@@ -59,7 +59,7 @@ export async function scrapeProductUrl(itemId: string, url: string): Promise<Scr
     // Fetch current item state so we merge (never overwrite manual data).
     const { data: current, error: fetchError } = await supabase
       .from("items")
-      .select("image_options, price_rrp")
+      .select("image_options, price_rrp, selected_image_url")
       .eq("id", itemId)
       .single();
 
@@ -86,6 +86,13 @@ export async function scrapeProductUrl(itemId: string, url: string): Promise<Scr
     // price_rrp: only fill if currently null — never overwrite a manual entry.
     if (current.price_rrp === null && price !== null) {
       update.price_rrp = price;
+    }
+
+    // Auto-select the best scraped image (first extracted = highest
+    // priority source) when the item has none — user can swap from the
+    // options grid at any time. Never overwrites an existing selection.
+    if (!current.selected_image_url && images.length > 0) {
+      update.selected_image_url = images[0];
     }
 
     if (status === "failed") {

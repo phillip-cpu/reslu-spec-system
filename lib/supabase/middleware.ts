@@ -41,6 +41,11 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith("/login") ||
     pathname.startsWith("/portal") ||
     pathname.startsWith("/api/portal") ||
+    // Digest flush: self-authenticates (GET via CRON_SECRET for Vercel
+    // Cron, POST via session) — must skip the auth-redirect so the
+    // cookieless cron GET reaches the handler instead of bouncing to
+    // /login. (Re-added — do not remove: the digest cron breaks without it.)
+    pathname.startsWith("/api/digest") ||
     pathname.startsWith("/_next") ||
     pathname.startsWith("/favicon") ||
     pathname.startsWith("/reslu-logo") ||
