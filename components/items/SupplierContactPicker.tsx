@@ -94,7 +94,7 @@ export function SupplierContactPicker({
         {linked ? `☏ ${linked.company}` : "☏ Link contact"}
       </button>
       {open && (
-        <div className="absolute z-20 mt-1 w-72 space-y-2 border border-[#dcd6cc] bg-nearwhite p-3 shadow-sm">
+        <div className="absolute right-0 z-20 mt-1 w-72 max-w-[calc(100vw-2rem)] space-y-2 border border-[#dcd6cc] bg-nearwhite p-3 shadow-sm">
           <div className="flex items-center justify-between gap-3">
             <p className="label-caps">Link a contact</p>
             <button type="button" onClick={() => setOpen(false)} className="text-caption text-charcoal/50 hover:text-nearblack">

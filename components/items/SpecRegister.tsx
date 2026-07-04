@@ -8,6 +8,7 @@ import { ItemAssets } from "./ItemAssets";
 import { ItemNotes } from "./ItemNotes";
 import { LibraryPicker } from "./LibraryPicker";
 import { SupplierContactPicker } from "./SupplierContactPicker";
+import { RoomAssignBar } from "./RoomAssignBar";
 
 interface Props {
   projectId: string;
@@ -152,6 +153,25 @@ export function SpecRegister({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  function toggleSelect(id: string) {
+    setSelectedIds((cur) => {
+      const next = new Set(cur);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+  function toggleSelectMany(ids: string[], on: boolean) {
+    setSelectedIds((cur) => {
+      const next = new Set(cur);
+      for (const id of ids) on ? next.add(id) : next.delete(id);
+      return next;
+    });
+  }
+  function clearSelection() {
+    setSelectedIds(new Set());
+  }
 
   const sortedCategories = useMemo(
     () => [...categories].sort((a, b) => a.sort_order - b.sort_order),
@@ -361,6 +381,20 @@ export function SpecRegister({
               <table className="w-full border-collapse">
                 <thead>
                   <tr className="border-b border-[#dcd6cc] text-left">
+                    <th className="w-8 px-2">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select all in ${group.label}`}
+                        checked={
+                          group.items.length > 0 &&
+                          group.items.every((it) => selectedIds.has(it.id))
+                        }
+                        onChange={(e) =>
+                          toggleSelectMany(group.items.map((it) => it.id), e.target.checked)
+                        }
+                        className="h-4 w-4 accent-nearblack"
+                      />
+                    </th>
                     <th className="w-6" />
                     <th className="w-12" />
                     <th className="label-caps px-2 py-1.5">Code</th>
@@ -380,6 +414,8 @@ export function SpecRegister({
                       item={item}
                       categories={sortedCategories}
                       expanded={expanded.has(item.id)}
+                      selected={selectedIds.has(item.id)}
+                      onToggleSelect={() => toggleSelect(item.id)}
                       onToggle={() => toggleExpand(item.id)}
                       onPatch={(patch) => patchItem(item.id, patch)}
                       onDelete={() => deleteItem(item.id)}
@@ -392,6 +428,15 @@ export function SpecRegister({
           </section>
         ))
       )}
+
+      {selectedIds.size > 0 && (
+        <RoomAssignBar
+          projectId={projectId}
+          selectedItemIds={[...selectedIds]}
+          onClear={clearSelection}
+          onError={onError}
+        />
+      )}
     </div>
   );
 }
@@ -402,6 +447,8 @@ function ItemRow({
   item: itemProp,
   categories,
   expanded,
+  selected,
+  onToggleSelect,
   onToggle,
   onPatch,
   onDelete,
@@ -410,6 +457,8 @@ function ItemRow({
   item: Item;
   categories: Category[];
   expanded: boolean;
+  selected: boolean;
+  onToggleSelect: () => void;
   onToggle: () => void;
   onPatch: (patch: Partial<Item>) => void;
   onDelete: () => void;
@@ -431,7 +480,16 @@ function ItemRow({
 
   return (
     <>
-      <tr className="border-b border-[#e5e0d6] align-top">
+      <tr className={clsx("border-b border-[#e5e0d6] align-top", selected && "bg-sand/10")}>
+        <td className="px-2 pt-2">
+          <input
+            type="checkbox"
+            aria-label="Select item"
+            checked={selected}
+            onChange={onToggleSelect}
+            className="h-4 w-4 accent-nearblack"
+          />
+        </td>
         <td className="pt-1">
           <button
             type="button"
@@ -534,7 +592,7 @@ function ItemRow({
       {expanded && (
         <tr className="border-b border-[#e5e0d6] bg-offwhite">
           <td />
-          <td colSpan={9} className="px-2 py-4">
+          <td colSpan={10} className="px-2 py-4">
             <div className="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
               <DetailField label="Application note">
                 <EditableCell
