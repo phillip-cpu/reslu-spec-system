@@ -50,7 +50,7 @@ const ITEM_STATUSES: ItemStatus[] = [
 
 const UNASSIGNED = "Unassigned";
 
-type GroupBy = "location" | "category" | "room";
+type GroupBy = "category" | "room";
 
 // ── helpers ─────────────────────────────────────────────────
 
@@ -162,7 +162,7 @@ export function SpecRegister({
   allocations,
   onRoomsChanged,
 }: Props) {
-  const [groupBy, setGroupBy] = useState<GroupBy>("location");
+  const [groupBy, setGroupBy] = useState<GroupBy>("room");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
@@ -255,7 +255,7 @@ export function SpecRegister({
       }
     } else {
       for (const it of filtered) {
-        const key = groupBy === "location" ? it.location?.trim() || UNASSIGNED : it.category;
+        const key = it.category;
         push(key, { item: it, roomQty: null });
       }
     }
@@ -291,7 +291,7 @@ export function SpecRegister({
         <div className="flex items-center gap-2">
           <span className="label-caps">Group by</span>
           <div className="flex border border-[#c9c2b4]">
-            {(["location", "category", "room"] as GroupBy[]).map((g) => (
+            {(["room", "category"] as GroupBy[]).map((g) => (
               <button
                 key={g}
                 type="button"
@@ -439,7 +439,6 @@ export function SpecRegister({
                     <th className="label-caps px-2 py-1.5">Cat</th>
                     <th className="label-caps px-2 py-1.5">Name</th>
                     <th className="label-caps px-2 py-1.5 text-right">Qty</th>
-                    <th className="label-caps px-2 py-1.5">Location</th>
                     <th className="label-caps px-2 py-1.5">Brand</th>
                     <th className="label-caps px-2 py-1.5">Supplier</th>
                     <th className="label-caps px-2 py-1.5">Status</th>
@@ -618,13 +617,6 @@ function ItemRow({
             />
           )}
         </td>
-        <td className="min-w-[120px] px-0 py-0">
-          <EditableCell
-            value={item.location}
-            placeholder="Unassigned"
-            onCommit={(v) => onPatch({ location: v || null })}
-          />
-        </td>
         <td className="min-w-[110px] px-0 py-0">
           <EditableCell
             value={item.brand}
@@ -657,7 +649,7 @@ function ItemRow({
       {expanded && (
         <tr className="border-b border-[#e5e0d6] bg-offwhite">
           <td />
-          <td colSpan={10} className="px-2 py-4">
+          <td colSpan={9} className="px-2 py-4">
             <div className="mb-4 border-b border-[#e5e0d6] pb-4">
               <ItemRoomsEditor
                 projectId={projectId}
