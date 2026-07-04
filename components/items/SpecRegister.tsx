@@ -18,6 +18,7 @@ import { LibraryPicker } from "./LibraryPicker";
 import { SupplierContactPicker } from "./SupplierContactPicker";
 import { RoomAssignBar } from "./RoomAssignBar";
 import { ItemRoomsEditor } from "./ItemRoomsEditor";
+import { RoomBuilder } from "./RoomBuilder";
 
 interface Props {
   projectId: string;
@@ -286,6 +287,14 @@ export function SpecRegister({
 
   return (
     <div className="space-y-6">
+      {/* Room builder — lay out rooms up front (feeds FF&E + per-room PDF) */}
+      <RoomBuilder
+        projectId={projectId}
+        rooms={rooms}
+        onChanged={onRoomsChanged}
+        onError={onError}
+      />
+
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-2">
