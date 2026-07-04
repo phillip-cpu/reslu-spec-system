@@ -2,8 +2,10 @@
 
 import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import readXlsxFile from "read-excel-file/browser";
 import {
   parseCsvTable,
+  rowsToCsv,
   suggestColumnMapping,
   IMPORT_TARGET_FIELDS,
   IMPORT_FIELD_LABELS,
@@ -53,6 +55,34 @@ export function ImportWizard({ projectId }: Props) {
   }
 
   function onFilePicked(file: File) {
+    setError(null);
+    const isXlsx =
+      file.name.toLowerCase().endsWith(".xlsx") ||
+      file.type ===
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+    if (isXlsx) {
+      // Parse the workbook's first sheet client-side into rows, serialise to
+      // CSV, and hand it to the same loadCsv pipeline the CSV path uses — the
+      // server import route is unchanged (still receives CSV text).
+      // read-excel-file's default call resolves the first sheet to Row[]
+      // (a 2D cell grid) at runtime; its bundled overload types this as
+      // Sheet[], so cast through unknown to the grid shape rowsToCsv wants.
+      readXlsxFile(file)
+        .then((rows) =>
+          loadCsv(
+            rowsToCsv(rows as unknown as (string | number | boolean | Date | null)[][]),
+            file.name
+          )
+        )
+        .catch(() =>
+          setError(
+            "Could not read that spreadsheet. Make sure it's a .xlsx file (not .xls or a protected/corrupt workbook)."
+          )
+        );
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = () => loadCsv(String(reader.result ?? ""), file.name);
     reader.onerror = () => setError("Could not read that file.");
@@ -116,7 +146,7 @@ export function ImportWizard({ projectId }: Props) {
           <input
             ref={fileInput}
             type="file"
-            accept=".csv,text/csv"
+            accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             hidden
             onChange={(e) => {
               const f = e.target.files?.[0];
@@ -128,7 +158,7 @@ export function ImportWizard({ projectId }: Props) {
             onClick={() => fileInput.current?.click()}
             className="bg-nearblack px-5 py-2.5 text-subhead text-white transition-colors hover:bg-charcoal"
           >
-            Choose CSV file
+            Choose CSV or Excel file
           </button>
         </div>
       )}

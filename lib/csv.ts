@@ -95,6 +95,22 @@ export function parseCsvTable(text: string): CsvTable {
   return { headers, rows };
 }
 
+/**
+ * Serialise a grid of cells back to CSV text. Used by the import wizard to
+ * turn xlsx rows (parsed client-side via read-excel-file) into the same CSV
+ * string the rest of the import pipeline already consumes — so xlsx support
+ * needs no server change. Cells are stringified; those containing a comma,
+ * quote, or newline are double-quoted with `"` escaped as `""` (RFC 4180).
+ */
+export function rowsToCsv(rows: (string | number | boolean | Date | null | undefined)[][]): string {
+  const cell = (v: string | number | boolean | Date | null | undefined): string => {
+    if (v === null || v === undefined) return "";
+    const s = v instanceof Date ? v.toISOString().slice(0, 10) : String(v);
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return rows.map((r) => r.map(cell).join(",")).join("\n");
+}
+
 // ------------------------------------------------------------
 // Column-mapping helpers (CSV import — Week 2)
 // ------------------------------------------------------------
