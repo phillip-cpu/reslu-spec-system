@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { DocumentStatusLight } from "./DocumentStatusLight";
 import { documentStatusFor, TRACKED_DOCUMENT_KINDS } from "@/lib/sow";
+import { createClient } from "@/lib/supabase/client";
+import { ASSET_BUCKET } from "@/lib/storage";
 import type { DocumentStatus, ProjectFile, ProjectFileKind } from "@/types";
 
 type FileWithUrl = ProjectFile & { url: string };
@@ -160,13 +162,35 @@ function DocumentSection({
     setUploading(true);
     onError(null);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("kind", kind);
-      if (revisionLabel.trim()) fd.append("revision_label", revisionLabel.trim());
+      // 1. Mint a signed upload URL (small request — filename only).
+      const urlRes = await fetch(`/api/projects/${projectId}/files/upload-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name }),
+      });
+      if (!urlRes.ok) throw new Error((await urlRes.json()).error ?? "Could not start upload");
+      const { path, token } = await urlRes.json();
+
+      // 2. Upload the file DIRECTLY to Supabase Storage (browser → storage),
+      //    so large documents (plans etc.) bypass the ~4.5 MB app-request cap.
+      const supabase = createClient();
+      const { error: upErr } = await supabase.storage
+        .from(ASSET_BUCKET)
+        .uploadToSignedUrl(path, token, file, {
+          contentType: file.type || "application/octet-stream",
+        });
+      if (upErr) throw new Error(upErr.message);
+
+      // 3. Record the metadata row (no file body).
       const res = await fetch(`/api/projects/${projectId}/files`, {
         method: "POST",
-        body: fd,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          storage_path: path,
+          filename: file.name,
+          kind,
+          revision_label: revisionLabel.trim() || null,
+        }),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? "Upload failed");
       const { file: row } = await res.json();

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS, slugFilename } from "@/lib/storage";
+import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
 import type { ProjectFile, ProjectFileKind } from "@/types";
 
 export const runtime = "nodejs";
@@ -80,40 +80,29 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const form = await request.formData().catch(() => null);
-  if (!form) {
-    return NextResponse.json({ error: "Expected form data" }, { status: 400 });
+  // Metadata-only: the file was already uploaded straight to Storage via a
+  // signed upload URL (POST .../files/upload-url), bypassing the ~4.5 MB
+  // Vercel body limit. This just records the row for the storage object.
+  const body = await request.json().catch(() => null);
+  if (!body) {
+    return NextResponse.json({ error: "Expected JSON body" }, { status: 400 });
   }
-  const file = form.get("file");
-  const kind = String(form.get("kind") ?? "other") as ProjectFileKind;
-  const revisionLabelRaw = form.get("revision_label");
+  const storage_path = typeof body.storage_path === "string" ? body.storage_path : "";
+  const filename =
+    typeof body.filename === "string" && body.filename.trim() ? body.filename.trim() : "document";
+  const kind = String(body.kind ?? "other") as ProjectFileKind;
   const revision_label =
-    typeof revisionLabelRaw === "string" && revisionLabelRaw.trim() !== ""
-      ? revisionLabelRaw.trim()
+    typeof body.revision_label === "string" && body.revision_label.trim() !== ""
+      ? body.revision_label.trim()
       : null;
 
-  if (!(file instanceof File)) {
-    return NextResponse.json({ error: "No file provided" }, { status: 400 });
-  }
   if (!KINDS.includes(kind)) {
     return NextResponse.json({ error: "Invalid kind" }, { status: 400 });
   }
-
-  const filename = file.name || "document";
-  const path = `projects/${projectId}/files/${Date.now()}-${slugFilename(filename)}`;
-  const bytes = Buffer.from(await file.arrayBuffer());
-
-  const { error: uploadError } = await supabase.storage
-    .from(ASSET_BUCKET)
-    .upload(path, bytes, {
-      contentType: file.type || "application/octet-stream",
-      upsert: false,
-    });
-  if (uploadError) {
-    return NextResponse.json(
-      { error: `Storage: ${uploadError.message}. If this mentions a missing bucket, run migration 009.` },
-      { status: 500 }
-    );
+  // The path must be one this project owns — it was minted by the upload-url
+  // route for exactly this prefix, so a forged cross-project path is rejected.
+  if (!storage_path.startsWith(`projects/${projectId}/files/`)) {
+    return NextResponse.json({ error: "Invalid storage path" }, { status: 400 });
   }
 
   const { data: row, error: insertError } = await supabase
@@ -121,7 +110,7 @@ export async function POST(
     .insert({
       project_id: projectId,
       kind,
-      storage_path: path,
+      storage_path,
       filename,
       revision_label,
       uploaded_by: user.id,
@@ -131,7 +120,7 @@ export async function POST(
 
   if (insertError) {
     // best-effort cleanup of the orphaned object
-    await supabase.storage.from(ASSET_BUCKET).remove([path]);
+    await supabase.storage.from(ASSET_BUCKET).remove([storage_path]);
     return NextResponse.json({ error: insertError.message }, { status: 500 });
   }
 
