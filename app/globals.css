@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 237 232 222; /* #EDE8DE cream */
+  --foreground: 49 49 49; /* #313131 charcoal */
+  --card: 245 241 232; /* #F5F1E8 off-white */
+  --primary: 26 26 26; /* #1A1A1A near-black */
+  --primary-foreground: 255 255 255;
+  --muted: 160 140 114; /* #A08C72 sand */
+  --border: 220 214 204; /* slightly darker than cream */
+  --radius: 0px; /* RESLU: no border radius — sharp edges */
+}
+
+* {
+  border-radius: 0 !important;
+}
+
+html,
+body {
+  background-color: #ede8de;
+  color: #313131;
+}
+
+body {
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-weight: 300;
+}
+
+.label-caps {
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #a08c72;
+}

@@ -1,0 +1,768 @@
+"use client";
+
+import { useMemo, useRef, useState } from "react";
+import Image from "next/image";
+import clsx from "clsx";
+import type { Category, Item, ItemStatus } from "@/types";
+import { ItemAssets } from "./ItemAssets";
+import { ItemNotes } from "./ItemNotes";
+import { LibraryPicker } from "./LibraryPicker";
+
+interface Props {
+  projectId: string;
+  items: Item[];
+  categories: Category[];
+  onPatch: (id: string, patch: Partial<Item>) => void;
+  onDelete: (id: string) => void;
+  onAdd: (item: Item) => void;
+  onError: (msg: string | null) => void;
+}
+
+const ITEM_STATUSES: ItemStatus[] = [
+  "Specced",
+  "Quoted",
+  "Ordered",
+  "On Site",
+  "Installed",
+];
+
+const UNASSIGNED = "Unassigned";
+
+type GroupBy = "location" | "category";
+
+// ── helpers ─────────────────────────────────────────────────
+
+/** Collapse the four dimension fields to one line, omitting blanks. */
+function formatDimensions(item: Item): string | null {
+  const parts = [item.width_mm, item.height_mm, item.length_mm, item.depth_mm]
+    .filter((v): v is number => v !== null && v !== undefined)
+    .map((v) => String(v));
+  return parts.length ? `${parts.join(" × ")} mm` : null;
+}
+
+/** Light validation — warn on implausible dimensions (Review §1C). */
+function dimensionWarning(item: Item): string | null {
+  const dims = [item.width_mm, item.height_mm, item.length_mm, item.depth_mm];
+  if (dims.some((v) => v !== null && v !== undefined && v > 5000)) {
+    return "Unusually large — check dimensions.";
+  }
+  if (item.width_mm === 210 && item.height_mm === 297) {
+    return "Looks like an A4 swatch artefact (210 × 297).";
+  }
+  return null;
+}
+
+function num(v: number | null): string {
+  return v === null || v === undefined ? "" : String(v);
+}
+
+// ── inline editable text cell ───────────────────────────────
+
+function EditableCell({
+  value,
+  onCommit,
+  placeholder,
+  type = "text",
+  className,
+  align = "left",
+}: {
+  value: string | null;
+  onCommit: (next: string) => void;
+  placeholder?: string;
+  type?: "text" | "number";
+  className?: string;
+  align?: "left" | "right";
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value ?? "");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function start() {
+    setDraft(value ?? "");
+    setEditing(true);
+    requestAnimationFrame(() => inputRef.current?.select());
+  }
+
+  function commit() {
+    setEditing(false);
+    if (draft.trim() !== (value ?? "").trim()) onCommit(draft.trim());
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        type={type}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") setEditing(false);
+        }}
+        className={clsx(
+          "w-full border border-nearblack bg-nearwhite px-2 py-1.5 text-body text-charcoal focus:outline-none",
+          align === "right" && "text-right",
+          className
+        )}
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={start}
+      className={clsx(
+        "block w-full px-2 py-1.5 text-body hover:bg-nearwhite",
+        align === "right" ? "text-right" : "text-left",
+        !value && "text-charcoal/30",
+        className
+      )}
+    >
+      {value || placeholder || "—"}
+    </button>
+  );
+}
+
+// ── main component ──────────────────────────────────────────
+
+export function SpecRegister({
+  projectId,
+  items,
+  categories,
+  onPatch,
+  onDelete,
+  onAdd,
+  onError,
+}: Props) {
+  const [groupBy, setGroupBy] = useState<GroupBy>("location");
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [adding, setAdding] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+
+  const sortedCategories = useMemo(
+    () => [...categories].sort((a, b) => a.sort_order - b.sort_order),
+    [categories]
+  );
+  const categoryName = useMemo(() => {
+    const map = new Map<string, string>();
+    categories.forEach((c) => map.set(c.prefix, c.name));
+    return map;
+  }, [categories]);
+
+  // ── mutations (delegated to the workspace) ───────────────
+
+  const patchItem = onPatch;
+  const deleteItem = onDelete;
+
+  function toggleExpand(id: string) {
+    setExpanded((cur) => {
+      const next = new Set(cur);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  // ── filtering + grouping ─────────────────────────────────
+
+  const filtered = useMemo(
+    () =>
+      items.filter(
+        (it) =>
+          (categoryFilter === "all" || it.category === categoryFilter) &&
+          (statusFilter === "all" || it.status === statusFilter)
+      ),
+    [items, categoryFilter, statusFilter]
+  );
+
+  const groups = useMemo(() => {
+    const map = new Map<string, Item[]>();
+    for (const it of filtered) {
+      const key =
+        groupBy === "location" ? it.location?.trim() || UNASSIGNED : it.category;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(it);
+    }
+    const entries = [...map.entries()];
+    if (groupBy === "location") {
+      entries.sort((a, b) => {
+        if (a[0] === UNASSIGNED) return 1;
+        if (b[0] === UNASSIGNED) return -1;
+        return a[0].localeCompare(b[0]);
+      });
+    } else {
+      const order = new Map(sortedCategories.map((c, i) => [c.prefix, i]));
+      entries.sort(
+        (a, b) => (order.get(a[0]) ?? 999) - (order.get(b[0]) ?? 999)
+      );
+    }
+    for (const [, list] of entries) {
+      list.sort((a, b) => a.item_code.localeCompare(b.item_code));
+    }
+    return entries.map(([key, list]) => ({
+      key,
+      label:
+        groupBy === "category"
+          ? `${key} · ${categoryName.get(key) ?? key}`
+          : key,
+      items: list,
+    }));
+  }, [filtered, groupBy, sortedCategories, categoryName]);
+
+  // ── render ───────────────────────────────────────────────
+
+  return (
+    <div className="space-y-6">
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="flex items-center gap-2">
+          <span className="label-caps">Group by</span>
+          <div className="flex border border-[#c9c2b4]">
+            {(["location", "category"] as GroupBy[]).map((g) => (
+              <button
+                key={g}
+                type="button"
+                onClick={() => setGroupBy(g)}
+                className={clsx(
+                  "px-3 py-1.5 text-subhead capitalize transition-colors",
+                  groupBy === g
+                    ? "bg-nearblack text-white"
+                    : "text-charcoal hover:bg-nearwhite"
+                )}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <label className="flex items-center gap-2">
+          <span className="label-caps">Category</span>
+          <select
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value)}
+            className="border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:outline-none focus:border-nearblack"
+          >
+            <option value="all">All</option>
+            {sortedCategories.map((c) => (
+              <option key={c.prefix} value={c.prefix}>
+                {c.prefix} · {c.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex items-center gap-2">
+          <span className="label-caps">Status</span>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:outline-none focus:border-nearblack"
+          >
+            <option value="all">All</option>
+            {ITEM_STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <span className="text-body text-charcoal/50">
+          {filtered.length} {filtered.length === 1 ? "item" : "items"}
+        </span>
+
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setLibraryOpen((o) => !o);
+              setAdding(false);
+            }}
+            className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
+          >
+            {libraryOpen ? "Close" : "Add from library"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setAdding((a) => !a);
+              setLibraryOpen(false);
+            }}
+            className="bg-nearblack px-4 py-2 text-subhead text-white transition-colors hover:bg-charcoal"
+          >
+            {adding ? "Close" : "Add item"}
+          </button>
+        </div>
+      </div>
+
+      {adding && (
+        <AddItemForm
+          projectId={projectId}
+          categories={sortedCategories}
+          onAdd={onAdd}
+          onError={onError}
+        />
+      )}
+
+      {libraryOpen && (
+        <LibraryPicker
+          projectId={projectId}
+          categories={sortedCategories}
+          onAdd={onAdd}
+          onError={onError}
+        />
+      )}
+
+      {/* Groups */}
+      {filtered.length === 0 ? (
+        <div className="border border-dashed border-[#c9c2b4] p-12 text-center">
+          <p className="text-body text-charcoal/60">
+            {items.length === 0
+              ? "No items yet. Add the first one to start the register."
+              : "No items match the current filters."}
+          </p>
+        </div>
+      ) : (
+        groups.map((group) => (
+          <section key={group.key}>
+            <div className="mb-2 flex items-baseline gap-3 border-b border-nearblack pb-1">
+              <h2 className="label-caps !text-nearblack">{group.label}</h2>
+              <span className="text-caption text-charcoal/50">
+                {group.items.length}
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr className="border-b border-[#dcd6cc] text-left">
+                    <th className="w-6" />
+                    <th className="w-12" />
+                    <th className="label-caps px-2 py-1.5">Code</th>
+                    <th className="label-caps px-2 py-1.5">Cat</th>
+                    <th className="label-caps px-2 py-1.5">Name</th>
+                    <th className="label-caps px-2 py-1.5 text-right">Qty</th>
+                    <th className="label-caps px-2 py-1.5">Location</th>
+                    <th className="label-caps px-2 py-1.5">Brand</th>
+                    <th className="label-caps px-2 py-1.5">Supplier</th>
+                    <th className="label-caps px-2 py-1.5">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {group.items.map((item) => (
+                    <ItemRow
+                      key={item.id}
+                      item={item}
+                      categories={sortedCategories}
+                      expanded={expanded.has(item.id)}
+                      onToggle={() => toggleExpand(item.id)}
+                      onPatch={(patch) => patchItem(item.id, patch)}
+                      onDelete={() => deleteItem(item.id)}
+                      onError={onError}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ))
+      )}
+    </div>
+  );
+}
+
+// ── item row (+ expandable detail) ──────────────────────────
+
+function ItemRow({
+  item,
+  categories,
+  expanded,
+  onToggle,
+  onPatch,
+  onDelete,
+  onError,
+}: {
+  item: Item;
+  categories: Category[];
+  expanded: boolean;
+  onToggle: () => void;
+  onPatch: (patch: Partial<Item>) => void;
+  onDelete: () => void;
+  onError: (msg: string | null) => void;
+}) {
+  const dims = formatDimensions(item);
+  const warning = dimensionWarning(item);
+
+  return (
+    <>
+      <tr className="border-b border-[#e5e0d6] align-top">
+        <td className="pt-1">
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-label={expanded ? "Collapse" : "Expand"}
+            className="px-1 py-1.5 text-charcoal/50 hover:text-nearblack"
+          >
+            {expanded ? "−" : "+"}
+          </button>
+        </td>
+        <td className="py-1.5">
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-label={expanded ? "Collapse" : "Expand"}
+            className="relative block h-9 w-9 overflow-hidden border border-[#dcd6cc] bg-cream"
+          >
+            {item.selected_image_url ? (
+              <Image
+                src={item.selected_image_url}
+                alt=""
+                fill
+                sizes="36px"
+                className="object-cover"
+              />
+            ) : (
+              <span className="flex h-full w-full items-center justify-center text-caption text-charcoal/25">
+                —
+              </span>
+            )}
+          </button>
+        </td>
+        <td className="whitespace-nowrap px-2 py-1.5 text-body font-normal text-nearblack">
+          {item.item_code}
+        </td>
+        <td className="px-1 py-1">
+          <select
+            value={item.category}
+            onChange={(e) => onPatch({ category: e.target.value })}
+            title="Changing category does not change the existing item code"
+            className="bg-transparent py-1 text-body focus:outline-none"
+          >
+            {categories.map((c) => (
+              <option key={c.prefix} value={c.prefix}>
+                {c.prefix}
+              </option>
+            ))}
+          </select>
+        </td>
+        <td className="min-w-[180px] px-0 py-0">
+          <EditableCell
+            value={item.name}
+            onCommit={(v) => v && onPatch({ name: v })}
+          />
+        </td>
+        <td className="w-16 px-0 py-0">
+          <EditableCell
+            value={num(item.quantity)}
+            type="number"
+            align="right"
+            onCommit={(v) => onPatch({ quantity: v === "" ? 1 : Number(v) })}
+          />
+        </td>
+        <td className="min-w-[120px] px-0 py-0">
+          <EditableCell
+            value={item.location}
+            placeholder="Unassigned"
+            onCommit={(v) => onPatch({ location: v || null })}
+          />
+        </td>
+        <td className="min-w-[110px] px-0 py-0">
+          <EditableCell
+            value={item.brand}
+            onCommit={(v) => onPatch({ brand: v || null })}
+          />
+        </td>
+        <td className="min-w-[110px] px-0 py-0">
+          <EditableCell
+            value={item.supplier}
+            onCommit={(v) => onPatch({ supplier: v || null })}
+          />
+        </td>
+        <td className="px-2 py-1">
+          <select
+            value={item.status}
+            onChange={(e) =>
+              onPatch({ status: e.target.value as ItemStatus })
+            }
+            className="bg-transparent py-1 text-body focus:outline-none"
+          >
+            {ITEM_STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </td>
+      </tr>
+
+      {expanded && (
+        <tr className="border-b border-[#e5e0d6] bg-offwhite">
+          <td />
+          <td colSpan={9} className="px-2 py-4">
+            <div className="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
+              <DetailField label="Application note">
+                <EditableCell
+                  value={item.application_note}
+                  onCommit={(v) => onPatch({ application_note: v || null })}
+                />
+              </DetailField>
+              <DetailField label="Colour">
+                <EditableCell
+                  value={item.colour}
+                  onCommit={(v) => onPatch({ colour: v || null })}
+                />
+              </DetailField>
+              <DetailField label="Material">
+                <EditableCell
+                  value={item.material}
+                  onCommit={(v) => onPatch({ material: v || null })}
+                />
+              </DetailField>
+              <DetailField label="Finish">
+                <EditableCell
+                  value={item.finish}
+                  onCommit={(v) => onPatch({ finish: v || null })}
+                />
+              </DetailField>
+              <DetailField label="Unit">
+                <EditableCell
+                  value={item.unit}
+                  onCommit={(v) => onPatch({ unit: v || "ea" })}
+                />
+              </DetailField>
+              <DetailField label="Supplier email">
+                <EditableCell
+                  value={item.supplier_email}
+                  onCommit={(v) => onPatch({ supplier_email: v || null })}
+                />
+              </DetailField>
+
+              <DetailField label="Dimensions (W × H × L × D mm)" full>
+                <div className="flex flex-wrap items-center gap-2">
+                  {(["width_mm", "height_mm", "length_mm", "depth_mm"] as const).map(
+                    (dim, i) => (
+                      <div key={dim} className="flex items-center gap-2">
+                        {i > 0 && <span className="text-charcoal/40">×</span>}
+                        <input
+                          type="number"
+                          defaultValue={num(item[dim])}
+                          onBlur={(e) => {
+                            const raw = e.target.value;
+                            const next = raw === "" ? null : Number(raw);
+                            if (next !== item[dim]) onPatch({ [dim]: next });
+                          }}
+                          className="w-20 border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
+                          aria-label={dim}
+                        />
+                      </div>
+                    )
+                  )}
+                  {dims && (
+                    <span className="text-body text-charcoal/50">= {dims}</span>
+                  )}
+                </div>
+                {warning && (
+                  <p className="mt-1 text-caption text-sand">⚠ {warning}</p>
+                )}
+              </DetailField>
+
+              <DetailField label="Description" full>
+                <EditableCell
+                  value={item.description}
+                  onCommit={(v) => onPatch({ description: v || null })}
+                />
+              </DetailField>
+
+              <DetailField label="Product URL" full>
+                <EditableCell
+                  value={item.product_url}
+                  onCommit={(v) => onPatch({ product_url: v || null })}
+                />
+              </DetailField>
+
+              <div className="border-t border-[#dcd6cc] pt-4 sm:col-span-2 lg:col-span-3">
+                <ItemAssets
+                  itemId={item.id}
+                  selectedImageUrl={item.selected_image_url}
+                  onImage={(url) =>
+                    onPatch({ selected_image_url: url || null })
+                  }
+                  onError={onError}
+                />
+              </div>
+
+              <div className="border-t border-[#dcd6cc] pt-4 sm:col-span-2 lg:col-span-3">
+                <ItemNotes itemId={item.id} onError={onError} />
+              </div>
+            </div>
+
+            <div className="mt-4 flex items-center justify-between border-t border-[#dcd6cc] pt-3">
+              <span className="text-caption text-charcoal/40">
+                {item.client_approved
+                  ? "Client approved"
+                  : item.client_flagged
+                    ? "Client flagged"
+                    : "Not yet actioned by client"}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (
+                    confirm(
+                      `Remove ${item.item_code} — ${item.name}? It is soft-deleted and can be restored by an admin.`
+                    )
+                  )
+                    onDelete();
+                }}
+                className="border border-red-700/40 px-3 py-1.5 text-subhead text-red-700 transition-colors hover:bg-red-700 hover:text-white"
+              >
+                Remove item
+              </button>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function DetailField({
+  label,
+  full,
+  children,
+}: {
+  label: string;
+  full?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={full ? "sm:col-span-2 lg:col-span-3" : undefined}>
+      <p className="label-caps mb-1">{label}</p>
+      {children}
+    </div>
+  );
+}
+
+// ── add-item form ───────────────────────────────────────────
+
+function AddItemForm({
+  projectId,
+  categories,
+  onAdd,
+  onError,
+}: {
+  projectId: string;
+  categories: Category[];
+  onAdd: (item: Item) => void;
+  onError: (msg: string | null) => void;
+}) {
+  const [name, setName] = useState("");
+  const [category, setCategory] = useState(categories[0]?.prefix ?? "");
+  const [location, setLocation] = useState("");
+  const [quantity, setQuantity] = useState("1");
+  const [submitting, setSubmitting] = useState(false);
+  const nameRef = useRef<HTMLInputElement>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim() || !category) return;
+    setSubmitting(true);
+    onError(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/items`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          category,
+          location: location.trim() || undefined,
+          quantity: Number(quantity) || 1,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? "Could not add item.");
+      }
+      const { item } = await res.json();
+      onAdd(item);
+      // keep the row open for rapid entry — reset name/location, keep category
+      setName("");
+      setLocation("");
+      setQuantity("1");
+      nameRef.current?.focus();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Could not add item.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form
+      onSubmit={submit}
+      className="flex flex-wrap items-end gap-3 border border-[#dcd6cc] bg-offwhite p-4"
+    >
+      <div className="min-w-[200px] flex-1">
+        <label className="label-caps mb-1 block">Name</label>
+        <input
+          ref={nameRef}
+          autoFocus
+          required
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Undermount Basin"
+          className="w-full border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none"
+        />
+      </div>
+      <div>
+        <label className="label-caps mb-1 block">Category</label>
+        <select
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+          className="border border-[#c9c2b4] bg-nearwhite px-2 py-2 text-body focus:border-nearblack focus:outline-none"
+        >
+          {categories.map((c) => (
+            <option key={c.prefix} value={c.prefix}>
+              {c.prefix} · {c.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className="label-caps mb-1 block">Location</label>
+        <input
+          value={location}
+          onChange={(e) => setLocation(e.target.value)}
+          placeholder="e.g. Ensuite"
+          className="w-36 border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none"
+        />
+      </div>
+      <div>
+        <label className="label-caps mb-1 block">Qty</label>
+        <input
+          type="number"
+          min="0"
+          step="any"
+          value={quantity}
+          onChange={(e) => setQuantity(e.target.value)}
+          className="w-20 border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none"
+        />
+      </div>
+      <button
+        type="submit"
+        disabled={submitting}
+        className="bg-nearblack px-5 py-2 text-subhead text-white transition-colors hover:bg-charcoal disabled:opacity-60"
+      >
+        {submitting ? "Adding…" : "Add"}
+      </button>
+      <p className="w-full text-caption text-charcoal/40">
+        The item code (e.g. {category || "TW"}-01) is generated automatically per
+        project.
+      </p>
+    </form>
+  );
+}

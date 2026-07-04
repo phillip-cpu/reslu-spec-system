@@ -1,0 +1,11 @@
+# Never upload local secrets — env vars are set in the Vercel dashboard/CLI.
+.env
+.env.local
+.env.*.local
+
+# Build/deps are reinstalled/rebuilt by Vercel.
+node_modules
+.next
+
+# Local scratch
+*.log
