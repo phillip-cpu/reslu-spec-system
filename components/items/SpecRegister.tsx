@@ -3,12 +3,21 @@
 import { useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import clsx from "clsx";
-import type { Category, DuplicateMatch, Item, ItemStatus } from "@/types";
+import type {
+  Category,
+  DuplicateMatch,
+  Item,
+  ItemStatus,
+  ProjectAllocation,
+  RoomWithCount,
+  ItemRoomAllocation,
+} from "@/types";
 import { ItemAssets } from "./ItemAssets";
 import { ItemNotes } from "./ItemNotes";
 import { LibraryPicker } from "./LibraryPicker";
 import { SupplierContactPicker } from "./SupplierContactPicker";
 import { RoomAssignBar } from "./RoomAssignBar";
+import { ItemRoomsEditor } from "./ItemRoomsEditor";
 
 interface Props {
   projectId: string;
@@ -25,6 +34,10 @@ interface Props {
    */
   onAddRefetch: (itemId: string, delayMs?: number) => void;
   onError: (msg: string | null) => void;
+  // Rooms + per-room allocations (multi-room assignment). See ProjectWorkspace.
+  rooms: RoomWithCount[];
+  allocations: ProjectAllocation[];
+  onRoomsChanged: () => void;
 }
 
 const ITEM_STATUSES: ItemStatus[] = [
@@ -37,7 +50,7 @@ const ITEM_STATUSES: ItemStatus[] = [
 
 const UNASSIGNED = "Unassigned";
 
-type GroupBy = "location" | "category";
+type GroupBy = "location" | "category" | "room";
 
 // ── helpers ─────────────────────────────────────────────────
 
@@ -145,6 +158,9 @@ export function SpecRegister({
   onAdd,
   onAddRefetch,
   onError,
+  rooms,
+  allocations,
+  onRoomsChanged,
 }: Props) {
   const [groupBy, setGroupBy] = useState<GroupBy>("location");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
@@ -210,39 +226,61 @@ export function SpecRegister({
     });
   }, [items, categoryFilter, statusFilter, search]);
 
-  const groups = useMemo(() => {
-    const map = new Map<string, Item[]>();
-    for (const it of filtered) {
-      const key =
-        groupBy === "location" ? it.location?.trim() || UNASSIGNED : it.category;
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(it);
+  // Each item's room allocations, indexed for room grouping + the per-item editor.
+  const allocByItem = useMemo(() => {
+    const m = new Map<string, ProjectAllocation[]>();
+    for (const a of allocations) {
+      const list = m.get(a.item_id) ?? [];
+      list.push(a);
+      m.set(a.item_id, list);
     }
+    return m;
+  }, [allocations]);
+
+  const groups = useMemo(() => {
+    type Row = { item: Item; roomQty: number | null };
+    const map = new Map<string, Row[]>();
+    const push = (key: string, row: Row) => {
+      const list = map.get(key) ?? [];
+      list.push(row);
+      map.set(key, list);
+    };
+
+    if (groupBy === "room") {
+      // An item in two rooms appears in both groups, each with its per-room qty.
+      for (const it of filtered) {
+        const allocs = allocByItem.get(it.id) ?? [];
+        if (allocs.length === 0) push(UNASSIGNED, { item: it, roomQty: null });
+        else for (const a of allocs) push(a.room_name, { item: it, roomQty: a.quantity });
+      }
+    } else {
+      for (const it of filtered) {
+        const key = groupBy === "location" ? it.location?.trim() || UNASSIGNED : it.category;
+        push(key, { item: it, roomQty: null });
+      }
+    }
+
     const entries = [...map.entries()];
-    if (groupBy === "location") {
+    if (groupBy === "category") {
+      const order = new Map(sortedCategories.map((c, i) => [c.prefix, i]));
+      entries.sort((a, b) => (order.get(a[0]) ?? 999) - (order.get(b[0]) ?? 999));
+    } else {
       entries.sort((a, b) => {
         if (a[0] === UNASSIGNED) return 1;
         if (b[0] === UNASSIGNED) return -1;
         return a[0].localeCompare(b[0]);
       });
-    } else {
-      const order = new Map(sortedCategories.map((c, i) => [c.prefix, i]));
-      entries.sort(
-        (a, b) => (order.get(a[0]) ?? 999) - (order.get(b[0]) ?? 999)
-      );
     }
     for (const [, list] of entries) {
-      list.sort((a, b) => a.item_code.localeCompare(b.item_code));
+      list.sort((a, b) => a.item.item_code.localeCompare(b.item.item_code));
     }
     return entries.map(([key, list]) => ({
       key,
       label:
-        groupBy === "category"
-          ? `${key} · ${categoryName.get(key) ?? key}`
-          : key,
+        groupBy === "category" ? `${key} · ${categoryName.get(key) ?? key}` : key,
       items: list,
     }));
-  }, [filtered, groupBy, sortedCategories, categoryName]);
+  }, [filtered, groupBy, sortedCategories, categoryName, allocByItem]);
 
   // ── render ───────────────────────────────────────────────
 
@@ -253,7 +291,7 @@ export function SpecRegister({
         <div className="flex items-center gap-2">
           <span className="label-caps">Group by</span>
           <div className="flex border border-[#c9c2b4]">
-            {(["location", "category"] as GroupBy[]).map((g) => (
+            {(["location", "category", "room"] as GroupBy[]).map((g) => (
               <button
                 key={g}
                 type="button"
@@ -387,10 +425,10 @@ export function SpecRegister({
                         aria-label={`Select all in ${group.label}`}
                         checked={
                           group.items.length > 0 &&
-                          group.items.every((it) => selectedIds.has(it.id))
+                          group.items.every((r) => selectedIds.has(r.item.id))
                         }
                         onChange={(e) =>
-                          toggleSelectMany(group.items.map((it) => it.id), e.target.checked)
+                          toggleSelectMany(group.items.map((r) => r.item.id), e.target.checked)
                         }
                         className="h-4 w-4 accent-nearblack"
                       />
@@ -408,9 +446,10 @@ export function SpecRegister({
                   </tr>
                 </thead>
                 <tbody>
-                  {group.items.map((item) => (
+                  {group.items.map(({ item, roomQty }) => (
                     <ItemRow
                       key={item.id}
+                      projectId={projectId}
                       item={item}
                       categories={sortedCategories}
                       expanded={expanded.has(item.id)}
@@ -420,6 +459,10 @@ export function SpecRegister({
                       onPatch={(patch) => patchItem(item.id, patch)}
                       onDelete={() => deleteItem(item.id)}
                       onError={onError}
+                      roomQty={roomQty}
+                      rooms={rooms}
+                      itemAllocations={allocByItem.get(item.id) ?? []}
+                      onRoomsChanged={onRoomsChanged}
                     />
                   ))}
                 </tbody>
@@ -433,7 +476,10 @@ export function SpecRegister({
         <RoomAssignBar
           projectId={projectId}
           selectedItemIds={[...selectedIds]}
-          onClear={clearSelection}
+          onClear={() => {
+            clearSelection();
+            onRoomsChanged();
+          }}
           onError={onError}
         />
       )}
@@ -444,6 +490,7 @@ export function SpecRegister({
 // ── item row (+ expandable detail) ──────────────────────────
 
 function ItemRow({
+  projectId,
   item: itemProp,
   categories,
   expanded,
@@ -453,7 +500,12 @@ function ItemRow({
   onPatch,
   onDelete,
   onError,
+  roomQty,
+  rooms,
+  itemAllocations,
+  onRoomsChanged,
 }: {
+  projectId: string;
   item: Item;
   categories: Category[];
   expanded: boolean;
@@ -463,6 +515,11 @@ function ItemRow({
   onPatch: (patch: Partial<Item>) => void;
   onDelete: () => void;
   onError: (msg: string | null) => void;
+  // When grouping by Room, the item's quantity IN THIS ROOM (else null).
+  roomQty: number | null;
+  rooms: RoomWithCount[];
+  itemAllocations: ItemRoomAllocation[];
+  onRoomsChanged: () => void;
 }) {
   // Week 6 cleanup: this row used to keep a local-only `scrapeOverride`
   // because the generic PATCH /api/items/[id] route's EDITABLE_FIELDS
@@ -546,12 +603,20 @@ function ItemRow({
           />
         </td>
         <td className="w-16 px-0 py-0">
-          <EditableCell
-            value={num(item.quantity)}
-            type="number"
-            align="right"
-            onCommit={(v) => onPatch({ quantity: v === "" ? 1 : Number(v) })}
-          />
+          {roomQty !== null ? (
+            // Room grouping: show this item's per-room quantity (edit it in
+            // the row's Rooms editor, not here — this is the room total).
+            <div className="px-2 py-1.5 text-right text-body text-nearblack" title="Quantity in this room">
+              {roomQty}
+            </div>
+          ) : (
+            <EditableCell
+              value={num(item.quantity)}
+              type="number"
+              align="right"
+              onCommit={(v) => onPatch({ quantity: v === "" ? 1 : Number(v) })}
+            />
+          )}
         </td>
         <td className="min-w-[120px] px-0 py-0">
           <EditableCell
@@ -593,6 +658,17 @@ function ItemRow({
         <tr className="border-b border-[#e5e0d6] bg-offwhite">
           <td />
           <td colSpan={10} className="px-2 py-4">
+            <div className="mb-4 border-b border-[#e5e0d6] pb-4">
+              <ItemRoomsEditor
+                projectId={projectId}
+                itemId={item.id}
+                itemQuantity={item.quantity}
+                rooms={rooms}
+                allocations={itemAllocations}
+                onChanged={onRoomsChanged}
+                onError={onError}
+              />
+            </div>
             <div className="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
               <DetailField label="Application note">
                 <EditableCell

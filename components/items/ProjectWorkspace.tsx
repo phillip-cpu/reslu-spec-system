@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import clsx from "clsx";
-import type { Category, Item } from "@/types";
+import type { Category, Item, ProjectAllocation, RoomWithCount } from "@/types";
 import { SpecRegister } from "./SpecRegister";
 import { ProcurementView } from "./ProcurementView";
 import { ProcurementBoardView } from "./ProcurementBoardView";
@@ -40,6 +40,29 @@ export function ProjectWorkspace({
   const [items, setItems] = useState<Item[]>(initialItems);
   const [view, setView] = useState<View>("spec");
   const [error, setError] = useState<string | null>(null);
+  const [rooms, setRooms] = useState<RoomWithCount[]>([]);
+  const [allocations, setAllocations] = useState<ProjectAllocation[]>([]);
+
+  // Rooms + per-room allocations for the spec register's Room grouping and
+  // per-item editor. Loaded client-side (they change often via bulk assign).
+  function refetchRooms() {
+    fetch(`/api/projects/${projectId}/rooms`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d.rooms)) setRooms(d.rooms);
+      })
+      .catch(() => {});
+    fetch(`/api/projects/${projectId}/items/rooms`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d.allocations)) setAllocations(d.allocations);
+      })
+      .catch(() => {});
+  }
+  useEffect(() => {
+    refetchRooms();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
 
   async function patchItem(id: string, patch: Partial<Item>) {
     const prev = items;
@@ -155,6 +178,9 @@ export function ProjectWorkspace({
           projectId={projectId}
           items={items}
           categories={categories}
+          rooms={rooms}
+          allocations={allocations}
+          onRoomsChanged={refetchRooms}
           onPatch={patchItem}
           onDelete={deleteItem}
           onAdd={addItem}

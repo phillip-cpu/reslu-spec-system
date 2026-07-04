@@ -3,6 +3,75 @@ import { createClient } from "@/lib/supabase/server";
 import type { BulkAssignRoomsInput } from "@/types";
 
 /**
+ * GET /api/projects/[id]/items/rooms
+ * Every room allocation in the project — { item_id, room_id, room_name,
+ * quantity } — for the spec register's room grouping and per-item editor.
+ */
+export async function GET(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id: projectId } = await params;
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const { data: rooms } = await supabase
+    .from("rooms")
+    .select("id,name")
+    .eq("project_id", projectId)
+    .is("deleted_at", null);
+  const roomIds = (rooms ?? []).map((r) => r.id);
+  const roomName = new Map((rooms ?? []).map((r) => [r.id, r.name as string]));
+
+  const { data: allocations } = roomIds.length
+    ? await supabase.from("item_rooms").select("item_id,room_id,quantity").in("room_id", roomIds)
+    : { data: [] as { item_id: string; room_id: string; quantity: number }[] };
+
+  return NextResponse.json({
+    allocations: (allocations ?? []).map((a) => ({
+      ...a,
+      room_name: roomName.get(a.room_id) ?? "",
+    })),
+  });
+}
+
+/**
+ * DELETE /api/projects/[id]/items/rooms — remove one allocation.
+ * body: { item_id, room_id }.
+ */
+export async function DELETE(
+  request: NextRequest,
+  { params: _params }: { params: Promise<{ id: string }> }
+) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  let body: { item_id?: string; room_id?: string };
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  if (!body.item_id || !body.room_id) {
+    return NextResponse.json({ error: "item_id and room_id are required" }, { status: 400 });
+  }
+
+  const { error } = await supabase
+    .from("item_rooms")
+    .delete()
+    .eq("item_id", body.item_id)
+    .eq("room_id", body.room_id);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true });
+}
+
+/**
  * POST /api/projects/[id]/items/rooms
  * body: BulkAssignRoomsInput — { item_ids, room_ids, quantity, mode }.
  *

@@ -1359,3 +1359,12 @@ export interface BulkAssignRoomsInput {
   quantity: number;
   mode: "add" | "replace";
 }
+
+/** One room allocation across the whole project
+ * (GET /api/projects/[id]/items/rooms) — used for room grouping + per-item editor. */
+export interface ProjectAllocation {
+  item_id: string;
+  room_id: string;
+  room_name: string;
+  quantity: number;
+}
