@@ -1303,3 +1303,59 @@ export interface LeadsDashboardSummary {
   total_pipeline_value: number;
   stages: LeadStageSummary[];
 }
+
+// ============================================================
+// Rooms + per-room item quantities (migration 015_rooms.sql)
+// ============================================================
+
+/** A room within a project (Ensuite, Bathroom, …). */
+export interface Room {
+  id: string;
+  project_id: string;
+  name: string;
+  sort: number;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+/** An item's allocation to a room, carrying the per-room quantity. */
+export interface ItemRoom {
+  id: string;
+  item_id: string;
+  room_id: string;
+  quantity: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Room list row with how many items are assigned to it. */
+export interface RoomWithCount extends Room {
+  item_count: number;
+}
+
+/** One item's room allocations, for showing chips on the spec register. */
+export interface ItemRoomAllocation {
+  room_id: string;
+  room_name: string;
+  quantity: number;
+}
+
+/** POST /api/projects/[id]/rooms — create a room. */
+export interface CreateRoomInput {
+  name: string;
+}
+
+/**
+ * POST /api/projects/[id]/items/rooms — bulk-assign items to rooms.
+ * Each selected item is upserted into each target room at `quantity`
+ * (existing allocations for those item/room pairs are updated, not
+ * duplicated). `mode: "replace"` first clears the items' other room
+ * allocations; "add" leaves untouched rooms in place.
+ */
+export interface BulkAssignRoomsInput {
+  item_ids: string[];
+  room_ids: string[];
+  quantity: number;
+  mode: "add" | "replace";
+}
