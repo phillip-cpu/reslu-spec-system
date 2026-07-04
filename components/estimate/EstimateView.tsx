@@ -193,7 +193,7 @@ export function EstimateView({
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? "Could not update line.");
       }
-      onReload();
+      await onReload();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not update line.");
     }
@@ -454,24 +454,55 @@ function LineRow({
   onDelete,
 }: {
   line: CostLine;
-  onPatch: (patch: Partial<CostLine>) => void;
+  onPatch: (patch: Partial<CostLine>) => Promise<void>;
   onDelete: () => void;
 }) {
   const [linkOpen, setLinkOpen] = useState(false);
-  const cost = lineCost(line);
-  const variance = lineVariance(line);
+  // Stage the whole line's edits locally, then save once when focus
+  // leaves the row — one save (and one background refresh) per line
+  // instead of one per box. A ref backs the draft so the row-blur
+  // handler still sees the last cell's edit, since that cell's commit
+  // and the row's blur fire in the same event.
+  const [draft, setDraft] = useState<Partial<CostLine>>({});
+  const draftRef = useRef<Partial<CostLine>>({});
+  const rowRef = useRef<HTMLTableRowElement>(null);
+
+  const stage = (patch: Partial<CostLine>) => {
+    draftRef.current = { ...draftRef.current, ...patch };
+    setDraft(draftRef.current);
+  };
+
+  async function commitRow() {
+    const pending = draftRef.current;
+    if (Object.keys(pending).length === 0) return;
+    draftRef.current = {};
+    // Keep the draft on screen through the save+refresh (no flash back to
+    // old values); clear it once the refreshed row lands.
+    await onPatch(pending);
+    setDraft({});
+  }
+
+  const v = { ...line, ...draft };
+  const cost = lineCost(v);
+  const variance = lineVariance(v);
 
   return (
     <>
-      <tr className="border-b border-[#e5e0d6] align-top">
+      <tr
+        ref={rowRef}
+        onBlur={(e) => {
+          if (!rowRef.current?.contains(e.relatedTarget as Node | null)) void commitRow();
+        }}
+        className="border-b border-[#e5e0d6] align-top"
+      >
         <td className="pt-1.5">
           <button
             type="button"
             onClick={() => setLinkOpen((o) => !o)}
-            title={line.item_id ? "Linked to a spec register item" : "Link to a spec register item"}
+            title={v.item_id ? "Linked to a spec register item" : "Link to a spec register item"}
             className={clsx(
               "px-1 text-caption",
-              line.item_id ? "text-sand" : "text-charcoal/25 hover:text-charcoal/60"
+              v.item_id ? "text-sand" : "text-charcoal/25 hover:text-charcoal/60"
             )}
           >
             ⚭
@@ -479,8 +510,8 @@ function LineRow({
         </td>
         <td className="min-w-[220px] px-0 py-0">
           <EditableText
-            value={line.description}
-            onCommit={(v) => v && onPatch({ description: v })}
+            value={v.description}
+            onCommit={(val) => val && stage({ description: val })}
           />
           {/* Double-counting rule (BUILD-SPEC.md "Estimate ↔ Schedule
               integration"): a line linked to a spec register item means
@@ -488,7 +519,7 @@ function LineRow({
               is already captured in the FF&E block below, sourced from
               the item's price_trade/price_rrp. Showing both here would
               double-count the product cost. */}
-          {line.item_id && (
+          {v.item_id && (
             <p className="px-2 pb-1 text-caption text-sand">
               Labour/install only — product cost in schedule
             </p>
@@ -496,33 +527,33 @@ function LineRow({
         </td>
         <td className="w-20 px-0 py-0">
           <EditableNumber
-            value={line.qty}
-            onCommit={(v) => onPatch({ qty: v })}
+            value={v.qty}
+            onCommit={(val) => stage({ qty: val })}
           />
         </td>
         <td className="w-20 px-0 py-0">
-          <EditableText value={line.unit} onCommit={(v) => onPatch({ unit: v || null })} />
+          <EditableText value={v.unit} onCommit={(val) => stage({ unit: val || null })} />
         </td>
         <td className="w-28 px-0 py-0">
-          <EditableNumber value={line.rate_ex_gst} onCommit={(v) => onPatch({ rate_ex_gst: v })} />
+          <EditableNumber value={v.rate_ex_gst} onCommit={(val) => stage({ rate_ex_gst: val })} />
         </td>
         <td className="w-28 px-0 py-0">
           <EditableNumber
-            value={line.cost_ex_gst}
+            value={v.cost_ex_gst}
             placeholder={cost !== null ? formatMoney(cost) : "—"}
-            onCommit={(v) => onPatch({ cost_ex_gst: v })}
+            onCommit={(val) => stage({ cost_ex_gst: val })}
           />
         </td>
         <td className="w-28 px-0 py-0">
           <EditableNumber
-            value={line.quoted_to_client_ex_gst}
-            onCommit={(v) => onPatch({ quoted_to_client_ex_gst: v })}
+            value={v.quoted_to_client_ex_gst}
+            onCommit={(val) => stage({ quoted_to_client_ex_gst: val })}
           />
         </td>
         <td className="w-28 px-0 py-0">
           <EditableNumber
-            value={line.actual_paid_ex_gst}
-            onCommit={(v) => onPatch({ actual_paid_ex_gst: v })}
+            value={v.actual_paid_ex_gst}
+            onCommit={(val) => stage({ actual_paid_ex_gst: val })}
           />
         </td>
         <td className={clsx("w-24 px-2 py-1.5 text-right text-body", variance !== null && variance < 0 && "text-red-700")}>
@@ -530,8 +561,8 @@ function LineRow({
         </td>
         <td className="px-1 py-1">
           <select
-            value={line.quote_status ?? ""}
-            onChange={(e) => onPatch({ quote_status: (e.target.value || null) as CostLine["quote_status"] })}
+            value={v.quote_status ?? ""}
+            onChange={(e) => stage({ quote_status: (e.target.value || null) as CostLine["quote_status"] })}
             className="bg-transparent py-1 text-body focus:outline-none"
           >
             <option value="">—</option>
@@ -543,13 +574,13 @@ function LineRow({
           </select>
         </td>
         <td className="min-w-[140px] px-0 py-0">
-          <EditableText value={line.notes} onCommit={(v) => onPatch({ notes: v || null })} />
+          <EditableText value={v.notes} onCommit={(val) => stage({ notes: val || null })} />
         </td>
         <td className="px-1 py-1.5">
           <button
             type="button"
             onClick={() => {
-              if (confirm(`Remove line "${line.description}"?`)) onDelete();
+              if (confirm(`Remove line "${v.description}"?`)) onDelete();
             }}
             className="text-caption text-red-700/60 hover:text-red-700"
           >
@@ -563,9 +594,9 @@ function LineRow({
           <td colSpan={11} className="px-2 py-3">
             <ItemLinkPicker
               projectId={line.project_id}
-              currentItemId={line.item_id}
+              currentItemId={v.item_id}
               onSelect={(itemId) => {
-                onPatch({ item_id: itemId });
+                void onPatch({ item_id: itemId });
                 setLinkOpen(false);
               }}
               onClose={() => setLinkOpen(false)}

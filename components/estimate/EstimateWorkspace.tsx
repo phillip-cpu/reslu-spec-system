@@ -34,8 +34,12 @@ export function EstimateWorkspace({ projectId }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [notInitialised, setNotInitialised] = useState(false);
 
-  const loadAll = useCallback(async () => {
-    setLoading(true);
+  // `silent` refreshes the data in the background without flipping the
+  // loading flag — so the estimate view stays mounted (keeping expanded
+  // sections open and avoiding a jarring "reload" flash) after inline
+  // edits. Only the initial load / initialise show the loading state.
+  const loadAll = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const [estimateRes, variationsRes, measurementsRes] = await Promise.all([
@@ -64,7 +68,7 @@ export function EstimateWorkspace({ projectId }: Props) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load the estimate.");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [projectId]);
 
@@ -164,7 +168,7 @@ export function EstimateWorkspace({ projectId }: Props) {
           estimate={estimate}
           notInitialised={notInitialised}
           onInitialise={initialiseFromTemplate}
-          onReload={loadAll}
+          onReload={() => loadAll(true)}
           approvedVariationsTotal={approvedVariations}
         />
       )}
@@ -173,7 +177,7 @@ export function EstimateWorkspace({ projectId }: Props) {
         <VariationsView
           projectId={projectId}
           variations={variations}
-          onReload={loadAll}
+          onReload={() => loadAll(true)}
         />
       )}
 
@@ -181,7 +185,7 @@ export function EstimateWorkspace({ projectId }: Props) {
         <MeasurementsView
           projectId={projectId}
           groups={measurementGroups}
-          onReload={loadAll}
+          onReload={() => loadAll(true)}
         />
       )}
     </div>
