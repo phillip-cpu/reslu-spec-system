@@ -152,22 +152,30 @@ underlying scrape attempt failed (check `item.scrape_status`).
 **Aria-relevant.**
 
 ### GET /api/items/[id]/files
-Auth: session. Body: none. Response: `{ files: (ItemFile & { url })[] }`,
-oldest first, each with a minted public URL from the `assets` bucket.
+Auth: session. Body: none. Response: `{ files: (ItemFile & { url: string | null })[] }`,
+oldest first, each with a signed URL (1hr TTL) minted from the
+**private** `assets` bucket (migration 009_assets_bucket.sql — see
+"Storage buckets" note below). `url` is `null` for a file whose signing
+call failed (e.g. the object is missing) rather than failing the whole
+list.
 
 ### POST /api/items/[id]/files
 Auth: session. Body: multipart `{ file, kind }` where
 `kind ∈ spec_sheet | install_manual | other`. Response:
 `{ file: {...row, url} }` (201). Uploads to
 `assets/items/${id}/files/${timestamp}-${slug}`; storage object is
-best-effort cleaned up if the DB insert fails.
+best-effort cleaned up if the DB insert fails. On a Storage error the
+response body's `error` includes the underlying Supabase Storage
+message (e.g. surfaces a missing-bucket error directly, pointing at
+migration 009) rather than a generic failure string.
 
 ### POST /api/items/[id]/files/from-url
 Auth: session. Body: `{ url, kind }`. Response: `{ file: {...row, url} }`
 (201). Server-side "Attach" for a PDF the scraper detected on the
 product page: SSRF-guarded fetch, 20MB cap, uploads then inserts (same
 cleanup-on-failure as above), and on success prunes the matching URL
-out of the item's `scraped_documents` JSON array.
+out of the item's `scraped_documents` JSON array. `url` is a signed URL
+(same TTL/bucket as above); `null` if signing failed post-upload.
 
 ### DELETE /api/item-files/[fileId]
 Auth: session. Body: none. Response: `{ ok: true }`. **Hard** deletes
@@ -176,9 +184,15 @@ column exists on this table).
 
 ### POST /api/items/[id]/image
 Auth: session. Body: multipart `file`, OR JSON `{ url }`. Response:
-`{ url: publicUrl }`. Uploads to `assets/items/${id}/image-${timestamp}.${ext}`
-(`upsert: true`). Does **not** persist the URL onto the item — the
-caller must separately `PATCH /api/items/[id]` with
+`{ url: publicUrl }`. Uploads to `item-images/items/${id}/image-${timestamp}.${ext}`
+(`upsert: true`) — the **public** `item-images` bucket (Week 7 fix: this
+previously wrote to the `assets` bucket, which either didn't exist or
+is now private, both of which broke `getPublicUrl()`; item cover images
+are a durable value persisted onto `items.selected_image_url` and
+reused indefinitely across the register/portal/PDF, so they belong in
+the same public bucket the PDF pre-pass re-hosting flow already uses —
+see `lib/images.ts` `PDF_IMAGE_BUCKET`). Does **not** persist the URL
+onto the item — the caller must separately `PATCH /api/items/[id]` with
 `selected_image_url`.
 
 ### GET /api/items/[id]/notes
@@ -267,11 +281,21 @@ Auth: admin. Body: none. Response: `EstimateResponse` —
 `{ sections: CostSectionWithLines[], markup_pct, rollup: {
 allTradesSubtotalExGst, approvedVariationsExGst, markupPct,
 markupExGst, totalToClientExGst, gst, totalIncGst, quotedExGst,
-actualExGst }, ffe: FfeRollup, wholeJob: WholeJobSummary }`. Week 6
-additive: `ffe` and `wholeJob` are new — see "FF&E — from schedule"
-below. Sections/lines are ordered by `sort`, non-deleted only.
-**Aria-relevant** (read-only estimate visibility for an admin-scoped
-agent context).
+actualExGst }, ffe: FfeRollup, wholeJob: WholeJobSummary,
+measurements: MeasurementWithGroup[] }`. Week 6 additive: `ffe` and
+`wholeJob` — see "FF&E — from schedule" below. Week 7 additive:
+`measurements` — every project measurement, flat, each with its
+group's name attached (`group_name`) — powers the cost-line
+measurement-link picker and lets the UI resolve a linked line's
+`measurement_id` to a label/value/unit without a second fetch. Cost
+lines with a non-null `measurement_id` have their contribution to
+`rollup.allTradesSubtotalExGst` (and their own `cost_ex_gst` display,
+when not manually overridden) computed from
+`lib/estimate.ts effectiveQty()` — `measurement.value * (1 +
+wastage_pct/100)` — rather than the line's own `qty` column; see
+"Cost lines" below. Sections/lines are ordered by `sort`, non-deleted
+only. **Aria-relevant** (read-only estimate visibility for an
+admin-scoped agent context).
 
 ### POST /api/projects/[id]/estimate/init
 Auth: admin. Body: none. Response: `{ sections: CostSectionWithLines[] }`
@@ -303,10 +327,18 @@ Response: `{ line }` (201).
 
 ### PATCH /api/estimate/lines/[id]
 Auth: admin. Body: `PatchCostLineInput` — any subset of the
-`CreateCostLineInput` fields plus `sort`. Response: `{ line }`.
-Setting `item_id` ties the line to a spec register item — per the
-"double-counting rule" (see FF&E section below), this marks the line
-as labour/install only in the UI.
+`CreateCostLineInput` fields plus `sort`, `measurement_id`,
+`wastage_pct` (Week 7). Response: `{ line }`. Setting `item_id` ties
+the line to a spec register item — per the "double-counting rule" (see
+FF&E section below), this marks the line as labour/install only in the
+UI. Setting `measurement_id` (references `measurements(id)`, `on delete
+set null`) links the line to a measurement row — its effective qty
+becomes `measurement.value * (1 + wastage_pct/100)` (see
+`lib/estimate.ts effectiveQty()`), overriding the line's own `qty`
+column for cost purposes while leaving `qty` itself untouched (unlink
+by setting `measurement_id: null` to hand-edit qty again). `wastage_pct`
+is validated 0–50 (400 outside that range); only meaningful alongside a
+non-null `measurement_id`, but not rejected if set without one.
 
 ### DELETE /api/estimate/lines/[id]
 Auth: admin. Body: none. Response: `{ ok: true }`. Soft-delete
@@ -463,14 +495,18 @@ BUILD-SPEC.md "Project documents").
 
 ### GET /api/projects/[id]/files
 Auth: session. Body: none. Response:
-`{ files: (ProjectFile & { url })[] }`, non-deleted, newest first.
-Each `kind ∈ plans | council | engineering | scope_of_works | other`.
+`{ files: (ProjectFile & { url: string | null })[] }`, non-deleted,
+newest first. Each `kind ∈ plans | council | engineering |
+scope_of_works | other`. `url` is a signed URL (1hr TTL) from the
+**private** `assets` bucket, `null` if signing failed.
 
 ### POST /api/projects/[id]/files
 Auth: session. Body: multipart `{ file, kind, revision_label? }`
 (e.g. `"T3"`). Response: `{ file: {...row, url} }` (201). Uploads to
 the same `assets` bucket item_files uses, under
-`projects/${id}/files/${timestamp}-${slug}`.
+`projects/${id}/files/${timestamp}-${slug}`. On a Storage error the
+response body's `error` includes the underlying Supabase Storage
+message.
 
 ### DELETE /api/project-files/[fileId]
 Auth: session, but restricted to admin **or** the original uploader
@@ -501,11 +537,15 @@ never blocks the response). **Not available to Aria** — BUILD-SPEC.md
 ## Digest
 
 ### POST /api/digest/flush
-Auth: session (not admin-gated). Body: none. Response: passthrough of
-`flushDigest()`'s result. Sends any pending `portal_digest_queue` rows,
-grouped per project, to admin profiles, then marks them `sent_at`.
-There is no built-in cron — something external (e.g. a scheduled job)
-must call this route to actually deliver queued digests.
+Auth: session (not admin-gated) **or** header
+`authorization: Bearer ${CRON_SECRET}` (Week 7). Body: none. Response:
+passthrough of `flushDigest()`'s result. Sends any pending
+`portal_digest_queue` rows, grouped per project, to admin profiles,
+then marks them `sent_at`. `vercel.json` now schedules this hourly via
+Vercel Cron (`"0 * * * *"`); the manual/session-authenticated trigger
+(e.g. a "Send digest" button) keeps working unchanged. The cron path
+uses a service-role Supabase client (no user session exists on a
+scheduled call) — see the route's doc comment for the reasoning.
 
 ---
 

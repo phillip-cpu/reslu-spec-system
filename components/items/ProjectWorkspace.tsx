@@ -74,6 +74,36 @@ export function ProjectWorkspace({
     setItems((cur) => [...cur, item]);
   }
 
+  /**
+   * Week 7 — scrape status visibility: after adding an item with a
+   * product URL, the scrape runs fire-and-forget server-side (see
+   * POST /api/projects/[id]/items) and this row's initial state is
+   * whatever came back synchronously (scrape_status: 'pending', no
+   * images yet). Re-fetching the item a few seconds later and merging
+   * it in-place (upsert by id, unlike addItem which always appends)
+   * lets the row pick up the real scrape_status/images/flag_note
+   * without the user having to manually reload the page. Silently
+   * no-ops on failure — this is a best-effort background refresh, not
+   * a user-facing action with its own error surface.
+   */
+  function upsertItem(item: Item) {
+    setItems((cur) => {
+      const exists = cur.some((it) => it.id === item.id);
+      return exists ? cur.map((it) => (it.id === item.id ? item : it)) : [...cur, item];
+    });
+  }
+
+  function scheduleItemRefetch(itemId: string, delayMs = 5000) {
+    setTimeout(() => {
+      fetch(`/api/items/${itemId}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((body) => {
+          if (body?.item) upsertItem(body.item as Item);
+        })
+        .catch(() => {});
+    }, delayMs);
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
@@ -118,6 +148,7 @@ export function ProjectWorkspace({
           onPatch={patchItem}
           onDelete={deleteItem}
           onAdd={addItem}
+          onAddRefetch={scheduleItemRefetch}
           onError={setError}
         />
       ) : (

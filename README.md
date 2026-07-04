@@ -52,18 +52,32 @@ This downloads everything the app needs. It can take a few minutes the first tim
    - `supabase/migrations/004_library_scraper.sql` (library trade-price
      provenance + duplicate-detection columns + scraped-document staging)
    - `supabase/migrations/005_portal_approvals.sql` (approval-reset audit
-     log + creates the `item-images` storage bucket)
+     log)
    - `supabase/migrations/006_monday_email.sql` (adds `projects.settings`
      JSON column used for per-project Monday column mapping, and creates
      the `portal_digest_queue` table used by the team email digest)
+   - `supabase/migrations/007_estimating.sql` (Estimate module tables +
+     creates the **`item-images`** storage bucket, public — durable
+     product/cover images embedded in the register, portal, and PDF)
+   - `supabase/migrations/008_project_files.sql` (Project Documents table)
+   - `supabase/migrations/009_assets_bucket.sql` (creates the **`assets`**
+     storage bucket, private + measurement-linking columns on
+     `cost_lines` + `projects.cover_image_path`) — **this is the fix for
+     the "spec sheet attach fails" bug**: earlier working copies of this
+     app never created the `assets` bucket at all (nothing did — it was
+     assumed to exist), so every item-document/project-document/invoice
+     upload failed in a fresh Supabase project until this migration was
+     added. If you're upgrading an existing deployment, run this one
+     migration and the uploads will start working with no other changes.
    - `supabase/seed.sql` (adds the category codes and a demo project)
 
-3. Go to **Storage** and create one more bucket by hand (only
-   `item-images` is created by a migration): a bucket named **`assets`**,
-   public. This holds item images (on selection) and item documents
-   (spec sheets, install manuals). Both buckets are safe as public-read —
-   nothing sensitive (pricing, client data) is ever stored as a file;
-   only already-selected product images and spec documents live there.
+3. Storage buckets are now fully created by the migrations above — no
+   manual Storage dashboard step needed. For reference: `item-images` is
+   **public** (product/cover images, safe to be public-read — nothing
+   sensitive lives there), `assets` is **private** (item documents,
+   project documents, invoice PDFs — client-related files, served via
+   short-lived signed URLs minted server-side, never a permanent public
+   link).
 
 4. Go to **Authentication → Providers** and make sure **Email** is enabled.
    Go to **Authentication → Settings** and turn **off** "Allow new users to
@@ -190,10 +204,14 @@ without them.
   `ARIA_GMAIL_REFRESH_TOKEN` (and optionally `GMAIL_TOKEN_URI` if not
   using Google's default). These must be freshly rotated credentials for
   the `aria@reslu.com.au` mailbox — the ones referenced in the original
-  planning document are considered compromised. Once configured, trigger
-  `POST /api/digest/flush` (authenticated) on whatever cadence you want —
-  a Vercel Cron job, an external uptime ping, or a manual button — to send
-  any pending client-activity digest.
+  planning document are considered compromised. `POST /api/digest/flush`
+  sends any pending client-activity digest; as of Week 7 this is wired
+  up to Vercel Cron (`vercel.json`, hourly — `0 * * * *`) so it fires
+  automatically once deployed, no manual trigger needed. Set
+  `CRON_SECRET` (see `.env.local.example`) in Vercel's project
+  environment variables so the route can authenticate the scheduled
+  call — a signed-in team member can still trigger it manually from a
+  browser session too (the route accepts either).
 
 ## Deploying to Vercel
 
@@ -221,10 +239,21 @@ without them.
 6. **Supabase Pro plan**: confirm the Supabase project is on Pro before
    relying on this in production — the free tier pauses the database after
    7 days of inactivity, which would silently take the live app offline.
-7. Storage buckets: confirm both `assets` and `item-images` exist in the
-   Supabase project connected to this Vercel deployment (see Step 2's
-   items 2–3 above) — a fresh Supabase project only gets `item-images`
-   from the migration; `assets` must still be created by hand.
+7. Storage buckets: confirm both `assets` (private) and `item-images`
+   (public) exist in the Supabase project connected to this Vercel
+   deployment — both are now created automatically by running the
+   migrations (`item-images` since 007, `assets` since
+   `009_assets_bucket.sql`, Week 7). If you're on an older working copy
+   that already has real data and never got a manually-created `assets`
+   bucket, run migration 009 before deploying — item spec-sheet/install-manual
+   attachments, project documents, and invoice PDF uploads all depend
+   on it and will fail with a clear "Storage: ... bucket not found ...
+   run migration 009" error until it exists.
+8. Cron: `vercel.json`'s `crons` entry (`POST /api/digest/flush`, hourly)
+   is picked up automatically on deploy — no separate setup beyond
+   setting `CRON_SECRET` in step 3 above. Confirm it in the Vercel
+   dashboard under the project's **Cron Jobs** tab after the first
+   deploy.
 
 ## Fonts (builder PDF)
 
@@ -247,3 +276,15 @@ rather use a different filename, e.g. `CormorantGaramond-Light.ttf`).
   auth provider is enabled in Supabase (Step 2.3).
 - **`npm install` fails** — check your internet connection; if it still
   fails, send the exact error text to whoever maintains the app.
+- **"Storage: Bucket not found" when attaching a spec sheet / uploading a
+  project document or invoice** — migration `009_assets_bucket.sql`
+  hasn't been run against this Supabase project yet. Run it (Step 2
+  above) and retry; no other change is needed.
+- **An item's image shows broken after upgrading to Week 7** — if this
+  item's image was uploaded before the Week 7 fix (when the image route
+  still wrote into the `assets` bucket), its `selected_image_url` may
+  still point at `.../object/public/assets/items/...`. Once `assets` is
+  private, that URL 403s. Fix: open the item, re-upload the image (now
+  goes to the public `item-images` bucket) — a one-time fix per
+  affected item. New uploads and anything the PDF pre-pass has already
+  touched are unaffected.

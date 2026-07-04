@@ -1,12 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import type { CreateProjectInput } from "@/types";
+import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
+import type { CreateProjectInput, ProjectWithCounts } from "@/types";
 
 /**
  * GET /api/projects
  * Returns all non-archived projects for the authenticated team.
  * Auth is enforced by middleware; RLS additionally restricts to
  * authenticated sessions only (team_all policy).
+ *
+ * Week 7: each project with a `cover_image_path` gets a `cover_image_url`
+ * (signed, 1hr TTL) minted here — same pattern as the dashboard server
+ * component's direct query — so any consumer of this route (including
+ * Aria) sees a ready-to-use image URL rather than having to know to
+ * call GET /api/projects/[id]/cover per project.
  */
 export async function GET() {
   const supabase = await createClient();
@@ -28,7 +35,17 @@ export async function GET() {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ projects });
+  const withCovers: ProjectWithCounts[] = await Promise.all(
+    (projects ?? []).map(async (p) => {
+      if (!p.cover_image_path) return { ...p, cover_image_url: null };
+      const { data: signed } = await supabase.storage
+        .from(ASSET_BUCKET)
+        .createSignedUrl(p.cover_image_path, SIGNED_URL_TTL_SECONDS);
+      return { ...p, cover_image_url: signed?.signedUrl ?? null };
+    })
+  );
+
+  return NextResponse.json({ projects: withCovers });
 }
 
 /**

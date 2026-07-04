@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { fetchSafely, UnsafeUrlError } from "@/lib/scraper/guard";
-import { ASSET_BUCKET, slugFilename } from "@/lib/storage";
+import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS, slugFilename } from "@/lib/storage";
 import type { AttachFromUrlInput, ItemFile, ItemFileKind } from "@/types";
 
 export const runtime = "nodejs";
@@ -101,7 +101,10 @@ export async function POST(
       upsert: false,
     });
   if (uploadError) {
-    return NextResponse.json({ error: uploadError.message }, { status: 500 });
+    return NextResponse.json(
+      { error: `Storage: ${uploadError.message}. If this mentions a missing bucket, run migration 009.` },
+      { status: 500 }
+    );
   }
 
   const { data: row, error: insertError } = await supabase
@@ -139,10 +142,22 @@ export async function POST(
     }
   }
 
-  const { data: publicUrl } = supabase.storage.from(ASSET_BUCKET).getPublicUrl(path);
+  // `assets` is a PRIVATE bucket (migration 009_assets_bucket.sql) — a
+  // signed URL, not getPublicUrl(), which would 403 against a private
+  // bucket. A signing failure here is non-fatal to the attach itself
+  // (the row is already created) — the file simply comes back with
+  // url: null and the UI can refetch the list to get a fresh link.
+  const { data: signed, error: signError } = await supabase.storage
+    .from(ASSET_BUCKET)
+    .createSignedUrl(path, SIGNED_URL_TTL_SECONDS);
 
   return NextResponse.json(
-    { file: { ...(row as unknown as ItemFile), url: publicUrl.publicUrl } },
+    {
+      file: {
+        ...(row as unknown as ItemFile),
+        url: signError ? null : signed?.signedUrl ?? null,
+      },
+    },
     { status: 201 }
   );
 }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { ASSET_BUCKET, slugFilename } from "@/lib/storage";
+import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS, slugFilename } from "@/lib/storage";
 import type { ProjectFile, ProjectFileKind } from "@/types";
 
 export const runtime = "nodejs";
@@ -9,16 +9,22 @@ const KINDS: ProjectFileKind[] = ["plans", "council", "engineering", "scope_of_w
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
-function withUrl(supabase: SupabaseServerClient, file: ProjectFile) {
-  const { data } = supabase.storage
+/**
+ * `assets` is a PRIVATE bucket (migration 009_assets_bucket.sql) — mint
+ * a short-TTL signed URL per request rather than getPublicUrl(), which
+ * would 403 against a private bucket. A signing failure drops that
+ * file's url to null rather than failing the whole list.
+ */
+async function withUrl(supabase: SupabaseServerClient, file: ProjectFile) {
+  const { data, error } = await supabase.storage
     .from(ASSET_BUCKET)
-    .getPublicUrl(file.storage_path);
-  return { ...file, url: data.publicUrl };
+    .createSignedUrl(file.storage_path, SIGNED_URL_TTL_SECONDS);
+  return { ...file, url: error ? null : data?.signedUrl ?? null };
 }
 
 /**
  * GET /api/projects/[id]/files — list a project's documents (all five
- * kinds, non-deleted) with public URLs. Team-visible (not admin-gated
+ * kinds, non-deleted) with signed URLs. Team-visible (not admin-gated
  * — BUILD-SPEC.md "Project documents": "documents aren't financial"),
  * same trust model as GET /api/items/[id]/files.
  */
@@ -48,7 +54,7 @@ export async function GET(
   }
 
   return NextResponse.json({
-    files: (files as ProjectFile[]).map((f) => withUrl(supabase, f)),
+    files: await Promise.all((files as ProjectFile[]).map((f) => withUrl(supabase, f))),
   });
 }
 
@@ -104,7 +110,10 @@ export async function POST(
       upsert: false,
     });
   if (uploadError) {
-    return NextResponse.json({ error: uploadError.message }, { status: 500 });
+    return NextResponse.json(
+      { error: `Storage: ${uploadError.message}. If this mentions a missing bucket, run migration 009.` },
+      { status: 500 }
+    );
   }
 
   const { data: row, error: insertError } = await supabase
@@ -127,7 +136,7 @@ export async function POST(
   }
 
   return NextResponse.json(
-    { file: withUrl(supabase, row as ProjectFile) },
+    { file: await withUrl(supabase, row as ProjectFile) },
     { status: 201 }
   );
 }

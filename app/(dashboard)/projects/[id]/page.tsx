@@ -4,6 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import { Header } from "@/components/layout/Header";
 import { ProjectWorkspace } from "@/components/items/ProjectWorkspace";
 import { MondayBoardPicker } from "@/components/items/MondayBoardPicker";
+import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
 import type { Category, Item } from "@/types";
 
 /**
@@ -45,12 +46,24 @@ export default async function ProjectPage({
   // admin server-side regardless of this UI gate.
   const isAdmin = info?.role === "admin";
 
+  // Cover image thumbnail next to the title (Week 7) — `assets` is
+  // private, so a signed URL is minted server-side here, same pattern
+  // as the dashboard cards and the settings page's preview.
+  let coverImageUrl: string | null = null;
+  if (project.cover_image_path) {
+    const { data: signed } = await supabase.storage
+      .from(ASSET_BUCKET)
+      .createSignedUrl(project.cover_image_path, SIGNED_URL_TTL_SECONDS);
+    coverImageUrl = signed?.signedUrl ?? null;
+  }
+
   return (
     <>
       <Header
         title={project.name}
         subtitle={project.client_name}
         subtitleHref="/"
+        titleThumbnailUrl={coverImageUrl}
         actions={
           <>
             <MondayBoardPicker

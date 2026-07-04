@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { safeFetch } from "@/lib/safe-fetch";
-import { ASSET_BUCKET, extForMime } from "@/lib/storage";
+import { extForMime } from "@/lib/storage";
+import { PDF_IMAGE_BUCKET } from "@/lib/images";
 
 export const runtime = "nodejs";
 
@@ -10,6 +11,19 @@ export const runtime = "nodejs";
  * Stores an item's chosen image into Supabase Storage and returns its
  * public URL (BUILD-SPEC.md §6: "on selection, copy chosen image into
  * Supabase Storage; PDFs embed from Storage, never from supplier sites").
+ *
+ * Bucket decision (Week 7 / migration 009_assets_bucket.sql): this
+ * route used to upload into the `assets` bucket and call
+ * getPublicUrl() on it — a bug, since `assets` was never created by
+ * any migration AND (once created) is private, so getPublicUrl() would
+ * mint a URL that 403s. Cover images are a durable value persisted
+ * onto items.selected_image_url and reused indefinitely (spec
+ * register thumbnail, client portal, builder PDF), so they belong in
+ * the PUBLIC `item-images` bucket instead — the same bucket the PDF
+ * pre-pass (lib/images.ts ensureStoredImage()) already re-hosts
+ * external images into for exactly this reason. Using one bucket for
+ * both write paths means selected_image_url always points at the same
+ * public host regardless of which path wrote it.
  *
  * Accepts either:
  *   - multipart/form-data with a `file` field, or
@@ -75,13 +89,16 @@ export async function POST(
   const path = `items/${id}/image-${Date.now()}.${ext}`;
 
   const { error: uploadError } = await supabase.storage
-    .from(ASSET_BUCKET)
+    .from(PDF_IMAGE_BUCKET)
     .upload(path, bytes, { contentType, upsert: true });
 
   if (uploadError) {
-    return NextResponse.json({ error: uploadError.message }, { status: 500 });
+    return NextResponse.json(
+      { error: `Storage: ${uploadError.message}. If this mentions a missing bucket, run migration 009.` },
+      { status: 500 }
+    );
   }
 
-  const { data } = supabase.storage.from(ASSET_BUCKET).getPublicUrl(path);
+  const { data } = supabase.storage.from(PDF_IMAGE_BUCKET).getPublicUrl(path);
   return NextResponse.json({ url: data.publicUrl });
 }

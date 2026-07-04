@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import type { Project } from "@/types";
 import { regenerateProjectToken } from "@/app/(dashboard)/projects/[id]/settings/actions";
 
@@ -9,6 +10,8 @@ interface Props {
   project: Project;
   isAdmin: boolean;
   appUrl: string;
+  /** Week 7 — signed URL for the current cover image, minted server-side by the settings page (assets bucket is private). */
+  initialCoverImageUrl: string | null;
 }
 
 /**
@@ -32,7 +35,7 @@ interface Props {
  * DELETE /api/projects/[id] (also unmodified; it already archives
  * rather than hard-deleting).
  */
-export function ProjectSettingsForm({ project, isAdmin, appUrl }: Props) {
+export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImageUrl }: Props) {
   const router = useRouter();
 
   const [name, setName] = useState(project.name);
@@ -48,6 +51,50 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl }: Props) {
   const [copyLabel, setCopyLabel] = useState("Copy link");
   const [regenerating, setRegenerating] = useState(false);
   const [archiving, setArchiving] = useState(false);
+
+  // Cover image (Week 7) — BUILD-SPEC.md "Project cover image".
+  const [coverImageUrl, setCoverImageUrl] = useState(initialCoverImageUrl);
+  const [uploadingCover, setUploadingCover] = useState(false);
+  const [removingCover, setRemovingCover] = useState(false);
+  const coverInput = useRef<HTMLInputElement>(null);
+
+  async function uploadCover(file: File) {
+    setUploadingCover(true);
+    setError(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`/api/projects/${project.id}/cover`, {
+        method: "POST",
+        body: fd,
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Cover image upload failed");
+      setCoverImageUrl(body.url ?? null);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Cover image upload failed");
+    } finally {
+      setUploadingCover(false);
+      if (coverInput.current) coverInput.current.value = "";
+    }
+  }
+
+  async function removeCover() {
+    if (!confirm("Remove the project cover image?")) return;
+    setRemovingCover(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/projects/${project.id}/cover`, { method: "DELETE" });
+      if (!res.ok) throw new Error((await res.json()).error ?? "Could not remove cover image");
+      setCoverImageUrl(null);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not remove cover image");
+    } finally {
+      setRemovingCover(false);
+    }
+  }
 
   const portalLink = `${appUrl.replace(/\/+$/, "")}/portal/${token}`;
 
@@ -136,6 +183,55 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl }: Props) {
           {error}
         </p>
       )}
+
+      <div className="space-y-3">
+        <h3 className="text-subhead text-nearblack">Cover image</h3>
+        <p className="text-body text-charcoal/60">
+          Shown on the dashboard project card and next to the project name.
+        </p>
+        <div className="flex items-start gap-4">
+          <div className="relative aspect-[3/2] w-48 shrink-0 overflow-hidden border border-[#dcd6cc] bg-cream">
+            {coverImageUrl ? (
+              <Image src={coverImageUrl} alt="" fill sizes="192px" className="object-cover" />
+            ) : (
+              <span className="flex h-full w-full items-center justify-center text-caption text-charcoal/25">
+                No cover image
+              </span>
+            )}
+          </div>
+          <div className="space-y-2">
+            <input
+              ref={coverInput}
+              type="file"
+              accept="image/*"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) uploadCover(f);
+              }}
+            />
+            <button
+              type="button"
+              disabled={uploadingCover}
+              onClick={() => coverInput.current?.click()}
+              className="border border-nearblack px-3 py-1.5 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white disabled:opacity-60"
+            >
+              {uploadingCover ? "Uploading…" : coverImageUrl ? "Replace image" : "Upload image"}
+            </button>
+            {coverImageUrl && (
+              <button
+                type="button"
+                disabled={removingCover}
+                onClick={removeCover}
+                className="block text-caption text-charcoal/50 hover:text-red-700 disabled:opacity-60"
+              >
+                {removingCover ? "Removing…" : "Remove image"}
+              </button>
+            )}
+            <p className="text-caption text-charcoal/40">JPG, PNG or WebP, up to 10MB.</p>
+          </div>
+        </div>
+      </div>
 
       <form onSubmit={saveFields} className="space-y-4">
         <div className="grid grid-cols-2 gap-4">

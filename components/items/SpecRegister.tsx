@@ -15,6 +15,13 @@ interface Props {
   onPatch: (id: string, patch: Partial<Item>) => void;
   onDelete: (id: string) => void;
   onAdd: (item: Item) => void;
+  /**
+   * Week 7 — scrape status visibility: schedules a background re-fetch
+   * of a single item a few seconds after it's added with a product URL,
+   * so the fire-and-forget scrape's real result (image count, price
+   * found, or a failure/flag) appears without a manual page reload.
+   */
+  onAddRefetch: (itemId: string, delayMs?: number) => void;
   onError: (msg: string | null) => void;
 }
 
@@ -134,6 +141,7 @@ export function SpecRegister({
   onPatch,
   onDelete,
   onAdd,
+  onAddRefetch,
   onError,
 }: Props) {
   const [groupBy, setGroupBy] = useState<GroupBy>("location");
@@ -315,6 +323,7 @@ export function SpecRegister({
           projectId={projectId}
           categories={sortedCategories}
           onAdd={onAdd}
+          onAddRefetch={onAddRefetch}
           onError={onError}
         />
       )}
@@ -609,6 +618,7 @@ function ItemRow({
                   </div>
                   <FetchDetailsButton
                     itemId={item.id}
+                    scrapeStatus={item.scrape_status}
                     // The scraper (POST /api/items/[id]/scrape) writes
                     // image_options/scrape_status/scraped_documents etc.
                     // server-side via the service-role client, then
@@ -623,6 +633,11 @@ function ItemRow({
                     onError={onError}
                   />
                 </div>
+                {/* Scrape status visibility (Week 7, user-reported:
+                    "not sure if the scraper is working") — shows the
+                    outcome of the last scrape attempt explicitly rather
+                    than leaving it silently invisible. */}
+                <ScrapeStatusLine item={item} />
               </DetailField>
 
               <div className="border-t border-[#dcd6cc] pt-4 sm:col-span-2 lg:col-span-3">
@@ -697,22 +712,30 @@ function DetailField({
 }
 
 /**
- * "Fetch details" — triggers POST /api/items/[id]/scrape (Week 3 scraper:
- * lib/scraper/index.ts), which writes image_options, scrape_status,
- * scraped_documents, etc. directly to the DB via the service-role
- * client and returns the updated item. onScraped hands that patch to
- * the row's normal onPatch (Week 6 cleanup — see the comment on
- * ItemRow's `item = itemProp` line): the generic PATCH /api/items/[id]
- * route's EDITABLE_FIELDS whitelist covers all of these fields now, so
- * there's no need for a local-only override that risked drifting out
- * of sync with the server.
+ * "Fetch details" / "Retry" — triggers POST /api/items/[id]/scrape
+ * (Week 3 scraper: lib/scraper/index.ts), which writes image_options,
+ * scrape_status, scraped_documents, etc. directly to the DB via the
+ * service-role client and returns the updated item. onScraped hands
+ * that patch to the row's normal onPatch (Week 6 cleanup — see the
+ * comment on ItemRow's `item = itemProp` line): the generic
+ * PATCH /api/items/[id] route's EDITABLE_FIELDS whitelist covers all
+ * of these fields now, so there's no need for a local-only override
+ * that risked drifting out of sync with the server.
+ *
+ * Week 7 — scrape status visibility: the button's label reflects
+ * whether the LAST attempt failed ("Retry") vs. this being the first
+ * attempt or a re-fetch of an already-successful scrape ("Fetch
+ * details" / "Fetch again"), so the same control doubles as the
+ * failed-scrape retry affordance the user asked for.
  */
 function FetchDetailsButton({
   itemId,
+  scrapeStatus,
   onScraped,
   onError,
 }: {
   itemId: string;
+  scrapeStatus: Item["scrape_status"];
   onScraped: (patch: Partial<Item>) => void;
   onError: (msg: string | null) => void;
 }) {
@@ -735,6 +758,13 @@ function FetchDetailsButton({
     }
   }
 
+  const idleLabel =
+    scrapeStatus === "failed"
+      ? "Retry"
+      : scrapeStatus === "success" || scrapeStatus === "partial"
+        ? "Fetch again"
+        : "Fetch details";
+
   return (
     <button
       type="button"
@@ -742,8 +772,88 @@ function FetchDetailsButton({
       disabled={loading}
       className="shrink-0 border border-[#c9c2b4] px-3 py-1.5 text-subhead text-charcoal transition-colors hover:border-nearblack hover:text-nearblack disabled:opacity-60"
     >
-      {loading ? "Fetching…" : "Fetch details"}
+      {loading ? "Fetching…" : idleLabel}
     </button>
+  );
+}
+
+/**
+ * Scrape status visibility (Week 7, user-reported: "not sure if the
+ * scraper is working"). Renders the outcome of the item's LAST scrape
+ * attempt explicitly, directly under the Product URL field:
+ *   - pending: a spinner note — either never scraped yet (no
+ *     scrape_attempted_at) or a scrape is in flight (fire-and-forget
+ *     from item creation, before this row has re-fetched).
+ *   - success / partial: image count + whether a price was found, plus
+ *     the attempt timestamp.
+ *   - failed: the scrape_flag_note (if the scraper left one) plus a
+ *     reminder that the "Retry" button above will try again.
+ *   - vision / skipped: treated as informational variants of success
+ *     (the scraper did run, just via a different path / chose not to
+ *     act) rather than a failure state.
+ * scrape_flagged (separately from scrape_status) surfaces as an
+ * additional warning line whenever it's true, regardless of status —
+ * the scraper can flag a low-confidence result even on an otherwise
+ * "successful" attempt.
+ */
+function ScrapeStatusLine({ item }: { item: Item }) {
+  if (!item.product_url) return null;
+
+  const attemptedAt = item.scrape_attempted_at
+    ? new Date(item.scrape_attempted_at).toLocaleString("en-AU", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      })
+    : null;
+
+  if (!item.scrape_attempted_at && item.scrape_status === "pending") {
+    return (
+      <p className="mt-1 flex items-center gap-1.5 text-caption text-charcoal/50">
+        <SpinnerDot /> Fetching product details…
+      </p>
+    );
+  }
+
+  if (item.scrape_status === "failed") {
+    return (
+      <div className="mt-1 text-caption text-red-700">
+        <p>
+          ⚠ Scrape failed{attemptedAt ? ` (${attemptedAt})` : ""}
+          {item.scrape_flag_note ? ` — ${item.scrape_flag_note}` : ""}.
+        </p>
+        <p className="text-charcoal/50">Use Retry above to try again.</p>
+      </div>
+    );
+  }
+
+  // success / partial / vision / skipped — all "the scraper ran" states.
+  const imageCount = item.image_options?.length ?? 0;
+  const priceFound = item.price_rrp !== null && item.price_rrp !== undefined;
+  const partial = item.scrape_status === "partial";
+
+  return (
+    <div className="mt-1 text-caption">
+      <p className={partial ? "text-sand" : "text-charcoal/50"}>
+        {partial ? "Partial — " : ""}
+        {imageCount} {imageCount === 1 ? "image" : "images"}
+        {priceFound ? ", price found" : ", no price found"}
+        {attemptedAt ? ` · ${attemptedAt}` : ""}
+      </p>
+      {item.scrape_flagged && (
+        <p className="text-sand">
+          ⚠ Flagged for review{item.scrape_flag_note ? `: ${item.scrape_flag_note}` : ""}.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SpinnerDot() {
+  return (
+    <span
+      aria-hidden
+      className="inline-block h-2 w-2 animate-pulse rounded-full bg-charcoal/40"
+    />
   );
 }
 
@@ -753,11 +863,13 @@ function AddItemForm({
   projectId,
   categories,
   onAdd,
+  onAddRefetch,
   onError,
 }: {
   projectId: string;
   categories: Category[];
   onAdd: (item: Item) => void;
+  onAddRefetch: (itemId: string, delayMs?: number) => void;
   onError: (msg: string | null) => void;
 }) {
   const [name, setName] = useState("");
@@ -820,6 +932,15 @@ function AddItemForm({
       }
       const { item } = await res.json();
       onAdd(item);
+      // Scrape status visibility (Week 7): the scrape kicked off by
+      // POST /api/projects/[id]/items runs fire-and-forget — `item` here
+      // is whatever came back synchronously (scrape_status: 'pending').
+      // Re-fetch this one item a few seconds later so its row can pick
+      // up the real result (images found, price found, or a failure/
+      // flag) without the user manually reloading the page.
+      if (productUrl.trim()) {
+        onAddRefetch(item.id);
+      }
       // keep the row open for rapid entry — reset name/location, keep category
       setName("");
       setLocation("");

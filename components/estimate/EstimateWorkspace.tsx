@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import clsx from "clsx";
-import type { EstimateResponse, MeasurementGroupWithRows, Variation } from "@/types";
-import { approvedVariationsTotal } from "@/lib/estimate";
+import type { CostLine, EstimateResponse, MeasurementGroupWithRows, MeasurementWithGroup, Variation } from "@/types";
+import { approvedVariationsTotal, projectRollup, sectionRollup, wholeJobSummary } from "@/lib/estimate";
 import { EstimateView } from "./EstimateView";
 import { VariationsView } from "./VariationsView";
 import { MeasurementsView } from "./MeasurementsView";
@@ -24,6 +24,19 @@ interface Props {
  * and app/api/estimate/**; every fetch here hits routes that
  * independently re-check admin role server-side, so even if this
  * component somehow rendered for a non-admin, no data would come back.
+ *
+ * Week 7 line-entry UX fix (user-reported: per-cell save + full page
+ * refresh made line entry painful): `onReload` (a full loadAll()
+ * re-fetch of all three endpoints) is now reserved for structural
+ * changes only (initialise from template, add/rename/delete a
+ * section/group — where the shape of the tree itself changed and a
+ * full re-derive is the simplest correct thing). Line/row-level edits
+ * instead go through the onLineChanged/onVariationChanged/
+ * onMeasurementChanged callbacks below, which patch local state
+ * in-place — no network round-trip beyond the single PATCH/POST the
+ * row itself issued, and the sticky summary / rollups recompute
+ * instantly from that local state because lib/estimate.ts's rollup
+ * functions are pure and already run client-side (see EstimateView).
  */
 export function EstimateWorkspace({ projectId }: Props) {
   const [view, setView] = useState<View>("estimate");
@@ -34,12 +47,8 @@ export function EstimateWorkspace({ projectId }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [notInitialised, setNotInitialised] = useState(false);
 
-  // `silent` refreshes the data in the background without flipping the
-  // loading flag — so the estimate view stays mounted (keeping expanded
-  // sections open and avoiding a jarring "reload" flash) after inline
-  // edits. Only the initial load / initialise show the loading state.
-  const loadAll = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
+  const loadAll = useCallback(async () => {
+    setLoading(true);
     setError(null);
     try {
       const [estimateRes, variationsRes, measurementsRes] = await Promise.all([
@@ -68,13 +77,176 @@ export function EstimateWorkspace({ projectId }: Props) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load the estimate.");
     } finally {
-      if (!silent) setLoading(false);
+      setLoading(false);
     }
   }, [projectId]);
 
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  // ── local, in-place mutation helpers (Week 7 line-entry UX fix) ──
+  // These update the already-loaded tree directly, so a single line
+  // edit/add never re-fetches the other two tabs' data or re-renders
+  // the whole page from a network round-trip. Each child view is
+  // still responsible for the optimistic-update + rollback dance
+  // around its own PATCH/POST call (see EstimateView/VariationsView/
+  // MeasurementsView) — these helpers are just where the resulting
+  // "here's the new/changed row" gets folded back into shared state.
+  //
+  // Every helper that can move a number the sticky summary shows also
+  // recomputes `estimate.rollup`/`section.rollup`/`estimate.ffe`/
+  // `estimate.wholeJob` right here, client-side, using the exact same
+  // pure functions (lib/estimate.ts) the server uses for the initial
+  // load — so the summary strip updates the instant a row saves, with
+  // no extra round-trip and no drift from the server's own math.
+
+  /** Re-derive every rollup in `estimate` from its current sections/measurements + the given variations. */
+  function recomputeRollups(
+    est: EstimateResponse,
+    sections: EstimateResponse["sections"],
+    variationsForRollup: Pick<Variation, "status" | "cost_ex_gst">[]
+  ): EstimateResponse {
+    const measurementsById = new Map(est.measurements.map((m) => [m.id, { value: m.value }]));
+    const sectionsWithRollups = sections.map((s) => ({
+      ...s,
+      rollup: sectionRollup(s.lines, measurementsById),
+    }));
+    const allLines = sectionsWithRollups.flatMap((s) => s.lines);
+    const rollup = projectRollup({
+      lines: allLines,
+      variations: variationsForRollup,
+      markupPct: est.markup_pct,
+      measurementsById,
+    });
+    const wholeJob = wholeJobSummary(rollup, est.ffe);
+    return { ...est, sections: sectionsWithRollups, rollup, wholeJob };
+  }
+
+  /** Replace one cost line in place, wherever its section is, then recompute totals. */
+  const patchLineLocal = useCallback((line: CostLine) => {
+    setEstimate((cur) => {
+      if (!cur) return cur;
+      const sections = cur.sections.map((s) =>
+        s.id === line.section_id
+          ? { ...s, lines: s.lines.map((l) => (l.id === line.id ? line : l)) }
+          : s
+      );
+      return recomputeRollups(cur, sections, variations);
+    });
+  }, [variations]);
+
+  /** Append a newly-created cost line to its section, then recompute totals. */
+  const addLineLocal = useCallback((line: CostLine) => {
+    setEstimate((cur) => {
+      if (!cur) return cur;
+      const sections = cur.sections.map((s) =>
+        s.id === line.section_id ? { ...s, lines: [...s.lines, line] } : s
+      );
+      return recomputeRollups(cur, sections, variations);
+    });
+  }, [variations]);
+
+  /** Remove a cost line from local state (after a successful DELETE), then recompute totals. */
+  const removeLineLocal = useCallback((sectionId: string, lineId: string) => {
+    setEstimate((cur) => {
+      if (!cur) return cur;
+      const sections = cur.sections.map((s) =>
+        s.id === sectionId ? { ...s, lines: s.lines.filter((l) => l.id !== lineId) } : s
+      );
+      return recomputeRollups(cur, sections, variations);
+    });
+  }, [variations]);
+
+  // Variations feed projectRollup via approvedVariationsTotal, so every
+  // variation mutation also recomputes `estimate`'s rollups (using the
+  // NEW variations list, not the stale closure) in addition to updating
+  // the variations list itself.
+  const patchVariationLocal = useCallback((variation: Variation) => {
+    setVariations((cur) => {
+      const next = cur.map((v) => (v.id === variation.id ? variation : v));
+      setEstimate((est) => (est ? recomputeRollups(est, est.sections, next) : est));
+      return next;
+    });
+  }, []);
+
+  const addVariationLocal = useCallback((variation: Variation) => {
+    setVariations((cur) => {
+      const next = [...cur, variation];
+      setEstimate((est) => (est ? recomputeRollups(est, est.sections, next) : est));
+      return next;
+    });
+  }, []);
+
+  const removeVariationLocal = useCallback((id: string) => {
+    setVariations((cur) => {
+      const next = cur.filter((v) => v.id !== id);
+      setEstimate((est) => (est ? recomputeRollups(est, est.sections, next) : est));
+      return next;
+    });
+  }, []);
+
+  // Measurement edits (value/wastage) change effectiveQty() for every
+  // cost line linked to that measurement, which changes that line's
+  // computed cost — so a measurement patch also refreshes
+  // `estimate.measurements` and recomputes rollups against the new
+  // measurement value, even though no cost_lines row itself changed.
+  const patchMeasurementLocal = useCallback(
+    (groupId: string, measurement: MeasurementGroupWithRows["measurements"][number]) => {
+      setMeasurementGroups((cur) =>
+        cur.map((g) =>
+          g.id === groupId
+            ? { ...g, measurements: g.measurements.map((m) => (m.id === measurement.id ? measurement : m)) }
+            : g
+        )
+      );
+      setEstimate((est) => {
+        if (!est) return est;
+        const groupName = est.measurements.find((m) => m.id === measurement.id)?.group_name ?? "";
+        const measurements: MeasurementWithGroup[] = est.measurements.map((m) =>
+          m.id === measurement.id ? { ...measurement, group_name: groupName } : m
+        );
+        const withMeasurements = { ...est, measurements };
+        return recomputeRollups(withMeasurements, withMeasurements.sections, variations);
+      });
+    },
+    [variations]
+  );
+
+  const addMeasurementLocal = useCallback(
+    (groupId: string, measurement: MeasurementGroupWithRows["measurements"][number]) => {
+      setMeasurementGroups((cur) =>
+        cur.map((g) => (g.id === groupId ? { ...g, measurements: [...g.measurements, measurement] } : g))
+      );
+      setEstimate((est) => {
+        if (!est) return est;
+        const group = measurementGroups.find((g) => g.id === groupId);
+        const measurements: MeasurementWithGroup[] = [
+          ...est.measurements,
+          { ...measurement, group_name: group?.name ?? "" },
+        ];
+        return { ...est, measurements };
+      });
+    },
+    [measurementGroups]
+  );
+
+  const removeMeasurementLocal = useCallback((groupId: string, measurementId: string) => {
+    setMeasurementGroups((cur) =>
+      cur.map((g) =>
+        g.id === groupId
+          ? { ...g, measurements: g.measurements.filter((m) => m.id !== measurementId) }
+          : g
+      )
+    );
+    // A deleted measurement can't still be linked (PATCH /api/estimate/lines/[id]
+    // would 400 on a stale FK, and the DB column is ON DELETE SET NULL
+    // regardless), so no line-level recompute is needed here beyond
+    // dropping it from the local measurements list.
+    setEstimate((est) =>
+      est ? { ...est, measurements: est.measurements.filter((m) => m.id !== measurementId) } : est
+    );
+  }, []);
 
   async function initialiseFromTemplate() {
     setError(null);
@@ -168,8 +340,12 @@ export function EstimateWorkspace({ projectId }: Props) {
           estimate={estimate}
           notInitialised={notInitialised}
           onInitialise={initialiseFromTemplate}
-          onReload={() => loadAll(true)}
+          onReload={loadAll}
+          onLineAdded={addLineLocal}
+          onLineChanged={patchLineLocal}
+          onLineRemoved={removeLineLocal}
           approvedVariationsTotal={approvedVariations}
+          measurements={estimate?.measurements ?? []}
         />
       )}
 
@@ -177,7 +353,10 @@ export function EstimateWorkspace({ projectId }: Props) {
         <VariationsView
           projectId={projectId}
           variations={variations}
-          onReload={() => loadAll(true)}
+          onReload={loadAll}
+          onVariationAdded={addVariationLocal}
+          onVariationChanged={patchVariationLocal}
+          onVariationRemoved={removeVariationLocal}
         />
       )}
 
@@ -185,7 +364,10 @@ export function EstimateWorkspace({ projectId }: Props) {
         <MeasurementsView
           projectId={projectId}
           groups={measurementGroups}
-          onReload={() => loadAll(true)}
+          onReload={loadAll}
+          onMeasurementAdded={addMeasurementLocal}
+          onMeasurementChanged={patchMeasurementLocal}
+          onMeasurementRemoved={removeMeasurementLocal}
         />
       )}
     </div>

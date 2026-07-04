@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { Header } from "@/components/layout/Header";
 import { ProjectSettingsForm } from "@/components/settings/ProjectSettingsForm";
+import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
 import type { Project } from "@/types";
 
 /**
@@ -44,6 +45,17 @@ export default async function ProjectSettingsPage({
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
 
+  // Cover image (Week 7): `assets` is private — mint a signed URL
+  // server-side for the settings page's current-cover preview, same
+  // pattern as the dashboard cards and project page header.
+  let coverImageUrl: string | null = null;
+  if (project.cover_image_path) {
+    const { data: signed } = await supabase.storage
+      .from(ASSET_BUCKET)
+      .createSignedUrl(project.cover_image_path, SIGNED_URL_TTL_SECONDS);
+    coverImageUrl = signed?.signedUrl ?? null;
+  }
+
   return (
     <>
       <Header title="Project settings" subtitle={project.name} />
@@ -52,6 +64,7 @@ export default async function ProjectSettingsPage({
           project={project as Project}
           isAdmin={isAdmin}
           appUrl={appUrl}
+          initialCoverImageUrl={coverImageUrl}
         />
       </main>
     </>

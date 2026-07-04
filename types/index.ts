@@ -40,11 +40,22 @@ export interface Project {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  // ---- additive (migration 009_assets_bucket.sql, Week 7) ----
+  // Storage path (not a URL — the `assets` bucket is private) of the
+  // project's cover image, e.g. `projects/{id}/cover.jpg`. Null if none
+  // set. Served via a signed URL minted server-side — see
+  // GET /api/projects/[id]/cover.
+  cover_image_path: string | null;
 }
 
-/** Project list rows may include a computed item count from the API. */
+/**
+ * Project list rows may include a computed item count from the API,
+ * plus a signed cover image URL (Week 7) minted server-side alongside
+ * the list query — see GET /api/projects.
+ */
 export interface ProjectWithCounts extends Project {
   item_count?: number;
+  cover_image_url?: string | null;
 }
 
 export interface LibraryItem {
@@ -423,6 +434,16 @@ export interface CostLine {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  // ---- additive (migration 009_assets_bucket.sql, Week 7) ----
+  // Estimate ↔ Schedule integration: when set, this line's effective
+  // qty is computed from the linked measurement's value (+ wastage_pct)
+  // instead of the qty column — see lib/estimate.ts effectiveQty().
+  // qty itself is left untouched by linking (unlink to hand-edit again).
+  measurement_id: string | null;
+  // 0–50, a percent (not a fraction) — validated server-side in
+  // PATCH /api/estimate/lines/[id]. Only meaningful when measurement_id
+  // is set; ignored by effectiveQty() otherwise.
+  wastage_pct: number | null;
 }
 
 /** A cost_sections row with its (non-deleted) cost_lines nested, as returned by GET /api/projects/[id]/estimate. */
@@ -571,6 +592,14 @@ export interface EstimateResponse {
   ffe: FfeRollup;
   /** Whole-job summary folding FF&E in AFTER trade markup — see lib/estimate.ts wholeJobSummary(). */
   wholeJob: WholeJobSummary;
+  /**
+   * Every measurement for the project, flat, with its group's name
+   * attached (Week 7 — Estimate ↔ Schedule integration). Used to
+   * resolve a linked cost line's measurement_id to a label/value/unit
+   * for display, and to populate the "link a measurement" picker
+   * grouped by measurement group, without a second fetch.
+   */
+  measurements: MeasurementWithGroup[];
 }
 
 /** POST /api/projects/[id]/estimate/init response. */
@@ -591,6 +620,22 @@ export interface PatchCostLineInput {
   item_id?: string | null;
   notes?: string | null;
   sort?: number;
+  /** Week 7 — Estimate ↔ Schedule integration: link/unlink a measurement. */
+  measurement_id?: string | null;
+  /** Week 7 — 0–50 (percent), only meaningful alongside measurement_id. */
+  wastage_pct?: number | null;
+}
+
+/**
+ * A measurement row annotated with its group's name — the shape the
+ * Estimate tab needs to both (a) resolve a linked cost line's
+ * measurement_id to a human label, and (b) group the link picker by
+ * measurement group, without a second round-trip to the measurements
+ * endpoint (BUILD-SPEC.md "Estimate ↔ Schedule integration": "link icon
+ * on a line → picker of measurements (grouped by measurement group)").
+ */
+export interface MeasurementWithGroup extends Measurement {
+  group_name: string;
 }
 
 /** body accepted by POST /api/estimate/sections/[sectionId]/lines. */

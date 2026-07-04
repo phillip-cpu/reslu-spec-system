@@ -197,7 +197,10 @@ export async function POST(
         upsert: false,
       });
     if (uploadError) {
-      return NextResponse.json({ error: uploadError.message }, { status: 500 });
+      return NextResponse.json(
+        { error: `Storage: ${uploadError.message}. If this mentions a missing bucket, run migration 009.` },
+        { status: 500 }
+      );
     }
     storage_path = path;
   }

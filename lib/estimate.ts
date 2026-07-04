@@ -12,7 +12,7 @@
 // total inc GST — replicating the Excel's summary block exactly."
 // ============================================================
 
-import type { CostLine, Variation } from "@/types";
+import type { CostLine, Measurement, Variation } from "@/types";
 
 /** GST rate, fixed at 10% per BUILD-SPEC.md ("GST 10%" everywhere it's mentioned). */
 export const GST_RATE = 0.1;
@@ -53,25 +53,78 @@ export interface LineCostInput {
   qty: number | null;
   rate_ex_gst: number | null;
   cost_ex_gst: number | null;
+  /** Week 7 — Estimate ↔ Schedule integration, both optional so every
+   * existing caller (unlinked lines, older call sites) is unaffected. */
+  measurement_id?: string | null;
+  wastage_pct?: number | null;
 }
 
 /**
- * lineCost(line) = cost_ex_gst if manually set (override), else
- * qty * rate_ex_gst if both present, else null (unknown/not yet costed).
- * BUILD-SPEC.md: "cost_ex_gst numeric(12,2) nullable (manual override;
- * else computed qty*rate in app)".
+ * Minimal shape needed from a measurement to compute effectiveQty —
+ * a subset of Measurement.
  */
-export function lineCost(line: LineCostInput): number | null {
+export interface EffectiveQtyMeasurementInput {
+  value: number;
+}
+
+/**
+ * effectiveQty(line, measurement) — BUILD-SPEC.md "Estimate ↔ Schedule
+ * integration": when a cost line is linked to a measurement, its
+ * quantity is DERIVED from that measurement's value (+ an optional
+ * wastage allowance), not hand-typed. The line's own `qty` column is
+ * left alone (so unlinking reverts to whatever was last hand-entered)
+ * — this function is the single source of truth for "what quantity
+ * does this line actually cost against right now".
+ *
+ * = measurement.value * (1 + (wastage_pct ?? 0) / 100) when a
+ *   measurement is linked and provided,
+ * else line.qty (the plain hand-entered value) — including when
+ *   measurement_id is set but the measurement itself wasn't passed in
+ *   (e.g. it was deleted; on delete set null means measurement_id would
+ *   already be null in that case, but a defensive fallback costs
+ *   nothing here).
+ */
+export function effectiveQty(
+  line: Pick<LineCostInput, "qty" | "measurement_id" | "wastage_pct">,
+  measurement: EffectiveQtyMeasurementInput | null | undefined
+): number | null {
+  if (line.measurement_id && measurement) {
+    const wastage = line.wastage_pct ?? 0;
+    return measurement.value * (1 + wastage / 100);
+  }
+  return line.qty;
+}
+
+/**
+ * lineCost(line, measurement?) = cost_ex_gst if manually set (override),
+ * else effectiveQty * rate_ex_gst if both present, else null
+ * (unknown/not yet costed). BUILD-SPEC.md: "cost_ex_gst numeric(12,2)
+ * nullable (manual override; else computed qty*rate in app)" — Week 7
+ * additive: "qty" in that computation is effectiveQty() when a
+ * measurement is linked, so a wastage-adjusted quantity flows through
+ * to cost automatically without a separate code path.
+ *
+ * The optional second argument is intentionally omissible — every
+ * existing call site (sectionRollup, projectRollup, the UI's
+ * per-cell display for unlinked lines) keeps working unchanged; only
+ * call sites that actually have the linked measurement in hand need to
+ * pass it for the linked-line figure to be accurate.
+ */
+export function lineCost(
+  line: LineCostInput,
+  measurement?: EffectiveQtyMeasurementInput | null
+): number | null {
   if (line.cost_ex_gst !== null && line.cost_ex_gst !== undefined) {
     return roundMoney(line.cost_ex_gst);
   }
+  const qty = effectiveQty(line, measurement);
   if (
-    line.qty !== null &&
-    line.qty !== undefined &&
+    qty !== null &&
+    qty !== undefined &&
     line.rate_ex_gst !== null &&
     line.rate_ex_gst !== undefined
   ) {
-    return roundMoney(line.qty * line.rate_ex_gst);
+    return roundMoney(qty * line.rate_ex_gst);
   }
   return null;
 }
@@ -111,8 +164,20 @@ export interface SectionRollup {
   variance: number | null;
 }
 
-/** Sums cost/quoted/actual across a section's (already-filtered, non-deleted) lines. */
-export function sectionRollup(lines: LineForRollup[]): SectionRollup {
+/**
+ * Sums cost/quoted/actual across a section's (already-filtered,
+ * non-deleted) lines.
+ *
+ * `measurementsById` is optional (Week 7, additive) — a lookup so
+ * linked lines' cost reflects effectiveQty() (measurement value +
+ * wastage) rather than their raw, possibly-stale `qty` column. Callers
+ * that don't pass it (or lines with no measurement_id) behave exactly
+ * as before.
+ */
+export function sectionRollup(
+  lines: LineForRollup[],
+  measurementsById?: Map<string, EffectiveQtyMeasurementInput>
+): SectionRollup {
   let costExGst = 0;
   let quotedExGst = 0;
   let actualExGst = 0;
@@ -120,7 +185,10 @@ export function sectionRollup(lines: LineForRollup[]): SectionRollup {
   let hasVariance = false;
 
   for (const line of lines) {
-    const cost = lineCost(line);
+    const measurement = line.measurement_id
+      ? measurementsById?.get(line.measurement_id) ?? null
+      : null;
+    const cost = lineCost(line, measurement);
     if (cost !== null) costExGst += cost;
     if (line.quoted_to_client_ex_gst !== null && line.quoted_to_client_ex_gst !== undefined) {
       quotedExGst += line.quoted_to_client_ex_gst;
@@ -179,6 +247,8 @@ export interface ProjectRollupInput {
   variations: Pick<Variation, "status" | "cost_ex_gst">[];
   /** projects.estimate_markup_pct — a fraction, e.g. 0.15 for 15%. */
   markupPct: number;
+  /** Optional (Week 7) — measurement id → measurement, for effectiveQty() on linked lines. */
+  measurementsById?: Map<string, EffectiveQtyMeasurementInput>;
 }
 
 export interface ProjectRollup {
@@ -215,9 +285,10 @@ export function projectRollup({
   lines,
   variations,
   markupPct,
+  measurementsById,
 }: ProjectRollupInput): ProjectRollup {
   const { costExGst: allTradesSubtotalExGst, quotedExGst, actualExGst } =
-    sectionRollup(lines);
+    sectionRollup(lines, measurementsById);
   const approvedVariationsExGst = approvedVariationsTotal(variations);
 
   const preMarkupBase = allTradesSubtotalExGst + approvedVariationsExGst;

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { projectRollup, sectionRollup, ffeRollup, wholeJobSummary } from "@/lib/estimate";
-import type { CostSectionWithLines, EstimateResponse } from "@/types";
+import type { CostSectionWithLines, EstimateResponse, Measurement, MeasurementWithGroup } from "@/types";
 
 /**
  * GET /api/projects/[id]/estimate
@@ -20,6 +20,13 @@ import type { CostSectionWithLines, EstimateResponse } from "@/types";
  * NEVER turned into cost_lines rows; this is a pure read-side
  * computation over `items`, per BUILD-SPEC.md "Estimate ↔ Schedule
  * integration".
+ *
+ * Week 7 additive: also returns `measurements` (every measurement for
+ * the project, flat, with its group's name attached) — needed so a
+ * cost line linked via `measurement_id` can be costed using
+ * lib/estimate.ts effectiveQty() (measurement value × (1 + wastage%))
+ * rather than its own possibly-stale `qty` column, and so the UI can
+ * show a linked line's resolved label/value without a second fetch.
  *
  * Admin-only, server-enforced: this whole surface is financial data
  * (BUILD-SPEC.md §Financial visibility), so a non-admin gets 403
@@ -61,6 +68,7 @@ export async function GET(
     { data: sections, error: sectionsError },
     { data: variations, error: variationsError },
     { data: items, error: itemsError },
+    { data: measurementRows, error: measurementsError },
   ] = await Promise.all([
     supabase
       .from("cost_sections")
@@ -77,6 +85,13 @@ export async function GET(
       .select("id, category, quantity, price_trade, price_rrp")
       .eq("project_id", projectId)
       .is("deleted_at", null),
+    // measurement_groups(name) nested for group_name — Week 7, needed
+    // for effectiveQty() on linked cost lines and the link-picker UI.
+    supabase
+      .from("measurements")
+      .select("*, measurement_groups(name)")
+      .eq("project_id", projectId)
+      .order("sort", { ascending: true }),
   ]);
 
   if (sectionsError) {
@@ -88,6 +103,17 @@ export async function GET(
   if (itemsError) {
     return NextResponse.json({ error: itemsError.message }, { status: 500 });
   }
+  if (measurementsError) {
+    return NextResponse.json({ error: measurementsError.message }, { status: 500 });
+  }
+
+  const measurements: MeasurementWithGroup[] = (measurementRows ?? []).map((row) => {
+    const { measurement_groups, ...rest } = row as unknown as Measurement & {
+      measurement_groups: { name: string } | null;
+    };
+    return { ...(rest as Measurement), group_name: measurement_groups?.name ?? "" };
+  });
+  const measurementsById = new Map(measurements.map((m) => [m.id, { value: m.value }]));
 
   const sectionsWithLines: CostSectionWithLines[] = (sections ?? []).map((section) => {
     const lines = ((section as unknown as { cost_lines: CostSectionWithLines["lines"] }).cost_lines ?? [])
@@ -98,7 +124,7 @@ export async function GET(
     return {
       ...(rest as unknown as CostSectionWithLines),
       lines,
-      rollup: sectionRollup(lines),
+      rollup: sectionRollup(lines, measurementsById),
     };
   });
 
@@ -107,6 +133,7 @@ export async function GET(
     lines: allLines,
     variations: variations ?? [],
     markupPct: project.estimate_markup_pct ?? 0,
+    measurementsById,
   });
 
   const ffe = ffeRollup(items ?? []);
@@ -118,6 +145,7 @@ export async function GET(
     rollup,
     ffe,
     wholeJob,
+    measurements,
   };
 
   return NextResponse.json(payload);

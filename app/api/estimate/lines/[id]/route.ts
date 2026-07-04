@@ -17,6 +17,9 @@ const EDITABLE_FIELDS = new Set([
   "item_id",
   "notes",
   "sort",
+  // Week 7 — Estimate ↔ Schedule integration (migration 009_assets_bucket.sql)
+  "measurement_id",
+  "wastage_pct",
 ]);
 
 const NUMERIC_FIELDS = new Set([
@@ -26,6 +29,7 @@ const NUMERIC_FIELDS = new Set([
   "quoted_to_client_ex_gst",
   "actual_paid_ex_gst",
   "sort",
+  "wastage_pct",
 ]);
 
 /**
@@ -69,6 +73,25 @@ export async function PATCH(
   ) {
     return NextResponse.json(
       { error: "quote_status must be one of Q, S, NA" },
+      { status: 400 }
+    );
+  }
+
+  // Week 7 — Estimate ↔ Schedule integration: wastage only makes sense
+  // as a percent addition on top of a linked measurement's value, so
+  // it's capped at a sane 0–50% range (also enforced by a DB check
+  // constraint in migration 009_assets_bucket.sql as a second line of
+  // defence for any future direct-SQL write).
+  if (
+    body.wastage_pct !== undefined &&
+    body.wastage_pct !== null &&
+    (typeof body.wastage_pct !== "number" ||
+      !Number.isFinite(body.wastage_pct) ||
+      body.wastage_pct < 0 ||
+      body.wastage_pct > 50)
+  ) {
+    return NextResponse.json(
+      { error: "wastage_pct must be a number between 0 and 50" },
       { status: 400 }
     );
   }
