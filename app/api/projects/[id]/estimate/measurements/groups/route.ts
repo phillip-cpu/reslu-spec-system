@@ -47,7 +47,7 @@ export async function GET(
     const { measurements: _omit, ...rest } = group as unknown as Record<string, unknown>;
     void _omit;
     return {
-      ...(rest as MeasurementGroupWithRows),
+      ...(rest as unknown as MeasurementGroupWithRows),
       measurements: rows,
       total: measurementGroupTotal(rows.map((r) => r.value)),
     };

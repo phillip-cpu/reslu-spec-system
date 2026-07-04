@@ -142,7 +142,7 @@ export async function POST(
   const { data: publicUrl } = supabase.storage.from(ASSET_BUCKET).getPublicUrl(path);
 
   return NextResponse.json(
-    { file: { ...(row as ItemFile), url: publicUrl.publicUrl } },
+    { file: { ...(row as unknown as ItemFile), url: publicUrl.publicUrl } },
     { status: 201 }
   );
 }

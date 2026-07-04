@@ -312,7 +312,9 @@ export async function PATCH(
     });
   }
 
-  const payload = admin ? typedItem : stripFinancials(typedItem);
+  const payload = admin
+    ? typedItem
+    : stripFinancials(typedItem as unknown as Record<string, unknown>);
   return NextResponse.json({ item: payload });
 }
 

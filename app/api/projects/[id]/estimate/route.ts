@@ -73,7 +73,7 @@ export async function GET(
     const { cost_lines: _omit, ...rest } = section as unknown as Record<string, unknown>;
     void _omit;
     return {
-      ...(rest as CostSectionWithLines),
+      ...(rest as unknown as CostSectionWithLines),
       lines,
       rollup: sectionRollup(lines),
     };
