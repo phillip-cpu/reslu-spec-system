@@ -10,10 +10,15 @@ const NAV_ITEMS = [
   { label: "Search", href: "/search" },
   { label: "Library", href: "/library" },
   { label: "Address Book", href: "/contacts" },
+  // Week 10: admin-only (leads are "admin-only, financial-adjacent"
+  // per BUILD-SPEC.md) — filtered out below for non-admins. This is
+  // the first NAV_ITEMS entry that needs role-awareness; every prior
+  // item here is team-visible.
+  { label: "Leads", href: "/leads", adminOnly: true },
   { label: "Settings", href: "/settings" },
 ];
 
-export function Sidebar() {
+export function Sidebar({ isAdmin = false }: { isAdmin?: boolean }) {
   const pathname = usePathname();
 
   return (
@@ -33,7 +38,7 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 px-3">
-        {NAV_ITEMS.map((item) => {
+        {NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin).map((item) => {
           const active =
             item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
           return (

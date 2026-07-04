@@ -39,7 +39,8 @@ function isPastDue(dueDate: string | null): boolean {
  * rename/add/delete columns (delete only when empty).
  *
  * Sort scheme (documented in full in migration 013's comment on
- * board_tasks.sort and docs/API-week9-additions.md): an integer
+ * board_tasks.sort and docs/API.md's "Address Book, Project board &
+ * Gantt — Week 9" section): an integer
  * ladder with SORT_STEP=1000 gaps between siblings. Dropping a card
  * into a new position computes a sort value HALFWAY between its new
  * neighbours (or ± SORT_STEP past the end if dropped first/last) —

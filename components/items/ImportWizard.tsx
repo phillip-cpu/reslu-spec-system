@@ -62,22 +62,31 @@ export function ImportWizard({ projectId }: Props) {
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
     if (isXlsx) {
-      // Parse the workbook's first sheet client-side into rows, serialise to
-      // CSV, and hand it to the same loadCsv pipeline the CSV path uses — the
-      // server import route is unchanged (still receives CSV text).
-      // read-excel-file's default call resolves the first sheet to Row[]
-      // (a 2D cell grid) at runtime; its bundled overload types this as
-      // Sheet[], so cast through unknown to the grid shape rowsToCsv wants.
+      // read-excel-file/browser returns Sheet[] = [{sheet, data}] (data is
+      // the 2D cell grid). Take the first sheet's rows, serialise to CSV,
+      // and hand it to the same loadCsv pipeline — the server is unchanged.
+      // (Guard for a plain Row[] too, in case a build returns rows directly.)
       readXlsxFile(file)
-        .then((rows) =>
-          loadCsv(
-            rowsToCsv(rows as unknown as (string | number | boolean | Date | null)[][]),
-            file.name
-          )
-        )
-        .catch(() =>
+        .then((parsed) => {
+          const arr = parsed as unknown as Array<
+            | { data?: (string | number | boolean | Date | null)[][] }
+            | (string | number | boolean | Date | null)[]
+          >;
+          const first = arr[0];
+          const grid = Array.isArray(first)
+            ? (arr as (string | number | boolean | Date | null)[][])
+            : (first as { data?: (string | number | boolean | Date | null)[][] })?.data ?? [];
+          if (grid.length === 0) {
+            setError("That spreadsheet has no sheets or no rows.");
+            return;
+          }
+          loadCsv(rowsToCsv(grid), file.name);
+        })
+        .catch((err) =>
           setError(
-            "Could not read that spreadsheet. Make sure it's a .xlsx file (not .xls or a protected/corrupt workbook)."
+            `Could not read that spreadsheet (${
+              err instanceof Error ? err.message : "unknown error"
+            }). Make sure it's a .xlsx file — not .xls, .numbers, or a protected/corrupt workbook.`
           )
         );
       return;

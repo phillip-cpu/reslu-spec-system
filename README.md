@@ -73,11 +73,15 @@ This downloads everything the app needs. It can take a few minutes the first tim
      `supabase/migrations/011_sow_overview.sql`,
      `supabase/migrations/012_portal_expansion.sql` (Storage RLS
      policies, Scope of Works builder + overview hub, portal expansion +
-     native e-signature — see `docs/API-portal-additions.md`)
+     native e-signature — see `docs/API.md` §"Portal expansion & native
+     e-signature — Week 8B")
    - `supabase/migrations/013_boards_contacts.sql` (Address Book
      `contacts` table + link-point columns on `cost_lines`/`items`,
      project kanban board tables, Gantt `schedule_phases` table — see
-     `docs/API-week9-additions.md`)
+     `docs/API.md` §"Address Book, Project board & Gantt — Week 9")
+   - `supabase/migrations/014_leads.sql` (Leads pipeline: `leads` +
+     `lead_stage_events` tables, `projects.lead_id` link column — see
+     `docs/API.md` §"Leads pipeline — Week 10" and "Leads + Aria" below)
    - `supabase/seed.sql` (adds the category codes and a demo project)
    - `supabase/seed_contacts.sql` (optional — Address Book seed data
      parsed from RESLU's Monday.com export, ~109 companies across 30
@@ -234,7 +238,8 @@ To stop the app, go back to Terminal and press `Ctrl + C`.
   `signature_events`; `project_files`/`variations` gained `share_to_portal`;
   `variations` gained `client_response`/`client_response_note`/
   `client_responded_at` (migration `012_portal_expansion.sql`). See
-  `docs/API-portal-additions.md` for the new routes.
+  `docs/API.md` §"Portal expansion & native e-signature — Week 8B" for
+  the routes.
 
 - **Week 9 — Boards, Gantt, Address Book** (replaces Monday.com task/
   scheduling functionality). **Address Book** (`/contacts`, sidebar
@@ -264,8 +269,70 @@ To stop the app, go back to Terminal and press `Ctrl + C`.
   notes) into the client portal's new "Timeline" section. New tables:
   `contacts`, `board_columns`, `board_tasks`, `schedule_phases`
   (migration `013_boards_contacts.sql`). See
-  `docs/API-week9-additions.md` for the new routes and the drag-drop
-  sort scheme.
+  `docs/API.md` §"Address Book, Project board & Gantt — Week 9" for the
+  routes and the drag-drop sort scheme.
+
+- **Week 10 — Leads pipeline + Aria API/MCP layer.** New sidebar entry
+  **Leads** (`/leads`, admin-only — hidden from the sidebar and
+  page-gated for non-admins, same "restricted" pattern as Invoices),
+  covering first-contact-to-construction: a 10-stage kanban
+  (Potential Lead → Site Visit Booked → Awaiting to Send Proposal →
+  Proposal Sent → Design Work In Progress → Construction In Progress,
+  plus Unable to Contact / Lead Lost / Complete / Potential Future Lead
+  visually muted at the end) with a list-view toggle, drag-drop stage
+  changes, an add-lead composer, and a detail panel (all fields
+  editable, single-save pattern like estimate lines, stage-history
+  timeline, notes). Moving a lead to "Design Work In Progress" surfaces
+  a one-click **Create project** button that creates a real project
+  from the lead's name/first name/location and links both records
+  together. A **needs-attention panel** surfaces four groups at the top
+  of the page (follow-ups due, proposals sent 4+ days with no
+  follow-up, proposals never sent after 7+ days, site visits in the
+  next 7 days), and a **pipeline dashboard** strip shows total active
+  pipeline value plus a per-stage count/value/avg-days-in-stage chip
+  row. New tables: `leads`, `lead_stage_events` (append-only, populated
+  by a DB trigger on every stage change — migration `014_leads.sql`);
+  `projects` gained `lead_id`. Leads are the first data in this app
+  called out as needing stronger-than-usual protection ("admin-only,
+  financial-adjacent") — enforcement is still API-layer-only (whole-
+  route 403, same shape as Invoices/Estimate), consistent with every
+  other table's RLS in this schema (see that migration's own extended
+  comment on why).
+
+  **One-time Monday leads import** (`scripts/import-monday-leads.mjs`,
+  plain Node, run by hand on the mini — never in this sandbox): reads
+  every item off Monday board `1808939489`, maps each item's Monday
+  **group title** to one of the 10 stages (the `META`/`DIRECT` groups
+  both map to `Potential Lead` with `source` set accordingly), and
+  upserts into `leads` keyed on `monday_item_id` — safe to re-run.
+  Defaults to `DRY_RUN=1` (prints what it would do, writes nothing);
+  set `DRY_RUN=0` to actually import. This is a **one-time** migration,
+  not an ongoing sync — per the locked Monday-replacement strategy, the
+  native `leads` table becomes the sole source of truth after this runs
+  once, and no code anywhere reads Monday leads-board state back into
+  the app.
+
+  **Aria API layer**: `docs/API.md` §"Leads pipeline — Week 10"
+  documents the full leads CRUD + stage-move + needs-attention routes;
+  `docs/API.md` itself is now the single consolidated API doc — the
+  two per-week "additions" files (`docs/API-portal-additions.md`,
+  `docs/API-week9-additions.md`) have been folded in and deleted.
+  `docs/ARIA.md` is new: how Aria authenticates
+  (`supabase-js signInWithPassword` → Bearer token), the exact
+  endpoints her lead-monitor/nurturer/site-brief automations should
+  poll, what deliberately stays on her side (Google Calendar, Gmail
+  sends, WhatsApp — none of that is proxied through this app), and
+  rate guidance.
+
+  **MCP server** (`mcp/`, a separate Node package installed on the
+  mini, not a dependency of this app): exposes 13 tools
+  (`list_projects`, `get_project`, `list_items`, `create_item`,
+  `update_item_status`, `list_leads`, `move_lead_stage`,
+  `get_needs_attention`, `list_invoices`, `create_invoice`,
+  `post_client_update`, `list_contacts`, `create_board_task`) — each a
+  thin `fetch()` against the REST API using Aria's own bearer token
+  (lazy sign-in, cached, one retry on a 401). See `mcp/README.md` for
+  install steps and an OpenClaw/Claude Code MCP config snippet.
 
 Client-portal financial gating and the real scraper pipeline (image/RRP
 extraction + PDF document detection) were completed in Week 3. Role-based
@@ -300,6 +367,53 @@ without them.
   environment variables so the route can authenticate the scheduled
   call — a signed-in team member can still trigger it manually from a
   browser session too (the route accepts either).
+
+## Leads + Aria (Week 10)
+
+The **Leads** page (`/leads`) is admin-only — Phillip's account should
+have `role: admin` in Settings for it to be visible in the sidebar.
+Nothing about the leads feature needs a manual Supabase Dashboard step
+beyond running migration `014_leads.sql` in Step 2.2 above.
+
+**One-time Monday leads import** — run this once, by hand, on whichever
+machine has network access and the right env vars (the Mac mini, once
+set up per BUILD-SPEC.md's migration note, or any machine with
+`MONDAY_API_TOKEN` + the Supabase values in its shell environment):
+
+```bash
+# Dry run first (default) — prints what would be imported, writes nothing:
+MONDAY_API_TOKEN=xxx \
+NEXT_PUBLIC_SUPABASE_URL=https://your-project-ref.supabase.co \
+SUPABASE_SERVICE_ROLE_KEY=xxx \
+node scripts/import-monday-leads.mjs
+
+# Once the dry-run output looks right, actually import:
+DRY_RUN=0 MONDAY_API_TOKEN=xxx \
+NEXT_PUBLIC_SUPABASE_URL=https://your-project-ref.supabase.co \
+SUPABASE_SERVICE_ROLE_KEY=xxx \
+node scripts/import-monday-leads.mjs
+```
+
+Safe to re-run (upserts on `monday_item_id`) — but once the leads
+module is in daily use, don't re-run it against live data without
+checking with Phillip first, since it will overwrite native edits with
+whatever the Monday board looks like at run time. See the script's own
+header comment for the exact group→stage mapping rules.
+
+**Aria's MCP server** (`mcp/`) is a separate Node package, installed
+and run on Aria's Mac mini — not part of this app's `npm install`.  See
+`mcp/README.md` for the full install/config steps; in short:
+
+```bash
+cd mcp
+npm install
+# set SPEC_URL, ARIA_EMAIL, ARIA_PASSWORD, NEXT_PUBLIC_SUPABASE_URL,
+# NEXT_PUBLIC_SUPABASE_ANON_KEY in the environment that launches it
+node src/index.mjs
+```
+
+`docs/ARIA.md` covers how she authenticates and which endpoints her
+lead-monitor/nurturer/site-brief automations should call.
 
 ## Deploying to Vercel
 

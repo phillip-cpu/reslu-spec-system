@@ -4,6 +4,7 @@ import { Header } from "@/components/layout/Header";
 import { CategorySettings } from "@/components/settings/CategorySettings";
 import { TeamSettings } from "@/components/settings/TeamSettings";
 import { IntegrationStatus } from "@/components/settings/IntegrationStatus";
+import { QuickLinks } from "@/components/settings/QuickLinks";
 import type { Category, Profile } from "@/types";
 
 /**
@@ -81,6 +82,14 @@ export default async function SettingsPage() {
             mondayConfigured={mondayConfigured}
             gmailConfigured={gmailConfigured}
           />
+        </section>
+
+        <section>
+          <h2 className="mb-1 text-subhead text-nearblack">Directory</h2>
+          <p className="mb-3 text-body text-charcoal/70">
+            External services that run the RESLU stack.
+          </p>
+          <QuickLinks />
         </section>
       </main>
     </>

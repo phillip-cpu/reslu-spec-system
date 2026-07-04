@@ -6,11 +6,18 @@ Aria authenticates as a normal Supabase user (`aria@reslu.com.au`,
 email/password → JWT) and drives the product entirely through these
 routes — every UI capability has (or should have) a route here. Routes
 tagged **Aria-relevant** are the ones she's expected to call most:
-items CRUD/import, invoices POST/PATCH/approve, estimate reads.
+items CRUD/import, invoices POST/PATCH/approve, estimate reads, leads
+CRUD/stage-move/needs-attention.
 
 Written by walking every file under `app/api/**` in this working copy
-(Week 6). Kept accurate to the code as it stands — if a route changes,
-update this file in the same commit.
+(Week 6), kept current through Week 10. If a route changes, update this
+file in the same commit — this is now the **single, consolidated** API
+doc; the two weekly "additions" files that previously existed
+(`docs/API-portal-additions.md` for Week 8B, `docs/API-week9-additions.md`
+for Week 9) have been folded in below (Week 8B's content lives under
+"Portal expansion & native e-signature — Week 8B"; Week 9's lives under
+"Address Book, Project board & Gantt — Week 9") and deleted from the
+repo — do not recreate that per-week-file pattern going forward.
 
 ## Auth tiers used below
 
@@ -80,6 +87,28 @@ Uses an explicit `PDF_ITEM_FIELDS` whitelist that excludes all
 pricing/ordering columns — the builder-facing PDF never contains
 financial data regardless of caller role. Items filtered to
 non-deleted, ordered category then item_code.
+
+### GET /api/projects/[id]/cover
+Auth: session. Body: none. Response: `{ url: string | null }` — a
+freshly-minted signed URL (1hr TTL) for the project's cover image, or
+`null` if none is set. Used to refresh the URL client-side after it
+expires (Week 7).
+
+### POST /api/projects/[id]/cover
+Auth: session. Body: multipart `{ file }` (`image/*`, 10MB cap).
+Response: `{ cover_image_path, url }` (the freshly-minted signed URL, so
+the caller can show the new cover immediately without a second fetch).
+Uploads to the **private** `assets` bucket at the fixed path
+`projects/{id}/cover.<ext>` (`upsert: true` — replacing a cover never
+accumulates orphaned Storage objects). Client houses are private
+information (unlike item product photos, which are already-public
+supplier catalogue images), hence the private bucket — unlike item
+images, which live in the public `item-images` bucket.
+
+### DELETE /api/projects/[id]/cover
+Auth: session. Body: none. Response: `{ ok: true }`. Removes the
+Storage object (best-effort — proceeds even if the object is already
+missing) and clears `projects.cover_image_path`.
 
 ### POST /api/projects/[id]/import
 Auth: session. Body: `{ csv: string, mapping: Record<string, string | null> }`
@@ -660,6 +689,541 @@ schema has no dedicated project-number column.
 
 ---
 
+## Portal expansion & native e-signature — Week 8B
+
+Folded in from the former `docs/API-portal-additions.md` (now deleted).
+Written in the same auth-tier vocabulary as above: **session**,
+**session (financial fields admin-only)**, **admin**, **portal-token**.
+
+### GET /portal/[token] (page, not an API route)
+Auth: portal-token. No longer just the FF&E schedule — now renders every
+sectioned area described below in one server-rendered page: Schedule &
+approvals (unchanged), Documents, Contracts & signatures, Variations,
+Progress photos, Updates. Still carries no item pricing; the one
+deliberate exception is variation cost, shown **inc GST only**.
+
+### Variations — portal response
+
+#### POST /api/portal/[token]/variation/[id]/respond
+Auth: portal-token. Body: `{ response: "approved" | "declined", note?: string }`.
+Response: `{ variation: { id, var_number, var_date, description, cost_inc_gst, client_response, client_response_note, client_responded_at } }`.
+Verifies the variation belongs to the token's project AND has
+`share_to_portal = true` before accepting a response (same ownership
+discipline as the existing item approve/flag route). Rate-limited.
+Records a digest-queue entry via `lib/gmail/digest.ts`'s
+`recordPortalAction()` (never blocks the response). `cost_inc_gst` is
+computed server-side from `cost_ex_gst * 1.10` — the client never
+supplies or sees `cost_ex_gst` directly.
+
+### Native e-signature
+
+#### GET /api/portal/[token]/sign/[requestId]
+Auth: portal-token. Response: `{ target: PortalSigningTarget, consentStatement }`.
+`target.document_url` is a signed URL (1hr TTL) to the underlying PDF for
+`project_file` subjects, or `null` for `variation`/`sow` subjects (no
+stored PDF to preview — the sign page shows a text summary instead).
+Rate-limited.
+
+#### POST /api/portal/[token]/sign/[requestId]
+Auth: portal-token. Body:
+`{ signature_data_url: string (PNG data URL), signer_name_typed: string, consent: boolean }`.
+Response: `{ status: "signed", signed_at, certificate_url }` or `{ error }`
+(400/404/409/500). This is the security-critical route — implements
+BUILD-SPEC.md §"Built-in digital signature" exactly:
+
+1. Rejects unless `consent === true` and a non-empty typed name and a
+   non-empty decoded PNG signature are present.
+2. Verifies the `signature_requests` row belongs to the token's project
+   and is still `pending` (409 if already `signed`/`void`).
+3. **Recomputes `document_sha256` server-side** from the actual stored
+   bytes (`lib/signatures.ts` `resolveDocumentBytes` + `sha256Hex`) —
+   never trusts a client-supplied hash. For `project_file` subjects this
+   downloads the real object from Storage; for `variation` subjects (no
+   stored PDF) it hashes a canonical JSON snapshot of the variation's
+   id/number/description/cost/date, which is what the void-on-edit
+   trigger (migration 012) invalidates when the variation later changes.
+4. Uploads the drawn signature PNG to the **private** `assets` bucket
+   (`signatures/{projectId}/{requestId}/...-signature.png`).
+5. Inserts one **append-only** `signature_events` row (see schema below)
+   via the service-role client, then flips `signature_requests.status`
+   to `'signed'`.
+6. Best-effort (never fails the response): renders a branded
+   signature-certificate PDF via React-PDF (`components/portal/SignatureCertificatePdf.tsx`),
+   uploads it as a **new** object next to the original (never overwriting
+   it), indexes it as a `project_files` row (`kind: 'other'`) for
+   `project_file` subjects, and emails admins via `lib/gmail/send.ts` if
+   Gmail is configured (no client-contact-email field exists on
+   `projects` yet, so client copies aren't sent until one is added — see
+   the route's inline comment).
+
+Rate-limited tighter than reads (10/min vs the usual 30/min) since this
+is the one portal route that writes durable, non-reversible evidence.
+
+### Signature requests — team-side
+
+#### POST /api/signatures
+Auth: session (any team member — NOT admin-only; only variation
+**sharing**, below, is admin-gated). Body:
+`{ project_id, subject_type: "project_file"|"variation"|"sow", subject_id }`.
+Response: `{ request }` (201). Validates the subject exists and belongs
+to `project_id` for `project_file`/`variation` subject types before
+creating the request (no `sow` table exists in this agent's boundary —
+`sow` subjects are trusted at face value here).
+
+#### GET /api/signatures?project_id=...
+Auth: session. Response: `{ requests: (SignatureRequest & { evidence })[] }`
+— each request's most recent `signature_events` row (signer name, signed
+at) is attached inline so the client-area UI doesn't need a second
+round-trip per row.
+
+#### GET /api/signatures/[id]
+Auth: session. Response: `{ request, evidence, certificate_url }`.
+`certificate_url` is a freshly-signed URL to the generated certificate
+PDF (re-derived by listing the `signatures/{projectId}/{requestId}/`
+Storage prefix — the certificate's exact filename is timestamped, not
+fixed).
+
+#### PATCH /api/signatures/[id]
+Auth: session. Body: `{ action: "void", reason?: string }`. Sets
+`status = 'void'`, `voided_reason`, `voided_at`. This is the **manual**
+half of void-on-change: `project_files` revisions are new rows (not
+edits), so there's no UPDATE for a trigger to catch — the team manually
+voids the old file's signature request when uploading a superseded
+revision. (Variations DO auto-void via a database trigger on
+`cost_ex_gst`/`description` UPDATE — see migration 012 PART 6 — no route
+needed for that case.)
+
+### Team-side client area
+
+All routes below are **session** (any team member) unless noted.
+
+#### GET /api/projects/[id]/client-updates/summary
+One-shot summary for the client-area page: files (with
+`share_to_portal`), variations (with `share_to_portal` + client
+response), signature requests, updates, photo count, and the fortnightly
+cadence figure: `{ cadence: { last_published_at, days_since_last_update, stale } }`
+(`stale = true` when `days_since_last_update > 14` or no update has ever
+been published).
+
+#### GET/POST /api/projects/[id]/client-updates/photos
+GET → `{ photos: (ProgressPhoto & { url })[] }`, newest first. POST →
+multipart `{ files[] (multiple), caption?, taken_at? }`, uploads each
+file sequentially into the private `assets` bucket
+(`projects/{id}/progress/...`), returns `{ photos: created[], errors[] }`
+(207-like partial-success shape, but responds 201 as long as at least one
+file succeeded, 500 if all failed).
+
+#### PATCH/DELETE /api/projects/[id]/client-updates/photos/[photoId]
+PATCH body: `{ caption?, taken_at? }`. DELETE soft-deletes
+(`deleted_at`).
+
+#### GET/POST /api/projects/[id]/client-updates/posts
+GET → `{ updates: PortalUpdate[] }`, ALL rows (drafts + published) for
+the team draft list — not the portal's published-only feed (that's the
+inline query in `app/portal/[token]/page.tsx`). POST body:
+`{ title, body_richtext }` → creates a **draft** (`published_at: null`).
+Aria-relevant: `post_client_update` MCP tool wraps this route (drafts
+only — this route never publishes).
+
+#### PATCH/DELETE /api/projects/[id]/client-updates/posts/[postId]
+PATCH body: `{ title?, body_richtext?, publish?: boolean }`.
+`publish: true` sets `published_at = now()` **only if currently null**
+(re-publishing doesn't reset the cadence clock); `publish: false`
+un-publishes. DELETE soft-deletes.
+
+#### PATCH /api/projects/[id]/client-updates/files/[fileId]/share
+Body: `{ share_to_portal: boolean }`. Team-authenticated, not admin-only
+— documents aren't financial (same gating as the rest of the Documents
+feature).
+
+#### PATCH /api/projects/[id]/client-updates/variations/[variationId]/share
+Body: `{ share_to_portal: boolean }`. **Auth: admin.** The one
+admin-gated action in this whole feature — "it exposes client pricing
+decisions" (BUILD-SPEC.md). Enforced server-side (403 for non-admins
+before any query runs), not merely disabled in the UI.
+
+### Schema reference (migration `012_portal_expansion.sql`)
+
+- `portal_updates(id, project_id, title, body_richtext, author_id, published_at?, created_at, updated_at, deleted_at?)`
+- `progress_photos(id, project_id, storage_path, caption?, taken_at?, uploaded_by, created_at, deleted_at?)`
+- `project_files.share_to_portal boolean default false` (additive)
+- `variations.share_to_portal boolean default false`, `.client_response ('approved'|'declined')?`, `.client_response_note?`, `.client_responded_at?` (additive)
+- `signature_requests(id, project_id, subject_type, subject_id, status, requested_by, voided_reason?, voided_at?, created_at, updated_at)`
+- `signature_events(id, project_id, subject_type, subject_id, signature_request_id?, document_sha256, signer_name_typed, signature_image_path, portal_token_used, ip?, user_agent?, signed_at)` —
+  **append-only**: RLS grants `authenticated` INSERT + SELECT only; there
+  is no UPDATE or DELETE policy on this table at all (not even for
+  `authenticated`), which is the actual enforcement mechanism. The portal
+  sign route inserts via the service-role client (bypasses RLS by
+  definition — this is the "INSERT via service role for portal" clause,
+  not a policy naming `service_role`).
+- Trigger `trg_void_signature_on_variation_change`: on `variations`
+  UPDATE, if `cost_ex_gst` or `description` changed AND a
+  `signature_events` row already exists for that variation, sets any
+  `signed` `signature_requests` row for it to `void`.
+
+---
+
+## Address Book, Project board & Gantt — Week 9
+
+Folded in from the former `docs/API-week9-additions.md` (now deleted).
+Every route below is **session** (team-visible, not admin-gated) — none
+of Week 9's data is financial (contacts are a trade/supplier directory;
+boards and phases are scheduling/task data), per BUILD-SPEC.md "Week 9 —
+detailed scope". All routes are **Aria-relevant** (BUILD-SPEC.md: "API
+routes for everything (Aria operates boards/contacts too)").
+
+### Address Book (contacts)
+
+#### GET /api/contacts
+Auth: session. Query: `?q=` (search across company/contact_name/
+specialty, ILIKE), `?category=` (exact match). Response:
+`{ contacts: Contact[] }`, non-deleted, ordered `company asc`.
+**Aria-relevant** (`list_contacts` MCP tool).
+
+#### POST /api/contacts
+Auth: session (any team member — same trust tier as
+`POST /api/library`, which any signed-in member may also create).
+Body: `CreateContactInput` — `{ company (required), contact_name?,
+phone?, email?, website?, specialty?, category?, notes? }`. Response:
+`{ contact }` (201).
+
+#### GET /api/contacts/[id]
+Auth: session. Response: `{ contact }`.
+
+#### PATCH /api/contacts/[id]
+Auth: session. Body: `PatchContactInput` (partial) — whitelist only.
+Empty strings become `null` except `company`, which must stay
+non-empty (400 otherwise). Response: `{ contact }`.
+
+#### DELETE /api/contacts/[id]
+Auth: session. Response: `{ ok: true }`. **Soft**-delete (`deleted_at`)
+— per the build brief's explicit column list, and because a contact may
+still be referenced by board cards / cost lines / items / phases via
+`on delete set null` FKs; a soft delete keeps the row resolvable by a
+direct id lookup (e.g. `GET /api/contacts/[id]` from a stale link) while
+hiding it from every list immediately.
+
+### Link points (existing routes, extended)
+
+#### PATCH /api/items/[id] (extended)
+`EDITABLE_FIELDS` gains `supplier_contact_id` (uuid, references
+`contacts(id) on delete set null`) — team-visible, not financial, so no
+admin-gating added for this one field. Picking a contact in the item
+detail panel autofills `supplier`/`supplier_email` client-side (only
+when those fields are currently empty) and sends them in the same PATCH
+body as `supplier_contact_id` — the route itself has no special-case
+logic for this; it's just three whitelisted fields landing in one
+request.
+
+#### PATCH /api/estimate/lines/[id] (extended)
+`EDITABLE_FIELDS` gains `contact_id` (uuid, references `contacts(id) on
+delete set null`) — "who's quoting/doing the trade" for a cost line.
+Still admin-only overall (this route's whole surface is financial, per
+BUILD-SPEC.md "Financial visibility") — the contact link itself isn't
+financial data, but it lives on a financial-gated row, so the existing
+route-level 403 applies to this field the same as every other field on
+`cost_lines`.
+
+### Project board (kanban)
+
+#### GET /api/projects/[id]/board
+Auth: session. Response: `{ columns: BoardColumnWithTasks[] }` — each
+column's non-deleted tasks, sorted, each task annotated with lightweight
+assignee (`{ id, full_name }`) and contact (`{ id, company,
+contact_name }`) display data (batched lookups, not N+1). **Seeds the
+project's default columns idempotently on first visit** (To Do / In
+Progress / Waiting / Done) — only when the project currently has zero
+columns, so calling this twice never double-seeds. The Board page
+(`app/(dashboard)/projects/[id]/board/page.tsx`) duplicates this same
+seed-if-empty check directly via `createClient()` rather than calling
+this route internally, per this codebase's existing sub-page convention
+(every other project sub-page queries Supabase directly server-side,
+never fetches its own API routes) — both copies are intentionally
+identical in shape.
+
+#### POST /api/projects/[id]/board
+Auth: session. Body: `CreateBoardTaskInput` — `{ column_id (required),
+title (required), description?, assignee_id?, contact_id?, due_date? }`.
+Response: `{ task }` (201). Validates `column_id` belongs to this
+project (400 otherwise — a forged cross-project column id is rejected,
+not silently accepted). `sort` = server-computed `max(existing sort in
+this column) + 1000` — see "Sort scheme" below. **Aria-relevant**
+(`create_board_task` MCP tool).
+
+#### PATCH /api/board-tasks/[id]
+Auth: session. Body: `PatchBoardTaskInput` (partial) — used for both
+plain field edits (title/description/assignee/contact/due_date) AND
+drag-drop moves (`column_id` + `sort` together in one request). When
+`column_id` is supplied and differs from the task's current column, it's
+re-validated against the task's own `project_id` (same forged-id
+defence as the POST route). Response: `{ task }`.
+
+#### DELETE /api/board-tasks/[id]
+Auth: session. Response: `{ ok: true }`. Soft-delete (`deleted_at`).
+
+#### POST /api/projects/[id]/board/columns
+Auth: session. Body: `{ name }`. Response: `{ column }` (201). `sort` =
+server-computed `max(existing) + 1000`, so a manually-added column
+always lands to the right of the existing set.
+
+#### PATCH /api/board-columns/[id]
+Auth: session. Body: `{ name?, sort? }`. Response: `{ column }`.
+Renaming is the whole point of "per-project editable columns" — cards
+only ever store `column_id`, never a denormalised column name, so a
+rename is instant everywhere without touching a single task row.
+
+#### DELETE /api/board-columns/[id]
+Auth: session. Response: `{ ok: true }` or 400 `"This column still has
+cards — move or remove them first."`. **Hard** delete, but ONLY when the
+column has zero non-deleted tasks (BUILD-SPEC.md detailed scope: "delete
+only when empty") — checked server-side before the delete runs, not
+merely disabled in the UI. `board_tasks.column_id` is `on delete
+cascade` at the DB layer (so a forced delete of a non-empty column is
+technically possible via direct SQL), but this route deliberately
+refuses rather than ever silently cascading away cards through the API.
+
+### Procurement board — no new routes
+
+BUILD-SPEC.md "Procurement board": "kanban VIEW over existing items ...
+drag to change status (same PATCH, triggers existing Monday sync/date
+stamps)". `components/items/ProcurementBoardView.tsx` drags a card
+between status columns by calling the exact same `onPatch` callback
+`ProjectWorkspace.tsx` already wires to `PATCH /api/items/[id]` for the
+Spec and Pricing & Procurement views — there is no new write path, and
+the existing fire-and-forget Monday sync on a transition to `"Ordered"`
+(see this file's `PATCH /api/items/[id]` entry above) fires identically
+regardless of which view triggered the status change. This view never
+requests or renders `price_rrp`/`price_trade`/`markup_pct`/any computed
+total — the parent `ProjectWorkspace` already holds the full `Item[]`
+in memory (fetched via the Overview/FF&E tab's existing item query), so
+no new GET route was needed for this lens either.
+
+### Gantt (schedule phases)
+
+#### GET /api/projects/[id]/phases
+Auth: session. Response: `{ phases: SchedulePhaseWithContact[] }`,
+non-deleted, sorted, each annotated with a lightweight contact summary
+(`{ id, company, contact_name }`, batched lookup).
+
+#### POST /api/projects/[id]/phases
+Auth: session. Body: `CreatePhaseInput` — `{ name (required), start_date
+(required), end_date (required), color_key? ('sand'|'charcoal'|'teal'|
+'amber', default 'sand'), contact_id?, notes? }`. Response: `{ phase }`
+(201). `end_date >= start_date` is validated here (400, friendly
+message) AND enforced by the DB check constraint
+(`chk_schedule_phases_dates`, migration 013) as a second line of
+defence. `sort` = server-computed `max(existing) + 1000`.
+
+#### PATCH /api/phases/[id]
+Auth: session. Body: `PatchPhaseInput` (partial). Validates
+`color_key` enum and re-checks `end_date >= start_date` across the
+**merged** result (existing row + patch) — so a partial update that only
+moves `start_date` later can't silently produce an invalid range that
+the DB constraint would otherwise reject with a raw, less-friendly
+Postgres error. Response: `{ phase }`.
+
+#### DELETE /api/phases/[id]
+Auth: session. Response: `{ ok: true }`. Soft-delete (`deleted_at`).
+
+#### Portal mirror — no new route
+BUILD-SPEC.md "Portal mirror": read-only, rendered directly in
+`app/portal/[token]/page.tsx`'s existing service-role query block (same
+pattern as every other portal section — Documents, Variations, Progress
+photos). The query is an explicit column whitelist —
+`select("id,name,start_date,end_date,color_key")` — that never fetches
+`contact_id` or `notes` in the first place (not merely hidden by the
+component), satisfying "phase names + bars + date ranges ONLY (no
+contacts, no notes)" at the query layer. Covered by the same
+token-gate + rate-limit + `noindex` that gates the whole portal page —
+no separate rate-limit call needed. Renders nothing (the section
+returns `null`) if the project has zero phases.
+
+### Sort scheme (board_tasks, board_columns, schedule_phases)
+
+All three tables use the same integer-ladder scheme: siblings get
+`sort` values 1000 apart (`0, 1000, 2000, ...`). A new row via POST
+lands at `max(existing) + 1000` — appended at the end without touching
+any other row. A drag-drop reorder (`PATCH /api/board-tasks/[id]` with
+`column_id`/`sort`) computes the new `sort` as the **midpoint** between
+the row's new neighbours (`Math.round((before.sort + after.sort) / 2)`,
+or `± 1000` past the end if dropped first/last in a column) — see
+`components/board/ProjectBoard.tsx`'s `onDrop()`. This means a typical
+reorder only ever writes to the ONE row being moved, never renumbers
+every card in a column. If two adjacent integers are ever exhausted
+(many reorders landing in exactly the same spot over time), the
+midpoint calculation falls back to `before.sort + 1` — a tie is
+harmless (no uniqueness constraint on `sort`), and the next full page
+reload re-derives array order from the tied values' relative position
+in the query's `order("sort")` result, which self-heals the gap over
+time without requiring a dedicated renumbering job.
+
+### Schema reference (migration `013_boards_contacts.sql`)
+
+- `contacts(id, company, contact_name?, phone?, email?, website?,
+  specialty?, category?, notes?, created_by?, created_at, updated_at,
+  deleted_at?)` — indexes on `category`, `company`, `deleted_at`.
+- `cost_lines.contact_id uuid references contacts(id) on delete set null` (additive)
+- `items.supplier_contact_id uuid references contacts(id) on delete set null` (additive)
+- `board_columns(id, project_id, name, sort, created_at, updated_at)`
+- `board_tasks(id, project_id, column_id references board_columns(id) on
+  delete cascade, title, description?, assignee_id references
+  profiles(id) on delete set null, contact_id references contacts(id) on
+  delete set null, due_date?, sort, created_by?, created_at, updated_at,
+  deleted_at?)`
+- `schedule_phases(id, project_id, name, start_date, end_date, color_key
+  ('sand'|'charcoal'|'teal'|'amber', default 'sand'), contact_id
+  references contacts(id) on delete set null, sort, notes?, created_at,
+  updated_at, deleted_at?)` — check constraint `end_date >= start_date`.
+- RLS: `team_all` (permissive, `authenticated`) on all four new tables —
+  same Phase 1 shape as every non-financial, non-append-only table in
+  this schema. No admin-gating requirement at the RLS layer; the one
+  piece of API-layer enforcement this week is "delete column only when
+  empty" (`DELETE /api/board-columns/[id]`).
+
+### Seed data
+
+`supabase/seed_contacts.sql` — parsed from
+`docs-address-book-export.txt` (Monday.com export, pdftotext) by
+`scripts/parse_address_book.py`. 109 companies across 30 categories (see
+that script's docstring for the exact parsing rules). Idempotent —
+guarded by a `where not exists (... same company + category ...)` check
+per row, safe to re-run. Ambiguous rows (a phone number mislabelled as a
+contact name; a company name that repeats verbatim under the same
+category elsewhere in the source) are flagged `notes = 'Imported —
+verify'`.
+
+---
+
+## Leads pipeline — Week 10 (admin-only, financial-adjacent)
+
+BUILD-SPEC.md "Week 10 — Leads pipeline + Aria API layer": the native
+`leads` table is the source of truth after a **one-time** Monday import
+(`scripts/import-monday-leads.mjs`) — there is no ongoing/live sync, and
+no route here ever reads Monday state back. Every route below is
+**admin** (whole-route 403 before any query runs, same shape as
+Invoices/Estimate) — leads are explicitly "admin-only, financial-adjacent"
+per the build spec. All routes are **Aria-relevant** — this is the
+feature set her lead-monitor, nurturer, and site-brief automations are
+built around (see `docs/ARIA.md`).
+
+### GET /api/leads
+Auth: admin. Query: `?stage=` (exact match, one of the 10 pipeline
+stages), `?q=` (search across surname_project/first_name/location/
+email/phone), `?since=` (ISO timestamp — only leads created at/after
+this time; this is exactly what a lead-monitor automation should poll),
+`?summary=1` (also returns a `summary: LeadsDashboardSummary` block —
+`{ total_pipeline_value, stages: [{ stage, count, value,
+avg_days_in_stage }] }` — computed over the WHOLE pipeline, independent
+of any `?stage`/`?q` filter applied to the `leads` array itself, so the
+dashboard strip never appears to change just because the list below it
+is filtered). Response: `{ leads: Lead[] }` or `{ leads, summary }`.
+Non-deleted only, newest-updated first. **Aria-relevant** (`list_leads`
+MCP tool).
+
+### POST /api/leads
+Auth: admin. Body: `CreateLeadInput` — `{ surname_project (required),
+first_name?, source? ('META'|'DIRECT'), stage? (defaults 'Potential
+Lead'), email?, phone?, location?, received_at? (defaults now), follow_up_date?,
+site_visit_date?, site_visit_location?, construction_value?, design_value?,
+design_start?, design_end?, construction_start?, construction_end?, notes? }`.
+Response: `{ lead }` (201). This is for natively-created leads — the
+one-time Monday import writes directly via the service-role client in
+`scripts/import-monday-leads.mjs`, not through this route.
+
+### GET /api/leads/[id]
+Auth: admin. Response: `{ lead }`.
+
+### PATCH /api/leads/[id]
+Auth: admin. Body: `PatchLeadInput` (partial, whitelist only) — every
+field including `stage` (though the documented path for a stage change
+is the dedicated `POST /api/leads/[id]/stage` below; a plain PATCH that
+happens to include `stage` still correctly logs a `lead_stage_events`
+row, since that's a DB trigger, not API-layer logic — see migration
+`014_leads.sql`). Empty strings become `null`, same convention as
+`PATCH /api/contacts/[id]`. `surname_project` must stay non-empty if
+included. Response: `{ lead }`.
+
+### DELETE /api/leads/[id]
+Auth: admin. Response: `{ ok: true }`. **Soft**-delete (`deleted_at`) —
+a lead may be linked to a project (`leads.project_id` /
+`projects.lead_id`), so this keeps the reference resolvable.
+
+### POST /api/leads/[id]/stage
+Auth: admin. Body: `{ stage }` (one of the 10 pipeline stages). The
+single documented path for a stage change — used by the kanban board's
+drag-drop and by Aria. Writes a plain `update({ stage })`; the
+`lead_stage_events` row is written by the `trg_leads_stage_change` DB
+trigger, not by this route directly, so there is exactly one writer of
+that table (no risk of a double-write if a future call site also tries
+to log the event). Response: `{ lead, events: LeadStageEvent[] }` — the
+lead's full stage-change history is included in the same response so a
+UI refreshing after a move doesn't need a second round-trip.
+**Aria-relevant** (`move_lead_stage` MCP tool).
+
+### GET /api/leads/[id]/history
+Auth: admin. Response: `{ events: LeadStageEvent[] }`, newest first.
+Same data `POST .../stage` returns inline, but independently fetchable
+for the detail panel's stage-history timeline on open/refresh.
+
+### POST /api/leads/[id]/create-project
+Auth: admin. Body: none. BUILD-SPEC.md: "Moving a lead to Design Work
+In Progress offers one-click 'Create project' (links lead -> project)."
+Creates a project with `name = leads.surname_project`, `client_name =
+"{first_name} {surname_project}"` (or just `surname_project` if no
+first name on file), `address = leads.location`, sets
+`leads.project_id` and the new project's `lead_id` — linked both ways.
+Idempotent: if the lead already has a `project_id` pointing at a project
+that still exists, returns that existing project instead of creating a
+second one (safe to re-click after a page refresh). Does not require
+the lead to currently be in "Design Work In Progress" — that's the UI's
+surfacing condition for the button, not a hard rule enforced here.
+Response: `{ project, lead }` (201, or 200 if it returned an existing
+project).
+
+### GET /api/leads/attention
+Auth: admin. Response: `LeadsAttentionResponse` — `{ nurture: Lead[],
+stale_proposals: Lead[], follow_ups_due: Lead[], site_visits_upcoming:
+Lead[] }`. BUILD-SPEC.md "Needs-attention panel": `nurture` = stage
+'Proposal Sent' for >=4 days (measured from the most recent
+`lead_stage_events` row moving the lead INTO its current stage, falling
+back to `received_at` then `created_at` if no such event exists);
+`stale_proposals` = stage 'Awaiting to Send Proposal' for >=7 days
+(same measurement); `follow_ups_due` = `follow_up_date` <= today;
+`site_visits_upcoming` = `site_visit_date` within the next 7 days. A
+lead can legitimately appear in more than one group at once — this is
+not deduplicated, since e.g. a 'Proposal Sent' lead whose follow-up is
+also overdue genuinely needs both signals surfaced. This is **the**
+route BUILD-SPEC's "Aria API layer" names for her nurturer/monitor
+automations to poll (see `docs/ARIA.md`). **Aria-relevant**
+(`get_needs_attention` MCP tool).
+
+### Schema reference (migration `014_leads.sql`)
+
+- `leads(id, surname_project, first_name?, source? ('META'|'DIRECT'),
+  stage (10-value check constraint, default 'Potential Lead'), email?,
+  phone?, location?, received_at?, follow_up_date?, site_visit_date?,
+  site_visit_location?, construction_value?, design_value?,
+  design_start?, design_end?, construction_start?, construction_end?,
+  monday_item_id? (unique — import provenance), notes?, project_id?
+  (references projects(id) on delete set null), created_by?, created_at,
+  updated_at, deleted_at?)` — indexes on `stage`, `follow_up_date`,
+  `deleted_at`, `project_id`.
+- `lead_stage_events(id, lead_id, from_stage?, to_stage, at)` —
+  append-only (insert + select RLS only, no update/delete policy, same
+  shape as `signature_events`); populated exclusively by the
+  `trg_leads_stage_change` trigger on `leads` UPDATE, never by direct
+  API-layer inserts.
+- `projects.lead_id uuid references leads(id) on delete set null`
+  (additive) — the reverse link for "Create project".
+- RLS: `team_all` (permissive, `authenticated`) on both new tables, same
+  Phase 1 shape as every other table in this schema (see that
+  migration's own extended comment on why admin enforcement for leads
+  is done exclusively in the API layer, consistent with how Invoices/
+  Estimate are already gated, rather than introducing the first-ever
+  RLS role check in this codebase for one table).
+
+---
+
 ## Portal (client-facing, token-based — not session auth)
 
 ### POST /api/portal/[token]/[action]/[itemId]
@@ -680,16 +1244,29 @@ never blocks the response). **Not available to Aria** — BUILD-SPEC.md
 
 ## Digest
 
+### GET /api/digest/flush
+Auth: header `authorization: Bearer ${CRON_SECRET}` only (401
+otherwise — no session path for GET). This is Vercel Cron's actual
+entry point: `vercel.json`'s `crons` entry calls this at fixed UTC
+times chosen to land on 9am/12pm/4pm Adelaide time in both DST states
+(Vercel Cron is UTC-only and can't express `Australia/Adelaide`
+directly); the handler itself re-checks the current Adelaide hour and
+only flushes on those three slots, returning `{ skipped: "..." }`
+harmlessly on every other invocation. Uses the service-role client (no
+user session exists on a scheduled call).
+
 ### POST /api/digest/flush
-Auth: session (not admin-gated) **or** header
-`authorization: Bearer ${CRON_SECRET}` (Week 7). Body: none. Response:
+Auth: session (not admin-gated) **or** the same
+`authorization: Bearer ${CRON_SECRET}` header. Body: none. Response:
 passthrough of `flushDigest()`'s result. Sends any pending
 `portal_digest_queue` rows, grouped per project, to admin profiles,
-then marks them `sent_at`. `vercel.json` now schedules this hourly via
-Vercel Cron (`"0 * * * *"`); the manual/session-authenticated trigger
-(e.g. a "Send digest" button) keeps working unchanged. The cron path
-uses a service-role Supabase client (no user session exists on a
-scheduled call) — see the route's doc comment for the reasoning.
+then marks them `sent_at`. This is the manual "Send digest" trigger
+(any signed-in team member, any time) — Vercel's own Cron calls the GET
+handler above, not this one; this POST path also accepts the
+CRON_SECRET header for any other external scheduler that prefers POST.
+The cron path uses a service-role Supabase client (no user session
+exists on a scheduled call) — see the route's doc comment for the
+reasoning.
 
 ---
 

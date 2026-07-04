@@ -56,6 +56,11 @@ export interface Project {
   // documentStatusFor()) rather than every project needing a seeded
   // row. Team-editable via PATCH /api/projects/[id]/document-status.
   document_status: Partial<Record<ProjectFileKind, DocumentStatus>>;
+  // ---- additive (migration 014_leads.sql, Week 10) ----
+  // Back-link to the lead this project was created from, if any (via
+  // the leads kanban's "Create project" action) — see leads.project_id
+  // for the forward link and app/api/leads/[id]/create-project/route.ts.
+  lead_id: string | null;
 }
 
 /**
@@ -1139,4 +1144,162 @@ export interface PortalPhase {
   start_date: string;
   end_date: string;
   color_key: PhaseColorKey;
+}
+
+// ---- Leads pipeline (Week 10) ----
+
+export type LeadSource = "META" | "DIRECT";
+
+/** Pipeline order — the 10 stages, in the exact order the kanban board
+ * renders its columns (see components/leads/LeadsBoard.tsx). Not
+ * alphabetical. Mirrors the CHECK constraint in
+ * supabase/migrations/014_leads.sql letter-for-letter. */
+export const LEAD_STAGES = [
+  "Potential Lead",
+  "Site Visit Booked",
+  "Awaiting to Send Proposal",
+  "Proposal Sent",
+  "Design Work In Progress",
+  "Construction In Progress",
+  "Unable to Contact",
+  "Lead Lost",
+  "Complete",
+  "Potential Future Lead",
+] as const;
+
+export type LeadStage = (typeof LEAD_STAGES)[number];
+
+/** Stages excluded from "active pipeline" totals (BUILD-SPEC.md
+ * "Pipeline dashboard": "total pipeline value (sum construction_value
+ * in active stages — exclude Lost/Complete/Unable/Future)"). */
+export const INACTIVE_LEAD_STAGES: LeadStage[] = [
+  "Unable to Contact",
+  "Lead Lost",
+  "Complete",
+  "Potential Future Lead",
+];
+
+export interface Lead {
+  id: string;
+  surname_project: string;
+  first_name: string | null;
+  source: LeadSource | null;
+  stage: LeadStage;
+  email: string | null;
+  phone: string | null;
+  location: string | null;
+  received_at: string | null;
+  follow_up_date: string | null;
+  site_visit_date: string | null;
+  site_visit_location: string | null;
+  construction_value: number | null;
+  design_value: number | null;
+  design_start: string | null;
+  design_end: string | null;
+  construction_start: string | null;
+  construction_end: string | null;
+  monday_item_id: string | null;
+  notes: string | null;
+  project_id: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface LeadStageEvent {
+  id: string;
+  lead_id: string;
+  from_stage: LeadStage | null;
+  to_stage: LeadStage;
+  at: string;
+}
+
+/** body accepted by POST /api/leads. */
+export interface CreateLeadInput {
+  surname_project: string;
+  first_name?: string | null;
+  source?: LeadSource | null;
+  stage?: LeadStage;
+  email?: string | null;
+  phone?: string | null;
+  location?: string | null;
+  received_at?: string | null;
+  follow_up_date?: string | null;
+  site_visit_date?: string | null;
+  site_visit_location?: string | null;
+  construction_value?: number | null;
+  design_value?: number | null;
+  design_start?: string | null;
+  design_end?: string | null;
+  construction_start?: string | null;
+  construction_end?: string | null;
+  notes?: string | null;
+}
+
+/** body accepted by PATCH /api/leads/[id]. Includes every editable
+ * field EXCEPT `stage` — stage changes go through the dedicated
+ * POST /api/leads/[id]/stage route so a lead_stage_events row is
+ * guaranteed (the DB trigger fires either way, but the dedicated
+ * route is the one documented call path for Aria/UI drag-drop). A
+ * plain PATCH that includes `stage` is still accepted (the trigger
+ * covers it), but is not the documented primary path. */
+export interface PatchLeadInput {
+  surname_project?: string;
+  first_name?: string | null;
+  source?: LeadSource | null;
+  stage?: LeadStage;
+  email?: string | null;
+  phone?: string | null;
+  location?: string | null;
+  received_at?: string | null;
+  follow_up_date?: string | null;
+  site_visit_date?: string | null;
+  site_visit_location?: string | null;
+  construction_value?: number | null;
+  design_value?: number | null;
+  design_start?: string | null;
+  design_end?: string | null;
+  construction_start?: string | null;
+  construction_end?: string | null;
+  notes?: string | null;
+}
+
+/** body accepted by POST /api/leads/[id]/stage. */
+export interface MoveLeadStageInput {
+  stage: LeadStage;
+}
+
+export interface LeadsListResponse {
+  leads: Lead[];
+}
+
+export interface LeadResponse {
+  lead: Lead;
+}
+
+/** GET /api/leads/attention response — BUILD-SPEC.md "Needs-attention
+ * panel": "Proposal Sent >=4 days (nurture candidates) + Awaiting to
+ * Send Proposal >=7 days (stale proposals) + follow_up_date
+ * due/past" + "site_visits_upcoming: next 7 days". */
+export interface LeadsAttentionResponse {
+  nurture: Lead[];
+  stale_proposals: Lead[];
+  follow_ups_due: Lead[];
+  site_visits_upcoming: Lead[];
+}
+
+/** Per-stage aggregate for the pipeline dashboard strip. */
+export interface LeadStageSummary {
+  stage: LeadStage;
+  count: number;
+  value: number;
+  avg_days_in_stage: number | null;
+}
+
+/** GET /api/leads dashboard summary, folded into the list response
+ * when `?summary=1` — see docs/API.md. */
+export interface LeadsDashboardSummary {
+  total_pipeline_value: number;
+  stages: LeadStageSummary[];
 }
