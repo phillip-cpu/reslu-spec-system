@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse, after } from "next/server";
+import { ensureStoredImage } from "@/lib/images";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { isAdmin } from "@/lib/auth";
 import { syncItemToMonday } from "@/lib/monday/sync";
@@ -268,6 +269,26 @@ export async function PATCH(
   }
   if (!item) {
     return NextResponse.json({ error: "Item not found" }, { status: 404 });
+  }
+
+  // Selected images must be durable: supplier sites hotlink-block and
+  // URLs rot (BUILD-SPEC §Images). If the new selection points at an
+  // external host, copy it into our storage now and return the stored
+  // URL. ensureStoredImage never throws and updates the item itself;
+  // on failure the external URL stays (better than nothing) and the
+  // UI will show it broken, prompting a manual upload.
+  if (
+    typeof update.selected_image_url === "string" &&
+    update.selected_image_url
+  ) {
+    const stored = await ensureStoredImage(
+      supabase,
+      id,
+      update.selected_image_url
+    );
+    if (stored.url && stored.url !== item.selected_image_url) {
+      item.selected_image_url = stored.url;
+    }
   }
 
   // One-way Monday sync when an item transitions to Ordered. Fire-and-

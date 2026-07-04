@@ -149,7 +149,18 @@ throws — outcome fields (`scrape_status`, `image_options`,
 `scraped_documents`, etc.) are written directly onto the item row by
 the scraper itself, so a 200 with the item comes back even when the
 underlying scrape attempt failed (check `item.scrape_status`).
-**Aria-relevant.**
+**Week 8A additive**: also best-effort extracts `width_mm`/`height_mm`/
+`length_mm`/`depth_mm` (see `lib/scraper/extract.ts`
+`dimensionsFromJsonLd`/`dimensionsFromText` — JSON-LD Product
+width/height/depth first, then text patterns like `"Width 895 mm"` or
+`"W x H x D: 895 x 455 x 560mm"`, cm/m unit-converted to mm, sanity
+range 10–10000mm). Only fills fields currently `null` on the item
+(never overwrites a manual/existing value), same rule as `price_rrp`.
+When at least one dimension is auto-filled, `scrape_flag_note` is set
+to `"Dimensions auto-read — please verify"` WITHOUT setting
+`scrape_flagged` — an FYI, not a review flag — surfaced in the Spec
+Register under the Product URL field alongside (not instead of) the
+existing flagged-for-review line. **Aria-relevant.**
 
 ### GET /api/items/[id]/files
 Auth: session. Body: none. Response: `{ files: (ItemFile & { url: string | null })[] }`,
@@ -513,6 +524,139 @@ Auth: session, but restricted to admin **or** the original uploader
 (403 otherwise). Body: none. Response: `{ ok: true }`. **Soft**
 delete (`deleted_at`) — unlike `item_files`, revision history is kept
 recoverable rather than destroying the storage object.
+
+---
+
+## Project overview hub + document traffic lights — Week 8A
+
+Team-visible (not admin-gated — a document's completion status isn't
+financial, same trust tier as `project_files`).
+
+### GET /api/projects/[id]/overview
+Auth: session. Body: none. Response: `ProjectOverviewResponse` —
+`{ project, ffe: { item_count, approved_count, flagged_count,
+ordered_count }, documents: { kind, status, latest_revision_label }[],
+estimate: { total_inc_gst, percent_quoted, variance } | null,
+client_activity: (ApprovalEvent & { item_code, item_name })[] }`.
+Backs the Overview tab's four cards. `documents` covers the four
+tracked kinds (`plans|council|engineering|scope_of_works` — `other`
+has no traffic light); each kind's `status` resolves via
+`lib/sow.ts documentStatusFor()` (stored value, or the kind's default —
+`'not_started'`/red for all four tracked kinds — when unset).
+`estimate` is `null` entirely for non-admins (field-stripped, not
+merely hidden) and also `null` for admins when the project's estimate
+hasn't been initialised yet. `client_activity` is the last 5
+`approval_events` for the project (joined through `items` — the table
+has no `project_id` column of its own), newest first. **Aria-relevant**
+(read-only project status snapshot).
+
+### PATCH /api/projects/[id]/document-status
+Auth: session (NOT admin-gated). Body: `{ kind, status }` where
+`kind ∈ plans | council | engineering | scope_of_works | other` and
+`status ∈ na | not_started | draft | done`. Response:
+`{ document_status }` (the full merged jsonb map). Merges into
+`projects.document_status` rather than replacing it — setting one
+kind's status never clobbers another's. Powers the click-to-cycle
+traffic light dot on both the Overview card and the Documents tab's
+section headers (`na -> not_started -> draft -> done -> na`, see
+`lib/sow.ts nextDocumentStatus()`).
+
+---
+
+## Scope of Works builder — Week 8A
+
+Team-visible (not admin-gated — a SOW isn't financial data). Aria
+integration: BUILD-SPEC.md "Scope of Works builder" — "API routes for
+SOW CRUD so Aria can draft a SOW from project docs ... and the team
+refines" — every route below is **Aria-relevant**.
+
+### GET /api/projects/[id]/sow
+Auth: session. Body: none. Response: `{ sow_documents: SowDocument[] }`,
+every non-deleted revision for the project, newest first
+(`created_at desc`) — powers the revision picker.
+
+### POST /api/projects/[id]/sow
+Auth: session. Body: `{ revision_label? }` (defaults to `"T1"`).
+Response: `{ sow, sections: SowSectionWithLines[] }` (201). Creates the
+project's **first** SOW only (subsequent revisions come from
+`POST .../[sowId]/new-revision`, not this route — calling it again
+would create an unrelated, unlinked second revision). Seeds sections
+via `lib/sow.ts seedSowSections()`: `General / Preliminaries`, then one
+section per the project's distinct non-null `items.location` values
+(alphabetical), or `Kitchen, Main Bathroom, Ensuite, Laundry` if the
+project has no located items yet, then `Exclusions`, `Assumptions`. A
+duplicate `revision_label` for the same project 409s (partial-unique
+index `idx_sow_documents_project_revision_active`).
+
+### GET /api/projects/[id]/sow/[sowId]
+Auth: session. Body: none. Response: `{ sow, sections:
+SowSectionWithLines[] }` — one revision with its sections and lines
+nested, sorted by `sort`.
+
+### DELETE /api/projects/[id]/sow/[sowId]
+Auth: session. Body: none. Response: `{ ok: true }`. Soft-delete
+(`deleted_at`) — drops the revision from the GET list/picker. No status
+guard: an issued SOW can still be soft-deleted here (issued only
+protects it from in-place editing, not from being retired).
+
+### POST /api/projects/[id]/sow/[sowId]/sections
+Auth: session. Body: `{ heading }`. Response:
+`{ section: SowSectionWithLines }` (201). 409 if the parent SOW's
+`status = 'issued'` (immutable — see "New revision" below).
+
+### PATCH /api/sow/sections/[sectionId]
+Auth: session. Body: `{ heading?, sort? }`. Response: `{ section }`.
+409 if the parent SOW is issued.
+
+### DELETE /api/sow/sections/[sectionId]
+Auth: session. Body: none. Response: `{ ok: true }`. Hard-deletes;
+`sow_lines` cascade. 409 if the parent SOW is issued.
+
+### POST /api/sow/sections/[sectionId]/lines
+Auth: session. Body: `{ text, kind? }` (`kind ∈ inclusion | exclusion |
+note`, defaults `'inclusion'`). Response: `{ line }` (201). Same
+single-save draft-row pattern as `components/estimate`'s
+`DraftLineRow`. 409 if the parent SOW is issued.
+
+### PATCH /api/sow/lines/[lineId]
+Auth: session. Body: `{ text?, kind?, sort? }`. Response: `{ line }`.
+409 if the parent SOW is issued.
+
+### DELETE /api/sow/lines/[lineId]
+Auth: session. Body: none. Response: `{ ok: true }`. Hard delete. 409
+if the parent SOW is issued.
+
+### POST /api/projects/[id]/sow/[sowId]/issue
+Auth: session. Body: none. Response: `{ sow }`. Sets `status: 'issued'`
++ stamps `issued_at`; every section/line write route above then 409s
+against this SOW until a new revision exists. 400 if already issued.
+Side effect: also sets `projects.document_status.scope_of_works =
+'done'` directly (not via the PATCH document-status route — so issuing
+can never silently skip flipping the traffic light).
+
+### POST /api/projects/[id]/sow/[sowId]/new-revision
+Auth: session. Body: none. Response: `{ sow }` (201). Only valid from
+an **issued** SOW (400 otherwise — a draft is already editable in
+place). Clones every section + line into a brand-new draft at the next
+free `T`-number (`nextRevisionLabel()` in `lib/sow.ts`, advancing past
+any existing label to avoid a collision if revisions were issued out of
+order). The source SOW is left untouched — still issued, still
+immutable — so what was actually issued to the client remains exactly
+as issued even after a later revision exists. Side effect: sets
+`projects.document_status.scope_of_works = 'draft'` (the new draft
+supersedes the issued one as "current").
+
+### GET /api/projects/[id]/sow/[sowId]/pdf
+Auth: session. Body: none. Response: raw PDF binary
+(`Content-Disposition: inline`, `Cache-Control: no-store`). React-PDF,
+RESLU brand — cover mirrors `docs-sow-reference.docx`'s placeholder
+structure (logo, "Scope of Works", project name, address-as-description,
+Project/Client/Project No./Date/Issue block); body renders each
+section as a sand spaced-caps heading, inclusions as a bulleted list,
+exclusions grouped under a cream-panel "Exclusions" treatment, notes in
+italic; footer styled like the FF&E schedule PDF's. `projectNo` is
+derived from the project id's first 8 characters (uppercased) — the
+schema has no dedicated project-number column.
 
 ---
 

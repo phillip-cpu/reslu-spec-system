@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ProjectFile, ProjectFileKind } from "@/types";
+import { DocumentStatusLight } from "./DocumentStatusLight";
+import { documentStatusFor, TRACKED_DOCUMENT_KINDS } from "@/lib/sow";
+import type { DocumentStatus, ProjectFile, ProjectFileKind } from "@/types";
 
 type FileWithUrl = ProjectFile & { url: string };
 
@@ -17,22 +19,26 @@ interface Props {
   projectId: string;
   currentUserId: string | null;
   isAdmin: boolean;
+  /** Traffic-light statuses as stored on the project (Week 8A) — absent keys resolve via lib/sow.ts documentStatusFor(). */
+  initialDocumentStatus: Partial<Record<ProjectFileKind, DocumentStatus>>;
 }
 
 /**
  * /projects/[id]/documents — Project Documents tab (BUILD-SPEC.md
- * "Project documents"). Team-visible, NOT admin-gated — documents
- * aren't financial. Five fixed sections, each newest-revision-first:
- * grouped by kind, sorted revision_label desc then uploaded_at desc,
- * latest visually prominent with older revisions muted beneath.
+ * "Project documents"; Week 8A adds the traffic light + SOW builder
+ * link). Team-visible, NOT admin-gated — documents aren't financial.
+ * Five fixed sections, each newest-revision-first: grouped by kind,
+ * sorted revision_label desc then uploaded_at desc, latest visually
+ * prominent with older revisions muted beneath.
  *
  * Mirrors components/items/ItemAssets.tsx's upload/list/remove shape,
  * extended with the revision_label field and per-section grouping.
  */
-export function ProjectDocuments({ projectId, currentUserId, isAdmin }: Props) {
+export function ProjectDocuments({ projectId, currentUserId, isAdmin, initialDocumentStatus }: Props) {
   const [files, setFiles] = useState<FileWithUrl[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [documentStatus, setDocumentStatus] = useState(initialDocumentStatus);
 
   useEffect(() => {
     let active = true;
@@ -91,6 +97,17 @@ export function ProjectDocuments({ projectId, currentUserId, isAdmin }: Props) {
           onUploaded={onUploaded}
           onRemove={removeFile}
           onError={setError}
+          // 'other' has no tracked traffic light (BUILD-SPEC.md: red
+          // default applies to the four tracked kinds only) — the
+          // header still renders, just without a status dot.
+          status={
+            TRACKED_DOCUMENT_KINDS.includes(section.kind)
+              ? documentStatusFor(documentStatus, section.kind)
+              : null
+          }
+          onStatusChanged={(next) =>
+            setDocumentStatus((cur) => ({ ...cur, [section.kind]: next }))
+          }
         />
       ))}
     </div>
@@ -107,6 +124,8 @@ function DocumentSection({
   onUploaded,
   onRemove,
   onError,
+  status,
+  onStatusChanged,
 }: {
   projectId: string;
   kind: ProjectFileKind;
@@ -117,6 +136,8 @@ function DocumentSection({
   onUploaded: (file: FileWithUrl) => void;
   onRemove: (id: string) => void;
   onError: (msg: string | null) => void;
+  status: DocumentStatus | null;
+  onStatusChanged: (next: DocumentStatus) => void;
 }) {
   const [revisionLabel, setRevisionLabel] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -162,8 +183,33 @@ function DocumentSection({
   return (
     <section className="border border-[#dcd6cc]">
       <div className="flex flex-wrap items-center justify-between gap-3 bg-cream px-4 py-3">
-        <p className="label-caps !text-nearblack">{label}</p>
+        <div className="flex items-center gap-3">
+          <p className="label-caps !text-nearblack">{label}</p>
+          {status && (
+            <DocumentStatusLight
+              projectId={projectId}
+              kind={kind}
+              status={status}
+              onChanged={onStatusChanged}
+              size="compact"
+            />
+          )}
+        </div>
         <div className="flex flex-wrap items-center gap-2">
+          {/* Scope of Works is now a structured builder, not a plain
+              upload — BUILD-SPEC.md "Scope of Works builder": "Documents
+              → Scope of Works becomes builder, not just file upload".
+              The upload affordance stays available underneath for any
+              supplementary PDFs (e.g. a signed/executed copy), but the
+              builder is the primary path, linked here. */}
+          {kind === "scope_of_works" && (
+            <a
+              href={`/projects/${projectId}/sow`}
+              className="border border-nearblack px-3 py-1.5 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
+            >
+              Open SOW builder
+            </a>
+          )}
           <input
             value={revisionLabel}
             onChange={(e) => setRevisionLabel(e.target.value)}

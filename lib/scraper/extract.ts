@@ -17,16 +17,183 @@ export interface DetectedDocument {
   label: string;
 }
 
+/**
+ * Dimensions in millimetres, best-effort-extracted (BUILD-SPEC.md
+ * "Dimension extraction (best-effort)"). Any subset may be present —
+ * suppliers rarely publish all four in the same place. Sanity-bounded
+ * 10–10000mm at the point of extraction (DIM_MIN/DIM_MAX below) so an
+ * obviously-wrong parse (a price accidentally matched as a dimension,
+ * a "1200x800px" image-size string) never reaches the item row.
+ */
+export interface ExtractedDimensions {
+  width_mm?: number;
+  height_mm?: number;
+  length_mm?: number;
+  depth_mm?: number;
+}
+
 export interface ExtractResult {
   price: number | null;
   priceConfidence: "high" | "medium" | "low" | "none";
   images: string[];
   documents: DetectedDocument[];
+  dimensions: ExtractedDimensions;
 }
 
 const MIN_PRICE = 1;
 const MAX_PRICE = 500_000;
 const MAX_IMAGES = 12;
+
+// ------------------------------------------------------------
+// Dimension extraction (best-effort)
+// BUILD-SPEC.md "Dimension extraction (best-effort)": try (a) JSON-LD
+// Product width/height/depth properties, (b) spec-table/text patterns
+// like "Width 895 mm", "W x H x D: 895 x 455 x 560mm", "Dimensions
+// (WxHxD)". Unit handling: cm -> x10, m -> x1000, mm -> x1 (bare
+// numbers with no unit are assumed mm, the schema's native unit).
+// ------------------------------------------------------------
+
+const DIM_MIN = 10;
+const DIM_MAX = 10000;
+
+/** Converts a captured number + unit token to millimetres; null if the unit is unrecognised or the result is out of sane range. */
+function toMm(value: number, unit: string | undefined): number | null {
+  if (!Number.isFinite(value)) return null;
+  const u = (unit ?? "mm").toLowerCase();
+  let mm: number;
+  if (u === "mm") mm = value;
+  else if (u === "cm") mm = value * 10;
+  else if (u === "m") mm = value * 1000;
+  else return null;
+  if (mm < DIM_MIN || mm > DIM_MAX) return null;
+  return Math.round(mm * 100) / 100;
+}
+
+interface JsonLdQuantitativeValue {
+  "@type"?: string;
+  value?: string | number;
+  unitCode?: string; // schema.org uses UN/CEFACT codes: MMT, CMT, MTR
+  unitText?: string;
+}
+interface JsonLdProductWithDimensions extends JsonLdProduct {
+  width?: string | number | JsonLdQuantitativeValue;
+  height?: string | number | JsonLdQuantitativeValue;
+  depth?: string | number | JsonLdQuantitativeValue;
+}
+
+const UNIT_CODE_TO_UNIT: Record<string, string> = {
+  MMT: "mm",
+  CMT: "cm",
+  MTR: "m",
+};
+
+/** Reads a schema.org QuantitativeValue (or bare number/string) property into a millimetre value. */
+function jsonLdDimensionToMm(
+  raw: string | number | JsonLdQuantitativeValue | undefined
+): number | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw === "number") return toMm(raw, "mm");
+  if (typeof raw === "string") {
+    // Bare string may itself carry a unit suffix, e.g. "895mm" / "89.5cm".
+    const m = /^([\d.]+)\s*(mm|cm|m)?$/i.exec(raw.trim());
+    if (!m) return null;
+    return toMm(Number(m[1]), m[2]);
+  }
+  const num = typeof raw.value === "number" ? raw.value : Number(raw.value);
+  const unit = raw.unitCode ? UNIT_CODE_TO_UNIT[raw.unitCode.toUpperCase()] : raw.unitText;
+  return toMm(num, unit);
+}
+
+/**
+ * (a) JSON-LD Product width/height/depth properties. schema.org has no
+ * "length" property for Product — a supplier publishing a length
+ * figure almost always does so as free text instead, which the (b)
+ * fallback below picks up via the WxHxD-style patterns.
+ */
+function dimensionsFromJsonLd(products: JsonLdProduct[]): ExtractedDimensions {
+  const out: ExtractedDimensions = {};
+  for (const p of products) {
+    const withDims = p as JsonLdProductWithDimensions;
+    if (out.width_mm === undefined) {
+      const mm = jsonLdDimensionToMm(withDims.width);
+      if (mm !== null) out.width_mm = mm;
+    }
+    if (out.height_mm === undefined) {
+      const mm = jsonLdDimensionToMm(withDims.height);
+      if (mm !== null) out.height_mm = mm;
+    }
+    if (out.depth_mm === undefined) {
+      const mm = jsonLdDimensionToMm(withDims.depth);
+      if (mm !== null) out.depth_mm = mm;
+    }
+  }
+  return out;
+}
+
+/**
+ * (b) Spec-table/text patterns on the visible page text, e.g.
+ *   "Width 895 mm" / "Height: 455mm" / "Depth 560 mm"
+ *   "W x H x D: 895 x 455 x 560mm" / "Dimensions (WxHxD): 895 x 455 x 560 mm"
+ * Both single-labelled lines and the combined "W x H x D" triple are
+ * tried; the combined pattern only fills whichever of width/height/
+ * length/depth aren't already set from JSON-LD or an earlier match in
+ * this same fallback, so the two sources merge rather than one
+ * clobbering the other.
+ */
+function dimensionsFromText(html: string): ExtractedDimensions {
+  const text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/gi, "&");
+
+  const out: ExtractedDimensions = {};
+  const numberUnit = String.raw`([\d.]+)\s*(mm|cm|m)?\b`;
+
+  // Single-labelled lines: "Width 895 mm", "Height: 455mm", etc.
+  const singlePatterns: { field: keyof ExtractedDimensions; re: RegExp }[] = [
+    { field: "width_mm", re: new RegExp(String.raw`\bwidth\b\s*[:\-]?\s*${numberUnit}`, "i") },
+    { field: "height_mm", re: new RegExp(String.raw`\bheight\b\s*[:\-]?\s*${numberUnit}`, "i") },
+    { field: "length_mm", re: new RegExp(String.raw`\blength\b\s*[:\-]?\s*${numberUnit}`, "i") },
+    { field: "depth_mm", re: new RegExp(String.raw`\bdepth\b\s*[:\-]?\s*${numberUnit}`, "i") },
+  ];
+  for (const { field, re } of singlePatterns) {
+    const m = re.exec(text);
+    if (!m) continue;
+    const mm = toMm(Number(m[1]), m[2]);
+    if (mm !== null) out[field] = mm;
+  }
+
+  // Combined "W x H x D: 895 x 455 x 560mm" / "Dimensions (WxHxD): 895 x 455 x 560 mm"
+  // — a single trailing unit applies to all three captured numbers.
+  const combinedRe = new RegExp(
+    String.raw`(?:w\s*x\s*h\s*x\s*d|dimensions?\s*\(?w\s*x\s*h\s*x\s*d\)?)\s*[:\-]?\s*` +
+      String.raw`([\d.]+)\s*x\s*([\d.]+)\s*x\s*([\d.]+)\s*(mm|cm|m)?\b`,
+    "i"
+  );
+  const combined = combinedRe.exec(text);
+  if (combined) {
+    const unit = combined[4];
+    const w = toMm(Number(combined[1]), unit);
+    const h = toMm(Number(combined[2]), unit);
+    const d = toMm(Number(combined[3]), unit);
+    if (out.width_mm === undefined && w !== null) out.width_mm = w;
+    if (out.height_mm === undefined && h !== null) out.height_mm = h;
+    if (out.depth_mm === undefined && d !== null) out.depth_mm = d;
+  }
+
+  return out;
+}
+
+/** Merges dimension sources, JSON-LD taking priority per-field over the text fallback. */
+function mergeDimensions(primary: ExtractedDimensions, fallback: ExtractedDimensions): ExtractedDimensions {
+  return {
+    width_mm: primary.width_mm ?? fallback.width_mm,
+    height_mm: primary.height_mm ?? fallback.height_mm,
+    length_mm: primary.length_mm ?? fallback.length_mm,
+    depth_mm: primary.depth_mm ?? fallback.depth_mm,
+  };
+}
 
 // ------------------------------------------------------------
 // JSON-LD (highest priority)
@@ -340,10 +507,17 @@ export function extractFromHtml(html: string, pageUrl: string): ExtractResult {
 
     const documents = extractDocuments(html, pageUrl);
 
-    return { price, priceConfidence, images: dedupedImages, documents };
+    // Dimensions (best-effort) — BUILD-SPEC.md "Dimension extraction
+    // (best-effort)": (a) JSON-LD Product width/height/depth first,
+    // (b) spec-table/text patterns as a fallback for any field JSON-LD
+    // didn't provide (including `length`, which schema.org's Product
+    // type has no dedicated property for).
+    const dimensions = mergeDimensions(dimensionsFromJsonLd(products), dimensionsFromText(html));
+
+    return { price, priceConfidence, images: dedupedImages, documents, dimensions };
   } catch {
     // Extraction must never throw — a malformed page degrades to "nothing
     // found", which the pipeline treats as a partial/failed scrape.
-    return { price: null, priceConfidence: "none", images: [], documents: [] };
+    return { price: null, priceConfidence: "none", images: [], documents: [], dimensions: {} };
   }
 }

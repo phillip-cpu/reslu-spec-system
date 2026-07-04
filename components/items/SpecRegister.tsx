@@ -844,6 +844,15 @@ function ScrapeStatusLine({ item }: { item: Item }) {
           ⚠ Flagged for review{item.scrape_flag_note ? `: ${item.scrape_flag_note}` : ""}.
         </p>
       )}
+      {/* Week 8A — dimension auto-fill note (BUILD-SPEC.md "Dimension
+          extraction (best-effort)"): the scraper leaves an FYI note in
+          scrape_flag_note WITHOUT setting scrape_flagged when it
+          auto-fills a dimension, so it must render here on its own
+          condition rather than being folded into the scrape_flagged
+          branch above (which would otherwise silently swallow it). */}
+      {!item.scrape_flagged && item.scrape_flag_note && (
+        <p className="text-sand">ⓘ {item.scrape_flag_note}</p>
+      )}
     </div>
   );
 }

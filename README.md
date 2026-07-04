@@ -179,6 +179,51 @@ To stop the app, go back to Terminal and press `Ctrl + C`.
   field edits, the Monday board ID, the client portal link (copy +
   admin-only regenerate), and admin-only archiving.
 
+- **Week 8B — Client portal expansion + native e-signature.** The portal
+  (`/portal/[token]`) is now sectioned, mobile-first, with a sticky anchor
+  nav: **Schedule & approvals** (unchanged), **Documents** (project files
+  with `share_to_portal` on, grouped by kind), **Contracts & signatures**
+  (pending/signed/void signature requests, with a link to the dedicated
+  sign page), **Variations** (shared variations — description + cost
+  **inc GST only**, the one deliberate pricing exception, with
+  Approve/Decline + an optional note), **Progress photos** (grid, newest
+  first, simple full-width lightbox), and **Updates** (published posts as
+  a feed, rendered through a tiny hand-written markdown renderer —
+  paragraphs/`**bold**`/`- lists` only, never `dangerouslySetInnerHTML`).
+  All of it token-gated, rate-limited, and `noindex`, same trust model as
+  the original Week 3B portal.
+  **Native e-signature** (`/portal/[token]/sign/[requestId]`): the client
+  opens the document in an embedded viewer, draws a signature on a plain
+  `<canvas>`, types their full name, and ticks a binding consent
+  statement. `POST /api/portal/[token]/sign/[requestId]` recomputes the
+  document's SHA-256 **server-side** from the actual stored bytes, saves
+  the drawn signature as a private PNG, and inserts an **append-only**
+  `signature_events` row (hash, typed name, signature image path, portal
+  token, IP, user agent, timestamp — RLS on that table grants INSERT +
+  SELECT only, no UPDATE/DELETE policy exists for anyone). A branded
+  signature-certificate PDF is generated via React-PDF and stored as a
+  new file alongside the original (the original is never overwritten —
+  no PDF-stamping library is in this project, so the certificate is a
+  separate document by design) and emailed to admins if Gmail is
+  configured. Editing a signed variation's cost/description automatically
+  voids its signature request (a database trigger); a superseded project
+  file (new revision row) is voided manually by the team from the new
+  **client area**.
+  **Team-side client area** (`/projects/[id]/client`, not yet linked from
+  the project tab bar — see Troubleshooting): upload progress photos
+  (multi-file, captions), write and publish update posts (draft list,
+  publish/unpublish), request signatures against a project document
+  (status chips, certificate link), and toggle which documents/variations
+  are shared to the portal. Team-visible throughout, **except** the
+  variation share toggle, which is admin-only (enforced server-side —
+  sharing a variation exposes a client-facing price) and shows a
+  "Last update published N days ago" cadence hint (amber past 14 days).
+  New tables: `portal_updates`, `progress_photos`, `signature_requests`,
+  `signature_events`; `project_files`/`variations` gained `share_to_portal`;
+  `variations` gained `client_response`/`client_response_note`/
+  `client_responded_at` (migration `012_portal_expansion.sql`). See
+  `docs/API-portal-additions.md` for the new routes.
+
 Client-portal financial gating and the real scraper pipeline (image/RRP
 extraction + PDF document detection) were completed in Week 3. Role-based
 admin enforcement for financial fields is now in place project-wide
@@ -288,3 +333,9 @@ rather use a different filename, e.g. `CormorantGaramond-Light.ttf`).
   goes to the public `item-images` bucket) — a one-time fix per
   affected item. New uploads and anything the PDF pre-pass has already
   touched are unaffected.
+- **Can't find the "Client area" from the project page** — it's a real
+  route (`/projects/[id]/client`) but isn't linked from the project tab
+  bar yet (`components/projects/ProjectTabs.tsx` is outside this
+  feature's file boundary — see BUILD-SPEC.md Week 8B). Navigate there
+  directly by URL for now; adding a "Client" tab entry is a one-line
+  follow-up whenever that file is next touched.

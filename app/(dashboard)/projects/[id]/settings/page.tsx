@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { Header } from "@/components/layout/Header";
+import { ProjectTabs } from "@/components/projects/ProjectTabs";
 import { ProjectSettingsForm } from "@/components/settings/ProjectSettingsForm";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
 import type { Project } from "@/types";
@@ -59,6 +60,7 @@ export default async function ProjectSettingsPage({
   return (
     <>
       <Header title="Project settings" subtitle={project.name} />
+      <ProjectTabs projectId={id} active="settings" isAdmin={isAdmin} />
       <main className="flex-1 px-8 py-8">
         <ProjectSettingsForm
           project={project as Project}

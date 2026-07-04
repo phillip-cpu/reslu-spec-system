@@ -34,6 +34,9 @@ export interface Project {
   address: string | null;
   status: ProjectStatus;
   budget: number | null;
+  // Estimate trade markup as a fraction (e.g. 0.15 = 15%) — migration
+  // 007_estimating.sql; not null default 0.
+  estimate_markup_pct: number;
   monday_board_id: string | null;
   client_token: string;
   created_by: string | null;
@@ -46,6 +49,13 @@ export interface Project {
   // set. Served via a signed URL minted server-side — see
   // GET /api/projects/[id]/cover.
   cover_image_path: string | null;
+  // ---- additive (migration 011_sow_overview.sql, Week 8A) ----
+  // Traffic-light status per document kind (BUILD-SPEC.md "Project
+  // overview hub"). Keyed by ProjectFileKind, missing keys mean "use
+  // the kind's default" (see lib/sow.ts DEFAULT_DOCUMENT_STATUS /
+  // documentStatusFor()) rather than every project needing a seeded
+  // row. Team-editable via PATCH /api/projects/[id]/document-status.
+  document_status: Partial<Record<ProjectFileKind, DocumentStatus>>;
 }
 
 /**
@@ -775,4 +785,144 @@ export interface PatchInvoiceInput {
 
 export interface GetInvoicesResponse {
   invoices: Invoice[];
+}
+
+// ------------------------------------------------------------
+// Project overview hub + document traffic lights (Week 8A, additive)
+// supabase/migrations/011_sow_overview.sql. BUILD-SPEC.md "Project
+// overview hub". Team-visible (not admin-gated — a document's
+// completion status isn't financial), see
+// app/api/projects/[id]/document-status/route.ts.
+// ------------------------------------------------------------
+
+export type DocumentStatus = "na" | "not_started" | "draft" | "done";
+
+/** body accepted by PATCH /api/projects/[id]/document-status. */
+export interface PatchDocumentStatusInput {
+  kind: ProjectFileKind;
+  status: DocumentStatus;
+}
+
+/**
+ * GET /api/projects/[id]/overview response — the cards on the
+ * Overview tab, computed server-side so the client never re-derives
+ * rollups from raw items/cost_lines/approval_events itself.
+ */
+export interface ProjectOverviewResponse {
+  project: Project;
+  ffe: {
+    item_count: number;
+    approved_count: number;
+    flagged_count: number;
+    ordered_count: number;
+  };
+  documents: {
+    /** Every tracked kind (plans/council/engineering/scope_of_works),
+     *  each resolved to an effective status (see lib/sow.ts
+     *  documentStatusFor()) plus the latest revision label, if any. */
+    kind: ProjectFileKind;
+    status: DocumentStatus;
+    latest_revision_label: string | null;
+  }[];
+  /** Present only for admins — the whole estimate summary is financial
+   *  data, per BUILD-SPEC.md "Financial visibility". */
+  estimate: {
+    total_inc_gst: number;
+    percent_quoted: number;
+    variance: number | null;
+  } | null;
+  client_activity: (ApprovalEvent & { item_code: string | null; item_name: string | null })[];
+}
+
+// ------------------------------------------------------------
+// Scope of Works builder (Week 8A, additive)
+// supabase/migrations/011_sow_overview.sql. BUILD-SPEC.md "Scope of
+// Works builder". Team access (not admin-gated — a SOW isn't
+// financial data), see app/api/projects/[id]/sow/**. Aria-relevant:
+// these routes let Aria draft a SOW from project docs and the team
+// refines it (BUILD-SPEC.md "Aria integration").
+// ------------------------------------------------------------
+
+export type SowStatus = "draft" | "issued";
+export type SowLineKind = "inclusion" | "exclusion" | "note";
+
+export interface SowDocument {
+  id: string;
+  project_id: string;
+  revision_label: string;
+  status: SowStatus;
+  issued_at: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface SowSection {
+  id: string;
+  sow_id: string;
+  heading: string;
+  sort: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SowLine {
+  id: string;
+  section_id: string;
+  text: string;
+  kind: SowLineKind;
+  sort: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A sow_sections row with its sow_lines nested, as returned by GET /api/projects/[id]/sow/[sowId]. */
+export interface SowSectionWithLines extends SowSection {
+  lines: SowLine[];
+}
+
+/** GET /api/projects/[id]/sow response — every revision, newest first, for the revision picker. */
+export interface SowListResponse {
+  sow_documents: SowDocument[];
+}
+
+/** GET /api/projects/[id]/sow/[sowId] response. */
+export interface SowDetailResponse {
+  sow: SowDocument;
+  sections: SowSectionWithLines[];
+}
+
+/** body accepted by POST /api/projects/[id]/sow — creates the first draft (T1) for a project. */
+export interface CreateSowInput {
+  revision_label?: string;
+}
+
+/** body accepted by POST /api/projects/[id]/sow/[sowId]/sections. */
+export interface CreateSowSectionInput {
+  heading: string;
+}
+
+/** body accepted by PATCH /api/sow/sections/[sectionId]. */
+export interface PatchSowSectionInput {
+  heading?: string;
+  sort?: number;
+}
+
+/** body accepted by POST /api/sow/sections/[sectionId]/lines. */
+export interface CreateSowLineInput {
+  text: string;
+  kind?: SowLineKind;
+}
+
+/** body accepted by PATCH /api/sow/lines/[lineId]. */
+export interface PatchSowLineInput {
+  text?: string;
+  kind?: SowLineKind;
+  sort?: number;
+}
+
+/** response shape for POST /api/projects/[id]/sow/[sowId]/issue and .../new-revision. */
+export interface SowActionResponse {
+  sow: SowDocument;
 }

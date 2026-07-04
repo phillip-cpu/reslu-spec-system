@@ -1,4 +1,5 @@
 import { createServiceRoleClient } from "@/lib/supabase/server";
+import { ensureStoredImage } from "@/lib/images";
 import { fetchSafely, UnsafeUrlError } from "./guard";
 import { extractFromHtml, type DetectedDocument } from "./extract";
 import { normalizeProductUrl } from "./normalize";
@@ -38,6 +39,9 @@ export interface ScrapeOutcome {
 
 const FAILURE_NOTE = "Auto-fetch failed — add images manually";
 
+/** Note appended to scrape_flag_note when at least one dimension was auto-filled (BUILD-SPEC.md "Dimension extraction (best-effort)"). */
+const DIMENSIONS_NOTE = "Dimensions auto-read — please verify";
+
 export async function scrapeProductUrl(itemId: string, url: string): Promise<ScrapeOutcome> {
   const supabase = createServiceRoleClient();
 
@@ -54,12 +58,12 @@ export async function scrapeProductUrl(itemId: string, url: string): Promise<Scr
     }
 
     const html = bytes.toString("utf-8");
-    const { price, images, documents } = extractFromHtml(html, finalUrl);
+    const { price, images, documents, dimensions } = extractFromHtml(html, finalUrl);
 
     // Fetch current item state so we merge (never overwrite manual data).
     const { data: current, error: fetchError } = await supabase
       .from("items")
-      .select("image_options, price_rrp, selected_image_url")
+      .select("image_options, price_rrp, selected_image_url, width_mm, height_mm, length_mm, depth_mm")
       .eq("id", itemId)
       .single();
 
@@ -91,20 +95,44 @@ export async function scrapeProductUrl(itemId: string, url: string): Promise<Scr
     // Auto-select the best scraped image (first extracted = highest
     // priority source) when the item has none — user can swap from the
     // options grid at any time. Never overwrites an existing selection.
-    if (!current.selected_image_url && images.length > 0) {
-      update.selected_image_url = images[0];
+    // (auto-select happens below via ensureStoredImage so the stored,
+    // hotlink-proof copy lands on the item — not the supplier's URL.)
+
+    // Dimensions (best-effort, BUILD-SPEC.md "Dimension extraction
+    // (best-effort)"): only fill fields that are CURRENTLY NULL — same
+    // never-overwrite-manual-data rule as price_rrp above. Each of the
+    // four fields is considered independently (a supplier page might
+    // only publish width+height, leaving length/depth for the team to
+    // measure/enter by hand).
+    const DIM_FIELDS = ["width_mm", "height_mm", "length_mm", "depth_mm"] as const;
+    let anyDimensionFilled = false;
+    for (const field of DIM_FIELDS) {
+      if (current[field] === null && dimensions[field] !== undefined) {
+        update[field] = dimensions[field];
+        anyDimensionFilled = true;
+      }
     }
 
     if (status === "failed") {
       update.scrape_flagged = true;
       update.scrape_flag_note = FAILURE_NOTE;
     } else {
-      // A successful/partial scrape clears any previous failure flag.
+      // A successful/partial scrape clears any previous failure flag —
+      // UNLESS dimensions were auto-filled this run, in which case the
+      // dedicated dimensions note takes that slot instead (still with
+      // scrape_flagged left false: this is an FYI, not a flag-for-review
+      // per BUILD-SPEC.md's "WITHOUT setting scrape_flagged=true").
       update.scrape_flagged = false;
-      update.scrape_flag_note = null;
+      update.scrape_flag_note = anyDimensionFilled ? DIMENSIONS_NOTE : null;
     }
 
     const { error: updateError } = await supabase.from("items").update(update).eq("id", itemId);
+
+    // Auto-select: copy the best scraped image into our storage when the
+    // item has none. Durable against supplier hotlink-blocking/URL rot.
+    if (!current.selected_image_url && images.length > 0) {
+      await ensureStoredImage(supabase, itemId, images[0]);
+    }
     if (updateError) {
       return { ok: false, status: "failed", note: updateError.message };
     }

@@ -2,48 +2,50 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { Header } from "@/components/layout/Header";
+import { ProjectTabs } from "@/components/projects/ProjectTabs";
+import { ProjectOverview } from "@/components/projects/ProjectOverview";
 import { ProjectWorkspace } from "@/components/items/ProjectWorkspace";
 import { MondayBoardPicker } from "@/components/items/MondayBoardPicker";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
 import type { Category, Item } from "@/types";
 
 /**
- * Spec Register (Week 2).
- * Programa-style editable, room-grouped grid over the project's items.
- * Spec view only — no pricing or ordering data (BUILD-SPEC.md §1–2);
- * those live in the internal Pricing & Procurement view (later sprint).
+ * Project overview hub (Week 8A — BUILD-SPEC.md "Project overview
+ * hub"). /projects/[id] now shows the Overview tab by default (cards:
+ * FF&E, Documents with traffic lights, Estimate summary [admin only],
+ * Client activity) behind a persistent tab bar. `?tab=ffe` renders the
+ * FF&E tab in place — the pre-Week-8 Spec Register/Pricing &
+ * Procurement workspace, unchanged, just moved under the tab bar
+ * rather than being the page's only content. Every other tab
+ * (Documents/Estimate/Invoices/Settings) is a pre-existing route the
+ * tab bar links to directly (BUILD-SPEC.md: "'tabs' may be styled
+ * links, simplest and best") — no deep link changes.
  */
 export default async function ProjectPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ tab?: string }>;
 }) {
   const { id } = await params;
+  const { tab } = await searchParams;
+  const showFfe = tab === "ffe";
   const supabase = await createClient();
 
-  const [{ data: project }, { data: items }, { data: categories }, info] =
-    await Promise.all([
-      supabase.from("projects").select("*").eq("id", id).single(),
-      supabase
-        .from("items")
-        .select("*")
-        .eq("project_id", id)
-        .is("deleted_at", null)
-        .order("category", { ascending: true })
-        .order("item_code", { ascending: true }),
-      supabase.from("categories").select("*").order("sort_order"),
-      getUserRole(supabase),
-    ]);
+  const [{ data: project }, info] = await Promise.all([
+    supabase.from("projects").select("*").eq("id", id).single(),
+    getUserRole(supabase),
+  ]);
 
   if (!project) {
     notFound();
   }
 
-  // Invoices queue is financial — link only rendered for admins (same
-  // "hidden entirely, not merely disabled" pattern as the archive/
-  // regenerate-token actions in ProjectSettingsForm.tsx). The route
-  // itself (app/api/projects/[id]/invoices/**) independently re-checks
-  // admin server-side regardless of this UI gate.
+  // Invoices/Estimate tabs are financial — hidden entirely for
+  // non-admins (same "hidden, not merely disabled" pattern as the
+  // pre-Week-8 header's admin-gated Invoices link). The routes
+  // themselves independently re-check admin server-side regardless.
   const isAdmin = info?.role === "admin";
 
   // Cover image thumbnail next to the title (Week 7) — `assets` is
@@ -57,6 +59,26 @@ export default async function ProjectPage({
     coverImageUrl = signed?.signedUrl ?? null;
   }
 
+  // The FF&E tab needs the full items/categories list; Overview fetches
+  // its own summary client-side (GET /api/projects/[id]/overview) so
+  // switching tabs doesn't pay for both queries on every load.
+  let items: Item[] = [];
+  let categories: Category[] = [];
+  if (showFfe) {
+    const [itemsRes, categoriesRes] = await Promise.all([
+      supabase
+        .from("items")
+        .select("*")
+        .eq("project_id", id)
+        .is("deleted_at", null)
+        .order("category", { ascending: true })
+        .order("item_code", { ascending: true }),
+      supabase.from("categories").select("*").order("sort_order"),
+    ]);
+    items = (itemsRes.data ?? []) as Item[];
+    categories = (categoriesRes.data ?? []) as Category[];
+  }
+
   return (
     <>
       <Header
@@ -65,66 +87,42 @@ export default async function ProjectPage({
         subtitleHref="/"
         titleThumbnailUrl={coverImageUrl}
         actions={
-          <>
-            <MondayBoardPicker
-              projectId={id}
-              currentBoardId={project.monday_board_id ?? null}
-            />
-            <a
-              href={`/projects/${id}/import`}
-              className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
-            >
-              Import CSV
-            </a>
-            {/* Project documents (Week 6, team-visible — not admin-gated,
-                see app/(dashboard)/projects/[id]/documents/page.tsx) */}
-            <a
-              href={`/projects/${id}/documents`}
-              className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
-            >
-              Documents
-            </a>
-            {/* Estimate module (Week 5, admin-gated — see app/(dashboard)/projects/[id]/estimate/page.tsx) */}
-            <a
-              href={`/projects/${id}/estimate`}
-              className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
-            >
-              Estimate
-            </a>
-            {/* Invoice queue (Week 6, admin-only — financial, see
-                app/(dashboard)/projects/[id]/invoices/page.tsx) */}
-            {isAdmin && (
+          showFfe ? (
+            <>
+              <MondayBoardPicker
+                projectId={id}
+                currentBoardId={project.monday_board_id ?? null}
+              />
               <a
-                href={`/projects/${id}/invoices`}
+                href={`/projects/${id}/import`}
                 className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
               >
-                Invoices
+                Import CSV
               </a>
-            )}
-            <a
-              href={`/api/projects/${id}/pdf`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
-            >
-              Download PDF
-            </a>
-            <a
-              href={`/projects/${id}/settings`}
-              className="border border-[#c9c2b4] px-4 py-2 text-subhead text-charcoal transition-colors hover:border-nearblack hover:text-nearblack"
-            >
-              Settings
-            </a>
-          </>
+              <a
+                href={`/api/projects/${id}/pdf`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
+              >
+                Download PDF
+              </a>
+            </>
+          ) : undefined
         }
       />
+      <ProjectTabs projectId={id} active={showFfe ? "ffe" : "overview"} isAdmin={isAdmin} />
       <main className="flex-1 px-8 py-8">
-        <ProjectWorkspace
-          projectId={id}
-          initialItems={(items ?? []) as Item[]}
-          categories={(categories ?? []) as Category[]}
-          budget={project.budget ?? null}
-        />
+        {showFfe ? (
+          <ProjectWorkspace
+            projectId={id}
+            initialItems={items}
+            categories={categories}
+            budget={project.budget ?? null}
+          />
+        ) : (
+          <ProjectOverview projectId={id} isAdmin={isAdmin} />
+        )}
       </main>
     </>
   );

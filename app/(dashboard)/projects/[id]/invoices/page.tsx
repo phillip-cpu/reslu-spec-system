@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { Header } from "@/components/layout/Header";
+import { ProjectTabs } from "@/components/projects/ProjectTabs";
 import { InvoiceQueue } from "@/components/invoices/InvoiceQueue";
 
 /**
@@ -54,6 +55,7 @@ export default async function ProjectInvoicesPage({
   return (
     <>
       <Header title={project.name} subtitle={`${project.client_name} · Invoices`} />
+      <ProjectTabs projectId={id} active="invoices" isAdmin={isAdmin} />
       <main className="flex-1 px-8 py-8">
         <InvoiceQueue projectId={id} />
       </main>
