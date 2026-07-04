@@ -20,8 +20,11 @@ import type { ImportItemsInput, ImportRowResult } from "@/types";
  *  - category is taken from a mapped Category column when present,
  *    otherwise derived from the item_code prefix (e.g. "TW-01" -> "TW").
  *    A row with neither a resolvable category nor a mappable one errors.
- *  - Never accepts pricing/procurement columns — this route only writes
- *    spec-view fields, same whitelist intent as PATCH /api/items/[id].
+ *  - Accepts product_url, image_url (→ selected_image_url + image_options),
+ *    and RRP/trade price columns when mapped. Pricing is stored as-is; its
+ *    visibility stays gated to the Pricing & Procurement view / admins as
+ *    everywhere else — importing a value is a deliberate admin action.
+ *    Procurement/ordering fields are still never accepted here.
  */
 export async function POST(
   request: NextRequest,
@@ -104,6 +107,16 @@ export async function POST(
     return Number.isFinite(n) ? n : null;
   };
 
+  // Prices often arrive as "$1,234.00" / "1,234" — strip currency symbols,
+  // thousands separators and stray text before parsing.
+  const toMoney = (v: string): number | null => {
+    if (!v) return null;
+    const cleaned = v.replace(/[^0-9.\-]/g, "");
+    if (cleaned === "" || cleaned === "-" || cleaned === ".") return null;
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : null;
+  };
+
   const results: ImportRowResult[] = [];
   const seenInFile = new Set<string>();
   let created = 0;
@@ -171,6 +184,17 @@ export async function POST(
       height_mm: toNum(cell(row, "height_mm")),
       length_mm: toNum(cell(row, "length_mm")),
       depth_mm: toNum(cell(row, "depth_mm")),
+      product_url: cell(row, "product_url") || null,
+      // A mapped Image URL becomes the item's cover image and its first
+      // image option (so "Replace image" still shows alternatives later).
+      ...(cell(row, "image_url")
+        ? {
+            selected_image_url: cell(row, "image_url"),
+            image_options: [cell(row, "image_url")],
+          }
+        : {}),
+      price_rrp: toMoney(cell(row, "price_rrp")),
+      price_trade: toMoney(cell(row, "price_trade")),
       created_by: user.id,
     };
 

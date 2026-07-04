@@ -172,6 +172,10 @@ export const IMPORT_TARGET_FIELDS = [
   "quantity",
   "unit",
   "description",
+  "product_url",
+  "image_url",
+  "price_rrp",
+  "price_trade",
   "notes", // free-text import notes column — not persisted, shown in the review step only
 ] as const;
 
@@ -196,6 +200,10 @@ export const IMPORT_FIELD_LABELS: Record<ImportTargetField, string> = {
   quantity: "Quantity",
   unit: "Unit",
   description: "Description",
+  product_url: "Product URL",
+  image_url: "Image URL",
+  price_rrp: "RRP (ex GST)",
+  price_trade: "Trade price (ex GST)",
   notes: "Notes (import only)",
 };
 
@@ -223,6 +231,22 @@ const FIELD_SYNONYMS: Record<ImportTargetField, string[]> = {
   quantity: ["qty", "quantity"],
   unit: ["unit", "uom"],
   description: ["description", "desc", "product name"],
+  product_url: [
+    "product url", "product link", "product page", "url", "link", "website",
+    "web", "web address", "product website", "spec link",
+  ],
+  image_url: [
+    "image", "image url", "image link", "photo", "photo url", "picture",
+    "thumbnail", "img", "image address",
+  ],
+  price_rrp: [
+    "rrp", "price", "retail", "retail price", "rrp ex gst", "rrp (ex gst)",
+    "unit price", "price rrp", "sell", "sell price",
+  ],
+  price_trade: [
+    "trade", "trade price", "trade cost", "cost", "cost price", "wholesale",
+    "trade ex gst", "buy price",
+  ],
   notes: ["notes", "note", "comment", "comments"],
 };
 
