@@ -1,6 +1,14 @@
 import clsx from "clsx";
 
-export type ProjectTabKey = "overview" | "ffe" | "documents" | "estimate" | "invoices" | "settings";
+export type ProjectTabKey =
+  | "overview"
+  | "ffe"
+  | "board"
+  | "timeline"
+  | "documents"
+  | "estimate"
+  | "invoices"
+  | "settings";
 
 interface Props {
   projectId: string;
@@ -20,11 +28,18 @@ interface Props {
  * entirely for non-admins — same "hidden, not merely disabled"
  * pattern as the old header's admin-gated Invoices link, and the
  * routes themselves independently re-check admin server-side.
+ *
+ * Week 9 additions: Board (kanban — project task board + procurement
+ * lens, BUILD-SPEC.md "Week 9 — detailed scope" §2/§3) and Timeline
+ * (Gantt, §4) — both team-visible (no financial data), so neither is
+ * adminOnly, same trust tier as Documents.
  */
 export function ProjectTabs({ projectId, active, isAdmin }: Props) {
   const tabs: { key: ProjectTabKey; label: string; href: string; adminOnly?: boolean }[] = [
     { key: "overview", label: "Overview", href: `/projects/${projectId}` },
     { key: "ffe", label: "FF&E", href: `/projects/${projectId}?tab=ffe` },
+    { key: "board", label: "Board", href: `/projects/${projectId}/board` },
+    { key: "timeline", label: "Timeline", href: `/projects/${projectId}/timeline` },
     { key: "documents", label: "Documents", href: `/projects/${projectId}/documents` },
     { key: "estimate", label: "Estimate", href: `/projects/${projectId}/estimate`, adminOnly: true },
     { key: "invoices", label: "Invoices", href: `/projects/${projectId}/invoices`, adminOnly: true },

@@ -5,8 +5,9 @@ import clsx from "clsx";
 import type { Category, Item } from "@/types";
 import { SpecRegister } from "./SpecRegister";
 import { ProcurementView } from "./ProcurementView";
+import { ProcurementBoardView } from "./ProcurementBoardView";
 
-type View = "spec" | "procurement";
+type View = "spec" | "procurement" | "board";
 
 interface Props {
   projectId: string;
@@ -16,11 +17,19 @@ interface Props {
 }
 
 /**
- * Owns the shared item state for a project and toggles between the two
- * internal views over the same items (BUILD-SPEC.md §1):
+ * Owns the shared item state for a project and toggles between the
+ * internal views over the same items (BUILD-SPEC.md §1, plus Week 9
+ * "Procurement board"):
  *   - Spec view (default): design data only, no pricing/ordering.
  *   - Pricing & Procurement view (internal): pricing, totals, dates.
- * Mutations live here so an edit in one view is reflected in the other.
+ *   - Board (Week 9, additive): kanban lens over the same items,
+ *     grouped by status — visible to all team, shows NO pricing (see
+ *     ProcurementBoardView.tsx's own doc comment). Drag-drop between
+ *     columns PATCHes status through the SAME patchItem() function the
+ *     other two views already use, so the existing Monday
+ *     fire-and-forget sync (PATCH /api/items/[id]) fires identically
+ *     regardless of which view triggered the status change.
+ * Mutations live here so an edit in one view is reflected in the others.
  */
 export function ProjectWorkspace({
   projectId,
@@ -112,6 +121,7 @@ export function ProjectWorkspace({
             [
               ["spec", "Spec"],
               ["procurement", "Pricing & Procurement"],
+              ["board", "Board"],
             ] as [View, string][]
           ).map(([v, label]) => (
             <button
@@ -151,13 +161,15 @@ export function ProjectWorkspace({
           onAddRefetch={scheduleItemRefetch}
           onError={setError}
         />
-      ) : (
+      ) : view === "procurement" ? (
         <ProcurementView
           items={items}
           categories={categories}
           budget={budget}
           onPatch={patchItem}
         />
+      ) : (
+        <ProcurementBoardView items={items} onPatch={patchItem} />
       )}
     </div>
   );

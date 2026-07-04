@@ -1,12 +1,13 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import type { CostLine, EstimateResponse, FfeCategoryRollup, MeasurementWithGroup, QuoteStatus } from "@/types";
+import type { Contact, CostLine, EstimateResponse, FfeCategoryRollup, MeasurementWithGroup, QuoteStatus } from "@/types";
 import { effectiveQty, lineCost, lineVariance } from "@/lib/estimate";
 import { formatMoney } from "./EstimateWorkspace";
 import { ItemLinkPicker } from "./ItemLinkPicker";
 import { MeasurementLinkPicker } from "./MeasurementLinkPicker";
+import { ContactLinkPicker } from "./ContactLinkPicker";
 
 interface Props {
   projectId: string;
@@ -492,6 +493,8 @@ function LineRow({
 }) {
   const [linkOpen, setLinkOpen] = useState(false);
   const [measurementLinkOpen, setMeasurementLinkOpen] = useState(false);
+  const [contactLinkOpen, setContactLinkOpen] = useState(false);
+  const [linkedContact, setLinkedContact] = useState<Contact | null>(null);
   const [draft, setDraft] = useState<CostLine>(line);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -514,6 +517,30 @@ function LineRow({
     setDraft((d) => ({ ...d, [key]: value }));
     setDirty(true);
   }
+
+  // Week 9 — Address Book link (BUILD-SPEC.md "Link points"): CostLine
+  // only carries contact_id, so the linked contact's display name is
+  // fetched separately here (a single-row GET, not a list) whenever
+  // the id changes — mirrors the "resolve a linked id to a label"
+  // pattern the measurement link already uses via the parent's
+  // `measurements` prop, but a contact isn't preloaded in bulk since
+  // most lines have no contact link.
+  useEffect(() => {
+    if (!draft.contact_id) {
+      setLinkedContact(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/contacts/${draft.contact_id}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        if (!cancelled && body?.contact) setLinkedContact(body.contact as Contact);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [draft.contact_id]);
 
   async function save() {
     if (!dirty || saving) return;
@@ -619,6 +646,22 @@ function LineRow({
           >
             📏
           </button>
+          {/* Contact link — Week 9 "Address Book" link point: "who's
+              quoting/doing the trade". A third, distinct link
+              affordance so it stays visually separate from the item
+              and measurement links above — a line can carry any
+              combination of the three independently. */}
+          <button
+            type="button"
+            onClick={() => setContactLinkOpen((o) => !o)}
+            title={draft.contact_id ? "Linked to an Address Book contact" : "Link to an Address Book contact"}
+            className={clsx(
+              "block px-1 text-caption",
+              draft.contact_id ? "text-sand" : "text-charcoal/25 hover:text-charcoal/60"
+            )}
+          >
+            ☏
+          </button>
           {dirty && (
             <button
               type="button"
@@ -647,6 +690,16 @@ function LineRow({
           {draft.item_id && (
             <p className="px-2 pb-1 text-caption text-sand">
               Labour/install only — product cost in schedule
+            </p>
+          )}
+          {/* Address Book chip — BUILD-SPEC.md "Link points": "selecting
+              also autofills the line's notes? NO — just stores the link
+              and shows company name chip." */}
+          {linkedContact && (
+            <p className="px-2 pb-1">
+              <span className="label-caps inline-block border border-sand px-1.5 py-0.5 !text-sand">
+                {linkedContact.company}
+              </span>
             </p>
           )}
           {rowError && <p className="px-2 pb-1 text-caption text-red-700">⚠ {rowError}</p>}
@@ -774,6 +827,21 @@ function LineRow({
                 setMeasurementLinkOpen(false);
               }}
               onClose={() => setMeasurementLinkOpen(false)}
+            />
+          </td>
+        </tr>
+      )}
+      {contactLinkOpen && (
+        <tr className="border-b border-[#e5e0d6] bg-offwhite">
+          <td />
+          <td colSpan={11} className="px-2 py-3">
+            <ContactLinkPicker
+              currentContactId={draft.contact_id}
+              onSelect={(contactId) => {
+                patchNow({ contact_id: contactId });
+                setContactLinkOpen(false);
+              }}
+              onClose={() => setContactLinkOpen(false)}
             />
           </td>
         </tr>

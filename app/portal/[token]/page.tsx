@@ -13,7 +13,8 @@ import { ContractsSection, type ContractRow } from "@/components/portal/Contract
 import { VariationsSection } from "@/components/portal/VariationsSection";
 import { ProgressPhotosSection } from "@/components/portal/ProgressPhotosSection";
 import { UpdatesFeed } from "@/components/portal/UpdatesFeed";
-import type { PortalItem } from "@/types";
+import { TimelineSection } from "@/components/portal/TimelineSection";
+import type { PortalItem, PortalPhase } from "@/types";
 import type {
   PortalItemFile,
   PortalItemWithFiles,
@@ -232,6 +233,21 @@ export default async function PortalPage({
     });
   }
 
+  // ---- Timeline (Week 9 portal mirror) ----
+  // BUILD-SPEC.md "Portal mirror": "phase names + bars + date ranges
+  // ONLY (no contacts, no notes)" — the select() below is an explicit
+  // whitelist that omits contact_id and notes entirely, same pattern
+  // as PORTAL_FIELDS above for items: the excluded columns are never
+  // fetched in the first place, not merely hidden by the component.
+  const { data: phaseRows } = await supabase
+    .from("schedule_phases")
+    .select("id,name,start_date,end_date,color_key")
+    .eq("project_id", project.id)
+    .is("deleted_at", null)
+    .order("sort", { ascending: true });
+
+  const phases: PortalPhase[] = (phaseRows ?? []) as PortalPhase[];
+
   // ---- Updates feed (published only, newest first) ----
   const { data: updateRows } = await supabase
     .from("portal_updates")
@@ -273,6 +289,7 @@ export default async function PortalPage({
       <PortalNav
         visible={{
           schedule: true,
+          timeline: phases.length > 0,
           documents: documents.length > 0,
           contracts: contracts.length > 0,
           variations: variations.length > 0,
@@ -286,6 +303,7 @@ export default async function PortalPage({
           <PortalBoard token={token} initialItems={itemsWithFiles} />
         </PortalSection>
 
+        <TimelineSection phases={phases} />
         <DocumentsSection documents={documents} />
         <ContractsSection token={token} contracts={contracts} />
         <VariationsSection token={token} initialVariations={variations} />

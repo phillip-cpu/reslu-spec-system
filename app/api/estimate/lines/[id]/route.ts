@@ -20,6 +20,9 @@ const EDITABLE_FIELDS = new Set([
   // Week 7 — Estimate ↔ Schedule integration (migration 009_assets_bucket.sql)
   "measurement_id",
   "wastage_pct",
+  // Week 9 — Address Book link point (migration 013_boards_contacts.sql):
+  // who's quoting/doing the trade for this line.
+  "contact_id",
 ]);
 
 const NUMERIC_FIELDS = new Set([

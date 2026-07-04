@@ -253,17 +253,9 @@ export function ItemAssets({
             <ul className="space-y-1">
               {scrapedDocuments.map((doc) => (
                 <li key={doc.url} className="flex items-center justify-between gap-2">
-                  {/* Preview before attaching: open the source PDF in a new
-                      tab so it can be checked it's the right document. */}
-                  <a
-                    href={doc.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title="Open to preview before attaching"
-                    className="truncate text-body text-charcoal/70 underline decoration-charcoal/30 underline-offset-2 hover:text-nearblack hover:decoration-nearblack"
-                  >
-                    {KIND_LABELS[doc.guessedKind]}: {doc.label} ↗
-                  </a>
+                  <span className="truncate text-body text-charcoal/70">
+                    {KIND_LABELS[doc.guessedKind]}: {doc.label}
+                  </span>
                   <button
                     type="button"
                     disabled={attachingUrl === doc.url}

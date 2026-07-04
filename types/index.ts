@@ -190,6 +190,12 @@ export interface Item {
   // as a real item_files row (BUILD-SPEC.md "Scraper extension —
   // document detection"). See types.ScrapedDocument below.
   scraped_documents: ScrapedDocument[];
+  // ---- additive (migration 013_boards_contacts.sql, Week 9) ----
+  // Optional link to an Address Book contact for this item's supplier.
+  // Picking a contact autofills supplier/supplier_email when those
+  // fields are empty (UI behaviour only — this column just stores the
+  // link). See components/items/SupplierContactPicker.tsx.
+  supplier_contact_id: string | null;
 }
 
 /**
@@ -454,6 +460,10 @@ export interface CostLine {
   // PATCH /api/estimate/lines/[id]. Only meaningful when measurement_id
   // is set; ignored by effectiveQty() otherwise.
   wastage_pct: number | null;
+  // ---- additive (migration 013_boards_contacts.sql, Week 9) ----
+  // Who's quoting/doing the trade for this line — BUILD-SPEC.md
+  // "Address Book" link points. See components/estimate/ContactLinkPicker.tsx.
+  contact_id: string | null;
 }
 
 /** A cost_sections row with its (non-deleted) cost_lines nested, as returned by GET /api/projects/[id]/estimate. */
@@ -634,6 +644,8 @@ export interface PatchCostLineInput {
   measurement_id?: string | null;
   /** Week 7 — 0–50 (percent), only meaningful alongside measurement_id. */
   wastage_pct?: number | null;
+  /** Week 9 — link/unlink an Address Book contact (who's quoting/doing the trade). */
+  contact_id?: string | null;
 }
 
 /**
@@ -925,4 +937,206 @@ export interface PatchSowLineInput {
 /** response shape for POST /api/projects/[id]/sow/[sowId]/issue and .../new-revision. */
 export interface SowActionResponse {
   sow: SowDocument;
+}
+
+// ------------------------------------------------------------
+// Week 9 — Boards, Gantt, Address Book (additive)
+// supabase/migrations/013_boards_contacts.sql. BUILD-SPEC.md "Week 9 —
+// detailed scope". None of this is financial data — team-visible, not
+// admin-gated. See app/api/contacts/**, app/api/projects/[id]/board/**,
+// app/api/board-tasks/**, app/api/board-columns/**,
+// app/api/projects/[id]/phases/**, app/api/phases/**.
+// ------------------------------------------------------------
+
+export interface Contact {
+  id: string;
+  company: string;
+  contact_name: string | null;
+  phone: string | null;
+  email: string | null;
+  website: string | null;
+  specialty: string | null;
+  category: string | null;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+/** body accepted by POST /api/contacts. */
+export interface CreateContactInput {
+  company: string;
+  contact_name?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  website?: string | null;
+  specialty?: string | null;
+  category?: string | null;
+  notes?: string | null;
+}
+
+/** body accepted by PATCH /api/contacts/[id] — all fields optional, partial update. */
+export interface PatchContactInput {
+  company?: string;
+  contact_name?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  website?: string | null;
+  specialty?: string | null;
+  category?: string | null;
+  notes?: string | null;
+}
+
+export interface ContactsListResponse {
+  contacts: Contact[];
+}
+
+/**
+ * A contact reduced to just what a card/chip/picker needs to render —
+ * used wherever a linked contact is joined onto another row (board
+ * tasks, items, cost lines, phases) so the API doesn't have to return
+ * a full Contact for a lightweight display chip.
+ */
+export interface ContactSummary {
+  id: string;
+  company: string;
+  contact_name: string | null;
+}
+
+// ---- Project board (kanban) ----
+
+export interface BoardColumn {
+  id: string;
+  project_id: string;
+  name: string;
+  sort: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BoardTask {
+  id: string;
+  project_id: string;
+  column_id: string;
+  title: string;
+  description: string | null;
+  assignee_id: string | null;
+  contact_id: string | null;
+  due_date: string | null;
+  sort: number;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+/** A board_tasks row annotated with lightweight assignee/contact display data — see GET /api/projects/[id]/board. */
+export interface BoardTaskWithRefs extends BoardTask {
+  assignee: { id: string; full_name: string } | null;
+  contact: ContactSummary | null;
+}
+
+/** A board_columns row with its (non-deleted) tasks nested, as returned by GET /api/projects/[id]/board. */
+export interface BoardColumnWithTasks extends BoardColumn {
+  tasks: BoardTaskWithRefs[];
+}
+
+/** GET /api/projects/[id]/board response. */
+export interface BoardResponse {
+  columns: BoardColumnWithTasks[];
+}
+
+/** body accepted by POST /api/projects/[id]/board (creates a task). */
+export interface CreateBoardTaskInput {
+  column_id: string;
+  title: string;
+  description?: string | null;
+  assignee_id?: string | null;
+  contact_id?: string | null;
+  due_date?: string | null;
+}
+
+/** body accepted by PATCH /api/board-tasks/[id]. */
+export interface PatchBoardTaskInput {
+  column_id?: string;
+  title?: string;
+  description?: string | null;
+  assignee_id?: string | null;
+  contact_id?: string | null;
+  due_date?: string | null;
+  sort?: number;
+}
+
+/** body accepted by POST /api/projects/[id]/board/columns. */
+export interface CreateBoardColumnInput {
+  name: string;
+}
+
+/** body accepted by PATCH /api/board-columns/[id]. */
+export interface PatchBoardColumnInput {
+  name?: string;
+  sort?: number;
+}
+
+// ---- Gantt (schedule phases) ----
+
+export type PhaseColorKey = "sand" | "charcoal" | "teal" | "amber";
+
+export interface SchedulePhase {
+  id: string;
+  project_id: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+  color_key: PhaseColorKey;
+  contact_id: string | null;
+  sort: number;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+/** A schedule_phases row annotated with lightweight contact display data — see GET /api/projects/[id]/phases. */
+export interface SchedulePhaseWithContact extends SchedulePhase {
+  contact: ContactSummary | null;
+}
+
+export interface PhasesListResponse {
+  phases: SchedulePhaseWithContact[];
+}
+
+/** body accepted by POST /api/projects/[id]/phases. */
+export interface CreatePhaseInput {
+  name: string;
+  start_date: string;
+  end_date: string;
+  color_key?: PhaseColorKey;
+  contact_id?: string | null;
+  notes?: string | null;
+}
+
+/** body accepted by PATCH /api/phases/[id]. */
+export interface PatchPhaseInput {
+  name?: string;
+  start_date?: string;
+  end_date?: string;
+  color_key?: PhaseColorKey;
+  contact_id?: string | null;
+  notes?: string | null;
+  sort?: number;
+}
+
+/**
+ * Read-only portal mirror of a phase — BUILD-SPEC.md "Portal mirror":
+ * "phase names + bars + date ranges ONLY (no contacts, no notes)".
+ * See app/portal/[token]/page.tsx and components/portal/TimelineSection.tsx.
+ */
+export interface PortalPhase {
+  id: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+  color_key: PhaseColorKey;
 }

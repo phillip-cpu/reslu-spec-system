@@ -7,6 +7,7 @@ import type { Category, DuplicateMatch, Item, ItemStatus } from "@/types";
 import { ItemAssets } from "./ItemAssets";
 import { ItemNotes } from "./ItemNotes";
 import { LibraryPicker } from "./LibraryPicker";
+import { SupplierContactPicker } from "./SupplierContactPicker";
 
 interface Props {
   projectId: string;
@@ -566,10 +567,27 @@ function ItemRow({
                 />
               </DetailField>
               <DetailField label="Supplier email">
-                <EditableCell
-                  value={item.supplier_email}
-                  onCommit={(v) => onPatch({ supplier_email: v || null })}
-                />
+                <div className="flex items-center gap-2">
+                  <div className="flex-1">
+                    <EditableCell
+                      value={item.supplier_email}
+                      onCommit={(v) => onPatch({ supplier_email: v || null })}
+                    />
+                  </div>
+                  {/* Week 9 — Address Book link point (BUILD-SPEC.md
+                      "Link points"): picking a contact autofills
+                      supplier/supplier_email only when those fields are
+                      currently empty — never overwrites a manually-set
+                      value. */}
+                  <SupplierContactPicker
+                    supplierContactId={item.supplier_contact_id}
+                    supplierEmpty={!item.supplier}
+                    supplierEmailEmpty={!item.supplier_email}
+                    onLink={(contactId, autofill) =>
+                      onPatch({ supplier_contact_id: contactId, ...autofill })
+                    }
+                  />
+                </div>
               </DetailField>
 
               <DetailField label="Dimensions (W × H × L × D mm)" full>

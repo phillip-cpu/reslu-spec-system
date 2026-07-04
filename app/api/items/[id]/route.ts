@@ -29,6 +29,10 @@ import type { Item } from "@/types";
  * selected_image_url was already whitelisted; product_url_normalized
  * is now kept in sync server-side whenever product_url changes (see
  * PATCH below) rather than trusting a client-supplied value for it.
+ *
+ * Week 9 addition: supplier_contact_id (migration 013_boards_contacts.sql)
+ * — the Address Book link point for this item's supplier. Team-visible,
+ * not financial, so no admin-gating needed for this field.
  */
 const EDITABLE_FIELDS = new Set([
   // Spec view
@@ -37,6 +41,7 @@ const EDITABLE_FIELDS = new Set([
   "category",
   "supplier",
   "supplier_email",
+  "supplier_contact_id",
   "brand",
   "quantity",
   "unit",

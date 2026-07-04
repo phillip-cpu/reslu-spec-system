@@ -10,6 +10,7 @@
 
 const SECTIONS = [
   { id: "schedule", label: "Schedule" },
+  { id: "timeline", label: "Timeline" },
   { id: "documents", label: "Documents" },
   { id: "contracts", label: "Contracts" },
   { id: "variations", label: "Variations" },

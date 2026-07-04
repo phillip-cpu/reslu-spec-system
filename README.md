@@ -69,7 +69,19 @@ This downloads everything the app needs. It can take a few minutes the first tim
      upload failed in a fresh Supabase project until this migration was
      added. If you're upgrading an existing deployment, run this one
      migration and the uploads will start working with no other changes.
+   - `supabase/migrations/010_storage_policies.sql`,
+     `supabase/migrations/011_sow_overview.sql`,
+     `supabase/migrations/012_portal_expansion.sql` (Storage RLS
+     policies, Scope of Works builder + overview hub, portal expansion +
+     native e-signature — see `docs/API-portal-additions.md`)
+   - `supabase/migrations/013_boards_contacts.sql` (Address Book
+     `contacts` table + link-point columns on `cost_lines`/`items`,
+     project kanban board tables, Gantt `schedule_phases` table — see
+     `docs/API-week9-additions.md`)
    - `supabase/seed.sql` (adds the category codes and a demo project)
+   - `supabase/seed_contacts.sql` (optional — Address Book seed data
+     parsed from RESLU's Monday.com export, ~109 companies across 30
+     trade categories; idempotent, safe to re-run)
 
 3. Storage buckets are now fully created by the migrations above — no
    manual Storage dashboard step needed. For reference: `item-images` is
@@ -223,6 +235,37 @@ To stop the app, go back to Terminal and press `Ctrl + C`.
   `variations` gained `client_response`/`client_response_note`/
   `client_responded_at` (migration `012_portal_expansion.sql`). See
   `docs/API-portal-additions.md` for the new routes.
+
+- **Week 9 — Boards, Gantt, Address Book** (replaces Monday.com task/
+  scheduling functionality). **Address Book** (`/contacts`, sidebar
+  entry between Library and Settings): global, searchable, grouped-by-
+  category trade/supplier directory (company, contact, phone, email,
+  website, specialty, category, notes), add/edit inline, soft delete.
+  Seeded from RESLU's Monday export (`supabase/seed_contacts.sql`, ~109
+  companies). Contacts link onto estimate cost lines (who's quoting/
+  doing the trade — shows a company chip) and onto item supplier fields
+  (picking a contact autofills supplier/supplier email if empty).
+  **Project board** (new "Board" tab): a per-project kanban with
+  editable columns (seeded To Do / In Progress / Waiting / Done),
+  cards showing title, assignee initials, linked contact, and due date
+  (red if overdue), native HTML5 drag-and-drop between columns, add-card
+  composer per column, rename/add/delete columns (delete only when
+  empty). **Procurement board** (third toggle option, "Board", on the
+  FF&E workspace, alongside Spec/Pricing & Procurement): a read-only-
+  pricing kanban lens over the same items grouped by status
+  (Specced/Quoted/Ordered/On Site/Installed) — dragging a card between
+  columns calls the exact same status-PATCH path the other two views
+  use, so the existing Monday sync-on-"Ordered" still fires; no pricing
+  is ever shown here. **Timeline** (new "Timeline" tab): a CSS-grid
+  Gantt — phase names down the left, weeks across the top (capped 52,
+  month labels), bars positioned by grid-column start/span in
+  brand-muted colours, inline edit panel per phase (name/dates/colour/
+  contact/notes), mirrored read-only (bars + dates only, no contacts/
+  notes) into the client portal's new "Timeline" section. New tables:
+  `contacts`, `board_columns`, `board_tasks`, `schedule_phases`
+  (migration `013_boards_contacts.sql`). See
+  `docs/API-week9-additions.md` for the new routes and the drag-drop
+  sort scheme.
 
 Client-portal financial gating and the real scraper pipeline (image/RRP
 extraction + PDF document detection) were completed in Week 3. Role-based
