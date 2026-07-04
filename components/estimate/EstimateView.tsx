@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import clsx from "clsx";
-import type { CostLine, EstimateResponse, QuoteStatus } from "@/types";
+import type { CostLine, EstimateResponse, FfeCategoryRollup, QuoteStatus } from "@/types";
 import { lineCost, lineVariance } from "@/lib/estimate";
 import { formatMoney } from "./EstimateWorkspace";
 import { ItemLinkPicker } from "./ItemLinkPicker";
@@ -350,6 +350,13 @@ export function EstimateView({
         </section>
       ))}
 
+      {/* FF&E — from schedule (Week 6, additive). Computed from the spec
+          register's items, not cost lines — schedule items are never
+          duplicated as cost lines (BUILD-SPEC.md "Estimate ↔ Schedule
+          integration"). Sits between the trade sections and the
+          "Add section" affordance, per the build brief. */}
+      <FfeBlock ffe={estimate.ffe} />
+
       {/* Add section */}
       {addingSection ? (
         <form onSubmit={addSection} className="flex items-center gap-2 border border-[#dcd6cc] bg-offwhite p-4">
@@ -475,6 +482,17 @@ function LineRow({
             value={line.description}
             onCommit={(v) => v && onPatch({ description: v })}
           />
+          {/* Double-counting rule (BUILD-SPEC.md "Estimate ↔ Schedule
+              integration"): a line linked to a spec register item means
+              this line is labour/install only — the product's own cost
+              is already captured in the FF&E block below, sourced from
+              the item's price_trade/price_rrp. Showing both here would
+              double-count the product cost. */}
+          {line.item_id && (
+            <p className="px-2 pb-1 text-caption text-sand">
+              Labour/install only — product cost in schedule
+            </p>
+          )}
         </td>
         <td className="w-20 px-0 py-0">
           <EditableNumber
@@ -603,6 +621,109 @@ function EditableText({
     >
       {value || placeholder || "—"}
     </button>
+  );
+}
+
+/**
+ * FF&E — from schedule block. Per-category rows (category, item count,
+ * total, confidence badge) plus an overall "FF&E $X — Y% quoted / Z%
+ * placeholder" line. Read-only here — the underlying numbers come from
+ * the spec register's items (price_trade/price_rrp/quantity), which are
+ * edited in the Pricing & Procurement view, not this tab.
+ */
+function FfeBlock({ ffe }: { ffe: EstimateResponse["ffe"] }) {
+  const [expanded, setExpanded] = useState(true);
+
+  return (
+    <section className="border border-[#dcd6cc]">
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-cream px-4 py-3">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setExpanded((e) => !e)}
+            className="text-charcoal/50 hover:text-nearblack"
+            aria-label={expanded ? "Collapse" : "Expand"}
+          >
+            {expanded ? "−" : "+"}
+          </button>
+          <p className="label-caps !text-nearblack">FF&E — from schedule</p>
+        </div>
+        <span className="text-caption text-charcoal/50">
+          Product cost from the spec register — priced separately from the trade estimate above
+        </span>
+      </div>
+
+      {expanded && (
+        <div className="overflow-x-auto">
+          {ffe.categories.length === 0 ? (
+            <p className="px-4 py-6 text-body text-charcoal/40">
+              No priced items on the spec register yet.
+            </p>
+          ) : (
+            <table className="w-full min-w-[640px] border-collapse">
+              <thead>
+                <tr className="border-b border-[#dcd6cc] text-left">
+                  <th className="label-caps px-2 py-1.5">Category</th>
+                  <th className="label-caps px-2 py-1.5 text-right">Items</th>
+                  <th className="label-caps px-2 py-1.5 text-right">Total ex GST</th>
+                  <th className="label-caps px-2 py-1.5">Confidence</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ffe.categories.map((cat) => (
+                  <tr key={cat.category} className="border-b border-[#e5e0d6]">
+                    <td className="px-2 py-1.5 text-body text-nearblack">{cat.category}</td>
+                    <td className="px-2 py-1.5 text-right text-body">{cat.item_count}</td>
+                    <td className="px-2 py-1.5 text-right text-body">{formatMoney(cat.total)}</td>
+                    <td className="px-2 py-1.5">
+                      <FfeConfidenceBadges cat={cat} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <div className="border-t border-[#dcd6cc] px-4 py-3">
+            <p className="text-body text-nearblack">
+              FF&E {formatMoney(ffe.total)} —{" "}
+              {Math.round(ffe.quoted_share * 100)}% quoted /{" "}
+              {Math.round(ffe.placeholder_share * 100)}% placeholder
+              {ffe.unpriced_count > 0 && (
+                <span className="text-charcoal/50"> · {ffe.unpriced_count} unpriced</span>
+              )}
+            </p>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Per-row confidence badges: 'QUOTED' (sand — price_trade set on at
+ * least one item), 'RRP PLACEHOLDER' (muted — falling back to
+ * price_rrp), 'UNPRICED n items' (warning — neither price set). A
+ * category can show more than one badge if it has a mix.
+ */
+function FfeConfidenceBadges({ cat }: { cat: FfeCategoryRollup }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {cat.quoted_count > 0 && (
+        <span className="label-caps border border-sand px-1.5 py-0.5 !text-sand">
+          Quoted{cat.quoted_count > 1 ? ` (${cat.quoted_count})` : ""}
+        </span>
+      )}
+      {cat.placeholder_count > 0 && (
+        <span className="label-caps border border-[#c9c2b4] px-1.5 py-0.5 !text-charcoal/50">
+          RRP placeholder{cat.placeholder_count > 1 ? ` (${cat.placeholder_count})` : ""}
+        </span>
+      )}
+      {cat.unpriced_count > 0 && (
+        <span className="label-caps border border-red-700/40 px-1.5 py-0.5 !text-red-700">
+          Unpriced {cat.unpriced_count} {cat.unpriced_count === 1 ? "item" : "items"}
+        </span>
+      )}
+    </div>
   );
 }
 

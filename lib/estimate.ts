@@ -262,3 +262,209 @@ export function variationIncGst(costExGst: number | null): number | null {
 // than the minimal LineForRollup shape (e.g. mapping straight from a
 // Supabase row).
 export type { CostLine };
+
+// ------------------------------------------------------------
+// FF&E — from schedule (Week 6, additive)
+// BUILD-SPEC.md "Estimate ↔ Schedule integration" (newest section):
+// Schedule (spec register) items are NEVER duplicated as cost lines.
+// Instead this computes a read-only "FF&E — from schedule" block: per
+// category, qty × best-known price, cascading price_trade (if set)
+// else price_rrp (flagged 'placeholder'), with a confidence split.
+//
+// Pure and dependency-free like the rest of this module — callers pass
+// in already-fetched, non-deleted items; this file never touches
+// Supabase directly.
+// ------------------------------------------------------------
+
+/** Minimal shape needed from an `items` row to compute the FF&E block. */
+export interface FfeItemInput {
+  id: string;
+  category: string;
+  quantity: number;
+  price_trade: number | null;
+  price_rrp: number | null;
+}
+
+export type FfeConfidence = "quoted" | "placeholder" | "unpriced";
+
+/**
+ * Per-item cascade: price_trade (if set) else price_rrp (flagged
+ * 'placeholder'), else null ('unpriced'). Mirrors the build spec's
+ * "cascade price_trade (if set) else price_rrp (flagged 'placeholder')".
+ */
+export function ffeBestPrice(item: FfeItemInput): {
+  bestPrice: number | null;
+  confidence: FfeConfidence;
+} {
+  if (item.price_trade !== null && item.price_trade !== undefined) {
+    return { bestPrice: item.price_trade, confidence: "quoted" };
+  }
+  if (item.price_rrp !== null && item.price_rrp !== undefined) {
+    return { bestPrice: item.price_rrp, confidence: "placeholder" };
+  }
+  return { bestPrice: null, confidence: "unpriced" };
+}
+
+export interface FfeCategoryRollup {
+  category: string;
+  item_count: number;
+  /** Sum of qty × bestPrice across the category's priced items (unpriced items contribute 0). */
+  total: number;
+  /** quoted_total / total, 0 if total is 0. Informational — same idea as the overall split but per-row. */
+  quoted_share: number;
+  quoted_count: number;
+  placeholder_count: number;
+  unpriced_count: number;
+}
+
+export interface FfeRollup {
+  categories: FfeCategoryRollup[];
+  /** Sum of every category's total — the "FF&E — from schedule" headline figure, ex GST. */
+  total: number;
+  quoted_total: number;
+  placeholder_total: number;
+  item_count: number;
+  quoted_count: number;
+  placeholder_count: number;
+  unpriced_count: number;
+  /** quoted_total / total (by $), 0 if total is 0 — drives "Y% quoted / Z% placeholder". */
+  quoted_share: number;
+  placeholder_share: number;
+}
+
+/**
+ * Computes the FF&E — from schedule block from a project's (already
+ * fetched, non-deleted) items. Grouped by category, each item tagged
+ * 'quoted' | 'placeholder' | 'unpriced' per ffeBestPrice() above.
+ *
+ * A zero/negative-quantity item still counts toward item_count (it's a
+ * real schedule line) but contributes $0 to the category total, same
+ * as an unpriced item would.
+ */
+export function ffeRollup(items: FfeItemInput[]): FfeRollup {
+  const byCategory = new Map<string, FfeItemInput[]>();
+  for (const item of items) {
+    const list = byCategory.get(item.category);
+    if (list) list.push(item);
+    else byCategory.set(item.category, [item]);
+  }
+
+  const categories: FfeCategoryRollup[] = [];
+  let total = 0;
+  let quotedTotal = 0;
+  let placeholderTotal = 0;
+  let itemCount = 0;
+  let quotedCount = 0;
+  let placeholderCount = 0;
+  let unpricedCount = 0;
+
+  for (const [category, catItems] of byCategory) {
+    let catTotal = 0;
+    let catQuotedTotal = 0;
+    let catQuotedCount = 0;
+    let catPlaceholderCount = 0;
+    let catUnpricedCount = 0;
+
+    for (const item of catItems) {
+      const { bestPrice, confidence } = ffeBestPrice(item);
+      const lineTotal = bestPrice !== null ? item.quantity * bestPrice : 0;
+      catTotal += lineTotal;
+      if (confidence === "quoted") {
+        catQuotedTotal += lineTotal;
+        catQuotedCount += 1;
+      } else if (confidence === "placeholder") {
+        placeholderTotal += lineTotal;
+        catPlaceholderCount += 1;
+      } else {
+        catUnpricedCount += 1;
+      }
+    }
+
+    categories.push({
+      category,
+      item_count: catItems.length,
+      total: roundMoney(catTotal),
+      quoted_share: catTotal > 0 ? roundMoney(catQuotedTotal / catTotal) : 0,
+      quoted_count: catQuotedCount,
+      placeholder_count: catPlaceholderCount,
+      unpriced_count: catUnpricedCount,
+    });
+
+    total += catTotal;
+    quotedTotal += catQuotedTotal;
+    itemCount += catItems.length;
+    quotedCount += catQuotedCount;
+    placeholderCount += catPlaceholderCount;
+    unpricedCount += catUnpricedCount;
+  }
+
+  // Sort categories for a stable, predictable UI order (alphabetical by
+  // category prefix — the categories table's own sort_order isn't
+  // available to this pure function, so the API/UI layer may re-sort
+  // against the categories list if a different order is preferred).
+  categories.sort((a, b) => a.category.localeCompare(b.category));
+
+  return {
+    categories,
+    total: roundMoney(total),
+    quoted_total: roundMoney(quotedTotal),
+    placeholder_total: roundMoney(placeholderTotal),
+    item_count: itemCount,
+    quoted_count: quotedCount,
+    placeholder_count: placeholderCount,
+    unpriced_count: unpricedCount,
+    quoted_share: total > 0 ? roundMoney(quotedTotal / total) : 0,
+    placeholder_share: total > 0 ? roundMoney(placeholderTotal / total) : 0,
+  };
+}
+
+// ------------------------------------------------------------
+// Whole-job summary — all-trades + approved variations + markup (the
+// existing projectRollup cascade) THEN FF&E added AFTER markup.
+//
+// Cascade decision (BUILD-SPEC.md "Estimate ↔ Schedule integration"):
+// FF&E client pricing is a SEPARATE pricing lane from the trade
+// estimate. The whole-job markup (projects.estimate_markup_pct) is a
+// margin the business applies to ITS OWN construction/trade costs
+// (cost_lines) — it has no relationship to spec register item
+// pricing, which already carries its own per-item markup_pct
+// (items.markup_pct, applied elsewhere to compute each item's client
+// price from price_trade/price_rrp). Folding FF&E into the
+// trade-markup base would double-apply a margin never priced into the
+// FF&E figure, and would silently conflate two different profit
+// mechanisms the business tracks separately (trade margin vs. product
+// margin). So: FF&E's `total` (already the best-known ex-GST product
+// cost, NOT yet client-marked-up — items.markup_pct is applied
+// elsewhere, e.g. the P&P view/PDF, not by this module) is added to
+// the cascade AFTER totalToClientExGst is computed, not folded into
+// the pre-markup base like approved variations are. GST is then
+// re-derived over the combined (trades + FF&E) total so the headline
+// "Total inc GST" still reflects one real GST figure.
+// ------------------------------------------------------------
+
+export interface WholeJobSummary {
+  /** The existing trades-only rollup (all-trades subtotal, approved variations, markup, GST) — unchanged. */
+  trades: ProjectRollup;
+  /** The FF&E — from schedule rollup (ex GST, no trade markup applied — see cascade comment above). */
+  ffe: FfeRollup;
+  /** trades.totalToClientExGst + ffe.total — the combined ex-GST figure BEFORE re-deriving GST. */
+  combinedExGst: number;
+  /** GST at 10% of combinedExGst. */
+  combinedGst: number;
+  /** The true whole-job headline: combinedExGst + combinedGst. */
+  combinedIncGst: number;
+}
+
+/**
+ * Folds the FF&E rollup into the whole-job summary AFTER trade markup
+ * (see cascade decision above). This is the figure that should replace
+ * the Estimate tab's "Estimate total — inc GST" placeholder comment
+ * ("FF&E client pricing joins this figure in a later release") once
+ * the FF&E block ships.
+ */
+export function wholeJobSummary(trades: ProjectRollup, ffe: FfeRollup): WholeJobSummary {
+  const combinedExGst = roundMoney(trades.totalToClientExGst + ffe.total);
+  const combinedGst = roundMoney(combinedExGst * GST_RATE);
+  const combinedIncGst = roundMoney(combinedExGst + combinedGst);
+  return { trades, ffe, combinedExGst, combinedGst, combinedIncGst };
+}

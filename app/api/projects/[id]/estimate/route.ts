@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
-import { projectRollup, sectionRollup } from "@/lib/estimate";
+import { projectRollup, sectionRollup, ffeRollup, wholeJobSummary } from "@/lib/estimate";
 import type { CostSectionWithLines, EstimateResponse } from "@/types";
 
 /**
@@ -13,10 +13,22 @@ import type { CostSectionWithLines, EstimateResponse } from "@/types";
  * BUILD-SPEC.md "Estimating module — enriched from Phillip's Excel
  * template".
  *
+ * Week 6 additive: also returns `ffe` (the "FF&E — from schedule"
+ * block computed from the project's non-deleted items — see
+ * lib/estimate.ts ffeRollup()) and `wholeJob` (trades + FF&E folded
+ * together — see lib/estimate.ts wholeJobSummary()). Schedule items are
+ * NEVER turned into cost_lines rows; this is a pure read-side
+ * computation over `items`, per BUILD-SPEC.md "Estimate ↔ Schedule
+ * integration".
+ *
  * Admin-only, server-enforced: this whole surface is financial data
  * (BUILD-SPEC.md §Financial visibility), so a non-admin gets 403
  * before any estimate query runs — no data of any kind is included in
- * a non-admin response, per this feature's build brief.
+ * a non-admin response, per this feature's build brief. This also
+ * covers the new items query below: price_trade/price_rrp are
+ * financial, so fetching them here (rather than via the team-visible
+ * items API) is safe only because this whole route is already
+ * admin-gated before any query executes.
  */
 export async function GET(
   _request: NextRequest,
@@ -45,25 +57,36 @@ export async function GET(
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  const [{ data: sections, error: sectionsError }, { data: variations, error: variationsError }] =
-    await Promise.all([
-      supabase
-        .from("cost_sections")
-        .select("*, cost_lines(*)")
-        .eq("project_id", projectId)
-        .order("sort", { ascending: true }),
-      supabase
-        .from("variations")
-        .select("status, cost_ex_gst")
-        .eq("project_id", projectId)
-        .is("deleted_at", null),
-    ]);
+  const [
+    { data: sections, error: sectionsError },
+    { data: variations, error: variationsError },
+    { data: items, error: itemsError },
+  ] = await Promise.all([
+    supabase
+      .from("cost_sections")
+      .select("*, cost_lines(*)")
+      .eq("project_id", projectId)
+      .order("sort", { ascending: true }),
+    supabase
+      .from("variations")
+      .select("status, cost_ex_gst")
+      .eq("project_id", projectId)
+      .is("deleted_at", null),
+    supabase
+      .from("items")
+      .select("id, category, quantity, price_trade, price_rrp")
+      .eq("project_id", projectId)
+      .is("deleted_at", null),
+  ]);
 
   if (sectionsError) {
     return NextResponse.json({ error: sectionsError.message }, { status: 500 });
   }
   if (variationsError) {
     return NextResponse.json({ error: variationsError.message }, { status: 500 });
+  }
+  if (itemsError) {
+    return NextResponse.json({ error: itemsError.message }, { status: 500 });
   }
 
   const sectionsWithLines: CostSectionWithLines[] = (sections ?? []).map((section) => {
@@ -86,10 +109,15 @@ export async function GET(
     markupPct: project.estimate_markup_pct ?? 0,
   });
 
+  const ffe = ffeRollup(items ?? []);
+  const wholeJob = wholeJobSummary(rollup, ffe);
+
   const payload: EstimateResponse = {
     sections: sectionsWithLines,
     markup_pct: project.estimate_markup_pct ?? 0,
     rollup,
+    ffe,
+    wholeJob,
   };
 
   return NextResponse.json(payload);

@@ -514,6 +514,44 @@ export interface Invoice {
   updated_at: string;
 }
 
+// ------------------------------------------------------------
+// FF&E — from schedule (Week 6, additive) — see lib/estimate.ts
+// ffeRollup()/wholeJobSummary(). Computed from items, never persisted.
+// ------------------------------------------------------------
+
+export type FfeConfidence = "quoted" | "placeholder" | "unpriced";
+
+export interface FfeCategoryRollup {
+  category: string;
+  item_count: number;
+  total: number;
+  quoted_share: number;
+  quoted_count: number;
+  placeholder_count: number;
+  unpriced_count: number;
+}
+
+export interface FfeRollup {
+  categories: FfeCategoryRollup[];
+  total: number;
+  quoted_total: number;
+  placeholder_total: number;
+  item_count: number;
+  quoted_count: number;
+  placeholder_count: number;
+  unpriced_count: number;
+  quoted_share: number;
+  placeholder_share: number;
+}
+
+export interface WholeJobSummary {
+  trades: EstimateResponse["rollup"];
+  ffe: FfeRollup;
+  combinedExGst: number;
+  combinedGst: number;
+  combinedIncGst: number;
+}
+
 /** GET /api/projects/[id]/estimate response — sections+lines plus the whole-job rollup. */
 export interface EstimateResponse {
   sections: CostSectionWithLines[];
@@ -529,6 +567,10 @@ export interface EstimateResponse {
     quotedExGst: number;
     actualExGst: number;
   };
+  /** FF&E — from schedule block (Week 6, additive) — see lib/estimate.ts ffeRollup(). */
+  ffe: FfeRollup;
+  /** Whole-job summary folding FF&E in AFTER trade markup — see lib/estimate.ts wholeJobSummary(). */
+  wholeJob: WholeJobSummary;
 }
 
 /** POST /api/projects/[id]/estimate/init response. */
@@ -615,4 +657,77 @@ export interface PatchMeasurementInput {
   unit?: string;
   item_id?: string | null;
   notes?: string | null;
+}
+
+// ------------------------------------------------------------
+// Project documents (Week 6, additive) — supabase/migrations/008_project_files.sql
+// BUILD-SPEC.md "Project documents". Team-visible (not admin-gated —
+// documents aren't financial), see app/api/projects/[id]/files/**.
+// ------------------------------------------------------------
+
+export type ProjectFileKind = "plans" | "council" | "engineering" | "scope_of_works" | "other";
+
+export interface ProjectFile {
+  id: string;
+  project_id: string;
+  kind: ProjectFileKind;
+  storage_path: string;
+  filename: string;
+  revision_label: string | null;
+  uploaded_by: string | null;
+  uploaded_at: string;
+  deleted_at: string | null;
+}
+
+/** GET /api/projects/[id]/files response — files include a minted public URL. */
+export interface ProjectFilesListResponse {
+  files: (ProjectFile & { url: string })[];
+}
+
+/** multipart body accepted by POST /api/projects/[id]/files: { file, kind, revision_label? }. */
+export interface UploadProjectFileResponse {
+  file: ProjectFile & { url: string };
+}
+
+// ------------------------------------------------------------
+// Invoice pipeline (Week 6, additive) — routes over the invoices table
+// defined in 007_estimating.sql. Admin-only, financial — see
+// app/api/projects/[id]/invoices/** and app/api/invoices/**.
+// ------------------------------------------------------------
+
+/** body accepted by POST /api/projects/[id]/invoices. */
+export interface CreateInvoiceInput {
+  supplier: string;
+  invoice_number: string;
+  invoice_date?: string | null;
+  amount_ex_gst: number;
+  gst?: number;
+  total?: number;
+  proposed_match_type?: InvoiceMatchType | null;
+  proposed_match_id?: string | null;
+  confidence_note?: string | null;
+}
+
+/** response shape for POST /api/projects/[id]/invoices. */
+export interface CreateInvoiceResponse {
+  invoice: Invoice;
+  /** Present when an existing non-rejected invoice matches (project, supplier, invoice_number). */
+  duplicate_warning?: Invoice;
+}
+
+/** body accepted by PATCH /api/invoices/[id]. */
+export interface PatchInvoiceInput {
+  supplier?: string;
+  invoice_number?: string;
+  invoice_date?: string | null;
+  amount_ex_gst?: number;
+  gst?: number;
+  total?: number;
+  proposed_match_type?: InvoiceMatchType | null;
+  proposed_match_id?: string | null;
+  confidence_note?: string | null;
+}
+
+export interface GetInvoicesResponse {
+  invoices: Invoice[];
 }

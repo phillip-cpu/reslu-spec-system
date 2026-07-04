@@ -405,17 +405,16 @@ function ItemRow({
   onDelete: () => void;
   onError: (msg: string | null) => void;
 }) {
-  // Local-only override for fields the scraper (POST /api/items/[id]/scrape)
-  // and the document-attach flow write server-side directly — NOT via the
-  // generic PATCH /api/items/[id] route, whose EDITABLE_FIELDS whitelist
-  // doesn't include image_options/scrape_*/scraped_documents (that route
-  // is outside this feature's file boundary). Routing scrape results
-  // through the shared onPatch would silently drop them (whitelist) and
-  // then clobber this row's just-fetched state with the stale server
-  // response. This override is display-only and reset whenever a fresh
-  // `item` prop arrives (e.g. from an unrelated onPatch elsewhere).
-  const [scrapeOverride, setScrapeOverride] = useState<Partial<Item> | null>(null);
-  const item = scrapeOverride ? { ...itemProp, ...scrapeOverride } : itemProp;
+  // Week 6 cleanup: this row used to keep a local-only `scrapeOverride`
+  // because the generic PATCH /api/items/[id] route's EDITABLE_FIELDS
+  // whitelist didn't include image_options/scrape_*/scraped_documents
+  // at the time. That whitelist has since been verified to include all
+  // of them (see app/api/items/[id]/route.ts's EDITABLE_FIELDS set —
+  // "Week 4 whitelist fix"), so scrape/attach results now persist via
+  // the normal onPatch round-trip like any other field, same as this
+  // row's onPatch({ selected_image_url }) call below. No local override
+  // needed — `item` is just the prop.
+  const item = itemProp;
 
   const dims = formatDimensions(item);
   const warning = dimensionWarning(item);
@@ -610,7 +609,17 @@ function ItemRow({
                   </div>
                   <FetchDetailsButton
                     itemId={item.id}
-                    onScraped={(patch) => setScrapeOverride((cur) => ({ ...cur, ...patch }))}
+                    // The scraper (POST /api/items/[id]/scrape) writes
+                    // image_options/scrape_status/scraped_documents etc.
+                    // server-side via the service-role client, then
+                    // returns the updated item. Persisting that through
+                    // the normal onPatch round-trip (rather than a
+                    // local-only override) re-PATCHes the same
+                    // already-correct values back — a harmless no-op
+                    // write — and, more importantly, syncs this row's
+                    // state from the PATCH response, exactly like any
+                    // other field edit on this row.
+                    onScraped={(patch) => onPatch(patch)}
                     onError={onError}
                   />
                 </div>
@@ -626,12 +635,11 @@ function ItemRow({
                   onError={onError}
                   scrapedDocuments={item.scraped_documents}
                   onDocumentAttached={(url) =>
-                    setScrapeOverride((cur) => ({
-                      ...cur,
+                    onPatch({
                       scraped_documents: (item.scraped_documents ?? []).filter(
                         (d) => d.url !== url
                       ),
-                    }))
+                    })
                   }
                 />
               </div>
@@ -690,15 +698,14 @@ function DetailField({
 
 /**
  * "Fetch details" — triggers POST /api/items/[id]/scrape (Week 3 scraper:
- * lib/scraper/index.ts). Applies the returned, updated fields via
- * onScraped — a LOCAL display-only override (see ItemRow), not the
- * shared onPatch/PATCH round-trip: the scraper writes image_options,
- * scrape_status, scraped_documents, etc. directly to the DB via the
- * service-role client, and those columns aren't in the generic
- * PATCH /api/items/[id] route's EDITABLE_FIELDS whitelist (that route is
- * outside this feature's file boundary) — sending them through onPatch
- * would have them silently dropped and then overwritten by the stale
- * response.
+ * lib/scraper/index.ts), which writes image_options, scrape_status,
+ * scraped_documents, etc. directly to the DB via the service-role
+ * client and returns the updated item. onScraped hands that patch to
+ * the row's normal onPatch (Week 6 cleanup — see the comment on
+ * ItemRow's `item = itemProp` line): the generic PATCH /api/items/[id]
+ * route's EDITABLE_FIELDS whitelist covers all of these fields now, so
+ * there's no need for a local-only override that risked drifting out
+ * of sync with the server.
  */
 function FetchDetailsButton({
   itemId,

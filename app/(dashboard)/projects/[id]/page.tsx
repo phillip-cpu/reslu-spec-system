@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { getUserRole } from "@/lib/auth";
 import { Header } from "@/components/layout/Header";
 import { ProjectWorkspace } from "@/components/items/ProjectWorkspace";
 import { MondayBoardPicker } from "@/components/items/MondayBoardPicker";
@@ -19,7 +20,7 @@ export default async function ProjectPage({
   const { id } = await params;
   const supabase = await createClient();
 
-  const [{ data: project }, { data: items }, { data: categories }] =
+  const [{ data: project }, { data: items }, { data: categories }, info] =
     await Promise.all([
       supabase.from("projects").select("*").eq("id", id).single(),
       supabase
@@ -30,11 +31,19 @@ export default async function ProjectPage({
         .order("category", { ascending: true })
         .order("item_code", { ascending: true }),
       supabase.from("categories").select("*").order("sort_order"),
+      getUserRole(supabase),
     ]);
 
   if (!project) {
     notFound();
   }
+
+  // Invoices queue is financial — link only rendered for admins (same
+  // "hidden entirely, not merely disabled" pattern as the archive/
+  // regenerate-token actions in ProjectSettingsForm.tsx). The route
+  // itself (app/api/projects/[id]/invoices/**) independently re-checks
+  // admin server-side regardless of this UI gate.
+  const isAdmin = info?.role === "admin";
 
   return (
     <>
@@ -53,6 +62,14 @@ export default async function ProjectPage({
             >
               Import CSV
             </a>
+            {/* Project documents (Week 6, team-visible — not admin-gated,
+                see app/(dashboard)/projects/[id]/documents/page.tsx) */}
+            <a
+              href={`/projects/${id}/documents`}
+              className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
+            >
+              Documents
+            </a>
             {/* Estimate module (Week 5, admin-gated — see app/(dashboard)/projects/[id]/estimate/page.tsx) */}
             <a
               href={`/projects/${id}/estimate`}
@@ -60,6 +77,16 @@ export default async function ProjectPage({
             >
               Estimate
             </a>
+            {/* Invoice queue (Week 6, admin-only — financial, see
+                app/(dashboard)/projects/[id]/invoices/page.tsx) */}
+            {isAdmin && (
+              <a
+                href={`/projects/${id}/invoices`}
+                className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
+              >
+                Invoices
+              </a>
+            )}
             <a
               href={`/api/projects/${id}/pdf`}
               target="_blank"

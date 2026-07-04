@@ -109,19 +109,25 @@ export function EstimateWorkspace({ projectId }: Props) {
         </p>
       )}
 
-      {/* Whole-job summary strip */}
+      {/* Whole-job summary strip — trades (all-trades + approved
+          variations + markup) folded with FF&E, added AFTER markup per
+          the Estimate ↔ Schedule integration cascade decision (see
+          lib/estimate.ts wholeJobSummary() for the full rationale). */}
       {estimate && !notInitialised && (
         <div className="border border-nearblack bg-offwhite px-6 py-5">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
-              <p className="label-caps mb-1">Estimate total — inc GST</p>
+              <p className="label-caps mb-1">Whole job total — inc GST</p>
               <p className="font-display text-section text-nearblack">
-                {formatMoney(estimate.rollup.totalIncGst)}
+                {formatMoney(estimate.wholeJob.combinedIncGst)}
               </p>
             </div>
             <p className="max-w-sm text-caption text-charcoal/50">
-              FF&E client pricing joins this figure in a later release — this
-              is the construction-cost estimate total only.
+              Trades {formatMoney(estimate.rollup.totalIncGst)} inc GST + FF&E{" "}
+              {formatMoney(estimate.ffe.total)} ex GST. FF&E is priced
+              separately from the trade estimate and is not marked up by
+              the trade markup % below — see the FF&E section for its own
+              quoted/placeholder split.
             </p>
           </div>
         </div>
