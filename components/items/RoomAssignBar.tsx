@@ -158,9 +158,17 @@ export function RoomAssignBar({
                 createRoom();
               }
             }}
-            placeholder="+ New room"
-            className="w-28 border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-caption focus:border-nearblack focus:outline-none"
+            placeholder="New room name…"
+            className="w-32 border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-caption focus:border-nearblack focus:outline-none"
           />
+          <button
+            type="button"
+            disabled={!newRoom.trim() || creating}
+            onClick={createRoom}
+            className="border border-nearblack px-2 py-1 text-caption text-nearblack hover:bg-nearblack hover:text-white disabled:opacity-40"
+          >
+            {creating ? "Adding…" : "+ Add room"}
+          </button>
         </div>
 
         <span className="text-charcoal/30">·</span>
