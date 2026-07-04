@@ -87,11 +87,48 @@ export interface CsvTable {
   rows: string[][];
 }
 
-/** Parse CSV text into a header row + data rows (empty input → empty table). */
+/**
+ * Find the real header row in a parsed grid. Design-tool exports (Programa
+ * etc.) prepend title/metadata rows ("RESLU", "Project: GOLDSWORTHY …")
+ * before the actual column headings, so row 0 is often NOT the header. We
+ * scan the first several rows and pick the one that best matches known field
+ * names (via suggestColumnMapping) — a sparse title row scores ~0 and loses
+ * to the wide, field-named header row; data rows below hold values, not
+ * field names, so they score low too. Cell count is the tie-breaker. Falls
+ * back to row 0 when nothing scores (an unrecognised but valid CSV).
+ */
+function detectHeaderRow(rows: string[][]): number {
+  const limit = Math.min(rows.length, 20);
+  let bestIdx = 0;
+  let bestScore = -1;
+  for (let i = 0; i < limit; i++) {
+    const cells = rows[i].map((c) => (c ?? "").trim());
+    const filled = cells.filter((c) => c !== "").length;
+    if (filled < 2) continue; // skip 1-cell title rows
+    const mapped = Object.values(suggestColumnMapping(cells)).filter(Boolean).length;
+    const score = mapped * 100 + filled; // recognised field names dominate
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = i;
+    }
+  }
+  return bestScore >= 0 ? bestIdx : 0;
+}
+
+/**
+ * Parse CSV text into a header row + data rows. The header row is
+ * auto-detected (see detectHeaderRow), so leading title/metadata rows common
+ * in design-tool exports are skipped: rows above the header are ignored and
+ * fully-empty rows below it are dropped. Empty input → empty table.
+ */
 export function parseCsvTable(text: string): CsvTable {
   const all = parseCsv(text);
   if (all.length === 0) return { headers: [], rows: [] };
-  const [headers, ...rows] = all;
+  const headerIdx = detectHeaderRow(all);
+  const headers = (all[headerIdx] ?? []).map((c) => (c ?? "").trim());
+  const rows = all
+    .slice(headerIdx + 1)
+    .filter((r) => r.some((c) => (c ?? "").trim() !== ""));
   return { headers, rows };
 }
 
