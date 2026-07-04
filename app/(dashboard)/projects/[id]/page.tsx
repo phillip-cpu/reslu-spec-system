@@ -50,6 +50,7 @@ export default async function ProjectPage({
       <Header
         title={project.name}
         subtitle={project.client_name}
+        subtitleHref="/"
         actions={
           <>
             <MondayBoardPicker
@@ -94,6 +95,12 @@ export default async function ProjectPage({
               className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
             >
               Download PDF
+            </a>
+            <a
+              href={`/projects/${id}/settings`}
+              className="border border-[#c9c2b4] px-4 py-2 text-subhead text-charcoal transition-colors hover:border-nearblack hover:text-nearblack"
+            >
+              Settings
             </a>
           </>
         }

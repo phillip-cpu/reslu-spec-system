@@ -18,14 +18,16 @@ export function Sidebar() {
   return (
     <aside className="w-56 shrink-0 bg-nearblack text-white min-h-screen flex flex-col">
       <div className="px-6 py-8">
-        <Image
-          src="/reslu-logo-white.png"
-          alt="RESLU"
-          width={100}
-          height={44}
-          priority
-          className="h-11 w-auto"
-        />
+        <Link href="/" aria-label="Back to dashboard">
+          <Image
+            src="/reslu-logo-white.png"
+            alt="RESLU"
+            width={100}
+            height={44}
+            priority
+            className="h-11 w-auto"
+          />
+        </Link>
         <p className="label-caps mt-3 text-sand">Spec System</p>
       </div>
 
