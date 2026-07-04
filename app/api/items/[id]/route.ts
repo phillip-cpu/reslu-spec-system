@@ -72,6 +72,48 @@ const TEXT_FIELDS = new Set([
 ]);
 
 /**
+ * GET /api/items/[id]
+ * Returns the full item row (all columns — this route is used by the
+ * item detail panel, which is internal-team-only, so pricing/procurement
+ * fields are fine here; the Spec register LIST endpoint is the one that
+ * must stay spec-safe) plus its notes, ordered oldest first.
+ */
+export async function GET(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { data: item, error } = await supabase
+    .from("items")
+    .select("*")
+    .eq("id", id)
+    .is("deleted_at", null)
+    .single();
+
+  if (error || !item) {
+    return NextResponse.json({ error: "Item not found" }, { status: 404 });
+  }
+
+  const { data: notes } = await supabase
+    .from("item_notes")
+    .select("*")
+    .eq("item_id", id)
+    .order("created_at", { ascending: true });
+
+  return NextResponse.json({ item, notes: notes ?? [] });
+}
+
+/**
  * PATCH /api/items/[id]
  * body: partial item. Only whitelisted fields are applied; unknown
  * or protected keys are silently dropped. Empty strings become null

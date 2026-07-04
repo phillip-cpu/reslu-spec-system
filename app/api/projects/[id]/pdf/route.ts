@@ -7,9 +7,6 @@ import type { Category, Item } from "@/types";
 // react-pdf + font/logo file reads require the Node runtime.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-// PDF rendering (font subsetting + image embedding) can exceed the
-// default 10s cap on a cold start; allow up to 60s.
-export const maxDuration = 60;
 
 /**
  * GET /api/projects/[id]/pdf

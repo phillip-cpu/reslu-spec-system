@@ -139,6 +139,7 @@ export function SpecRegister({
   const [groupBy, setGroupBy] = useState<GroupBy>("location");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -168,15 +169,17 @@ export function SpecRegister({
 
   // ── filtering + grouping ─────────────────────────────────
 
-  const filtered = useMemo(
-    () =>
-      items.filter(
-        (it) =>
-          (categoryFilter === "all" || it.category === categoryFilter) &&
-          (statusFilter === "all" || it.status === statusFilter)
-      ),
-    [items, categoryFilter, statusFilter]
-  );
+  const filtered = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    return items.filter((it) => {
+      if (categoryFilter !== "all" && it.category !== categoryFilter) return false;
+      if (statusFilter !== "all" && it.status !== statusFilter) return false;
+      if (!term) return true;
+      return [it.name, it.item_code, it.supplier, it.brand, it.location]
+        .filter(Boolean)
+        .some((v) => (v as string).toLowerCase().includes(term));
+    });
+  }, [items, categoryFilter, statusFilter, search]);
 
   const groups = useMemo(() => {
     const map = new Map<string, Item[]>();
@@ -270,6 +273,14 @@ export function SpecRegister({
             ))}
           </select>
         </label>
+
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search name, code, supplier, brand, location…"
+          className="min-w-[220px] border border-[#c9c2b4] bg-nearwhite px-3 py-1.5 text-body focus:border-nearblack focus:outline-none"
+        />
 
         <span className="text-body text-charcoal/50">
           {filtered.length} {filtered.length === 1 ? "item" : "items"}
@@ -578,10 +589,15 @@ function ItemRow({
               </DetailField>
 
               <DetailField label="Product URL" full>
-                <EditableCell
-                  value={item.product_url}
-                  onCommit={(v) => onPatch({ product_url: v || null })}
-                />
+                <div className="flex items-center gap-2">
+                  <div className="flex-1">
+                    <EditableCell
+                      value={item.product_url}
+                      onCommit={(v) => onPatch({ product_url: v || null })}
+                    />
+                  </div>
+                  <FetchDetailsButton itemId={item.id} onError={onError} />
+                </div>
               </DetailField>
 
               <div className="border-t border-[#dcd6cc] pt-4 sm:col-span-2 lg:col-span-3">
@@ -647,6 +663,48 @@ function DetailField({
   );
 }
 
+/**
+ * "Fetch details" — triggers POST /api/items/[id]/scrape. The route is a
+ * stub through Week 2 (501 "Scraper lands in Week 3"); this button exists
+ * now so the UI wiring doesn't need to change when the real scraper ships.
+ */
+function FetchDetailsButton({
+  itemId,
+  onError,
+}: {
+  itemId: string;
+  onError: (msg: string | null) => void;
+}) {
+  const [loading, setLoading] = useState(false);
+
+  async function fetchDetails() {
+    setLoading(true);
+    onError(null);
+    try {
+      const res = await fetch(`/api/items/${itemId}/scrape`, { method: "POST" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body.error ?? "Could not fetch product details.");
+      }
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Could not fetch product details.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={fetchDetails}
+      disabled={loading}
+      className="shrink-0 border border-[#c9c2b4] px-3 py-1.5 text-subhead text-charcoal transition-colors hover:border-nearblack hover:text-nearblack disabled:opacity-60"
+    >
+      {loading ? "Fetching…" : "Fetch details"}
+    </button>
+  );
+}
+
 // ── add-item form ───────────────────────────────────────────
 
 function AddItemForm({
@@ -664,6 +722,7 @@ function AddItemForm({
   const [category, setCategory] = useState(categories[0]?.prefix ?? "");
   const [location, setLocation] = useState("");
   const [quantity, setQuantity] = useState("1");
+  const [productUrl, setProductUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -681,6 +740,7 @@ function AddItemForm({
           category,
           location: location.trim() || undefined,
           quantity: Number(quantity) || 1,
+          product_url: productUrl.trim() || undefined,
         }),
       });
       if (!res.ok) {
@@ -693,6 +753,7 @@ function AddItemForm({
       setName("");
       setLocation("");
       setQuantity("1");
+      setProductUrl("");
       nameRef.current?.focus();
     } catch (err) {
       onError(err instanceof Error ? err.message : "Could not add item.");
@@ -715,6 +776,16 @@ function AddItemForm({
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="e.g. Undermount Basin"
+          className="w-full border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none"
+        />
+      </div>
+      <div className="min-w-[220px] flex-1">
+        <label className="label-caps mb-1 block">Product URL (optional)</label>
+        <input
+          type="url"
+          value={productUrl}
+          onChange={(e) => setProductUrl(e.target.value)}
+          placeholder="Paste supplier product page — details fetched automatically"
           className="w-full border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none"
         />
       </div>

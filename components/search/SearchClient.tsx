@@ -39,13 +39,12 @@ export function SearchClient() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    if (q.trim().length < 2) {
+      setResults(EMPTY);
+      return;
+    }
     const ctrl = new AbortController();
     const t = setTimeout(() => {
-      if (q.trim().length < 2) {
-        setResults(EMPTY);
-        setLoading(false);
-        return;
-      }
       setLoading(true);
       fetch(`/api/search?q=${encodeURIComponent(q.trim())}`, {
         signal: ctrl.signal,

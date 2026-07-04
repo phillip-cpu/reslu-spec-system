@@ -264,3 +264,30 @@ export interface ItemResponse {
   item: Item;
   notes?: ItemNote[];
 }
+
+// ------------------------------------------------------------
+// CSV import (Week 2) — /projects/[id]/import, /api/projects/[id]/import
+// ------------------------------------------------------------
+
+/** body sent to POST /api/projects/[id]/import */
+export interface ImportItemsInput {
+  /** Raw CSV text — the server re-parses it (never trusts client-parsed rows). */
+  csv: string;
+  /** CSV header → item field, as confirmed by the user in the mapping step. */
+  mapping: Record<string, string | null>;
+}
+
+export interface ImportRowResult {
+  row: number; // 1-based data-row index (excludes header)
+  item_code: string | null;
+  name: string | null;
+  status: "created" | "skipped_duplicate" | "error";
+  reason?: string;
+}
+
+export interface ImportItemsResponse {
+  created: number;
+  skipped: number;
+  errors: number;
+  results: ImportRowResult[];
+}

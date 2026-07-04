@@ -37,7 +37,3 @@ next-env.d.ts
 # supabase
 supabase/.branches
 supabase/.temp
-.env*
-
-# claude local settings
-.claude/*.local.json

@@ -3,13 +3,66 @@ import { createClient } from "@/lib/supabase/server";
 import type { CreateItemInput } from "@/types";
 
 /**
+ * Columns returned by the Spec register (BUILD-SPEC.md §1–2 / Week 2 scope):
+ * design data only. Deliberately excludes price_rrp, price_trade, markup_pct,
+ * lead_time_weeks, ordered_at, eta, delivered_at, monday_item_id,
+ * monday_synced_at — those belong to the internal Pricing & Procurement
+ * view and must never appear in this response, even for admins. An explicit
+ * column list (not `select("*")`) is used so a future schema addition can
+ * never leak into this endpoint by accident.
+ */
+const SPEC_VIEW_COLUMNS = [
+  "id",
+  "project_id",
+  "library_item_id",
+  "item_code",
+  "category",
+  "name",
+  "description",
+  "supplier",
+  "supplier_email",
+  "brand",
+  "quantity",
+  "unit",
+  "location",
+  "application_note",
+  "colour",
+  "material",
+  "finish",
+  "width_mm",
+  "height_mm",
+  "length_mm",
+  "depth_mm",
+  "status",
+  "product_url",
+  "selected_image_url",
+  "image_options",
+  "scrape_status",
+  "scrape_attempted_at",
+  "scrape_flagged",
+  "scrape_flag_note",
+  "client_approved",
+  "client_flagged",
+  "client_flag_note",
+  "client_actioned_at",
+  "created_by",
+  "created_at",
+  "updated_at",
+  "deleted_at",
+].join(",");
+
+/**
  * GET /api/projects/[id]/items
  * Returns all active (non-soft-deleted) spec items for a project,
  * ordered by category then item code. Auth enforced by middleware;
  * RLS restricts to authenticated team sessions (team_all policy).
+ *
+ * Query filters: ?category=TW&status=Specced&q=basin — category and status
+ * are exact matches against the stored values; q does a case-insensitive
+ * partial match across name, item_code, supplier, and brand.
  */
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
@@ -23,11 +76,31 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { data: items, error } = await supabase
+  const { searchParams } = new URL(request.url);
+  const category = searchParams.get("category");
+  const status = searchParams.get("status");
+  const q = searchParams.get("q");
+
+  let query = supabase
     .from("items")
-    .select("*")
+    .select(SPEC_VIEW_COLUMNS)
     .eq("project_id", id)
-    .is("deleted_at", null)
+    .is("deleted_at", null);
+
+  if (category && category !== "all") {
+    query = query.eq("category", category);
+  }
+  if (status && status !== "all") {
+    query = query.eq("status", status);
+  }
+  if (q && q.trim()) {
+    const term = q.trim().replace(/[%_]/g, (m) => `\\${m}`);
+    query = query.or(
+      `name.ilike.%${term}%,item_code.ilike.%${term}%,supplier.ilike.%${term}%,brand.ilike.%${term}%`
+    );
+  }
+
+  const { data: items, error } = await query
     .order("category", { ascending: true })
     .order("item_code", { ascending: true });
 

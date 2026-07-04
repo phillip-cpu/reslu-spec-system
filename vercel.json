@@ -1,5 +1,10 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "nextjs",
-  "regions": ["syd1"]
+  "functions": {
+    "app/api/pdf/[projectId]/route.ts": {
+      "maxDuration": 60
+    },
+    "app/api/items/[id]/scrape/route.ts": {
+      "maxDuration": 30
+    }
+  }
 }

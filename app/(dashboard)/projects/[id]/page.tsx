@@ -48,6 +48,12 @@ export default async function ProjectPage({
               currentBoardId={project.monday_board_id ?? null}
             />
             <a
+              href={`/projects/${id}/import`}
+              className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
+            >
+              Import CSV
+            </a>
+            <a
               href={`/api/projects/${id}/pdf`}
               target="_blank"
               rel="noopener noreferrer"
