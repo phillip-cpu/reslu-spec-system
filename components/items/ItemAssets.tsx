@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
-import type { ItemFile, ItemFileKind } from "@/types";
+import type { ItemFile, ItemFileKind, ScrapedDocument } from "@/types";
 
 type FileWithUrl = ItemFile & { url: string };
 
@@ -17,13 +17,29 @@ interface Props {
   selectedImageUrl: string | null;
   onImage: (url: string) => void;
   onError: (msg: string | null) => void;
+  /**
+   * PDFs detected on the product page during scrape but not yet attached
+   * (items.scraped_documents — BUILD-SPEC.md "Scraper extension —
+   * document detection"). One-click "Attach" downloads server-side via
+   * POST /api/items/[id]/files/from-url and adds a real item_files row.
+   */
+  scrapedDocuments?: ScrapedDocument[];
+  onDocumentAttached?: (url: string) => void;
 }
 
-export function ItemAssets({ itemId, selectedImageUrl, onImage, onError }: Props) {
+export function ItemAssets({
+  itemId,
+  selectedImageUrl,
+  onImage,
+  onError,
+  scrapedDocuments = [],
+  onDocumentAttached,
+}: Props) {
   const [files, setFiles] = useState<FileWithUrl[]>([]);
   const [loadingFiles, setLoadingFiles] = useState(true);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
+  const [attachingUrl, setAttachingUrl] = useState<string | null>(null);
   const [kind, setKind] = useState<ItemFileKind>("spec_sheet");
   const imageInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -93,6 +109,26 @@ export function ItemAssets({ itemId, selectedImageUrl, onImage, onError }: Props
     } catch {
       setFiles(prev);
       onError("Could not remove document");
+    }
+  }
+
+  async function attachScraped(doc: ScrapedDocument) {
+    setAttachingUrl(doc.url);
+    onError(null);
+    try {
+      const res = await fetch(`/api/items/${itemId}/files/from-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: doc.url, kind: doc.guessedKind }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? "Attach failed");
+      const { file: row } = await res.json();
+      setFiles((cur) => [...cur, row]);
+      onDocumentAttached?.(doc.url);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Could not attach document");
+    } finally {
+      setAttachingUrl(null);
     }
   }
 
@@ -208,6 +244,31 @@ export function ItemAssets({ itemId, selectedImageUrl, onImage, onError }: Props
             {uploadingFile ? "Uploading…" : "Upload document"}
           </button>
         </div>
+
+        {/* Detected-but-not-yet-attached PDFs from the last product scrape
+            (BUILD-SPEC.md "Scraper extension — document detection"). */}
+        {scrapedDocuments.length > 0 && (
+          <div className="mt-3 border-t border-[#dcd6cc] pt-3">
+            <p className="label-caps mb-1 text-sand">Found on product page</p>
+            <ul className="space-y-1">
+              {scrapedDocuments.map((doc) => (
+                <li key={doc.url} className="flex items-center justify-between gap-2">
+                  <span className="truncate text-body text-charcoal/70">
+                    {KIND_LABELS[doc.guessedKind]}: {doc.label}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={attachingUrl === doc.url}
+                    onClick={() => attachScraped(doc)}
+                    className="shrink-0 border border-nearblack px-2 py-1 text-caption text-nearblack hover:bg-nearblack hover:text-white disabled:opacity-60"
+                  >
+                    {attachingUrl === doc.url ? "Attaching…" : "Attach"}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
     </div>
   );

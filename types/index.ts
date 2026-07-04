@@ -76,6 +76,14 @@ export interface LibraryItem {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  // ---- additive (migration 004_library_scraper.sql) ----
+  // Trade price provenance — BUILD-SPEC.md "Library — trade price capture".
+  // Financial fields: admin-gated, see app/api/library/route.ts.
+  trade_price_received_at: string | null;
+  trade_price_source: string | null;
+  // Duplicate detection — normalised product_url (lowercase host, no
+  // www., no query/fragment/trailing slash). See lib/scraper/normalize.ts.
+  product_url_normalized: string | null;
 }
 
 export type ItemStatus = "Specced" | "Quoted" | "Ordered" | "On Site" | "Installed";
@@ -153,6 +161,14 @@ export interface Item {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+
+  // ---- additive (migration 004_library_scraper.sql) ----
+  // Duplicate detection — normalised product_url. See lib/scraper/normalize.ts.
+  product_url_normalized: string | null;
+  // PDFs detected on the product page during scrape but not yet attached
+  // as a real item_files row (BUILD-SPEC.md "Scraper extension —
+  // document detection"). See types.ScrapedDocument below.
+  scraped_documents: ScrapedDocument[];
 }
 
 /**
@@ -290,4 +306,54 @@ export interface ImportItemsResponse {
   skipped: number;
   errors: number;
   results: ImportRowResult[];
+}
+
+// ------------------------------------------------------------
+// Scraper + library duplicate detection (Week 3A, additive)
+// ------------------------------------------------------------
+
+export type ScrapedDocumentKind = "spec_sheet" | "install_manual" | "other";
+
+/**
+ * A PDF (or other document) detected on a scraped product page but not
+ * yet attached as a real item_files row. Staged in items.scraped_documents
+ * (migration 004_library_scraper.sql). See lib/scraper/extract.ts.
+ */
+export interface ScrapedDocument {
+  url: string;
+  guessedKind: ScrapedDocumentKind;
+  label: string;
+}
+
+/** body sent to POST /api/items/[id]/scrape — both fields optional. */
+export interface ScrapeItemInput {
+  url?: string;
+}
+
+export interface ScrapeItemResponse {
+  item: Item;
+}
+
+/** body sent to POST /api/items/[id]/files/from-url */
+export interface AttachFromUrlInput {
+  url: string;
+  kind: ItemFileKind;
+}
+
+export interface AttachFromUrlResponse {
+  file: ItemFile & { url: string };
+}
+
+export type DuplicateSource = "library" | "project";
+
+export interface DuplicateMatch {
+  source: DuplicateSource;
+  id: string;
+  name: string;
+  item_code?: string;
+}
+
+/** response shape for GET /api/library/check?url=... */
+export interface CheckDuplicatesResponse {
+  duplicates: DuplicateMatch[];
 }

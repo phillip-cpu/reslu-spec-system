@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { scrapeProductUrl, normalizeProductUrl } from "@/lib/scraper";
 import type { CreateItemInput } from "@/types";
 
 /**
@@ -213,6 +214,11 @@ export async function POST(
       length_mm: toNum(body.length_mm) ?? (libraryDefaults.length_mm as number | null) ?? null,
       depth_mm: toNum(body.depth_mm) ?? (libraryDefaults.depth_mm as number | null) ?? null,
       product_url: pick(body.product_url, "product_url"),
+      // Duplicate detection (BUILD-SPEC.md "Library — trade price capture
+      // & duplicate detection"): keep normalised URL in sync wherever
+      // product_url is set. Never blocks creation — normalize returns
+      // null on unparsable input.
+      product_url_normalized: normalizeProductUrl(pick(body.product_url, "product_url")),
       selected_image_url: (libraryDefaults.selected_image_url as string | null) ?? null,
       price_rrp: (libraryDefaults.price_rrp as number | null) ?? null,
       price_trade: (libraryDefaults.price_trade as number | null) ?? null,
@@ -247,6 +253,18 @@ export async function POST(
         { project_id: id, library_item_id: body.library_item_id },
         { onConflict: "project_id,library_item_id" }
       );
+  }
+
+  // Fetch-first scraping (BUILD-SPEC.md: "never block item creation" on
+  // scrape outcome) — fire-and-forget, response already carries the
+  // created item; the register picks up scrape_status via its own
+  // polling/refresh. scrapeProductUrl never throws. Wrapped in
+  // next/server's after() so the work isn't killed the instant the
+  // response is sent on serverless runtimes (Vercel) — plain
+  // `void scrapeProductUrl(...)` is not guaranteed to complete post-response
+  // outside a long-lived server.
+  if (item?.product_url) {
+    after(() => scrapeProductUrl(item.id, item.product_url));
   }
 
   return NextResponse.json({ item }, { status: 201 });

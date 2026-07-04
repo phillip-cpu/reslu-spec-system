@@ -3,7 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import clsx from "clsx";
-import type { Category, Item, ItemStatus } from "@/types";
+import type { Category, DuplicateMatch, Item, ItemStatus } from "@/types";
 import { ItemAssets } from "./ItemAssets";
 import { ItemNotes } from "./ItemNotes";
 import { LibraryPicker } from "./LibraryPicker";
@@ -389,7 +389,7 @@ export function SpecRegister({
 // ── item row (+ expandable detail) ──────────────────────────
 
 function ItemRow({
-  item,
+  item: itemProp,
   categories,
   expanded,
   onToggle,
@@ -405,6 +405,18 @@ function ItemRow({
   onDelete: () => void;
   onError: (msg: string | null) => void;
 }) {
+  // Local-only override for fields the scraper (POST /api/items/[id]/scrape)
+  // and the document-attach flow write server-side directly — NOT via the
+  // generic PATCH /api/items/[id] route, whose EDITABLE_FIELDS whitelist
+  // doesn't include image_options/scrape_*/scraped_documents (that route
+  // is outside this feature's file boundary). Routing scrape results
+  // through the shared onPatch would silently drop them (whitelist) and
+  // then clobber this row's just-fetched state with the stale server
+  // response. This override is display-only and reset whenever a fresh
+  // `item` prop arrives (e.g. from an unrelated onPatch elsewhere).
+  const [scrapeOverride, setScrapeOverride] = useState<Partial<Item> | null>(null);
+  const item = scrapeOverride ? { ...itemProp, ...scrapeOverride } : itemProp;
+
   const dims = formatDimensions(item);
   const warning = dimensionWarning(item);
 
@@ -596,7 +608,11 @@ function ItemRow({
                       onCommit={(v) => onPatch({ product_url: v || null })}
                     />
                   </div>
-                  <FetchDetailsButton itemId={item.id} onError={onError} />
+                  <FetchDetailsButton
+                    itemId={item.id}
+                    onScraped={(patch) => setScrapeOverride((cur) => ({ ...cur, ...patch }))}
+                    onError={onError}
+                  />
                 </div>
               </DetailField>
 
@@ -608,6 +624,15 @@ function ItemRow({
                     onPatch({ selected_image_url: url || null })
                   }
                   onError={onError}
+                  scrapedDocuments={item.scraped_documents}
+                  onDocumentAttached={(url) =>
+                    setScrapeOverride((cur) => ({
+                      ...cur,
+                      scraped_documents: (item.scraped_documents ?? []).filter(
+                        (d) => d.url !== url
+                      ),
+                    }))
+                  }
                 />
               </div>
 
@@ -664,15 +689,24 @@ function DetailField({
 }
 
 /**
- * "Fetch details" — triggers POST /api/items/[id]/scrape. The route is a
- * stub through Week 2 (501 "Scraper lands in Week 3"); this button exists
- * now so the UI wiring doesn't need to change when the real scraper ships.
+ * "Fetch details" — triggers POST /api/items/[id]/scrape (Week 3 scraper:
+ * lib/scraper/index.ts). Applies the returned, updated fields via
+ * onScraped — a LOCAL display-only override (see ItemRow), not the
+ * shared onPatch/PATCH round-trip: the scraper writes image_options,
+ * scrape_status, scraped_documents, etc. directly to the DB via the
+ * service-role client, and those columns aren't in the generic
+ * PATCH /api/items/[id] route's EDITABLE_FIELDS whitelist (that route is
+ * outside this feature's file boundary) — sending them through onPatch
+ * would have them silently dropped and then overwritten by the stale
+ * response.
  */
 function FetchDetailsButton({
   itemId,
+  onScraped,
   onError,
 }: {
   itemId: string;
+  onScraped: (patch: Partial<Item>) => void;
   onError: (msg: string | null) => void;
 }) {
   const [loading, setLoading] = useState(false);
@@ -686,6 +720,7 @@ function FetchDetailsButton({
       if (!res.ok) {
         throw new Error(body.error ?? "Could not fetch product details.");
       }
+      if (body.item) onScraped(body.item as Partial<Item>);
     } catch (err) {
       onError(err instanceof Error ? err.message : "Could not fetch product details.");
     } finally {
@@ -726,6 +761,34 @@ function AddItemForm({
   const [submitting, setSubmitting] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
 
+  // Duplicate detection (BUILD-SPEC.md "Library — trade price capture &
+  // duplicate detection"): non-blocking — checked on URL field blur, the
+  // user can still create the item regardless. "Use library item" swaps
+  // this add into a library-linked add instead (library_item_id), which
+  // the items POST route hydrates defaults from.
+  const [duplicates, setDuplicates] = useState<DuplicateMatch[]>([]);
+  const [checkingDuplicates, setCheckingDuplicates] = useState(false);
+  const [libraryItemId, setLibraryItemId] = useState<string | null>(null);
+
+  async function checkDuplicates() {
+    const url = productUrl.trim();
+    if (!url) {
+      setDuplicates([]);
+      return;
+    }
+    setCheckingDuplicates(true);
+    try {
+      const res = await fetch(`/api/library/check?url=${encodeURIComponent(url)}`);
+      if (!res.ok) return;
+      const body = await res.json();
+      setDuplicates(body.duplicates ?? []);
+    } catch {
+      // Non-blocking lookup — silently ignore failures.
+    } finally {
+      setCheckingDuplicates(false);
+    }
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim() || !category) return;
@@ -741,6 +804,7 @@ function AddItemForm({
           location: location.trim() || undefined,
           quantity: Number(quantity) || 1,
           product_url: productUrl.trim() || undefined,
+          library_item_id: libraryItemId ?? undefined,
         }),
       });
       if (!res.ok) {
@@ -754,6 +818,8 @@ function AddItemForm({
       setLocation("");
       setQuantity("1");
       setProductUrl("");
+      setDuplicates([]);
+      setLibraryItemId(null);
       nameRef.current?.focus();
     } catch (err) {
       onError(err instanceof Error ? err.message : "Could not add item.");
@@ -784,10 +850,48 @@ function AddItemForm({
         <input
           type="url"
           value={productUrl}
-          onChange={(e) => setProductUrl(e.target.value)}
+          onChange={(e) => {
+            setProductUrl(e.target.value);
+            setLibraryItemId(null);
+            setDuplicates([]);
+          }}
+          onBlur={checkDuplicates}
           placeholder="Paste supplier product page — details fetched automatically"
           className="w-full border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none"
         />
+        {checkingDuplicates && (
+          <p className="mt-1 text-caption text-charcoal/40">Checking for duplicates…</p>
+        )}
+        {!checkingDuplicates && duplicates.length > 0 && (
+          <div className="mt-1 space-y-1">
+            {duplicates.map((d) => (
+              <p
+                key={`${d.source}-${d.id}`}
+                className="flex flex-wrap items-center gap-2 text-caption text-sand"
+              >
+                <span>
+                  ⚠ Already {d.source === "library" ? "in library" : "in this project"}:{" "}
+                  {d.item_code ? `${d.item_code} — ` : ""}
+                  {d.name}
+                </span>
+                {d.source === "library" && (
+                  <button
+                    type="button"
+                    onClick={() => setLibraryItemId(d.id)}
+                    className={clsx(
+                      "border px-2 py-0.5 text-caption transition-colors",
+                      libraryItemId === d.id
+                        ? "border-nearblack bg-nearblack text-white"
+                        : "border-[#c9c2b4] text-charcoal hover:border-nearblack"
+                    )}
+                  >
+                    {libraryItemId === d.id ? "Using library item ✓" : "Use library item"}
+                  </button>
+                )}
+              </p>
+            ))}
+          </div>
+        )}
       </div>
       <div>
         <label className="label-caps mb-1 block">Category</label>

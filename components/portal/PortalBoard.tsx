@@ -3,23 +3,29 @@
 import { useMemo, useState } from "react";
 import clsx from "clsx";
 import Image from "next/image";
-import type { PortalItem } from "@/types";
+import type { PortalItemWithFiles } from "@/app/portal/types";
 
 const UNASSIGNED = "Other";
 
+const FILE_KIND_LABELS: Record<string, string> = {
+  spec_sheet: "Spec sheet",
+  install_manual: "Install manual",
+  other: "Document",
+};
+
 interface Props {
   token: string;
-  initialItems: PortalItem[];
+  initialItems: PortalItemWithFiles[];
 }
 
 export function PortalBoard({ token, initialItems }: Props) {
-  const [items, setItems] = useState<PortalItem[]>(initialItems);
+  const [items, setItems] = useState<PortalItemWithFiles[]>(initialItems);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [flaggingId, setFlaggingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const groups = useMemo(() => {
-    const map = new Map<string, PortalItem[]>();
+    const map = new Map<string, PortalItemWithFiles[]>();
     for (const it of items) {
       const key = it.location?.trim() || UNASSIGNED;
       if (!map.has(key)) map.set(key, []);
@@ -49,7 +55,12 @@ export function PortalBoard({ token, initialItems }: Props) {
         throw new Error(body.error ?? "Something went wrong.");
       }
       const { item } = await res.json();
-      setItems((cur) => cur.map((it) => (it.id === id ? item : it)));
+      // The approve/flag response returns the bare PortalItem shape (no
+      // `files`) — preserve the files already loaded for this item
+      // rather than dropping them on update.
+      setItems((cur) =>
+        cur.map((it) => (it.id === id ? { ...it, ...item, files: it.files } : it))
+      );
       setFlaggingId(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -84,7 +95,10 @@ export function PortalBoard({ token, initialItems }: Props) {
 
       {groups.map(([location, groupItems]) => (
         <section key={location}>
-          <h2 className="label-caps mb-3 border-b border-nearblack pb-1 !text-nearblack">
+          {/* Elegant section header: cream band, sand spaced-caps label,
+              hairline near-black rule — matches the FF&E PDF's category
+              headers and the brand guide (no rounded corners). */}
+          <h2 className="label-caps mb-3 border-b border-nearblack bg-cream px-1 pb-2 pt-3">
             {location}
           </h2>
           <div className="space-y-4">
@@ -132,6 +146,24 @@ export function PortalBoard({ token, initialItems }: Props) {
                     <p className="mt-2 border-l-2 border-red-700/40 pl-2 text-body text-charcoal/70">
                       Your note: {item.client_flag_note}
                     </p>
+                  )}
+
+                  {/* Documents (spec sheets / install manuals) — signed
+                      Storage URLs, time-limited (BUILD-SPEC.md §5). */}
+                  {item.files.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+                      {item.files.map((f) => (
+                        <a
+                          key={f.id}
+                          href={f.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-body text-nearblack underline decoration-sand underline-offset-2 hover:decoration-nearblack"
+                        >
+                          {FILE_KIND_LABELS[f.kind] ?? "Document"}
+                        </a>
+                      ))}
+                    </div>
                   )}
 
                   {/* Actions */}

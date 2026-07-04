@@ -1,10 +1,34 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Category, LibraryItem } from "@/types";
+import type { Category, DuplicateMatch, LibraryItem } from "@/types";
 
 interface Props {
   categories: Category[];
+}
+
+const aud = new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" });
+
+/**
+ * Financial fields (price_trade, trade_price_received_at,
+ * trade_price_source) are stripped entirely from the API response for
+ * non-admin sessions (see app/api/library/route.ts) — the key is
+ * deleted, not just nulled. That's what this checks: if the key isn't
+ * present at all, this session can't see financials, so the trade
+ * price panel doesn't render (BUILD-SPEC.md: "Non-admins see no
+ * financials section at all").
+ */
+function hasFinancialAccess(item: LibraryItem): boolean {
+  return "price_trade" in item;
+}
+
+/** Trade price age — BUILD-SPEC.md: "flag if older than ~6 months". */
+function isTradePriceStale(receivedAt: string | null): boolean {
+  if (!receivedAt) return false;
+  const received = new Date(receivedAt + "T00:00:00");
+  const sixMonthsAgo = new Date();
+  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+  return received < sixMonthsAgo;
 }
 
 export function LibraryBrowser({ categories }: Props) {
@@ -40,6 +64,9 @@ export function LibraryBrowser({ categories }: Props) {
   }
   function remove(id: string) {
     setItems((cur) => cur.filter((i) => i.id !== id));
+  }
+  function patch(id: string, next: LibraryItem) {
+    setItems((cur) => cur.map((i) => (i.id === id ? next : i)));
   }
 
   const categoryName = new Map(categories.map((c) => [c.prefix, c.name]));
@@ -132,6 +159,13 @@ export function LibraryBrowser({ categories }: Props) {
                   </p>
                 )}
               </div>
+
+              {/* Trade price panel — admin-only (financial data), see
+                  hasFinancialAccess() above. */}
+              {hasFinancialAccess(item) && (
+                <TradePricePanel item={item} onSaved={(next) => patch(item.id, next)} onError={setError} />
+              )}
+
               <div className="mt-3 flex items-center justify-between border-t border-[#dcd6cc] pt-2">
                 {item.product_url ? (
                   <a
@@ -171,6 +205,109 @@ export function LibraryBrowser({ categories }: Props) {
   );
 }
 
+/**
+ * Trade price + received date + source (BUILD-SPEC.md "Library — trade
+ * price capture & duplicate detection"). Entering a trade price
+ * auto-fills the received date to today (still editable); a subtle
+ * hint appears once the price is >6 months old ("re-check with
+ * supplier"). Only ever rendered for admin sessions — see
+ * hasFinancialAccess() above — but the PATCH is also enforced
+ * server-side (app/api/library/[id]/route.ts strips non-admin writes).
+ */
+function TradePricePanel({
+  item,
+  onSaved,
+  onError,
+}: {
+  item: LibraryItem;
+  onSaved: (next: LibraryItem) => void;
+  onError: (msg: string | null) => void;
+}) {
+  const [price, setPrice] = useState(item.price_trade === null ? "" : String(item.price_trade));
+  const [receivedAt, setReceivedAt] = useState(item.trade_price_received_at ?? "");
+  const [source, setSource] = useState(item.trade_price_source ?? "");
+  const [saving, setSaving] = useState(false);
+
+  async function save(patch: Record<string, unknown>) {
+    setSaving(true);
+    onError(null);
+    try {
+      const res = await fetch(`/api/library/${item.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? "Could not save trade price");
+      const { item: next } = await res.json();
+      onSaved(next);
+      if ("trade_price_received_at" in next) setReceivedAt(next.trade_price_received_at ?? "");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Could not save trade price");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const stale = isTradePriceStale(receivedAt || null);
+
+  return (
+    <div className="mt-3 border-t border-[#dcd6cc] pt-2">
+      <p className="label-caps mb-1 text-sand">Trade price (admin)</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1">
+          <span className="text-caption text-charcoal/50">$</span>
+          <input
+            type="number"
+            step="0.01"
+            value={price}
+            onChange={(e) => setPrice(e.target.value)}
+            onBlur={() => {
+              const next = price.trim() === "" ? null : Number(price);
+              if (next === item.price_trade) return;
+              save({ price_trade: next });
+            }}
+            disabled={saving}
+            className="w-24 border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-body focus:border-nearblack focus:outline-none"
+          />
+        </label>
+        <label className="flex items-center gap-1">
+          <span className="text-caption text-charcoal/50">Received</span>
+          <input
+            type="date"
+            value={receivedAt}
+            onChange={(e) => setReceivedAt(e.target.value)}
+            onBlur={() => {
+              const next = receivedAt || null;
+              if (next === item.trade_price_received_at) return;
+              save({ trade_price_received_at: next });
+            }}
+            disabled={saving}
+            className="border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-caption focus:border-nearblack focus:outline-none"
+          />
+        </label>
+        <input
+          value={source}
+          onChange={(e) => setSource(e.target.value)}
+          onBlur={() => {
+            const next = source.trim() || null;
+            if (next === item.trade_price_source) return;
+            save({ trade_price_source: next });
+          }}
+          disabled={saving}
+          placeholder="Source (e.g. supplier rep / quote #)"
+          className="min-w-[160px] flex-1 border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-caption focus:border-nearblack focus:outline-none"
+        />
+      </div>
+      {item.price_trade !== null && (
+        <p className="mt-1 text-caption text-charcoal/40">
+          {aud.format(item.price_trade)}
+          {stale && <span className="ml-2 text-sand">⚠ Price aged &gt;6 months — re-check with supplier.</span>}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function LibraryForm({
   categories,
   onCreated,
@@ -192,7 +329,28 @@ function LibraryForm({
     product_url: "",
   });
   const [submitting, setSubmitting] = useState(false);
+  const [duplicates, setDuplicates] = useState<DuplicateMatch[]>([]);
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  // Non-blocking duplicate check on URL blur — BUILD-SPEC.md: "when a
+  // product URL is pasted (add item, add library item, or import)...
+  // offer 'Already in library — use existing item?'" — never blocks
+  // creation, purely informational here.
+  async function checkDuplicates() {
+    const url = form.product_url.trim();
+    if (!url) {
+      setDuplicates([]);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/library/check?url=${encodeURIComponent(url)}`);
+      if (!res.ok) return;
+      const body = await res.json();
+      setDuplicates(body.duplicates ?? []);
+    } catch {
+      // Silent — informational only.
+    }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -262,7 +420,26 @@ function LibraryForm({
       </label>
       <label className="flex flex-col gap-1 sm:col-span-2">
         <span className="label-caps">Product URL</span>
-        <input value={form.product_url} onChange={(e) => set("product_url", e.target.value)} className={field} />
+        <input
+          value={form.product_url}
+          onChange={(e) => {
+            set("product_url", e.target.value);
+            setDuplicates([]);
+          }}
+          onBlur={checkDuplicates}
+          className={field}
+        />
+        {duplicates.length > 0 && (
+          <div className="mt-1 space-y-0.5">
+            {duplicates.map((d) => (
+              <p key={`${d.source}-${d.id}`} className="text-caption text-sand">
+                ⚠ Already {d.source === "library" ? "in library" : "in a project"}:{" "}
+                {d.item_code ? `${d.item_code} — ` : ""}
+                {d.name}
+              </p>
+            ))}
+          </div>
+        )}
       </label>
       <div className="sm:col-span-3">
         <button

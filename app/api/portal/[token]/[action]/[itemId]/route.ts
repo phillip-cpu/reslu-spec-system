@@ -115,17 +115,20 @@ export async function POST(
   }
 
   // Audit trail with a snapshot (BUILD-SPEC.md §7 / Review §1.6).
+  // Snapshot shape fixed to {name, supplier, brand, selected_image_url}
+  // per the Week 3B portal audit — enough to identify what the client
+  // was looking at without carrying the whole row (and definitely
+  // without any pricing/ordering fields).
   await supabase.from("approval_events").insert({
     item_id: item.id,
     action,
     note,
     portal_token: token,
     item_snapshot: {
-      item_code: item.item_code,
       name: item.name,
       supplier: item.supplier,
-      quantity: item.quantity,
-      status: item.status,
+      brand: item.brand,
+      selected_image_url: item.selected_image_url,
     },
   });
 

@@ -126,6 +126,18 @@ Client-portal financial gating, the real scraper pipeline (image/RRP
 extraction + PDF document detection), and role-based admin enforcement for
 financial fields follow in later weeks per BUILD-SPEC.md.
 
+## Fonts (builder PDF)
+
+The FF&E schedule PDF (`components/pdf/SchedulePdf.tsx`) uses Cormorant
+Garamond Light for the cover title, page headers, and item names — this
+copy already has `public/fonts/CormorantGaramond.ttf` in place. If that
+file is ever missing (e.g. a fresh clone before it's been added back),
+the PDF route does **not** fail — it falls back to the built-in
+Times-Roman serif automatically. Drop a `CormorantGaramond.ttf` file
+into `public/fonts/` to bring the brand font back (or update the
+`CORMORANT_PATH` constant near the top of `SchedulePdf.tsx` if you'd
+rather use a different filename, e.g. `CormorantGaramond-Light.ttf`).
+
 ## Troubleshooting
 
 - **"Could not load projects" on the dashboard** — double-check the three
