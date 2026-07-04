@@ -357,3 +357,262 @@ export interface DuplicateMatch {
 export interface CheckDuplicatesResponse {
   duplicates: DuplicateMatch[];
 }
+
+// ------------------------------------------------------------
+// Estimating module (Week 5, additive) — supabase/migrations/007_estimating.sql
+// BUILD-SPEC.md "Project estimating module" / "Estimating module —
+// enriched from Phillip's Excel template" / "Invoice pipeline".
+// Entirely admin-only, financial-gated — see app/api/projects/[id]/estimate/**
+// and app/api/estimate/**. Appended here, never reordered, per this
+// feature's file-boundary rules.
+// ------------------------------------------------------------
+
+export interface EstimateTemplate {
+  id: string;
+  name: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EstimateTemplateSection {
+  id: string;
+  template_id: string;
+  name: string;
+  sort: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EstimateTemplateLine {
+  id: string;
+  section_id: string;
+  description: string;
+  unit: string | null;
+  sort: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CostSection {
+  id: string;
+  project_id: string;
+  name: string;
+  sort: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type QuoteStatus = "Q" | "S" | "NA";
+
+export interface CostLine {
+  id: string;
+  section_id: string;
+  project_id: string;
+  description: string;
+  qty: number | null;
+  unit: string | null;
+  rate_ex_gst: number | null;
+  cost_ex_gst: number | null;
+  quoted_to_client_ex_gst: number | null;
+  actual_paid_ex_gst: number | null;
+  quote_status: QuoteStatus | null;
+  item_id: string | null;
+  notes: string | null;
+  sort: number;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+/** A cost_sections row with its (non-deleted) cost_lines nested, as returned by GET /api/projects/[id]/estimate. */
+export interface CostSectionWithLines extends CostSection {
+  lines: CostLine[];
+  /** Per-section rollup — see lib/estimate.ts sectionRollup(). */
+  rollup: {
+    costExGst: number;
+    quotedExGst: number;
+    actualExGst: number;
+    variance: number | null;
+  };
+}
+
+export type VariationStatus = "proposed" | "approved" | "rejected";
+
+export interface Variation {
+  id: string;
+  project_id: string;
+  var_number: number;
+  var_date: string;
+  description: string;
+  cost_ex_gst: number;
+  status: VariationStatus;
+  approved_by: string | null;
+  requested_by: string | null;
+  item_id: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface MeasurementGroup {
+  id: string;
+  project_id: string;
+  name: string;
+  sort: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Measurement {
+  id: string;
+  group_id: string;
+  project_id: string;
+  label: string;
+  value: number;
+  unit: string;
+  item_id: string | null;
+  notes: string | null;
+  sort: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A measurement_groups row with its measurements nested, plus a computed group total. */
+export interface MeasurementGroupWithRows extends MeasurementGroup {
+  measurements: Measurement[];
+  total: number;
+}
+
+export type InvoiceMatchType = "cost_line" | "item";
+export type InvoiceStatus = "unmatched" | "proposed" | "approved" | "rejected";
+
+/**
+ * Schema-only this release (BUILD-SPEC.md "Invoice pipeline — AI-updated
+ * actuals") — no UI ships against this yet, but the shape is defined now
+ * so the future queue UI/Aria integration doesn't need a types change.
+ */
+export interface Invoice {
+  id: string;
+  project_id: string;
+  supplier: string;
+  invoice_number: string;
+  invoice_date: string | null;
+  amount_ex_gst: number;
+  gst: number;
+  total: number;
+  storage_path: string | null;
+  proposed_match_type: InvoiceMatchType | null;
+  proposed_match_id: string | null;
+  confidence_note: string | null;
+  status: InvoiceStatus;
+  approved_by: string | null;
+  approved_at: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** GET /api/projects/[id]/estimate response — sections+lines plus the whole-job rollup. */
+export interface EstimateResponse {
+  sections: CostSectionWithLines[];
+  markup_pct: number;
+  rollup: {
+    allTradesSubtotalExGst: number;
+    approvedVariationsExGst: number;
+    markupPct: number;
+    markupExGst: number;
+    totalToClientExGst: number;
+    gst: number;
+    totalIncGst: number;
+    quotedExGst: number;
+    actualExGst: number;
+  };
+}
+
+/** POST /api/projects/[id]/estimate/init response. */
+export interface EstimateInitResponse {
+  sections: CostSectionWithLines[];
+}
+
+/** body accepted by PATCH /api/estimate/lines/[id] — all fields optional, partial update. */
+export interface PatchCostLineInput {
+  description?: string;
+  qty?: number | null;
+  unit?: string | null;
+  rate_ex_gst?: number | null;
+  cost_ex_gst?: number | null;
+  quoted_to_client_ex_gst?: number | null;
+  actual_paid_ex_gst?: number | null;
+  quote_status?: QuoteStatus | null;
+  item_id?: string | null;
+  notes?: string | null;
+  sort?: number;
+}
+
+/** body accepted by POST /api/estimate/sections/[sectionId]/lines. */
+export interface CreateCostLineInput {
+  description: string;
+  qty?: number | null;
+  unit?: string | null;
+  rate_ex_gst?: number | null;
+  cost_ex_gst?: number | null;
+  quoted_to_client_ex_gst?: number | null;
+  actual_paid_ex_gst?: number | null;
+  quote_status?: QuoteStatus | null;
+  item_id?: string | null;
+  notes?: string | null;
+}
+
+/** body accepted by POST /api/projects/[id]/estimate/sections. */
+export interface CreateCostSectionInput {
+  name: string;
+}
+
+/** body accepted by POST /api/projects/[id]/estimate/variations. */
+export interface CreateVariationInput {
+  description: string;
+  var_date?: string;
+  cost_ex_gst?: number;
+  status?: VariationStatus;
+  approved_by?: string;
+  requested_by?: string;
+  item_id?: string;
+  notes?: string;
+}
+
+/** body accepted by PATCH /api/estimate/variations/[id]. */
+export interface PatchVariationInput {
+  description?: string;
+  var_date?: string;
+  cost_ex_gst?: number;
+  status?: VariationStatus;
+  approved_by?: string | null;
+  requested_by?: string | null;
+  item_id?: string | null;
+  notes?: string | null;
+}
+
+/** body accepted by POST /api/projects/[id]/estimate/measurements/groups. */
+export interface CreateMeasurementGroupInput {
+  name: string;
+}
+
+/** body accepted by POST /api/estimate/measurements/groups/[groupId]/measurements. */
+export interface CreateMeasurementInput {
+  label: string;
+  value?: number;
+  unit?: string;
+  item_id?: string;
+  notes?: string;
+}
+
+/** body accepted by PATCH /api/estimate/measurements/[id]. */
+export interface PatchMeasurementInput {
+  label?: string;
+  value?: number;
+  unit?: string;
+  item_id?: string | null;
+  notes?: string | null;
+}

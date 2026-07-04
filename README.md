@@ -40,7 +40,8 @@ This downloads everything the app needs. It can take a few minutes the first tim
    inactivity, which would take the app offline unexpectedly.
 
 2. Once the project is created, open the **SQL Editor** in the Supabase
-   dashboard and run the three files in this order:
+   dashboard and run these files **in order** (each is idempotent — safe
+   to re-run if you're not sure whether it already applied):
    - `supabase/migrations/001_initial.sql` (creates all tables)
    - `supabase/migrations/002_grants.sql` (grants the app's database
      roles access to those tables — without this, every screen shows
@@ -48,18 +49,32 @@ This downloads everything the app needs. It can take a few minutes the first tim
    - `supabase/migrations/003_profiles_provisioning.sql` (auto-creates a
      profile for each team member — without this, adding items fails
      with a foreign-key error)
-   - `supabase/seed.sql` (adds the 21 category codes and a demo project)
+   - `supabase/migrations/004_library_scraper.sql` (library trade-price
+     provenance + duplicate-detection columns + scraped-document staging)
+   - `supabase/migrations/005_portal_approvals.sql` (approval-reset audit
+     log + creates the `item-images` storage bucket)
+   - `supabase/migrations/006_monday_email.sql` (adds `projects.settings`
+     JSON column used for per-project Monday column mapping, and creates
+     the `portal_digest_queue` table used by the team email digest)
+   - `supabase/seed.sql` (adds the category codes and a demo project)
 
-3. Go to **Authentication → Providers** and make sure **Email** is enabled.
+3. Go to **Storage** and create one more bucket by hand (only
+   `item-images` is created by a migration): a bucket named **`assets`**,
+   public. This holds item images (on selection) and item documents
+   (spec sheets, install manuals). Both buckets are safe as public-read —
+   nothing sensitive (pricing, client data) is ever stored as a file;
+   only already-selected product images and spec documents live there.
+
+4. Go to **Authentication → Providers** and make sure **Email** is enabled.
    Go to **Authentication → Settings** and turn **off** "Allow new users to
    sign up" — accounts for this app are created manually by an administrator,
    not via self sign-up.
 
-4. Create a login for yourself: **Authentication → Users → Add user**, enter
+5. Create a login for yourself: **Authentication → Users → Add user**, enter
    an email and a password. Repeat for each team member (Phillip, Tenille,
    Nathan, Tony).
 
-5. Go to **Settings → API** in the Supabase dashboard. You'll need three
+6. Go to **Settings → API** in the Supabase dashboard. You'll need three
    values from this page in the next step:
    - Project URL
    - `anon` `public` key
@@ -72,10 +87,11 @@ This downloads everything the app needs. It can take a few minutes the first tim
    cp .env.local.example .env.local
    ```
 2. Open `.env.local` in a text editor and paste in the three Supabase values
-   from Step 2.5 above. Leave the Monday.com and Gmail values blank for now —
-   they aren't used until later weeks, and the tokens mentioned in the
-   original planning document must be rotated (replaced with new ones)
-   before they're used anywhere, since they were exposed in a shared file.
+   from Step 2.6 above. Leave the Monday.com and Gmail values blank until
+   you're ready to turn those integrations on (see "Monday.com and Gmail
+   integrations" below) — the tokens mentioned in the original planning
+   document must be rotated (replaced with new ones) before they're used
+   anywhere, since they were exposed in a shared file.
 3. Save the file. **Never share this file or commit it to git** — it holds
    real credentials once filled in.
 
@@ -90,7 +106,7 @@ a login page. Sign in with one of the accounts you created in Step 2.4.
 
 To stop the app, go back to Terminal and press `Ctrl + C`.
 
-## What's built so far (Week 1 + Week 2)
+## What's built so far
 
 - Project scaffold, brand styling (cream/charcoal/sand, no rounded corners)
 - Database schema with categories, projects, items, files, approval history
@@ -121,10 +137,94 @@ To stop the app, go back to Terminal and press `Ctrl + C`.
   the client portal or the builder PDF.
 - Product library, client portal, PDF export, and Monday.com sync (one-way,
   on status → Ordered).
+- **Week 4** — Monday.com sync rebuilt properly (`lib/monday/client.ts` +
+  `lib/monday/sync.ts`): real column mapping (status, supplier, quantity,
+  product URL, ordered/ETA dates) driven by each project's
+  `settings.monday.columns` JSON, `change_multiple_column_values` for
+  re-syncing an already-created item, and a manual retry route
+  (`POST /api/monday/sync/[itemId]`). Every Monday GraphQL call uses
+  variables only — never string interpolation. The item PATCH route's
+  edit whitelist gained the fields the scrape/duplicate-detection flows
+  need (`image_options`, `scrape_status`, `scraped_documents`,
+  `product_url_normalized`), and now strips `price_trade`/`markup_pct`
+  from both reads and writes for non-admin sessions, matching the
+  library API's gating pattern.
+- **Week 4** — Team email digest redesigned around a durable queue
+  (`portal_digest_queue`, migration 006) instead of sending on every
+  portal click: `lib/gmail/digest.ts`'s `recordPortalAction()` queues
+  each client approve/flag, and `POST /api/digest/flush` (any signed-in
+  team member) batches pending rows per project and emails all admins,
+  e.g. "Goldsworthy — client activity: 2 approved, 1 flagged (SW-04:
+  'wrong colour')" with a link to the register.
+- **Week 4** — Settings gained a real **Team** section (admin can change
+  roles via `PATCH /api/profiles/[id]`, blocked from demoting the last
+  admin) and a real **Integrations** section (green/grey dots reflecting
+  whether `MONDAY_API_TOKEN` / the Gmail credential trio are present on
+  the server — never exposes the values themselves). A new
+  **Project Settings** page (`/projects/[id]/settings`) covers project
+  field edits, the Monday board ID, the client portal link (copy +
+  admin-only regenerate), and admin-only archiving.
 
-Client-portal financial gating, the real scraper pipeline (image/RRP
-extraction + PDF document detection), and role-based admin enforcement for
-financial fields follow in later weeks per BUILD-SPEC.md.
+Client-portal financial gating and the real scraper pipeline (image/RRP
+extraction + PDF document detection) were completed in Week 3. Role-based
+admin enforcement for financial fields is now in place project-wide
+(library, items, settings) as of Week 4.
+
+## Monday.com and Gmail integrations
+
+Both are optional and dormant until configured — the app works fully
+without them.
+
+- **Monday.com**: set `MONDAY_API_TOKEN` in `.env.local` (or the Vercel
+  project's environment variables). Then, per project, set a **board ID**
+  in that project's Settings page (or the register's inline picker) and
+  optionally a **column map** in `projects.settings` — see
+  `lib/monday/sync.ts`'s `MondayColumnMap` doc comment for the JSON shape
+  and documented example column IDs (`status`, `supplier`, `quantity`,
+  `product_url`, `ordered_at`, `eta`). Monday column IDs are board-specific
+  and auto-generated by Monday, so there's no universal default — open the
+  target board, add/identify the columns you want populated, and copy
+  their IDs (Monday's column settings menu → "Column settings" shows the
+  ID, or use the Monday API playground) into that JSON.
+- **Gmail** (team digest): set `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`,
+  `ARIA_GMAIL_REFRESH_TOKEN` (and optionally `GMAIL_TOKEN_URI` if not
+  using Google's default). These must be freshly rotated credentials for
+  the `aria@reslu.com.au` mailbox — the ones referenced in the original
+  planning document are considered compromised. Once configured, trigger
+  `POST /api/digest/flush` (authenticated) on whatever cadence you want —
+  a Vercel Cron job, an external uptime ping, or a manual button — to send
+  any pending client-activity digest.
+
+## Deploying to Vercel
+
+1. Push this repository to the private GitHub repo (`reslu-spec-system`)
+   — Vercel deploys from GitHub, not from a local folder.
+2. In the Vercel dashboard, **Add New → Project**, import the repo. Leave
+   the framework preset as Next.js (auto-detected).
+3. Under **Settings → Environment Variables**, add every variable from
+   `.env.local.example` with real, rotated values (Production environment
+   at minimum; add Preview too if you want preview deployments to work
+   against the same Supabase project). Include
+   `NEXT_PUBLIC_APP_URL=https://<your-domain>` — this is used to build the
+   client portal link shown in Settings and in digest emails, so it must
+   be the real deployed URL, not `localhost`.
+4. `vercel.json` already sets longer function timeouts for the routes that
+   need them on Vercel's default (Node.js) runtime:
+   - `app/api/projects/[id]/pdf/route.ts` → 60s (PDF generation embeds
+     images and can take longer than the 10s default)
+   - `app/api/items/[id]/scrape/route.ts` → 30s (fetches an external
+     product page)
+   - `app/api/projects/[id]/import/route.ts` → 30s (bulk CSV row inserts)
+   No changes needed unless a new long-running route is added later.
+5. Deploy. On the first visit, sign in with a Supabase Auth account
+   created in Step 2's item 5 above (self-signup is disabled by design).
+6. **Supabase Pro plan**: confirm the Supabase project is on Pro before
+   relying on this in production — the free tier pauses the database after
+   7 days of inactivity, which would silently take the live app offline.
+7. Storage buckets: confirm both `assets` and `item-images` exist in the
+   Supabase project connected to this Vercel deployment (see Step 2's
+   items 2–3 above) — a fresh Supabase project only gets `item-images`
+   from the migration; `assets` must still be created by hand.
 
 ## Fonts (builder PDF)
 

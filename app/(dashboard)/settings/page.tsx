@@ -2,12 +2,22 @@ import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { Header } from "@/components/layout/Header";
 import { CategorySettings } from "@/components/settings/CategorySettings";
+import { TeamSettings } from "@/components/settings/TeamSettings";
+import { IntegrationStatus } from "@/components/settings/IntegrationStatus";
 import type { Category, Profile } from "@/types";
 
 /**
- * Settings — category management (admin-only, enforced in the API) and
- * the team roster. Integrations (Monday, Gmail) are configured via
- * environment variables, not here.
+ * Settings — category management, team roster + role editing (both
+ * admin-only, enforced server-side in the respective API routes), and
+ * read-only integration status.
+ *
+ * Week 4: Team section gained real role editing (was a static list) —
+ * see components/settings/TeamSettings.tsx + PATCH /api/profiles/[id].
+ * Integrations section gained real green/grey status dots computed
+ * from server-side env presence (was a static paragraph) — see
+ * components/settings/IntegrationStatus.tsx. Booleans are computed
+ * here, server-side, from process.env — never by exposing the env
+ * vars themselves to the client.
  */
 export default async function SettingsPage() {
   const supabase = await createClient();
@@ -18,6 +28,13 @@ export default async function SettingsPage() {
     supabase.from("categories").select("*").order("sort_order"),
     supabase.from("profiles").select("*").order("full_name"),
   ]);
+
+  const mondayConfigured = Boolean(process.env.MONDAY_API_TOKEN);
+  const gmailConfigured = Boolean(
+    process.env.GMAIL_CLIENT_ID &&
+      process.env.GMAIL_CLIENT_SECRET &&
+      process.env.ARIA_GMAIL_REFRESH_TOKEN
+  );
 
   return (
     <>
@@ -40,33 +57,30 @@ export default async function SettingsPage() {
         <section>
           <h2 className="mb-1 text-subhead text-nearblack">Team</h2>
           <p className="mb-4 text-body text-charcoal/60">
-            All team members have equal access to projects. The admin role only
-            gates settings changes.
+            Financial data (trade price, markup, client price) is admin-only,
+            enforced by the API regardless of what the screen shows.
+            {!isAdmin && " Only admins can change roles."}
           </p>
-          <ul className="max-w-lg divide-y divide-[#e5e0d6] border border-[#dcd6cc] bg-offwhite">
-            {(team ?? []).map((p: Profile) => (
-              <li key={p.id} className="flex items-center justify-between px-4 py-3">
-                <div>
-                  <p className="text-body text-nearblack">{p.full_name}</p>
-                  <p className="text-caption text-charcoal/50">{p.email}</p>
-                </div>
-                <span className="label-caps">{p.role}</span>
-              </li>
-            ))}
-          </ul>
-          <p className="mt-3 text-caption text-charcoal/50">
-            Add or remove team members in the Supabase dashboard
-            (Authentication → Users). New users get a profile automatically.
-          </p>
+          <TeamSettings
+            initialTeam={(team ?? []) as Profile[]}
+            canEdit={isAdmin}
+            currentUserId={info?.userId ?? ""}
+          />
         </section>
 
         <section>
           <h2 className="mb-1 text-subhead text-nearblack">Integrations</h2>
-          <p className="text-body text-charcoal/60">
-            Monday.com procurement sync and the Gmail client-action digest are
-            configured with credentials in <code>.env.local</code>. They stay
-            dormant until those values are supplied.
+          <p className="mb-4 text-body text-charcoal/60">
+            Monday.com procurement sync and the Gmail team digest are configured
+            with credentials in <code>.env.local</code> (or the Vercel project&apos;s
+            environment variables in production). They stay dormant until those
+            values are supplied — this list only reflects whether the app can see
+            them, not whether the credentials are valid.
           </p>
+          <IntegrationStatus
+            mondayConfigured={mondayConfigured}
+            gmailConfigured={gmailConfigured}
+          />
         </section>
       </main>
     </>

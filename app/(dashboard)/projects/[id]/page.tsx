@@ -53,6 +53,13 @@ export default async function ProjectPage({
             >
               Import CSV
             </a>
+            {/* Estimate module (Week 5, admin-gated — see app/(dashboard)/projects/[id]/estimate/page.tsx) */}
+            <a
+              href={`/projects/${id}/estimate`}
+              className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
+            >
+              Estimate
+            </a>
             <a
               href={`/api/projects/${id}/pdf`}
               target="_blank"

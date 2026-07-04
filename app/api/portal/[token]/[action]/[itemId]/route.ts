@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { rateLimit } from "@/lib/rate-limit";
-import { sendTeamEmail } from "@/lib/gmail";
+// Week 4 (lib/monday.ts + lib/gmail.ts owner, boundary: lib/gmail/**):
+// queue this action for the batched team digest instead of sending an
+// email inline on every portal click — see lib/gmail/digest.ts for the
+// full design. This is the one permitted portal-file touch outside the
+// Estimating/portal boundary; recordPortalAction() never throws and
+// never blocks this route's response.
+import { recordPortalAction } from "@/lib/gmail/digest";
 import type { PortalItem } from "@/types";
 
 /**
@@ -132,58 +138,15 @@ export async function POST(
     },
   });
 
-  // Team digest email (BUILD-SPEC.md §9 / Review §1.8). Best-effort and
-  // dormant until Gmail credentials are configured — never fails the
-  // client's action.
-  void notifyTeam(supabase, project.id, project.name, item.name, action, note);
+  // Team digest (BUILD-SPEC.md §9 / Review §1.8). Queues this action for
+  // the batched per-project digest (lib/gmail/digest.ts) instead of
+  // emailing inline — never fails the client's action, never throws.
+  void recordPortalAction(supabase, {
+    projectId: project.id,
+    itemId: item.id,
+    action,
+    note,
+  });
 
   return NextResponse.json({ item: updated as PortalItem });
-}
-
-/**
- * Fire-and-forget team digest. Computes the project's current approved /
- * flagged tallies so the email reads like "Client approved 4, flagged 2".
- * Any failure (including missing Gmail creds) is swallowed.
- */
-async function notifyTeam(
-  supabase: ReturnType<typeof createServiceRoleClient>,
-  projectId: string,
-  projectName: string,
-  itemName: string,
-  action: "approve" | "flag",
-  note: string | null
-): Promise<void> {
-  try {
-    const [{ data: team }, approved, flagged] = await Promise.all([
-      supabase.from("profiles").select("email"),
-      supabase
-        .from("items")
-        .select("*", { count: "exact", head: true })
-        .eq("project_id", projectId)
-        .is("deleted_at", null)
-        .eq("client_approved", true),
-      supabase
-        .from("items")
-        .select("*", { count: "exact", head: true })
-        .eq("project_id", projectId)
-        .is("deleted_at", null)
-        .eq("client_flagged", true),
-    ]);
-
-    const recipients = (team ?? [])
-      .map((p: { email: string }) => p.email)
-      .filter(Boolean);
-
-    const verb = action === "approve" ? "approved" : "flagged";
-    await sendTeamEmail({
-      to: recipients,
-      subject: `${projectName}: client ${verb} “${itemName}”`,
-      body:
-        `The client just ${verb} “${itemName}” on ${projectName}.` +
-        (note ? `\n\nNote: ${note}` : "") +
-        `\n\nProject status: ${approved.count ?? 0} approved, ${flagged.count ?? 0} flagged.`,
-    });
-  } catch {
-    // digest is non-critical
-  }
 }
