@@ -33,6 +33,15 @@ import type { Item } from "@/types";
  * Week 9 addition: supplier_contact_id (migration 013_boards_contacts.sql)
  * — the Address Book link point for this item's supplier. Team-visible,
  * not financial, so no admin-gating needed for this field.
+ *
+ * Phase 11 extension: decision_needed_by (migration 016_portal_v2.sql)
+ * — design-phase decision deadline. The column and its portal-side
+ * read/render shipped in Phase 11B, but that agent didn't own this
+ * file, so there was previously no write path for staff to actually
+ * set one (see docs/API.md's "Known gap" note on this route, now
+ * closed). Plain team-editable date, not financial — no admin-gating.
+ * Falls through to the date-passthrough branch below (not NUMERIC/
+ * TEXT/JSON_FIELDS), same as ordered_at/eta/delivered_at.
  */
 const EDITABLE_FIELDS = new Set([
   // Spec view
@@ -68,6 +77,9 @@ const EDITABLE_FIELDS = new Set([
   "ordered_at",
   "eta",
   "delivered_at",
+  // Phase 11 extension — design-phase decision deadline (see doc
+  // comment above EDITABLE_FIELDS).
+  "decision_needed_by",
 ]);
 
 /**

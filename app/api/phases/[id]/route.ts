@@ -14,6 +14,22 @@ const EDITABLE_FIELDS = new Set([
   "sort",
 ]);
 
+// Fields that are always system-managed and can never be set by a
+// client PATCH, regardless of phase kind — silently stripped rather
+// than 400ing, consistent with EDITABLE_FIELDS already only picking
+// up recognised keys (anything not in EDITABLE_FIELDS, including
+// `kind`/`cost_section_id`, is already ignored by the loop below; this
+// constant exists purely so that fact is documented explicitly rather
+// than left implicit).
+const SYSTEM_MANAGED_FIELDS = new Set(["kind", "cost_section_id"]);
+
+// Fields that are blocked outright on an umbrella-kind phase — its
+// dates/name are system-recomputed on every GET (see
+// app/api/projects/[id]/phases/route.ts), so a client edit to them
+// would just be silently overwritten on the next read anyway; this
+// returns an explicit 400 instead of a confusing no-op.
+const UMBRELLA_RESTRICTED_FIELDS = new Set(["name", "start_date", "end_date"]);
+
 /**
  * PATCH /api/phases/[id]
  * body: PatchPhaseInput (partial). Validates color_key enum and
@@ -21,6 +37,20 @@ const EDITABLE_FIELDS = new Set([
  * so a partial update — e.g. only moving start_date later — can't
  * silently create an invalid range that the DB constraint would then
  * reject with a raw Postgres error. Response: { phase }.
+ *
+ * `kind` and `cost_section_id` are never client-editable (see
+ * SYSTEM_MANAGED_FIELDS — they simply aren't in EDITABLE_FIELDS, so
+ * they're silently stripped from the update, same handling as any
+ * other unrecognised key in the body).
+ *
+ * If the phase being patched is kind === 'umbrella', any attempt to
+ * touch name/start_date/end_date is rejected with 400 — those fields
+ * are system-recomputed on every GET /api/projects/[id]/phases call
+ * (umbrella recompute-on-read), so a direct edit here would either be
+ * silently clobbered on the next read (confusing) or fight the
+ * recompute logic. Other fields (color_key, contact_id, notes, sort)
+ * remain editable on an umbrella phase — there's no reason to block
+ * cosmetic/organisational edits, only the system-managed span.
  */
 export async function PATCH(
   request: NextRequest,
@@ -52,6 +82,16 @@ export async function PATCH(
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  if (existing.kind === "umbrella") {
+    const touchesRestricted = Object.keys(body).some((k) => UMBRELLA_RESTRICTED_FIELDS.has(k));
+    if (touchesRestricted) {
+      return NextResponse.json(
+        { error: "Umbrella phase dates and name are system-managed and cannot be edited directly." },
+        { status: 400 }
+      );
+    }
+  }
+
   if (body.color_key !== undefined && !VALID_COLORS.has(body.color_key)) {
     return NextResponse.json(
       { error: "color_key must be one of sand, charcoal, teal, amber" },
@@ -70,7 +110,7 @@ export async function PATCH(
 
   const update: Record<string, unknown> = {};
   for (const [key, raw] of Object.entries(body)) {
-    if (!EDITABLE_FIELDS.has(key)) continue;
+    if (!EDITABLE_FIELDS.has(key)) continue; // silently strips kind/cost_section_id and any other unrecognised key
     if (key === "name") {
       const trimmed = typeof raw === "string" ? raw.trim() : raw;
       if (!trimmed) {
@@ -110,6 +150,15 @@ export async function PATCH(
  * DELETE /api/phases/[id]
  * Soft-delete (deleted_at) — parity with items/cost_lines/variations/
  * board_tasks.
+ *
+ * Deleting an umbrella phase directly IS allowed (no special-case
+ * block) — the simplest correct behaviour, since the next
+ * GET /api/projects/[id]/phases will simply recreate it if the
+ * "Preliminaries & Site" cost section still has live lines. There is
+ * no data-loss risk in allowing it: the umbrella phase carries no
+ * team-authored content of its own (its dates/name are system-derived,
+ * and cost_section_lines are read live from cost_lines, not stored
+ * on the phase), so deleting it is at worst a no-op until the next read.
  */
 export async function DELETE(
   _request: NextRequest,

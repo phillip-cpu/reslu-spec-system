@@ -6,16 +6,23 @@
  * or stacked sections, mobile-first)"). Plain in-page anchors — no
  * router involved, no client-side section state to keep in sync with
  * SSR'd content below.
+ *
+ * Phase 11B renames: "Schedule" -> "Selections" (the FF&E approvals
+ * section, restyled at scale — BUILD-SPEC.md §"Selections (FF&E
+ * approvals)"), "Updates" -> "Diary" (magazine-style journal entries),
+ * and adds "Handover" (only shown once the project is completed — see
+ * app/portal/[token]/page.tsx's `visible.handover` flag).
  */
 
 const SECTIONS = [
-  { id: "schedule", label: "Schedule" },
+  { id: "selections", label: "Selections" },
   { id: "timeline", label: "Timeline" },
+  { id: "diary", label: "Diary" },
   { id: "documents", label: "Documents" },
   { id: "contracts", label: "Contracts" },
   { id: "variations", label: "Variations" },
   { id: "photos", label: "Progress" },
-  { id: "updates", label: "Updates" },
+  { id: "handover", label: "Handover" },
 ] as const;
 
 export function PortalNav({ visible }: { visible: Record<string, boolean> }) {

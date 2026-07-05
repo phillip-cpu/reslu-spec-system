@@ -46,6 +46,12 @@ export async function updateSession(request: NextRequest) {
     // cookieless cron GET reaches the handler instead of bouncing to
     // /login. (Re-added — do not remove: the digest cron breaks without it.)
     pathname.startsWith("/api/digest") ||
+    // Trade portal (Week 11): /trade/[token] is a public, token-gated page
+    // (like /portal); /api/trade/[token]/respond validates the token itself;
+    // /api/trade-reminders self-authenticates via CRON_SECRET. All must skip
+    // the auth-redirect so trades (no session) and Vercel Cron reach them.
+    pathname.startsWith("/trade") ||
+    pathname.startsWith("/api/trade") ||
     pathname.startsWith("/_next") ||
     pathname.startsWith("/favicon") ||
     pathname.startsWith("/reslu-logo") ||

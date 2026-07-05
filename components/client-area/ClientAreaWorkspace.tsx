@@ -4,9 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 import clsx from "clsx";
 import { CadenceBanner } from "@/components/client-area/CadenceBanner";
 import { ProgressPhotosPanel } from "@/components/client-area/ProgressPhotosPanel";
-import { UpdatesPanel } from "@/components/client-area/UpdatesPanel";
+import { DiaryPanel, type DiaryUpdateRow } from "@/components/client-area/DiaryPanel";
 import { ContractsPanel } from "@/components/client-area/ContractsPanel";
 import { VariationSharingPanel } from "@/components/client-area/VariationSharingPanel";
+import { HandoverCurationPanel } from "@/components/client-area/HandoverCurationPanel";
 
 export interface ClientAreaSummary {
   files: {
@@ -36,12 +37,7 @@ export interface ClientAreaSummary {
     voided_reason: string | null;
     created_at: string;
   }[];
-  updates: {
-    id: string;
-    title: string;
-    published_at: string | null;
-    created_at: string;
-  }[];
+  updates: DiaryUpdateRow[];
   photo_count: number;
   cadence: {
     last_published_at: string | null;
@@ -50,11 +46,18 @@ export interface ClientAreaSummary {
   };
 }
 
+// "Diary" per BUILD-SPEC.md §"Phase 11 — Diary" ("weekly updates v2 ...
+// journal entries"; the client area's "Updates" tab from Week 8B is
+// renamed to match the portal-facing "Diary" section). Tab key stays
+// "diary" (not "updates") so a deep link like
+// /projects/[id]/client?tab=diary (used by the Gallery's "Add to diary
+// draft" handoff) resolves directly without a legacy-key mapping.
 const TABS = [
   { key: "photos", label: "Progress photos" },
-  { key: "updates", label: "Updates" },
+  { key: "diary", label: "Diary" },
   { key: "contracts", label: "Contracts & signatures" },
   { key: "variations", label: "Variations" },
+  { key: "handover", label: "Handover pack" },
 ] as const;
 
 type TabKey = (typeof TABS)[number]["key"];
@@ -76,7 +79,14 @@ export function ClientAreaWorkspace({
   portalToken: string;
   isAdmin: boolean;
 }) {
-  const [tab, setTab] = useState<TabKey>("photos");
+  // Initial tab honours ?tab=diary (or any valid tab key) in the URL —
+  // the Gallery's "Add to diary draft" action redirects here with that
+  // query param so the handoff lands directly on the Diary tab.
+  const [tab, setTab] = useState<TabKey>(() => {
+    if (typeof window === "undefined") return "photos";
+    const requested = new URLSearchParams(window.location.search).get("tab");
+    return (TABS.some((t) => t.key === requested) ? requested : "photos") as TabKey;
+  });
   const [summary, setSummary] = useState<ClientAreaSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -138,8 +148,8 @@ export function ClientAreaWorkspace({
       ) : (
         <>
           {tab === "photos" && <ProgressPhotosPanel projectId={projectId} />}
-          {tab === "updates" && summary && (
-            <UpdatesPanel projectId={projectId} initialUpdates={summary.updates} onChange={reload} />
+          {tab === "diary" && summary && (
+            <DiaryPanel projectId={projectId} initialUpdates={summary.updates} onChange={reload} />
           )}
           {tab === "contracts" && summary && (
             <ContractsPanel
@@ -157,6 +167,7 @@ export function ClientAreaWorkspace({
               onChange={reload}
             />
           )}
+          {tab === "handover" && <HandoverCurationPanel projectId={projectId} />}
         </>
       )}
     </div>

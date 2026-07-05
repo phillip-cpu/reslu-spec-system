@@ -10,6 +10,10 @@ import { rateLimit } from "@/lib/rate-limit";
 import { recordPortalAction } from "@/lib/gmail/digest";
 import type { PortalItem } from "@/types";
 
+/** PortalItem plus the Phase 11B decision-deadline field — see the
+ * identical note in app/api/portal/[token]/bulk-approve/route.ts. */
+type PortalItemWithDeadline = PortalItem & { decision_needed_by: string | null };
+
 /**
  * POST /api/portal/[token]/[action]/[itemId]   action ∈ approve | flag
  *
@@ -26,7 +30,7 @@ import type { PortalItem } from "@/types";
  */
 
 const PORTAL_FIELDS =
-  "id,item_code,name,description,supplier,quantity,location,status,selected_image_url,client_approved,client_flagged,client_flag_note";
+  "id,item_code,name,description,supplier,quantity,location,status,selected_image_url,client_approved,client_flagged,client_flag_note,decision_needed_by";
 
 function clientIp(request: NextRequest): string {
   const fwd = request.headers.get("x-forwarded-for");
@@ -148,5 +152,5 @@ export async function POST(
     note,
   });
 
-  return NextResponse.json({ item: updated as PortalItem });
+  return NextResponse.json({ item: updated as PortalItemWithDeadline });
 }

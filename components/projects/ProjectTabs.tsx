@@ -6,6 +6,8 @@ export type ProjectTabKey =
   | "board"
   | "timeline"
   | "documents"
+  | "gallery" // Phase 11B — site photo gallery, see app/(dashboard)/projects/[id]/gallery/
+  | "client" // Phase 11B — team-side client area, see app/(dashboard)/projects/[id]/client/
   | "estimate"
   | "invoices"
   | "settings";
@@ -41,6 +43,8 @@ export function ProjectTabs({ projectId, active, isAdmin }: Props) {
     { key: "board", label: "Board", href: `/projects/${projectId}/board` },
     { key: "timeline", label: "Timeline", href: `/projects/${projectId}/timeline` },
     { key: "documents", label: "Documents", href: `/projects/${projectId}/documents` },
+    { key: "gallery", label: "Gallery", href: `/projects/${projectId}/gallery` },
+    { key: "client", label: "Client area", href: `/projects/${projectId}/client` },
     { key: "estimate", label: "Estimate", href: `/projects/${projectId}/estimate`, adminOnly: true },
     { key: "invoices", label: "Invoices", href: `/projects/${projectId}/invoices`, adminOnly: true },
     { key: "settings", label: "Settings", href: `/projects/${projectId}/settings` },

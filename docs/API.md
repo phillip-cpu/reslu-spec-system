@@ -68,6 +68,16 @@ Auth: session. Body: `Partial<Project>` — only `id`, `client_token`,
 `status: "archived"` can be set via PUT as an alternate path to the
 dedicated DELETE below — both work, DELETE is the documented way.
 
+**Phase 11 extension (5 July 2026):** `components/settings/
+ProjectSettingsForm.tsx` gains a "Client contacts" group writing
+through this same route (no new route needed — the body-passthrough
+above already covers it): `client_email`, `notify_client` (both
+migration `016_portal_v2.sql` — existed in the schema since Phase 11B
+but were never surfaced on any form until now) plus `client_phone`,
+`client_secondary_name`, `client_secondary_email`,
+`client_secondary_phone` (new, migration `017_project_contacts.sql` —
+second owner on a couple's job).
+
 ### DELETE /api/projects/[id]
 Auth: session. Body: none. Response: `{ ok: true }`. Soft-delete: sets
 `status = "archived"` (not a hard delete).
@@ -157,13 +167,26 @@ quantity, unit, location, application_note, colour, material, finish,
 width_mm, height_mm, length_mm, depth_mm, status, product_url,
 selected_image_url, image_options, scrape_status, scraped_documents,
 price_rrp, price_trade, markup_pct, lead_time_weeks, ordered_at, eta,
-delivered_at`. `price_trade`/`markup_pct` are silently dropped from a
-non-admin body (not rejected). `item_code` is immutable. Response:
-`{ item }` (stripped for non-admins). Side effect: when `status`
-transitions to `"Ordered"` and no `monday_item_id` exists yet, fires a
-one-way Monday sync via `after()` — fire-and-forget, never blocks or
-fails the response; on failure nothing is written back (a later status
-change or `POST /api/monday/sync/[itemId]` can retry). **Aria-relevant.**
+delivered_at, decision_needed_by`. `price_trade`/`markup_pct` are
+silently dropped from a non-admin body (not rejected). `item_code` is
+immutable. Response: `{ item }` (stripped for non-admins). Side effect:
+when `status` transitions to `"Ordered"` and no `monday_item_id` exists
+yet, fires a one-way Monday sync via `after()` — fire-and-forget, never
+blocks or fails the response; on failure nothing is written back (a
+later status change or `POST /api/monday/sync/[itemId]` can retry).
+**Aria-relevant.**
+
+**Phase 11 extension (5 July 2026):** `decision_needed_by` (date,
+migration `016_portal_v2.sql`) added to `EDITABLE_FIELDS` — this closes
+the "Known gap" previously documented under "Decision deadlines" below:
+the column existed and was read/rendered on the portal side since Phase
+11B, but staff had no write path until now. Falls through to the plain
+date-passthrough branch (not `NUMERIC`/`TEXT`/`JSON_FIELDS`), same as
+`ordered_at`/`eta`/`delivered_at` — `""` becomes `null`. Surfaced in
+`components/items/SpecRegister.tsx`'s expanded item row as a native
+date input labelled "Client decision needed by", next to Status, using
+the same single-save-per-field pattern (`onBlur` commits straight
+through `onPatch`) as every other field on that row.
 
 ### DELETE /api/items/[id]
 Auth: session. Body: none. Response: `{ ok: true }`. Soft-delete
@@ -695,6 +718,14 @@ Folded in from the former `docs/API-portal-additions.md` (now deleted).
 Written in the same auth-tier vocabulary as above: **session**,
 **session (financial fields admin-only)**, **admin**, **portal-token**.
 
+**Superseded by Phase 11B below** for the portal page's section names/
+layout ("Schedule & approvals" -> "Selections", "Updates" -> "Diary",
+plus new What's next / Handover sections) — this section is kept as
+historical record of what Week 8B shipped; see "Portal v2, diary,
+gallery & notifications (Phase 11B)" further down for the current
+behaviour. The variation-respond and native e-signature routes
+documented below are unchanged and still current.
+
 ### GET /portal/[token] (page, not an API route)
 Auth: portal-token. No longer just the FF&E schedule — now renders every
 sectioned area described below in one server-rendered page: Schedule &
@@ -752,9 +783,16 @@ BUILD-SPEC.md §"Built-in digital signature" exactly:
    uploads it as a **new** object next to the original (never overwriting
    it), indexes it as a `project_files` row (`kind: 'other'`) for
    `project_file` subjects, and emails admins via `lib/gmail/send.ts` if
-   Gmail is configured (no client-contact-email field exists on
-   `projects` yet, so client copies aren't sent until one is added — see
-   the route's inline comment).
+   Gmail is configured. **Note (Phase 11 extension, 5 July 2026):**
+   `projects.client_email` now exists (migration `016_portal_v2.sql`,
+   surfaced in Project settings this release) and `lib/notify-client.ts`
+   is wired into request-*creation* (see `POST /api/signatures` below),
+   but this sign-*completion* route itself is untouched this release —
+   it still only emails admins, not the client, on a completed
+   signature. Wiring a "your signature was received" client
+   confirmation here is a natural follow-up, not done in this pass (out
+   of this task's stated scope: "wire lib/notify-client.ts into
+   signature-request creation").
 
 Rate-limited tighter than reads (10/min vs the usual 30/min) since this
 is the one portal route that writes durable, non-reversible evidence.
@@ -769,6 +807,20 @@ Response: `{ request }` (201). Validates the subject exists and belongs
 to `project_id` for `project_file`/`variation` subject types before
 creating the request (no `sow` table exists in this agent's boundary —
 `sow` subjects are trusted at face value here).
+
+**Phase 11 extension (5 July 2026):** now calls `notifyClient(supabase,
+project_id, { trigger: "signature_requested", label, section:
+"contracts" })` fire-and-forget (`void`, no `after()`) immediately
+after the insert succeeds — same placement/pattern as every other
+`notifyClient` call site (diary publish, document/variation
+share-to-portal): after the DB write's error/null check, before the
+JSON response, never blocking or failing request creation on a
+notification failure. This closes the one documented gap in
+`lib/notify-client.ts`'s module doc comment ("NOT wired: signature
+request creation"). `label` is the document's `filename` for
+`project_file` subjects, `"Variation #{var_number}"` for `variation`
+subjects, or the generic fallback `"a document"` for `sow` subjects (no
+SOW table in this boundary to look up a title from).
 
 #### GET /api/signatures?project_id=...
 Auth: session. Response: `{ requests: (SignatureRequest & { evidence })[] }`
@@ -1168,17 +1220,44 @@ for the detail panel's stage-history timeline on open/refresh.
 ### POST /api/leads/[id]/create-project
 Auth: admin. Body: none. BUILD-SPEC.md: "Moving a lead to Design Work
 In Progress offers one-click 'Create project' (links lead -> project)."
-Creates a project with `name = leads.surname_project`, `client_name =
-"{first_name} {surname_project}"` (or just `surname_project` if no
-first name on file), `address = leads.location`, sets
-`leads.project_id` and the new project's `lead_id` — linked both ways.
-Idempotent: if the lead already has a `project_id` pointing at a project
-that still exists, returns that existing project instead of creating a
-second one (safe to re-click after a page refresh). Does not require
-the lead to currently be in "Design Work In Progress" — that's the UI's
-surfacing condition for the button, not a hard rule enforced here.
-Response: `{ project, lead }` (201, or 200 if it returned an existing
-project).
+**Phase 11 extension (5 July 2026):** UI label renamed **"Progress to
+job"** in `components/leads/LeadDetailPanel.tsx` — this route path is
+unchanged. The button is now surfaced whenever the lead's stage is
+`'Design Work In Progress'`, `'Construction In Progress'`, or
+`'Complete'` (previously only right after a stage change into 'Design
+Work In Progress'), so older leads already further along can still be
+progressed to a job.
+
+Creates a project prepopulated from the lead:
+- `name` <- `leads.surname_project` (unchanged, whole string incl. any descriptor)
+- `client_name` <- `leads.first_name` + the **surname extracted** from
+  `surname_project` (see "Name-split heuristic" below) — or just the
+  extracted surname if no first name is on file
+- `client_email` <- `leads.email`
+- `client_phone` <- `leads.phone`
+- `address` <- `leads.location`
+- `budget` <- `leads.construction_value`
+
+Sets `leads.project_id` and the new project's `lead_id` — linked both
+ways (unchanged). Idempotent: if the lead already has a `project_id`
+pointing at a project that still exists, returns that existing project
+instead of creating a second one (safe to re-click after a page
+refresh). Does not require the lead to currently be in any particular
+stage — that's the UI's surfacing condition for the button, not a hard
+rule enforced here. Response: `{ project, lead }` (201, or 200 if it
+returned an existing project).
+
+**Name-split heuristic** (`extractSurname()` in this route file):
+`surname_project` is a free-text card title in the format `'Surname'`
+or `'Surname — project descriptor'`. The function splits on the FIRST
+occurrence of `' — '` (em-dash) or `' - '` (hyphen), both with
+surrounding spaces, and takes everything before it, trimmed; if no
+separator is found, the whole trimmed string is treated as the
+surname. This fixes a Week 10 behaviour where `client_name` was built
+from `first_name` + the WHOLE `surname_project` string (producing
+names like "Jane Smith — Kitchen Reno"); it now reads "Jane Smith".
+Best-effort by design — `surname_project` is not a structured name
+field.
 
 ### GET /api/leads/attention
 Auth: admin. Response: `LeadsAttentionResponse` — `{ nurture: Lead[],
@@ -1313,6 +1392,410 @@ an explicit column whitelist or the same `stripFinancials()` helper if
 this route's scope grows.
 
 ---
+
+## Trade visits & timeline v2 (Phase 11A)
+
+Migration `015_trade_visits.sql`: new table `trade_visits`; `schedule_phases`
+gains `kind` (`'phase'|'umbrella'`, default `'phase'`) and `cost_section_id`
+(nullable FK to `cost_sections`, `on delete set null`). See that
+migration's own doc comments for the full design rationale (why
+`contact_id` stays nullable, why `confirm_token`'s default mirrors
+`projects.client_token`, why status/proposed_* are separate columns
+rather than jsonb).
+
+### GET /api/projects/[id]/phases (extended)
+Auth: session. Response now: `{ phases: SchedulePhaseWithVisits[] }` —
+each phase carries `kind`, `cost_section_id`, and a batched-fetch
+`visits: TradeVisitWithContact[]` (non-deleted, each with a lightweight
+contact summary). Before returning, this route performs **umbrella
+recompute-on-read**: it looks up a `cost_sections` row named
+(case-insensitively) "Preliminaries & Site" with at least one live
+`cost_lines` row; if found, it upserts a `kind='umbrella'` phase named
+"Site Setup" whose `start_date`/`end_date` are recomputed to
+`min(start)`/`max(end)` across every ordinary `kind='phase'` row
+(`lib/trade-visits.ts`'s `computeUmbrellaBand`); if not found (or the
+section has zero live lines), any existing umbrella phase is
+soft-deleted. Tradeoff: the umbrella band is only as fresh as the last
+GET — accepted to avoid coupling this file to the estimate module
+(`app/api/estimate/**`), which this feature does not own. The umbrella
+phase also carries `cost_section_lines: string[]` — line
+**descriptions only**, no cost/pricing fields.
+
+### POST /api/projects/[id]/phases (extended)
+`kind` is never accepted from the client — every phase created here is
+`kind='phase'` (the DB default). Umbrella phases are exclusively
+system-maintained via the GET recompute-on-read logic above; there is
+no client-facing way to create one directly.
+
+### PATCH /api/phases/[id] (extended)
+`kind` and `cost_section_id` are silently stripped from the update
+(never in `EDITABLE_FIELDS`). If the target phase is `kind='umbrella'`,
+any attempt to touch `name`/`start_date`/`end_date` 400s ("Umbrella
+phase dates and name are system-managed and cannot be edited
+directly.") — those fields are recomputed on every GET, so a direct
+edit would either be silently clobbered or fight the recompute logic.
+Other fields (`color_key`, `contact_id`, `notes`, `sort`) remain
+editable on an umbrella phase.
+
+### DELETE /api/phases/[id] (unchanged behaviour, note added)
+Deleting an umbrella phase directly is allowed — no special-case block.
+It carries no team-authored content of its own (dates are
+system-derived, `cost_section_lines` are read live from `cost_lines`),
+so deleting it is at worst a no-op until the next
+`GET /api/projects/[id]/phases` recreates it.
+
+### POST /api/projects/[id]/visits
+Auth: session, no admin gate (scheduling data, not financial). Body:
+`CreateVisitInput` — `{ phase_id, contact_id?, start_date, end_date,
+arrival_slot? ('first_thing'|'midday'|'afternoon'), arrival_time?,
+notes? }`. Validates: phase exists under this project and is NOT
+`kind='umbrella'` (400 "Cannot add visits to the Site Setup umbrella
+phase"), contact (if given) exists, `end_date >= start_date`,
+`arrival_slot` enum. Inserts with `status='unconfirmed'`;
+`confirm_token` is a DB default, never client-supplied. Response:
+`{ visit }` (201).
+
+### PATCH /api/visits/[id]
+Auth: session. Body: `PatchVisitInput` (partial) — `contact_id`,
+`start_date`, `end_date`, `arrival_slot`, `arrival_time`, `notes` only.
+`status`/`confirm_token`/`confirmed_at`/`confirmed_by`/`proposed_*`/
+`reminder_sent_at` are silently stripped (not in `EDITABLE_FIELDS`) —
+those are managed exclusively via `/confirm`, `/resolve-proposal`, and
+the public `/api/trade/[token]/respond` route. Rejects (400) if the
+visit's parent phase is `kind='umbrella'` (defensive — structurally
+should never happen, since umbrella phases can never receive visits at
+creation). Response: `{ visit }`.
+
+### DELETE /api/visits/[id]
+Auth: session. Soft-delete (`deleted_at`). Response: `{ ok: true }`.
+
+### POST /api/visits/[id]/confirm
+Auth: session, no admin gate. Staff "confirm on behalf of trade" — no
+body. Sets `status='confirmed'`, `confirmed_at=now()`,
+`confirmed_by='staff'`. Response: `{ visit }`. Used from the mobile
+bottom sheet and the phase edit panel's per-visit row.
+
+### POST /api/visits/[id]/resolve-proposal
+Auth: session, no admin gate. Body: `{ action: 'accept' }` or
+`{ action: 'counter', start_date, end_date, arrival_slot?,
+arrival_time?, note? }`. 400 unless `visit.status === 'proposed_change'`.
+`accept`: copies `proposed_*` onto the live fields, clears `proposed_*`,
+sets `status='confirmed'`, `confirmed_by='staff'`; if the visit's
+contact has an email and Gmail is configured, sends a confirmation
+email with a link back to `/trade/[confirm_token]` — wrapped in
+try/catch, a send failure is logged (`console.error`) but does NOT fail
+the request (fire-and-forget, same "DB write is the source of truth"
+pattern used elsewhere in this codebase). `counter`: overwrites
+`proposed_*` with the staff's own counter-proposal; `status` **stays**
+`'proposed_change'` (the trade sees the new proposed date next time
+they open their link) — sends a different-copy email, same fail-open
+behaviour. Response: `{ visit }`.
+
+### GET /api/visits/attention
+Auth: session, **no admin gate** — a deliberate deviation from
+`GET /api/leads/attention`'s admin gate, since trade-visit scheduling
+data carries no financial values (unlike leads' pipeline value).
+Response: `{ proposed_pending: [...], starting_soon: [...] }` from
+`lib/trade-visits.ts`'s `computeVisitAttention` — `proposed_pending` is
+every non-deleted visit with `status='proposed_change'`;
+`starting_soon` is every non-deleted `unconfirmed`/`tentative` visit
+whose `start_date` is within `[today, today+3]` inclusive. Each visit
+is annotated with `phase_name`, `project_name`, and a lightweight
+`contact` summary (batched, not N+1).
+
+### GET /trade/[token] (page, not an API route)
+Public, unauthenticated. Same trust model as `/portal/[token]`:
+`trade_visits.confirm_token` (32-byte hex, same generation expression
+as `projects.client_token`) is the security boundary. Rate-limited by
+IP (`rateLimit(\`trade-page:\${token}:\${clientIp}\`)`), `noindex`,
+service-role client. Expired (deleted, or `today > end_date`) renders
+an `ExpiredNotice` in-page rather than `notFound()`, so a trade with a
+stale link still sees a polite message instead of a bare 404. Shows
+nominated day(s)/arrival (`formatArrival()`), a "who else is on site"
+list (company + status only, `confirmed`/`tentative` visits overlapping
+the subject visit's covered week(s) — see `lib/trade-visits.ts`'s
+`findOverlappingVisits` for the exact overlap definition used), and the
+three response actions below. **No contact phone/email of ANY trade
+(self or other) is ever included in this page's data or render path.**
+
+**On-machine follow-up required:** `/trade` and `/api/trade` are not
+yet in `lib/supabase/middleware.ts`'s `isPublicPath` allowlist — until
+a human adds them, an unauthenticated visitor hitting this page gets
+redirected to `/login`. See this feature's build notes for the exact
+lines to add (that file is read-only for this agent).
+
+### POST /api/trade/[token]/respond
+Public, unauthenticated. Rate-limited tighter than the page
+(`rateLimit(..., 10, 60_000)` — a mutation, not a read). Re-checks
+token expiry independently of the page (so a direct POST against an
+expired visit 410s even if the trade never loaded the page). Body,
+dispatched on `action`:
+- `'confirm'`: sets `status='confirmed'`, `confirmed_by='trade'`. If
+  the visit has neither `arrival_slot` nor `arrival_time` already set,
+  the body MUST supply one (400 "Please choose an arrival time before
+  confirming." otherwise) — mirrored client-side by
+  `components/trade/TradeRespondForm.tsx` forcing the picker open in
+  that case.
+- `'confirm_different_time'`: auto-accepted immediately (same-day, no
+  staff approval needed) — sets `arrival_slot`/`arrival_time`,
+  `status='confirmed'`, `confirmed_by='trade'`, and appends an FYI line
+  to `notes` (`[Trade changed arrival time on <date>]`) rather than a
+  new column.
+- `'propose'`: sets `proposed_start`/`proposed_end`/`proposed_slot`/
+  `proposed_time`/`proposed_note`, `status='proposed_change'`.
+  Validates `proposed_end >= proposed_start`.
+
+Response: `{ visit }` or `{ error }`.
+
+### GET /api/trade-reminders
+Vercel Cron entry point, `vercel.json` schedule `"0 21 * * *"` (21:00
+UTC = 07:30 ACST, Adelaide standard time, no DST correction attempted
+— see the route's own doc comment for why a half-hour drift across
+DST transitions is acceptable for a "day before" reminder, unlike the
+digest cron's exact-hour requirement). Auth: `Bearer ${CRON_SECRET}`
+**or** an authenticated team session (manual "run reminders now"
+trigger) — mirrors `POST /api/digest/flush`'s `isCronCall` fallback
+pattern. Finds non-deleted `trade_visits` with `status IN
+('unconfirmed','tentative')`, `reminder_sent_at IS NULL`, and
+`start_date` 1 or 2 days from today (server UTC date — a harmless
+±1-day fuzz, contrasted with the digest cron's exact-hour need).
+Sends a personalized reminder email per visit (nominated day/time, the
+"who else is on site" list, a link to `/trade/[confirm_token]`) via
+`lib/gmail/send.ts`'s `sendTeamEmail`. Only stamps `reminder_sent_at`
+on an actual (non-skipped) send — a skip due to missing Gmail
+configuration is retried on the next run, since it is not the same as
+"already reminded". Each visit's send is wrapped in try/catch so one
+failure doesn't abort the batch. Response: `{ sent, skipped, failed }`.
+Invariant: an umbrella-kind phase can never have `trade_visits` rows
+against it (enforced at `POST /api/projects/[id]/visits`), so this
+query never needs to filter by phase kind.
+
+### Schema reference (migration `015_trade_visits.sql`)
+
+- `trade_visits(id, project_id, phase_id references schedule_phases(id)
+  on delete cascade, contact_id references contacts(id) on delete set
+  null, start_date, end_date, arrival_slot?, arrival_time?, status
+  ('unconfirmed'|'confirmed'|'tentative'|'declined'|'proposed_change',
+  default 'unconfirmed'), proposed_start?, proposed_end?, proposed_slot?,
+  proposed_time?, proposed_note?, confirm_token (unique, default
+  `encode(gen_random_bytes(32), 'hex')` — same expression as
+  `projects.client_token`), confirmed_at?, confirmed_by?
+  ('trade'|'staff'), reminder_sent_at?, notes?, created_by?, created_at,
+  updated_at, deleted_at?)` — check constraint `end_date >= start_date`.
+  Indexes: `project_id`, `phase_id`, `(status, start_date)`,
+  `deleted_at`.
+- `schedule_phases` gains `kind` (`'phase'|'umbrella'`, default
+  `'phase'`) and `cost_section_id references cost_sections(id) on
+  delete set null` (additive).
+- RLS: `team_all` (permissive, `authenticated`) on `trade_visits` — the
+  public `/trade/[token]` page and its respond route never use this
+  policy; they go through the service-role client (bypasses RLS
+  entirely), same trust model as the client portal.
+
+## Portal v2, diary, gallery & notifications (Phase 11B)
+
+Restyled client portal, the internal site-photo gallery, the Aria
+diary workflow, decision deadlines, the handover pack, and client-
+facing email notifications. Migration `016_portal_v2.sql`.
+
+### Portal page (`GET /portal/[token]`)
+
+Unauthenticated, token-gated, rate-limited, `noindex`, service-role
+client. Section order: **What's next** (derived-only banner, no nav
+entry) -> **Selections** (was "Schedule & approvals") -> **Timeline**
+(unchanged, owned by the Phase 11A agent's `TimelineSection.tsx`) ->
+**Diary** (was "Updates", now magazine-style with 1-2 photos) ->
+**Documents** (now includes `kind='certificate'` + inline "Signed"/
+"Awaiting signature" badges) -> **Contracts & signatures** ->
+**Variations** -> **Progress photos** (now reads published
+`site_photos` UNION legacy `progress_photos`) -> **Handover** (only
+rendered when `projects.status = 'completed'`).
+
+Still never selects any pricing/ordering column on items; the one
+deliberate exception remains variations' `cost_inc_gst` (computed
+server-side, never `cost_ex_gst`).
+
+### Selections (FF&E approvals at scale)
+
+- `POST /api/portal/[token]/approve/[itemId]` / `.../flag/[itemId]` —
+  unchanged from Week 3B/8B, now also returns `decision_needed_by` in
+  the response item.
+- `POST /api/portal/[token]/bulk-approve` — Body `{ location }`.
+  Approves every item in that room that is NOT flagged and NOT already
+  approved, in one call. Writes ONE `approval_events` row PER ITEM
+  (never a single combined "bulk" event) with note `"Approved via
+  'Approve all in room' (<location>)."`. Never touches flagged items —
+  enforced twice: the candidate SELECT excludes `client_flagged=true`,
+  and the UPDATE itself re-asserts `.eq("client_flagged", false)` as
+  defence in depth against a race. Rate-limited per token+ip like every
+  other portal route. Response: `{ approved_count, items }`.
+- Client UI (`components/portal/SelectionsSection.tsx`): progress
+  header + bar, filter chips (Awaiting/Flagged/Approved), room grouping
+  with per-room "Approve all N" (confirm dialog first), and a
+  full-screen "Review one by one" stepper
+  (`components/portal/SelectionsStepper.tsx`) that only queues
+  not-yet-decided items, with Approve/Flag/Skip and auto-advance
+  ("N of M" progress).
+- Deadline display: when `items.decision_needed_by` is set and the item
+  isn't yet approved, the row shows "Approve by {date} to keep your
+  design package on schedule" — amber once the date has passed.
+  Construction dates are never mentioned (design-phase framing only,
+  per BUILD-SPEC.md).
+
+### Diary workflow
+
+- `GET/POST /api/projects/[id]/client-updates/posts` — POST now accepts
+  an optional `photo_ids: string[]` (linked via `portal_update_photos`,
+  ownership-checked against the project first) and no longer requires
+  non-empty `title`/`body_richtext` (a bare draft can be created with
+  just photos attached, or completely empty as a placeholder). GET now
+  returns each update's linked `photos` (signed URLs) and its
+  `status`/`draft_source`.
+- `PATCH /api/projects/[id]/client-updates/posts/[postId]` —
+  `{ publish: true }` now also sets `status: 'published'` (previously
+  only touched `published_at`); on a genuine FIRST publish it also (a)
+  marks every linked `site_photos` row `published_to_portal = true`
+  and (b) fires a client email notification (best-effort, see
+  Notifications below). `{ publish: false }` resets `status: 'draft'`.
+- `GET/POST /api/projects/[id]/client-updates/posts/[postId]/aria-draft`
+  — Aria-facing (she authenticates as a normal team session per
+  `docs/ARIA.md`, not service-role). GET fetches the draft's rough
+  notes + linked photo captions (404s unless `status = 'draft'`). POST
+  `{ title, body_richtext }` saves her polished copy onto the SAME row,
+  setting `draft_source: 'aria'`, `status: 'pending_approval'` (404s
+  unless the row is still `status = 'draft'` — she can't overwrite an
+  already-submitted or already-published entry). Publishing is a
+  SEPARATE, human, one-tap action via the PATCH route above — this
+  route never sets `published_at`.
+- `GET /api/projects/[id]/client-updates/summary` — `updates` now
+  includes `body_richtext`, `status`, `draft_source`, and each entry's
+  linked `photos` (signed URLs), feeding the client-area Diary panel's
+  initial render.
+- Team UI: `components/client-area/DiaryPanel.tsx` — phone-first
+  composer (photo picker first, one large rough-notes textarea, one
+  "Send to Aria" button), a "Ready to publish" section showing
+  `DiaryApprovalCard` (polished preview, single-tap Publish, inline
+  Edit), a "Drafts awaiting Aria" list, and a Published list with
+  Unpublish/Remove. `DiaryApprovalCard` is exported standalone so the
+  project overview hub (outside this agent's boundary) can reuse it —
+  see this task's boundary notes.
+
+### Site gallery (internal)
+
+- `GET/POST /api/projects/[id]/site-photos` — team-authenticated. GET
+  lists all staged photos (published + unpublished), signed URLs, newest
+  `taken_at` first. POST — multipart, multiple `files[]` + optional
+  `caption`/`taken_at`, mirrors the existing `progress_photos` upload
+  route's shape exactly, writing to `site_photos` instead. Client-side
+  compression (canvas, max 2000px longest edge, JPEG q=0.85, no deps —
+  `components/gallery/compress.ts`) happens BEFORE the multipart POST;
+  the route itself does not re-compress.
+- `PATCH/DELETE /api/site-photos/[id]` — team-authenticated. PATCH any
+  subset of `{ caption, published_to_portal, in_handover_pack,
+  taken_at }`. DELETE soft-deletes (`deleted_at`).
+- UI: `/projects/[id]/gallery` (linked from `ProjectTabs`) —
+  `GalleryUploader` (two actions: "Take photo" = `<input capture=
+  "environment">` camera-direct, "Upload" = multi-select library
+  picker), `GalleryGrid` (grouped by `taken_at` date, inline caption
+  edit, per-photo publish toggle, multi-select mode), and "Add to diary
+  draft" (creates a bare draft via the posts route with the selected
+  photo ids, then redirects to `/projects/[id]/client?tab=diary`).
+
+### Handover pack
+
+- `GET/PATCH /api/projects/[id]/handover` — team-authenticated. GET
+  returns curation candidates across three tables: `project_files`
+  (`kind='certificate'` OR already `share_to_portal`), `item_files`
+  (`kind IN ('install_manual','warranty')`, ownership-checked via an
+  `items!inner(project_id)` filtered embed), and `site_photos` (all,
+  not deleted). PATCH body `{ table, id, in_handover_pack }` toggles one
+  row, re-verifying project ownership for every table before writing.
+- UI: `components/client-area/HandoverCurationPanel.tsx`, a new
+  "Handover pack" tab in the team client area — plain tick-lists, no
+  new page.
+- Portal: the Handover section only renders when `projects.status =
+  'completed'`, built server-side by `buildHandoverPack()` in
+  `app/portal/[token]/page.tsx` from the same three tables' `
+  in_handover_pack = true` rows.
+
+### Client email notifications
+
+`lib/notify-client.ts` — `notifyClient()` / `notifyClientBatch()`.
+No-op (never throws) when Gmail is unconfigured, the project has no
+`client_email`, `notify_client` is off, or the event list is empty.
+Sends ONE email per request cycle covering however many
+notification-worthy events fired in that cycle (see the file's doc
+comment for why this is request-cycle batching rather than a true
+cross-request time-window batch). Wired into: diary first-publish
+(`.../posts/[postId]` PATCH), document share-to-portal turning ON
+(`.../files/[fileId]/share` PATCH), variation share-to-portal turning
+ON (`.../variations/[variationId]/share` PATCH), and — **Phase 11
+extension, 5 July 2026** — signature request creation
+(`POST /api/signatures`, `trigger: "signature_requested"`, `section:
+"contracts"`; see that route's entry above). This closes the "NOT
+wired" gap this section previously documented.
+
+**Phase 11 extension — dual recipients:** `notifyClientBatch()` now
+sends to BOTH `projects.client_email` and `projects.
+client_secondary_email` (migration `017_project_contacts.sql`) in ONE
+email's `to` list, when the secondary is set — not two separate sends.
+`lib/gmail/send.ts`'s `sendTeamEmail({ to: string[] })` already accepts
+multiple recipients on a single message, so this needed no transport
+change; only the `ProjectRow` select + a `.filter(Boolean)` on the `to`
+array in `notifyClientBatch()`. `client_email` (primary) remains the
+sole gate for whether a notification fires at all.
+
+### Decision deadlines
+
+`items.decision_needed_by` (nullable date, migration 016) — portal
+approve/bulk-approve responses already include it, and the Selections
+UI already renders the "Approve by {date}" copy when it's set.
+
+**Closed in Phase 11 extension (5 July 2026):** `decision_needed_by` is
+now in `PATCH /api/items/[id]`'s `EDITABLE_FIELDS` (see that route's
+entry above) and has a write surface — a native date input labelled
+"Client decision needed by" in `components/items/SpecRegister.tsx`'s
+expanded item row, next to Status, using the same single-save-per-field
+pattern as every other field there. Staff can now actually set a
+deadline; previously the column existed and was read/rendered
+everywhere on the portal side but nothing populated it.
+
+## Owner contact details — Phase 11 extension (5 July 2026)
+
+Migration `017_project_contacts.sql`. Phillip's build note: "Owner
+contact details on projects" — projects can have two owners (couples).
+
+### Schema reference (migration `017_project_contacts.sql`)
+
+- `projects` gains (all nullable text, no format validation, same as
+  the existing `client_email`): `client_phone`, `client_secondary_name`,
+  `client_secondary_email`, `client_secondary_phone`. No
+  `client_secondary_...` "primary" counterpart column is added for the
+  first owner's name — `client_name` (migration `001_initial.sql`)
+  already is the primary owner's name.
+
+### Settings form
+
+`components/settings/ProjectSettingsForm.tsx` gains a "Client contacts"
+group (see `PUT /api/projects/[id]`'s entry above for the field list) —
+primary email/phone, a notify-client checkbox, and an optional "Second
+owner" name/email/phone sub-group. All fields disabled (not hidden) for
+non-admins, matching every other field on this form. A caption note
+appears under the second owner's email once filled in: "Both owners
+will be copied on the same email notification."
+
+### Leads → job handoff
+
+See `POST /api/leads/[id]/create-project`'s entry above (UI relabel to
+"Progress to job", widened surfacing stages, prepopulated
+client_email/client_phone/budget, and the name-split heuristic).
+
+### Integration debts closed
+
+- `decision_needed_by` write path — see `PATCH /api/items/[id]`'s entry
+  above and "Decision deadlines" above.
+- Signature-request client notification — see `POST /api/signatures`'s
+  entry above and "Client email notifications" above.
 
 ## Known inconsistencies (carried over, not fixed this release)
 

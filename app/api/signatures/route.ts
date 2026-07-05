@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { notifyClient } from "@/lib/notify-client";
 import type { CreateSignatureRequestInput } from "@/lib/signatures";
 
 /**
@@ -49,11 +50,14 @@ export async function POST(request: NextRequest) {
   // Validate the subject actually exists and belongs to this project
   // before creating a request against it — mirrors the ownership
   // discipline used throughout the portal routes, applied here on the
-  // team-authoring side instead.
+  // team-authoring side instead. Also captures a short display label
+  // for the client-notification email below (filename / variation
+  // number) — never pricing data, just an identifying label.
+  let subjectLabel = "a document";
   if (subject_type === "project_file") {
     const { data: file } = await supabase
       .from("project_files")
-      .select("id,project_id")
+      .select("id,project_id,filename")
       .eq("id", subject_id)
       .eq("project_id", project_id)
       .is("deleted_at", null)
@@ -61,10 +65,11 @@ export async function POST(request: NextRequest) {
     if (!file) {
       return NextResponse.json({ error: "Document not found in this project" }, { status: 404 });
     }
+    subjectLabel = file.filename;
   } else if (subject_type === "variation") {
     const { data: variation } = await supabase
       .from("variations")
-      .select("id,project_id")
+      .select("id,project_id,var_number")
       .eq("id", subject_id)
       .eq("project_id", project_id)
       .is("deleted_at", null)
@@ -72,10 +77,12 @@ export async function POST(request: NextRequest) {
     if (!variation) {
       return NextResponse.json({ error: "Variation not found in this project" }, { status: 404 });
     }
+    subjectLabel = `Variation #${variation.var_number}`;
   }
   // 'sow' — no SOW table in this agent's boundary; requests may be
   // created against a subject_id the SOW builder (Week 8A) owns, and
   // are trusted at face value here (no cross-boundary table to check).
+  // subjectLabel stays the generic "a document" fallback for this case.
 
   // Hashing happens at SIGN time, server-side (see
   // app/api/portal/[token]/sign/[requestId]/route.ts) — not here at
@@ -95,6 +102,20 @@ export async function POST(request: NextRequest) {
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  // Client notification (BUILD-SPEC.md "Phase 11 additions — confirmed
+  // by Phillip" point 1: "... signature request ... -> email to
+  // client"). Fire-and-forget, same pattern as every other
+  // notifyClient() call site (diary publish, document/variation
+  // share-to-portal) — best-effort, never fails the request creation
+  // itself. This was the one documented gap: lib/notify-client.ts
+  // already defines the "signature_requested" trigger + "contracts"
+  // section, but no call site wired it in until now.
+  void notifyClient(supabase, project_id, {
+    trigger: "signature_requested",
+    label: subjectLabel,
+    section: "contracts",
+  });
 
   return NextResponse.json({ request: row }, { status: 201 });
 }

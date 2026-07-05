@@ -379,6 +379,73 @@ const TOOLS = [
         body: JSON.stringify(body),
       }),
   },
+  // ------------------------------------------------------------
+  // Phase 11B — Diary workflow (BUILD-SPEC.md §"Phase 11 — Diary" /
+  // §"mobile pass"): staff write rough notes + pick 1-2 photos from the
+  // site gallery on their phone -> a draft portal_updates row is
+  // created (status 'draft') -> Aria calls draft_diary_entry to fetch
+  // the rough notes + linked photo captions, writes a polished
+  // title+body, then calls draft_diary_entry AGAIN with that polished
+  // copy to submit it, which flips the row to status
+  // 'pending_approval' -> a human takes it from there (single-tap
+  // Publish in the client area / project overview — Aria NEVER
+  // publishes; see docs/ARIA.md's "she drafts — never publishes"
+  // section).
+  //
+  // One tool, two modes, mirroring BUILD-SPEC's own phrasing ("MCP tool
+  // draft_diary_entry: fetches draft + photo captions, returns polished
+  // title+body, sets status 'pending_approval'") as a single named
+  // tool: calling it WITHOUT title/body_richtext fetches (read mode);
+  // calling it WITH both submits the polished copy (write mode). This
+  // keeps the tool surface to the one name the spec names, while still
+  // letting Aria read-then-think-then-write across two separate calls
+  // (a single call can't both return content for the model to read AND
+  // accept content the model hasn't generated yet in the same turn).
+  // ------------------------------------------------------------
+  {
+    name: "draft_diary_entry",
+    description:
+      "Two modes, same tool. FETCH mode (omit title/body_richtext): returns a diary draft's rough notes and linked gallery-photo captions, ready for Aria to turn into a polished magazine-style entry (serif headline + short story). SUBMIT mode (pass title + body_richtext): saves Aria's polished copy onto that same draft and sets its status to 'pending_approval' — NOT published yet; a human must one-tap Publish it in the client area before it appears on the client portal. Aria never publishes diary entries herself. Only works on entries currently in status 'draft'.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project UUID" },
+        update_id: {
+          type: "string",
+          description:
+            "portal_updates row id — get this from project context or by asking which project's diary draft to work on; drafts are visible in the team client area UI.",
+        },
+        title: { type: "string", description: "SUBMIT mode only — polished, magazine-style headline" },
+        body_richtext: {
+          type: "string",
+          description: "SUBMIT mode only — polished short story, markdown (paragraphs/bold/lists only)",
+        },
+      },
+      required: ["project_id", "update_id"],
+      additionalProperties: false,
+    },
+    handler: async ({ project_id, update_id, title, body_richtext }) => {
+      const path = `/api/projects/${project_id}/client-updates/posts/${update_id}/aria-draft`;
+      if (typeof title === "string" && typeof body_richtext === "string") {
+        return apiFetch(path, { method: "POST", body: JSON.stringify({ title, body_richtext }) });
+      }
+      return apiFetch(path);
+    },
+  },
+  {
+    name: "list_site_photos",
+    description:
+      "List a project's internal site-photo gallery (staged photos, some published to the client portal, some not) — so Aria can see what's available when drafting a diary entry or choosing which photos to reference. Read-only; does not fetch image bytes, just captions/dates/URLs.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project UUID" },
+      },
+      required: ["project_id"],
+      additionalProperties: false,
+    },
+    handler: async ({ project_id }) => apiFetch(`/api/projects/${project_id}/site-photos`),
+  },
   {
     name: "list_contacts",
     description:

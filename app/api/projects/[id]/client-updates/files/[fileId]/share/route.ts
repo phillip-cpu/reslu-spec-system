@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { notifyClient } from "@/lib/notify-client";
 
 /**
  * PATCH /api/projects/[id]/client-updates/files/[fileId]/share
@@ -46,6 +47,18 @@ export async function PATCH(
 
   if (error || !updated) {
     return NextResponse.json({ error: error?.message ?? "Not found" }, { status: 404 });
+  }
+
+  // Client notification only on turning sharing ON (BUILD-SPEC.md
+  // §"Phase 11 additions — confirmed by Phillip" point 1: "new shared
+  // document"), never on un-sharing. Best-effort, never fails the
+  // toggle itself.
+  if (body.share_to_portal === true) {
+    void notifyClient(supabase, projectId, {
+      trigger: "document_shared",
+      label: updated.filename,
+      section: "documents",
+    });
   }
 
   return NextResponse.json({ file: updated });

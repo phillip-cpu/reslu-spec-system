@@ -27,6 +27,21 @@ function toDateTimeLocal(iso: string | null): string {
 }
 
 /**
+ * Stages at which "Progress to job" is offered (Phase 11 extension, 5
+ * July 2026 — Phillip): the lead is far enough along that a real job
+ * exists or is imminent. Previously this only showed right after a
+ * stage change into 'Design Work In Progress' (Week 10); widened to
+ * also cover 'Construction In Progress' and 'Complete' so a lead that
+ * skipped straight past Design (or was imported already further along)
+ * isn't stuck with no way to create/link its job.
+ */
+const PROGRESS_TO_JOB_STAGES = new Set([
+  "Design Work In Progress",
+  "Construction In Progress",
+  "Complete",
+]);
+
+/**
  * Detail panel — BUILD-SPEC.md "Detail panel: all fields editable
  * (single-save row pattern like estimate lines), stage history
  * timeline from lead_stage_events, notes. 'Create project' button
@@ -38,6 +53,12 @@ function toDateTimeLocal(iso: string | null): string {
  * triggers a save (same as the estimate line's row-blur autosave).
  * Rendered as a slide-over panel, not a full-page route, so the
  * board/list stays mounted underneath.
+ *
+ * Phase 11 extension (5 July 2026 — Phillip): the "Create project"
+ * button is relabelled "Progress to job" (route path unchanged — see
+ * app/api/leads/[id]/create-project/route.ts) and is now offered at
+ * three stages (see PROGRESS_TO_JOB_STAGES below), not only right
+ * after a stage change into 'Design Work In Progress'.
  */
 export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete, onProjectCreated }: Props) {
   const router = useRouter();
@@ -119,16 +140,28 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
     }
   }
 
+  /**
+   * "Progress to job" (Phase 11 extension, 5 July 2026 — Phillip's UI
+   * rename of the Week 10 "Create project" action; the route path
+   * itself is unchanged, see app/api/leads/[id]/create-project/route.ts).
+   * Surfaced whenever the lead is far enough along that a job is real —
+   * 'Design Work In Progress', 'Construction In Progress', or 'Complete'
+   * — not only in the instant right after a stage change into Design
+   * Work In Progress, so an admin catching up on older leads (already
+   * sitting in Construction/Complete without ever having had a project
+   * created) can still one-click it. Hidden once project_id is set
+   * (idempotent route, but the UI shows "View linked project" instead).
+   */
   async function handleCreateProject() {
     setCreatingProject(true);
     setError(null);
     try {
       const res = await fetch(`/api/leads/${lead.id}/create-project`, { method: "POST" });
       const body = await res.json();
-      if (!res.ok) throw new Error(body.error ?? "Could not create project.");
+      if (!res.ok) throw new Error(body.error ?? "Could not create the job.");
       onProjectCreated(body.project.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create project.");
+      setError(err instanceof Error ? err.message : "Could not create the job.");
     } finally {
       setCreatingProject(false);
     }
@@ -340,14 +373,14 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
               </button>
             )}
 
-            {draft.stage === "Design Work In Progress" && !draft.project_id && (
+            {PROGRESS_TO_JOB_STAGES.has(draft.stage) && !draft.project_id && (
               <button
                 type="button"
                 onClick={handleCreateProject}
                 disabled={creatingProject}
                 className="border border-sand px-4 py-2 text-caption text-sand hover:bg-sand hover:text-white disabled:opacity-50"
               >
-                {creatingProject ? "Creating…" : "Create project"}
+                {creatingProject ? "Creating…" : "Progress to job"}
               </button>
             )}
             {draft.project_id && (

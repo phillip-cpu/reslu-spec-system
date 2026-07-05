@@ -12,7 +12,7 @@ import type { PortalItem } from "@/types";
 /** A downloadable document surfaced on the portal, with a signed URL. */
 export interface PortalItemFile {
   id: string;
-  kind: "spec_sheet" | "install_manual" | "other";
+  kind: "spec_sheet" | "install_manual" | "other" | "warranty";
   filename: string;
   /** Time-limited signed Supabase Storage URL — never a public/permanent one. */
   url: string;
@@ -21,6 +21,9 @@ export interface PortalItemFile {
 /** PortalItem extended with its downloadable documents. */
 export interface PortalItemWithFiles extends PortalItem {
   files: PortalItemFile[];
+  /** Phase 11B — design-phase decision deadline (BUILD-SPEC.md §"Phase
+   * 11 additions — confirmed by Phillip" point 2). Null = no deadline set. */
+  decision_needed_by: string | null;
 }
 
 // ------------------------------------------------------------
@@ -43,7 +46,7 @@ import type { SignatureRequestStatus, SignatureSubjectType } from "@/lib/signatu
 /** A project_files row shared to the portal (share_to_portal = true), with a signed URL. */
 export interface PortalDocument {
   id: string;
-  kind: "plans" | "council" | "engineering" | "scope_of_works" | "other";
+  kind: "plans" | "council" | "engineering" | "scope_of_works" | "other" | "certificate";
   filename: string;
   revision_label: string | null;
   uploaded_at: string;
@@ -96,6 +99,8 @@ export interface PortalUpdate {
   title: string;
   body_richtext: string;
   published_at: string;
+  /** Phase 11B — magazine-style diary entry images (1-2), signed URLs, from portal_update_photos. */
+  photos: { id: string; url: string; caption: string | null }[];
 }
 
 /** The pending signature request being signed, with everything the sign page needs. */
@@ -108,4 +113,34 @@ export interface PortalSigningTarget {
   document_filename: string;
   /** Signed URL to view the document (PDF) in an iframe — null for variation/sow subjects with no stored file. */
   document_url: string | null;
+}
+
+// ------------------------------------------------------------
+// Phase 11B — portal v2 additions.
+// BUILD-SPEC.md §"Phase 11 — Client portal v2 + trade confirmations"
+// points 2-5, §"Phase 11 additions — confirmed by Phillip".
+// ------------------------------------------------------------
+
+/** "What's next" block — derived-only, no pricing/contact details, trade company names only. */
+export interface PortalWhatsNext {
+  this_week: { phase_names: string[]; trade_companies: string[] };
+  next_week: { phase_names: string[]; trade_companies: string[] };
+}
+
+/** A handover-pack file (project_files or item_files, curated in_handover_pack = true). */
+export interface PortalHandoverFile {
+  id: string;
+  kind: string;
+  filename: string;
+  url: string;
+  /** Present for item_files — which item this manual/warranty belongs to. */
+  item_name?: string;
+}
+
+/** The Handover section's full payload — only rendered when project status = 'completed'. */
+export interface PortalHandoverPack {
+  manuals_and_warranties: PortalHandoverFile[];
+  certificates: PortalHandoverFile[];
+  documents: PortalHandoverFile[];
+  gallery: { id: string; url: string; caption: string | null }[];
 }

@@ -79,6 +79,8 @@ Every tool is a thin wrapper over an existing REST route — see `docs/API.md` f
 | `list_invoices` | `GET /api/projects/[id]/invoices` | Admin-only, financial. Filter: `status`. |
 | `create_invoice` | `POST /api/projects/[id]/invoices` | Admin-only, financial. Use after parsing a supplier invoice email/PDF. |
 | `post_client_update` | `POST /api/projects/[id]/client-updates/posts` | Creates a **draft** — does not publish to the client portal. |
+| `draft_diary_entry` | `GET`/`POST /api/projects/[id]/client-updates/posts/[postId]/aria-draft` | Two modes: call without `title`/`body_richtext` to FETCH a draft's rough notes + photo captions; call WITH both to SUBMIT polished copy (sets `status: 'pending_approval'`). Never publishes — see `docs/ARIA.md`'s "Diary workflow" section. |
+| `list_site_photos` | `GET /api/projects/[id]/site-photos` | The project's internal gallery (published + unpublished), for referencing captions/photos when drafting a diary entry. Read-only. |
 | `list_contacts` | `GET /api/contacts` | Address Book (trades/suppliers). Filters: `q`, `category`. |
 | `create_board_task` | `POST /api/projects/[id]/board` | Needs an existing `column_id` for that project. |
 

@@ -5,45 +5,60 @@ import { notFound } from "next/navigation";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { ASSET_BUCKET } from "@/lib/storage";
 import { rateLimit } from "@/lib/rate-limit";
-import { PortalBoard } from "@/components/portal/PortalBoard";
 import { PortalNav } from "@/components/portal/PortalNav";
-import { PortalSection } from "@/components/portal/PortalSection";
+import { WhatsNextBlock } from "@/components/portal/WhatsNextBlock";
+import { SelectionsSection } from "@/components/portal/SelectionsSection";
 import { DocumentsSection } from "@/components/portal/DocumentsSection";
 import { ContractsSection, type ContractRow } from "@/components/portal/ContractsSection";
 import { VariationsSection } from "@/components/portal/VariationsSection";
 import { ProgressPhotosSection } from "@/components/portal/ProgressPhotosSection";
-import { UpdatesFeed } from "@/components/portal/UpdatesFeed";
+import { DiarySection } from "@/components/portal/DiarySection";
 import { TimelineSection } from "@/components/portal/TimelineSection";
+import { HandoverSection } from "@/components/portal/HandoverSection";
+import { getWhatsNext } from "@/lib/portal-whats-next";
 import type { PortalItem, PortalPhase } from "@/types";
 import type {
   PortalItemFile,
   PortalItemWithFiles,
   PortalDocument,
+  PortalSignatureSummary,
   PortalVariation,
   PortalProgressPhoto,
   PortalUpdate,
+  PortalHandoverPack,
+  PortalHandoverFile,
 } from "@/app/portal/types";
 
 /**
- * Client Approval Portal — Week 8B expansion (BUILD-SPEC.md "Week 8 —
- * Client portal expansion"): the portal is now sectioned — Schedule &
- * approvals (existing PortalBoard, reused unmodified per the task's
- * "reuse, don't rewrite"), Documents, Contracts & signatures,
- * Variations, Progress photos, Updates. Every section is token-gated +
- * rate-limited + noindex, same as the Week 3B page this extends.
+ * Client Approval Portal — Phase 11B restyle (BUILD-SPEC.md "Phase 11
+ * — Client portal v2 + trade confirmations" points 2-5, "Phase 11
+ * additions — confirmed by Phillip"). Single sectioned page, sticky
+ * top nav:
+ *
+ *   What's next (derived, top of page, no nav entry — always visible
+ *   when there's anything to show) -> Selections (FF&E approvals at
+ *   scale) -> Timeline (owned by the Phase 11A agent's
+ *   TimelineSection.tsx — NOT touched here beyond passing it the same
+ *   phases prop it already accepted) -> Diary (magazine-style journal,
+ *   renamed from "Updates") -> Documents (+ certificates, signed
+ *   badges) -> Contracts & signatures -> Variations -> Progress photos
+ *   (published site_photos + any published-update photos) -> Handover
+ *   (only when project status = 'completed').
  *
  * Still carries NO item pricing anywhere — PORTAL_FIELDS is unchanged
- * from Week 3B. The ONE deliberate exception (BUILD-SPEC.md) is
+ * from Week 3B/8B. The ONE deliberate exception (BUILD-SPEC.md) is
  * variations' client-facing cost, shown INC GST only, computed
  * server-side below (never cost_ex_gst, never any item price_trade/
- * price_rrp/markup_pct field).
+ * price_rrp/markup_pct field). No internal-only photo reaches this
+ * page: site_photos are queried with `.eq("published_to_portal", true)`
+ * only — never the full internal gallery.
  */
 export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
 const PORTAL_FIELDS =
-  "id,item_code,name,description,supplier,quantity,location,status,selected_image_url,client_approved,client_flagged,client_flag_note";
+  "id,item_code,name,description,supplier,quantity,location,status,selected_image_url,client_approved,client_flagged,client_flag_note,decision_needed_by";
 
 const SIGNED_URL_TTL_SECONDS = 60 * 60;
 const GST_RATE = 0.1;
@@ -67,7 +82,7 @@ export default async function PortalPage({
 
   const { data: project } = await supabase
     .from("projects")
-    .select("id,name,client_name")
+    .select("id,name,client_name,status")
     .eq("client_token", token)
     .single();
 
@@ -75,7 +90,8 @@ export default async function PortalPage({
     notFound();
   }
 
-  // ---- Schedule & approvals (existing, unchanged query) ----
+  // ---- Selections (FF&E approvals) — unchanged field whitelist plus
+  // decision_needed_by (Phase 11B) ----
   const { data: items } = await supabase
     .from("items")
     .select(PORTAL_FIELDS)
@@ -84,7 +100,7 @@ export default async function PortalPage({
     .order("location", { ascending: true, nullsFirst: false })
     .order("item_code", { ascending: true });
 
-  const portalItems = (items ?? []) as PortalItem[];
+  const portalItems = (items ?? []) as (PortalItem & { decision_needed_by: string | null })[];
   const itemIds = portalItems.map((i) => i.id);
   const filesByItemId = new Map<string, PortalItemFile[]>();
 
@@ -117,7 +133,7 @@ export default async function PortalPage({
     files: filesByItemId.get(item.id) ?? [],
   }));
 
-  // ---- Documents (project_files where share_to_portal) ----
+  // ---- Documents (project_files where share_to_portal, incl. certificates) ----
   const { data: fileRows } = await supabase
     .from("project_files")
     .select("id,kind,storage_path,filename,revision_label,uploaded_at")
@@ -126,23 +142,9 @@ export default async function PortalPage({
     .is("deleted_at", null)
     .order("uploaded_at", { ascending: false });
 
-  const documents: PortalDocument[] = [];
-  for (const row of fileRows ?? []) {
-    const { data: signed, error: signError } = await supabase.storage
-      .from(ASSET_BUCKET)
-      .createSignedUrl(row.storage_path, SIGNED_URL_TTL_SECONDS);
-    if (signError || !signed?.signedUrl) continue;
-    documents.push({
-      id: row.id,
-      kind: row.kind as PortalDocument["kind"],
-      filename: row.filename,
-      revision_label: row.revision_label,
-      uploaded_at: row.uploaded_at,
-      url: signed.signedUrl,
-    });
-  }
-
   // ---- Contracts & signatures (signature_requests for shared project_files) ----
+  // Computed before the documents list below so each document can carry
+  // its own signature summary inline (Phase 11B "signed badges").
   const sharedFileIds = new Set((fileRows ?? []).map((f) => f.id));
   const filenameById = new Map((fileRows ?? []).map((f) => [f.id, f.filename]));
 
@@ -171,6 +173,36 @@ export default async function PortalPage({
         });
       }
     }
+  }
+
+  const signatureByFileId = new Map<string, PortalSignatureSummary>();
+  for (const r of relevantRequests) {
+    if (r.subject_type !== "project_file") continue;
+    const evidence = evidenceByRequest.get(r.id);
+    signatureByFileId.set(r.subject_id, {
+      request_id: r.id,
+      status: r.status,
+      subject_type: r.subject_type,
+      signed_by: evidence?.signer_name_typed ?? null,
+      signed_at: evidence?.signed_at ?? null,
+    });
+  }
+
+  const documents: PortalDocument[] = [];
+  for (const row of fileRows ?? []) {
+    const { data: signed, error: signError } = await supabase.storage
+      .from(ASSET_BUCKET)
+      .createSignedUrl(row.storage_path, SIGNED_URL_TTL_SECONDS);
+    if (signError || !signed?.signedUrl) continue;
+    documents.push({
+      id: row.id,
+      kind: row.kind as PortalDocument["kind"],
+      filename: row.filename,
+      revision_label: row.revision_label,
+      uploaded_at: row.uploaded_at,
+      url: signed.signedUrl,
+      signature: signatureByFileId.get(row.id) ?? null,
+    });
   }
 
   const contracts: ContractRow[] = relevantRequests.map((r) => {
@@ -210,16 +242,35 @@ export default async function PortalPage({
     client_responded_at: v.client_responded_at,
   }));
 
-  // ---- Progress photos (newest first) ----
-  const { data: photoRows } = await supabase
-    .from("progress_photos")
-    .select("id,storage_path,caption,taken_at,created_at")
-    .eq("project_id", project.id)
-    .is("deleted_at", null)
-    .order("created_at", { ascending: false });
+  // ---- Progress photos ----
+  // Phase 11B: "Existing Week 8 portal progress-photos section becomes
+  // the published view of this gallery ... portal shows only
+  // published_to_portal = true or photos attached to published
+  // updates — one photo pipeline, staged internally, curated out."
+  // Reads ONLY site_photos with published_to_portal = true — the
+  // internal staging gallery (unpublished rows) never reaches this
+  // query. progress_photos (the pre-Phase-11B table) is also still
+  // read for backward compatibility with any historical rows uploaded
+  // before the Gallery tab existed; new uploads only ever go to
+  // site_photos (see app/api/projects/[id]/site-photos/route.ts).
+  const [{ data: sitePhotoRows }, { data: legacyPhotoRows }] = await Promise.all([
+    supabase
+      .from("site_photos")
+      .select("id,storage_path,caption,taken_at,created_at")
+      .eq("project_id", project.id)
+      .eq("published_to_portal", true)
+      .is("deleted_at", null)
+      .order("taken_at", { ascending: false }),
+    supabase
+      .from("progress_photos")
+      .select("id,storage_path,caption,taken_at,created_at")
+      .eq("project_id", project.id)
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false }),
+  ]);
 
   const photos: PortalProgressPhoto[] = [];
-  for (const row of photoRows ?? []) {
+  for (const row of [...(sitePhotoRows ?? []), ...(legacyPhotoRows ?? [])]) {
     const { data: signed, error: signError } = await supabase.storage
       .from(ASSET_BUCKET)
       .createSignedUrl(row.storage_path, SIGNED_URL_TTL_SECONDS);
@@ -232,13 +283,12 @@ export default async function PortalPage({
       created_at: row.created_at,
     });
   }
+  photos.sort((a, b) => (b.taken_at ?? b.created_at).localeCompare(a.taken_at ?? a.created_at));
 
-  // ---- Timeline (Week 9 portal mirror) ----
-  // BUILD-SPEC.md "Portal mirror": "phase names + bars + date ranges
-  // ONLY (no contacts, no notes)" — the select() below is an explicit
-  // whitelist that omits contact_id and notes entirely, same pattern
-  // as PORTAL_FIELDS above for items: the excluded columns are never
-  // fetched in the first place, not merely hidden by the component.
+  // ---- Timeline (Week 9 portal mirror, owned by the Phase 11A agent's
+  // TimelineSection.tsx component — this page only queries the same
+  // whitelisted columns it always has and passes them through
+  // unchanged) ----
   const { data: phaseRows } = await supabase
     .from("schedule_phases")
     .select("id,name,start_date,end_date,color_key")
@@ -248,7 +298,10 @@ export default async function PortalPage({
 
   const phases: PortalPhase[] = (phaseRows ?? []) as PortalPhase[];
 
-  // ---- Updates feed (published only, newest first) ----
+  // ---- What's next (derived-only, Phase 11B) ----
+  const whatsNext = await getWhatsNext(supabase, project.id);
+
+  // ---- Diary (published only, newest first, with 1-2 photos each) ----
   const { data: updateRows } = await supabase
     .from("portal_updates")
     .select("id,title,body_richtext,published_at")
@@ -257,12 +310,42 @@ export default async function PortalPage({
     .is("deleted_at", null)
     .order("published_at", { ascending: false });
 
+  const updateIds = (updateRows ?? []).map((u) => u.id);
+  const diaryPhotosByUpdate = new Map<string, { id: string; url: string; caption: string | null }[]>();
+  if (updateIds.length > 0) {
+    const { data: links } = await supabase
+      .from("portal_update_photos")
+      .select("update_id,sort,site_photos(id,storage_path,caption)")
+      .in("update_id", updateIds)
+      .order("sort", { ascending: true });
+
+    for (const link of links ?? []) {
+      const photo = Array.isArray(link.site_photos) ? link.site_photos[0] : link.site_photos;
+      if (!photo) continue;
+      const { data: signed, error: signError } = await supabase.storage
+        .from(ASSET_BUCKET)
+        .createSignedUrl(photo.storage_path, SIGNED_URL_TTL_SECONDS);
+      if (signError || !signed?.signedUrl) continue;
+      const list = diaryPhotosByUpdate.get(link.update_id) ?? [];
+      list.push({ id: photo.id, url: signed.signedUrl, caption: photo.caption });
+      diaryPhotosByUpdate.set(link.update_id, list);
+    }
+  }
+
   const updates: PortalUpdate[] = (updateRows ?? []).map((u) => ({
     id: u.id,
     title: u.title,
     body_richtext: u.body_richtext,
     published_at: u.published_at as string,
+    photos: diaryPhotosByUpdate.get(u.id) ?? [],
   }));
+
+  // ---- Handover pack (only when project status = 'completed') ----
+  // BUILD-SPEC.md §"Phase 11 additions — confirmed by Phillip" point 4.
+  let handoverPack: PortalHandoverPack | null = null;
+  if (project.status === "completed") {
+    handoverPack = await buildHandoverPack(supabase, project.id);
+  }
 
   return (
     <div className="min-h-screen bg-cream">
@@ -286,29 +369,30 @@ export default async function PortalPage({
         </div>
       </header>
 
+      <WhatsNextBlock whatsNext={whatsNext} />
+
       <PortalNav
         visible={{
-          schedule: true,
+          selections: true,
           timeline: phases.length > 0,
+          diary: true,
           documents: documents.length > 0,
           contracts: contracts.length > 0,
           variations: variations.length > 0,
           photos: photos.length > 0,
-          updates: updates.length > 0,
+          handover: handoverPack !== null,
         }}
       />
 
       <main className="mx-auto max-w-4xl space-y-10 px-6 py-8">
-        <PortalSection id="schedule" title="Schedule &amp; approvals">
-          <PortalBoard token={token} initialItems={itemsWithFiles} />
-        </PortalSection>
-
+        <SelectionsSection token={token} initialItems={itemsWithFiles} />
         <TimelineSection phases={phases} />
+        <DiarySection updates={updates} />
         <DocumentsSection documents={documents} />
         <ContractsSection token={token} contracts={contracts} />
         <VariationsSection token={token} initialVariations={variations} />
         <ProgressPhotosSection photos={photos} />
-        <UpdatesFeed updates={updates} />
+        {handoverPack && <HandoverSection pack={handoverPack} />}
       </main>
 
       <footer className="mx-auto max-w-4xl px-6 py-10 text-caption text-charcoal/40">
@@ -316,4 +400,82 @@ export default async function PortalPage({
       </footer>
     </div>
   );
+}
+
+/**
+ * Assembles the Handover section's payload — curated (in_handover_pack
+ * = true) manuals & warranties (item_files), certificates + documents
+ * (project_files, split by kind === 'certificate' vs everything else),
+ * and the curated final gallery (site_photos where in_handover_pack).
+ * Only called when project.status === 'completed'.
+ */
+async function buildHandoverPack(
+  supabase: ReturnType<typeof createServiceRoleClient>,
+  projectId: string
+): Promise<PortalHandoverPack> {
+  const [{ data: itemFileRows }, { data: projectFileRows }, { data: galleryRows }] = await Promise.all([
+    // item_files has no project_id column — the items!inner(...) embed
+    // filters to items actually belonging to this project (same
+    // pattern already used by app/api/projects/[id]/overview/route.ts
+    // and app/api/projects/[id]/handover/route.ts), so ownership is
+    // enforced by the query itself rather than a defensive re-check
+    // after the fact.
+    supabase
+      .from("item_files")
+      .select("id,item_id,kind,storage_path,filename,items!inner(project_id,name)")
+      .in("kind", ["install_manual", "warranty"])
+      .eq("in_handover_pack", true)
+      .eq("items.project_id", projectId),
+    supabase
+      .from("project_files")
+      .select("id,kind,storage_path,filename")
+      .eq("project_id", projectId)
+      .eq("in_handover_pack", true)
+      .is("deleted_at", null),
+    supabase
+      .from("site_photos")
+      .select("id,storage_path,caption")
+      .eq("project_id", projectId)
+      .eq("in_handover_pack", true)
+      .is("deleted_at", null),
+  ]);
+
+  const manualsAndWarranties: PortalHandoverFile[] = [];
+  for (const row of itemFileRows ?? []) {
+    const { data: signed, error } = await supabase.storage
+      .from(ASSET_BUCKET)
+      .createSignedUrl(row.storage_path, SIGNED_URL_TTL_SECONDS);
+    if (error || !signed?.signedUrl) continue;
+    const item = Array.isArray(row.items) ? row.items[0] : row.items;
+    manualsAndWarranties.push({
+      id: row.id,
+      kind: row.kind,
+      filename: row.filename,
+      url: signed.signedUrl,
+      item_name: item?.name,
+    });
+  }
+
+  const certificates: PortalHandoverFile[] = [];
+  const documents: PortalHandoverFile[] = [];
+  for (const row of projectFileRows ?? []) {
+    const { data: signed, error } = await supabase.storage
+      .from(ASSET_BUCKET)
+      .createSignedUrl(row.storage_path, SIGNED_URL_TTL_SECONDS);
+    if (error || !signed?.signedUrl) continue;
+    const file: PortalHandoverFile = { id: row.id, kind: row.kind, filename: row.filename, url: signed.signedUrl };
+    if (row.kind === "certificate") certificates.push(file);
+    else documents.push(file);
+  }
+
+  const gallery: PortalHandoverPack["gallery"] = [];
+  for (const row of galleryRows ?? []) {
+    const { data: signed, error } = await supabase.storage
+      .from(ASSET_BUCKET)
+      .createSignedUrl(row.storage_path, SIGNED_URL_TTL_SECONDS);
+    if (error || !signed?.signedUrl) continue;
+    gallery.push({ id: row.id, url: signed.signedUrl, caption: row.caption });
+  }
+
+  return { manuals_and_warranties: manualsAndWarranties, certificates, documents, gallery };
 }

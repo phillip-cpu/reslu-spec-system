@@ -34,6 +34,18 @@ interface Props {
  * file is outside this boundary). Archive goes through the existing
  * DELETE /api/projects/[id] (also unmodified; it already archives
  * rather than hard-deleting).
+ *
+ * Phase 11 extension — "Client contacts" group (5 July 2026, Phillip):
+ * client_email + notify_client (migration 016_portal_v2.sql) were
+ * added to the schema in Phase 11B but never surfaced on this form —
+ * audited via grep across app/+components/ before building (see this
+ * task's verification notes): no other UI wrote to either column, so
+ * both are net-new fields here, not a duplicate surface. client_phone
+ * + client_secondary_name/_email/_phone (migration
+ * 017_project_contacts.sql) are net-new for the second owner on a
+ * couple's job. All six save through the same PUT /api/projects/[id]
+ * (unmodified — it already accepts any Partial<Project> body), in the
+ * same saveFields() submit as the existing fields above.
  */
 export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImageUrl }: Props) {
   const router = useRouter();
@@ -44,6 +56,14 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImag
   const [budget, setBudget] = useState(project.budget?.toString() ?? "");
   const [mondayBoardId, setMondayBoardId] = useState(project.monday_board_id ?? "");
   const [token, setToken] = useState(project.client_token);
+
+  // Phase 11 extension — Client contacts group (see doc comment above).
+  const [clientEmail, setClientEmail] = useState(project.client_email ?? "");
+  const [notifyClient, setNotifyClient] = useState(project.notify_client);
+  const [clientPhone, setClientPhone] = useState(project.client_phone ?? "");
+  const [secondaryName, setSecondaryName] = useState(project.client_secondary_name ?? "");
+  const [secondaryEmail, setSecondaryEmail] = useState(project.client_secondary_email ?? "");
+  const [secondaryPhone, setSecondaryPhone] = useState(project.client_secondary_phone ?? "");
 
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -112,6 +132,13 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImag
           address: address.trim() || null,
           budget: budget.trim() === "" ? null : Number(budget),
           monday_board_id: mondayBoardId.trim() || null,
+          // Phase 11 extension — Client contacts group.
+          client_email: clientEmail.trim() || null,
+          notify_client: notifyClient,
+          client_phone: clientPhone.trim() || null,
+          client_secondary_name: secondaryName.trim() || null,
+          client_secondary_email: secondaryEmail.trim() || null,
+          client_secondary_phone: secondaryPhone.trim() || null,
         }),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? "Could not save");
@@ -286,6 +313,96 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImag
               className="border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
             />
           </label>
+        </div>
+
+        {/* Phase 11 extension — Client contacts (5 July 2026, Phillip):
+            primary email/phone + a second owner's name/email/phone for
+            couples. Saves through the same submit as every other field
+            on this form (single PUT /api/projects/[id]). */}
+        <div className="space-y-4 border-t border-[#dcd6cc] pt-6">
+          <h3 className="text-subhead text-nearblack">Client contacts</h3>
+          <p className="text-body text-charcoal/60">
+            Used for the client portal link and for RESLU&apos;s email
+            notifications (diary updates, shared documents, signature
+            requests, variations). Never shown to anyone but the RESLU
+            team.
+          </p>
+
+          <div className="grid grid-cols-2 gap-4">
+            <label className="flex flex-col gap-1">
+              <span className="label-caps">Primary email</span>
+              <input
+                type="email"
+                value={clientEmail}
+                onChange={(e) => setClientEmail(e.target.value)}
+                disabled={!isAdmin}
+                placeholder="client@example.com"
+                className="border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="label-caps">Primary phone</span>
+              <input
+                type="tel"
+                value={clientPhone}
+                onChange={(e) => setClientPhone(e.target.value)}
+                disabled={!isAdmin}
+                className="border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+              />
+            </label>
+          </div>
+
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={notifyClient}
+              onChange={(e) => setNotifyClient(e.target.checked)}
+              disabled={!isAdmin}
+              className="h-4 w-4 border-[#c9c2b4] disabled:opacity-60"
+            />
+            <span className="label-caps">Email the client on updates</span>
+          </label>
+
+          <div className="border-t border-[#e5e0d6] pt-4">
+            <p className="label-caps mb-3">Second owner (optional)</p>
+            <div className="grid grid-cols-2 gap-4">
+              <label className="flex flex-col gap-1 col-span-2">
+                <span className="label-caps">Name</span>
+                <input
+                  value={secondaryName}
+                  onChange={(e) => setSecondaryName(e.target.value)}
+                  disabled={!isAdmin}
+                  className="border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="label-caps">Email</span>
+                <input
+                  type="email"
+                  value={secondaryEmail}
+                  onChange={(e) => setSecondaryEmail(e.target.value)}
+                  disabled={!isAdmin}
+                  placeholder="client@example.com"
+                  className="border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="label-caps">Phone</span>
+                <input
+                  type="tel"
+                  value={secondaryPhone}
+                  onChange={(e) => setSecondaryPhone(e.target.value)}
+                  disabled={!isAdmin}
+                  className="border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+                />
+              </label>
+            </div>
+            {secondaryEmail.trim() && (
+              <p className="mt-2 text-caption text-charcoal/40">
+                Both owners will be copied on the same email notification.
+              </p>
+            )}
+          </div>
         </div>
 
         {isAdmin && (

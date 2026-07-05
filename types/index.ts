@@ -61,6 +61,18 @@ export interface Project {
   // the leads kanban's "Create project" action) — see leads.project_id
   // for the forward link and app/api/leads/[id]/create-project/route.ts.
   lead_id: string | null;
+  // ---- additive (migration 017_portal_v2.sql, Week 11) ----
+  // Client email for client-facing notifications (lib/notify-client.ts).
+  client_email: string | null;
+  // Per-project toggle for client email notifications — defaults true.
+  notify_client: boolean;
+  // ---- additive (migration 018_project_contacts.sql, Week 11) ----
+  // Primary owner's phone + optional second owner's contact details
+  // (couples: two owners on one job). All nullable.
+  client_phone: string | null;
+  client_secondary_name: string | null;
+  client_secondary_email: string | null;
+  client_secondary_phone: string | null;
 }
 
 /**

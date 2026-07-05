@@ -154,3 +154,85 @@ itself.
   per BUILD-SPEC.md), every one of these calls starts returning `403`
   immediately. That's the intended safety rail, not a bug to work
   around.
+
+## Diary workflow (Phase 11B)
+
+BUILD-SPEC.md §"Phase 11 — Diary" + §"mobile pass": staff write rough
+notes on their phone (with 1-2 photos picked from the site gallery),
+Aria turns that into a polished magazine-style entry, and a human
+publishes it. **Aria drafts — she never publishes.** Publishing a diary
+entry is always a separate, explicit, one-tap human action; nothing in
+this workflow gives her (or any MCP tool) the ability to make a diary
+entry appear on the client portal.
+
+### The pipeline
+
+1. A team member, usually on their phone on site, opens the Gallery or
+   the client area's Diary tab, picks or takes 1-2 photos, types a few
+   rough notes into one plain textarea, and taps "Send to Aria". This
+   creates a `portal_updates` row: `status: 'draft'`, `draft_source:
+   'manual'`, linked to the chosen photos via `portal_update_photos`.
+2. Aria calls the `draft_diary_entry` MCP tool WITHOUT `title`/
+   `body_richtext` (fetch mode) — passing `project_id` and `update_id`.
+   This returns the rough notes (`update.rough_notes`) and each linked
+   photo's caption/date/signed URL (`photos[]`). She reads these, then
+   writes a serif-headline-worthy title and a short, warm story in the
+   entry's voice.
+3. Aria calls `draft_diary_entry` AGAIN, this time WITH `title` and
+   `body_richtext` (submit mode). This saves her polished copy onto the
+   SAME row and flips it to `status: 'pending_approval'`,
+   `draft_source: 'aria'`. Nothing is published yet.
+4. A human sees the entry as an approval card (`DiaryApprovalCard` in
+   `components/client-area/DiaryPanel.tsx` — "Ready to publish") in the
+   client area, reviews Aria's draft, optionally taps "Edit" to tweak
+   the copy inline, and taps "Publish" — one tap, phone-friendly. THIS
+   is the only action that sets `published_at` and `status:
+   'published'`. Publishing also marks the linked photos
+   `published_to_portal = true` and fires a client email notification
+   (best-effort, no-op if unconfigured — see `lib/notify-client.ts`).
+
+### `draft_diary_entry` (MCP tool)
+
+One tool, two modes, matching how the tool is actually called across
+two separate model turns (read the rough notes and photos, think, then
+write the polished copy):
+
+- **Fetch mode** — call with `{ project_id, update_id }` only. Returns
+  `{ update: { id, rough_notes, current_title }, photos: [{ id,
+  caption, taken_at, url }] }`. 409s if the entry isn't currently
+  `status: 'draft'` (i.e. someone already submitted or published it).
+- **Submit mode** — call with `{ project_id, update_id, title,
+  body_richtext }`. Saves the polished copy and sets `status:
+  'pending_approval'`. Also 409s if the entry has moved on from
+  `'draft'` in the meantime (e.g. a human somehow published a bare
+  draft in between — shouldn't normally happen since a bare draft with
+  no polished copy has nothing worth publishing, but the check is
+  there regardless).
+
+There is no separate "list pending drafts" tool — Aria discovers which
+project's diary draft to work on from context (she's usually invoked
+right after a team member sends notes, or a human tells her which
+project), the same way `post_client_update` already works. Drafts are
+also visible in the team client area's Diary tab if a human wants to
+check on one directly.
+
+### `list_site_photos` (MCP tool)
+
+`{ project_id }` -> the project's full internal gallery (published AND
+unpublished), so Aria can see what's available — captions, dates,
+signed URLs — when deciding which photos best fit a story, or when a
+team member asks her to reference something specific from a recent
+site visit. Read-only; it never publishes or modifies anything.
+
+### Why this split matters
+
+The publish boundary is enforced structurally, not just by convention:
+neither `draft_diary_entry`'s submit mode nor any other MCP tool sets
+`published_at` or writes `status: 'published'` — only `PATCH
+/api/projects/[id]/client-updates/posts/[postId]` with `{ publish:
+true }` does that, and that route requires a real team session (Aria's
+own session included, in principle) but is only ever actually called
+from the human-facing "Publish" button in the client area UI. If
+Aria's credentials were ever compromised, the worst she could do to the
+Diary is draft copy sitting in `pending_approval` for a human to
+review — never push it live herself.

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
 
 /**
  * GET /api/projects/[id]/client-updates/summary
@@ -55,7 +56,7 @@ export async function GET(
         .order("created_at", { ascending: false }),
       supabase
         .from("portal_updates")
-        .select("id,title,published_at,created_at")
+        .select("id,title,body_richtext,status,draft_source,published_at,created_at")
         .eq("project_id", projectId)
         .is("deleted_at", null)
         .order("created_at", { ascending: false }),
@@ -72,11 +73,36 @@ export async function GET(
     ? Math.floor((Date.now() - new Date(lastPublished).getTime()) / (1000 * 60 * 60 * 24))
     : null;
 
+  // Attach linked gallery photos (signed URLs) to each diary entry —
+  // same enrichment as GET .../posts, needed here too since this
+  // summary route is what actually feeds DiaryPanel's initial render
+  // (see components/client-area/ClientAreaWorkspace.tsx).
+  const updateIds = (updates ?? []).map((u) => u.id);
+  const photosByUpdate = new Map<string, { id: string; url: string | null; caption: string | null }[]>();
+  if (updateIds.length > 0) {
+    const { data: links } = await supabase
+      .from("portal_update_photos")
+      .select("update_id,sort,site_photos(id,storage_path,caption)")
+      .in("update_id", updateIds)
+      .order("sort", { ascending: true });
+
+    for (const link of links ?? []) {
+      const photo = Array.isArray(link.site_photos) ? link.site_photos[0] : link.site_photos;
+      if (!photo) continue;
+      const { data: signed } = await supabase.storage
+        .from(ASSET_BUCKET)
+        .createSignedUrl(photo.storage_path, SIGNED_URL_TTL_SECONDS);
+      const list = photosByUpdate.get(link.update_id) ?? [];
+      list.push({ id: photo.id, url: signed?.signedUrl ?? null, caption: photo.caption });
+      photosByUpdate.set(link.update_id, list);
+    }
+  }
+
   return NextResponse.json({
     files: files ?? [],
     variations: variations ?? [],
     signature_requests: signatureRequests ?? [],
-    updates: updates ?? [],
+    updates: (updates ?? []).map((u) => ({ ...u, photos: photosByUpdate.get(u.id) ?? [] })),
     photo_count: photos?.length ?? 0,
     cadence: {
       last_published_at: lastPublished,

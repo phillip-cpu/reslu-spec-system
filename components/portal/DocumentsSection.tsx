@@ -7,6 +7,7 @@ const KIND_LABELS: Record<PortalDocument["kind"], string> = {
   engineering: "Engineering",
   scope_of_works: "Scope of works",
   other: "Other",
+  certificate: "Compliance certificates",
 };
 
 const KIND_ORDER: PortalDocument["kind"][] = [
@@ -14,18 +15,23 @@ const KIND_ORDER: PortalDocument["kind"][] = [
   "council",
   "engineering",
   "scope_of_works",
+  "certificate",
   "other",
 ];
 
 /**
  * Documents section (BUILD-SPEC.md "Week 8 — Client portal expansion":
  * "Documents (project_files where share_to_portal, grouped by kind,
- * signed URLs)"). Read-only list — signing happens in the Contracts
- * section below via a link to the dedicated sign page, so a document
- * requiring a signature appears in BOTH places (Documents for browsing/
- * download, Contracts for the actionable signing queue), matching how
- * the spec separates "Documents" from "Contracts & signatures" as two
- * distinct sections.
+ * signed URLs)"; Phase 11B adds "signed badges and certificates" per
+ * §"portal v2 restyle"). Read-only list — signing happens in the
+ * Contracts section below via a link to the dedicated sign page, so a
+ * document requiring a signature appears in BOTH places (Documents for
+ * browsing/download — now with an inline "Signed" badge when
+ * doc.signature.status === 'signed' — Contracts for the actionable
+ * signing queue), matching how the spec separates "Documents" from
+ * "Contracts & signatures" as two distinct sections. The `signature`
+ * field is optional/undefined unless the portal page populates it (see
+ * app/portal/[token]/page.tsx) — this component tolerates its absence.
  */
 export function DocumentsSection({ documents }: { documents: PortalDocument[] }) {
   if (documents.length === 0) {
@@ -65,8 +71,16 @@ export function DocumentsSection({ documents }: { documents: PortalDocument[] })
                     )}
                     {doc.filename}
                   </a>
-                  <span className="shrink-0 text-caption text-charcoal/40">
-                    {new Date(doc.uploaded_at).toLocaleDateString("en-AU")}
+                  <span className="flex shrink-0 items-center gap-3">
+                    {doc.signature?.status === "signed" && (
+                      <span className="label-caps !text-sand">Signed</span>
+                    )}
+                    {doc.signature?.status === "pending" && (
+                      <span className="label-caps !text-charcoal/40">Awaiting signature</span>
+                    )}
+                    <span className="text-caption text-charcoal/40">
+                      {new Date(doc.uploaded_at).toLocaleDateString("en-AU")}
+                    </span>
                   </span>
                 </li>
               ))}

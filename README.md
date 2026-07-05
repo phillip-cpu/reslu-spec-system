@@ -272,6 +272,39 @@ To stop the app, go back to Terminal and press `Ctrl + C`.
   `docs/API.md` §"Address Book, Project board & Gantt — Week 9" for the
   routes and the drag-drop sort scheme.
 
+- **Phase 11A — Trade confirmation engine + Timeline v2.** Each phase
+  can now hold multiple trade visits (`trade_visits` — dates, arrival
+  slot/time, status, contact) — the phase row itself stays a single
+  bar with a compact strip of status dots; full detail (add/edit/
+  delete a visit, contact picker, arrival slot/time) lives in the
+  existing phase edit panel. An auto-maintained **"Site Setup" umbrella
+  band** renders as a full-width, system-managed row spanning the whole
+  project schedule whenever the estimate's "Preliminaries & Site" cost
+  section has live line items — its dates are recomputed every time the
+  Timeline tab loads, and tapping it shows the section's line
+  descriptions (no pricing) instead of an edit form. Long schedules get
+  a **week/month zoom toggle** (grids over 12 weeks), a collapsible
+  **"Completed" phases group**, and a vertical **today line**; on
+  mobile the phase-name column stays sticky while scrolling weeks, and
+  tapping a visit dot opens a bottom sheet with a one-tap "confirm on
+  behalf of trade" button.
+  Trades themselves respond via a public, unauthenticated page at
+  `/trade/[token]` (same unguessable-token trust model as the client
+  portal) — **Confirm as-is**, **Confirm a different time** (same day,
+  auto-accepted, no staff approval needed), or **Propose another day**
+  (staff then accepts or counters from the team side). The trade page
+  shows a "who else is on site" list (company + status only — never
+  another trade's contact name, phone, or email) and, if no arrival
+  time has ever been nominated, requires choosing one before a first
+  confirm can complete. A daily reminder email (`/api/trade-reminders`,
+  cron `0 21 * * *` — 07:30 Adelaide time) nudges trades 1–2 days
+  before an unconfirmed visit. A **needs-attention** endpoint surfaces
+  pending trade counter-proposals and visits starting within 3 days.
+  New table: `trade_visits`; `schedule_phases` gains `kind`
+  (`'phase'|'umbrella'`) and `cost_section_id` (migration
+  `015_trade_visits.sql`). See `docs/API.md` §"Trade visits & timeline
+  v2 (Phase 11A)" for the full route list.
+
 - **Week 10 — Leads pipeline + Aria API/MCP layer.** New sidebar entry
   **Leads** (`/leads`, admin-only — hidden from the sidebar and
   page-gated for non-admins, same "restricted" pattern as Invoices),
@@ -325,19 +358,44 @@ To stop the app, go back to Terminal and press `Ctrl + C`.
   rate guidance.
 
   **MCP server** (`mcp/`, a separate Node package installed on the
-  mini, not a dependency of this app): exposes 13 tools
+  mini, not a dependency of this app): exposes 15 tools
   (`list_projects`, `get_project`, `list_items`, `create_item`,
   `update_item_status`, `list_leads`, `move_lead_stage`,
   `get_needs_attention`, `list_invoices`, `create_invoice`,
-  `post_client_update`, `list_contacts`, `create_board_task`) — each a
-  thin `fetch()` against the REST API using Aria's own bearer token
-  (lazy sign-in, cached, one retry on a 401). See `mcp/README.md` for
-  install steps and an OpenClaw/Claude Code MCP config snippet.
+  `post_client_update`, `draft_diary_entry`, `list_site_photos`,
+  `list_contacts`, `create_board_task`) — each a thin `fetch()` against
+  the REST API using Aria's own bearer token (lazy sign-in, cached, one
+  retry on a 401). See `mcp/README.md` for install steps and an
+  OpenClaw/Claude Code MCP config snippet.
 
 Client-portal financial gating and the real scraper pipeline (image/RRP
 extraction + PDF document detection) were completed in Week 3. Role-based
 admin enforcement for financial fields is now in place project-wide
 (library, items, settings) as of Week 4.
+
+- **Phase 11B — Portal v2, diary, site gallery, notifications.**
+  Migration `016_portal_v2.sql`. The client portal (`/portal/[token]`)
+  is now: What's next (derived this-week/next-week banner) → Selections
+  (FF&E approvals restyled to scale to 200+ items: progress bar, filter
+  chips, room-grouped bulk approve, full-screen one-by-one review
+  stepper, design-phase decision deadlines) → Timeline → Diary
+  (magazine-style journal, replacing "Updates") → Documents (+
+  certificates, signed badges) → Contracts & signatures → Variations →
+  Progress photos → Handover (manuals/warranties/certificates/gallery,
+  shown only once a project is marked Completed). A new internal
+  **Gallery** tab (`/projects/[id]/gallery`) is the staging area for
+  site photos — "Take photo" (camera-direct on phones) or "Upload"
+  (multi-select), client-side compressed to max 2000px before upload,
+  grouped by date, with a publish toggle and "Add to diary draft". The
+  **Diary** composer in the client area is phone-first: pick photos,
+  write rough notes in one big textarea, tap "Send to Aria" — she
+  drafts a polished title + story via the `draft_diary_entry` MCP tool,
+  and a human one-taps "Publish" (she never publishes herself). Client
+  email notifications (`lib/notify-client.ts`) fire on diary publish,
+  new shared documents, and shared variations (no-op without Gmail
+  config or a project `client_email`). See `docs/API.md`'s "Portal v2,
+  diary, gallery & notifications (Phase 11B)" section and
+  `docs/ARIA.md`'s "Diary workflow" section for full detail.
 
 ## Monday.com and Gmail integrations
 

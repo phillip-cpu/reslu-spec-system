@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { isAdmin } from "@/lib/auth";
+import { notifyClient } from "@/lib/notify-client";
 
 /**
  * PATCH /api/projects/[id]/client-updates/variations/[variationId]/share
@@ -56,6 +57,18 @@ export async function PATCH(
 
   if (error || !updated) {
     return NextResponse.json({ error: error?.message ?? "Not found" }, { status: 404 });
+  }
+
+  // Client notification only on turning sharing ON (BUILD-SPEC.md
+  // §"Phase 11 additions — confirmed by Phillip" point 1: "shared
+  // variation"), never on un-sharing. Best-effort, never fails the
+  // toggle itself.
+  if (body.share_to_portal === true) {
+    void notifyClient(supabase, projectId, {
+      trigger: "variation_shared",
+      label: `Variation #${updated.var_number}`,
+      section: "variations",
+    });
   }
 
   return NextResponse.json({ variation: updated });

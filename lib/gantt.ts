@@ -118,3 +118,68 @@ export function isNewMonth(weeks: Date[], index: number): boolean {
   const cur = weeks[index];
   return prev.getUTCMonth() !== cur.getUTCMonth() || prev.getUTCFullYear() !== cur.getUTCFullYear();
 }
+
+// ============================================================
+// Phase 11A additions — Timeline v2: trade-visit bar positions and
+// the umbrella-band grid position. Everything above this line is
+// unchanged from Week 9 (existing exports/signatures/behaviour are
+// untouched — components/portal/TimelineSection.tsx and every other
+// existing caller keeps working identically).
+//
+// Split rationale (documented per the build spec): grid/pixel math —
+// mapping a date range onto the shared week-grid's column/percentage
+// coordinates — belongs here, next to computeGanttGrid/
+// phaseGridPosition, since it's the exact same class of computation
+// on the exact same grid. Visit DOMAIN logic (status, arrival labels,
+// attention grouping, overlap detection, umbrella date-range
+// derivation) lives in lib/trade-visits.ts instead — this file stays
+// a pure "dates -> grid coordinates" module with zero knowledge of
+// what a "visit" or "umbrella" conceptually means beyond "a date
+// range to place on the grid".
+// ============================================================
+
+/**
+ * Maps a trade visit's date range onto the SAME shared week grid used
+ * for phase bars (not a row-relative grid) — visits are rendered
+ * inside a phase's row (see components/gantt/VisitBar.tsx), so they
+ * need coordinates in the identical column space as the phase bar
+ * itself, letting a visit bar be positioned as an inset/offset within
+ * or below its parent phase's bar without a second coordinate system.
+ * Reuses phaseGridPosition's exact clamping logic since a visit range
+ * is date-shaped in precisely the same way a phase range is.
+ */
+export function visitGridPosition(visit: PhaseDateRange, grid: GanttGrid): GridPosition {
+  return phaseGridPosition(visit, grid);
+}
+
+/**
+ * Grid position for the umbrella band — spans the umbrella phase's
+ * own (auto-maintained) start_date/end_date across the shared week
+ * grid. The umbrella's start/end are kept in sync with min/max of
+ * ordinary phases by the API layer (see lib/trade-visits.ts's
+ * computeUmbrellaBand and app/api/projects/[id]/phases/route.ts's
+ * recompute-on-read logic) — this function only does the grid-
+ * coordinate mapping, identical to any other phase-shaped date range.
+ */
+export function umbrellaGridPosition(umbrella: PhaseDateRange, grid: GanttGrid): GridPosition {
+  return phaseGridPosition(umbrella, grid);
+}
+
+/**
+ * Today's column position as a single-week grid position — used to
+ * render the vertical "today" line at the correct x-offset. Returns
+ * null if today falls entirely outside the grid (before gridStart, or
+ * beyond the capped 52-week span), so the caller can skip rendering
+ * the line rather than clamping it to a misleading edge position.
+ */
+export function todayGridPosition(grid: GanttGrid, now: Date = new Date()): GridPosition | null {
+  const todayRange: PhaseDateRange = {
+    start_date: now.toISOString().slice(0, 10),
+    end_date: now.toISOString().slice(0, 10),
+  };
+  const todayTime = parseDate(todayRange.start_date).getTime();
+  if (todayTime < grid.gridStart.getTime()) return null;
+  const gridEndTime = grid.gridStart.getTime() + grid.weekCount * MS_PER_WEEK;
+  if (todayTime >= gridEndTime) return null;
+  return phaseGridPosition(todayRange, grid);
+}
