@@ -31,7 +31,7 @@
 -- text — store markdown, author_id, published_at nullable — draft
 -- until published, created_at, updated_at, deleted_at)".
 -- ============================================================
-create table portal_updates (
+create table if not exists portal_updates (
   id              uuid primary key default gen_random_uuid(),
   project_id      uuid not null references projects(id) on delete cascade,
   title           text not null,
@@ -49,8 +49,8 @@ create table portal_updates (
   deleted_at      timestamptz
 );
 
-create index idx_portal_updates_project on portal_updates(project_id, published_at);
-create index idx_portal_updates_deleted_at on portal_updates(deleted_at);
+create index if not exists idx_portal_updates_project on portal_updates(project_id, published_at);
+create index if not exists idx_portal_updates_deleted_at on portal_updates(deleted_at);
 
 create trigger trg_portal_updates_updated_at
   before update on portal_updates
@@ -61,7 +61,7 @@ create trigger trg_portal_updates_updated_at
 -- BUILD-SPEC.md: "progress_photos (id, project_id, storage_path,
 -- caption, taken_at date nullable, uploaded_by, created_at, deleted_at)".
 -- ============================================================
-create table progress_photos (
+create table if not exists progress_photos (
   id              uuid primary key default gen_random_uuid(),
   project_id      uuid not null references projects(id) on delete cascade,
   storage_path    text not null,
@@ -72,8 +72,8 @@ create table progress_photos (
   deleted_at      timestamptz
 );
 
-create index idx_progress_photos_project on progress_photos(project_id, created_at);
-create index idx_progress_photos_deleted_at on progress_photos(deleted_at);
+create index if not exists idx_progress_photos_project on progress_photos(project_id, created_at);
+create index if not exists idx_progress_photos_deleted_at on progress_photos(deleted_at);
 
 -- No updated_at trigger — mirrors item_files/project_files: uploads are
 -- immutable, a caption edit is a small PATCH but the row is otherwise
@@ -112,7 +112,7 @@ create index if not exists idx_variations_share_to_portal
 -- against the project at request-creation time (see
 -- app/api/signatures/route.ts).
 -- ============================================================
-create table signature_requests (
+create table if not exists signature_requests (
   id              uuid primary key default gen_random_uuid(),
   project_id      uuid not null references projects(id) on delete cascade,
   subject_type    text not null check (subject_type in ('project_file', 'variation', 'sow')),
@@ -129,8 +129,8 @@ create table signature_requests (
   updated_at      timestamptz not null default now()
 );
 
-create index idx_signature_requests_project on signature_requests(project_id, status);
-create index idx_signature_requests_subject on signature_requests(subject_type, subject_id);
+create index if not exists idx_signature_requests_project on signature_requests(project_id, status);
+create index if not exists idx_signature_requests_subject on signature_requests(subject_type, subject_id);
 
 create trigger trg_signature_requests_updated_at
   before update on signature_requests
@@ -163,7 +163,7 @@ create trigger trg_signature_requests_updated_at
 -- the ledger directly under RLS without needing the service-role
 -- client for that alone.
 -- ============================================================
-create table signature_events (
+create table if not exists signature_events (
   id                      uuid primary key default gen_random_uuid(),
   project_id              uuid not null references projects(id) on delete cascade,
   subject_type            text not null check (subject_type in ('project_file', 'variation', 'sow')),
@@ -178,9 +178,9 @@ create table signature_events (
   signed_at               timestamptz not null default now()
 );
 
-create index idx_signature_events_project on signature_events(project_id);
-create index idx_signature_events_subject on signature_events(subject_type, subject_id);
-create index idx_signature_events_request on signature_events(signature_request_id);
+create index if not exists idx_signature_events_project on signature_events(project_id);
+create index if not exists idx_signature_events_subject on signature_events(subject_type, subject_id);
+create index if not exists idx_signature_events_request on signature_events(signature_request_id);
 
 -- No set_updated_at trigger — this table has no updated_at column at
 -- all (append-only ledgers don't get edited, so there is nothing to
@@ -202,11 +202,11 @@ alter table signature_events enable row level security;
 -- for migrations/ops, not application code, per the append-only
 -- design). This is the actual enforcement mechanism the security
 -- spec's "no UPDATE/DELETE policies" describes.
-create policy "signature_events_insert" on signature_events
-  for insert to authenticated with check (true);
+drop policy if exists "signature_events_insert" on signature_events;
+create policy "signature_events_insert" on signature_events  for insert to authenticated with check (true);
 
-create policy "signature_events_select" on signature_events
-  for select to authenticated using (true);
+drop policy if exists "signature_events_select" on signature_events;
+create policy "signature_events_select" on signature_events  for select to authenticated using (true);
 
 -- ============================================================
 -- PART 6 — Void-on-change trigger (variations)
@@ -277,12 +277,12 @@ alter table portal_updates enable row level security;
 alter table progress_photos enable row level security;
 alter table signature_requests enable row level security;
 
-create policy "team_all" on portal_updates
-  for all to authenticated using (true) with check (true);
-create policy "team_all" on progress_photos
-  for all to authenticated using (true) with check (true);
-create policy "team_all" on signature_requests
-  for all to authenticated using (true) with check (true);
+drop policy if exists "team_all" on portal_updates;
+create policy "team_all" on portal_updates  for all to authenticated using (true) with check (true);
+drop policy if exists "team_all" on progress_photos;
+create policy "team_all" on progress_photos  for all to authenticated using (true) with check (true);
+drop policy if exists "team_all" on signature_requests;
+create policy "team_all" on signature_requests  for all to authenticated using (true) with check (true);
 
 -- project_files and variations already have "team_all" policies from
 -- 008_project_files.sql / 007_estimating.sql — the new columns added

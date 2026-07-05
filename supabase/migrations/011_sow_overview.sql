@@ -37,7 +37,7 @@ alter table projects
 -- revisions), rendered to a branded PDF, shareable to the portal.
 -- ============================================================
 
-create table sow_documents (
+create table if not exists sow_documents (
   id              uuid primary key default gen_random_uuid(),
   project_id      uuid not null references projects(id) on delete cascade,
   -- e.g. "T1", "T2" — mirrors project_files.revision_label's free-text
@@ -58,13 +58,13 @@ create table sow_documents (
 create unique index idx_sow_documents_project_revision_active
   on sow_documents(project_id, revision_label) where deleted_at is null;
 
-create index idx_sow_documents_project on sow_documents(project_id, deleted_at);
+create index if not exists idx_sow_documents_project on sow_documents(project_id, deleted_at);
 
 create trigger trg_sow_documents_updated_at
   before update on sow_documents
   for each row execute function set_updated_at();
 
-create table sow_sections (
+create table if not exists sow_sections (
   id          uuid primary key default gen_random_uuid(),
   sow_id      uuid not null references sow_documents(id) on delete cascade,
   heading     text not null,
@@ -73,13 +73,13 @@ create table sow_sections (
   updated_at  timestamptz not null default now()
 );
 
-create index idx_sow_sections_sow on sow_sections(sow_id, sort);
+create index if not exists idx_sow_sections_sow on sow_sections(sow_id, sort);
 
 create trigger trg_sow_sections_updated_at
   before update on sow_sections
   for each row execute function set_updated_at();
 
-create table sow_lines (
+create table if not exists sow_lines (
   id          uuid primary key default gen_random_uuid(),
   section_id  uuid not null references sow_sections(id) on delete cascade,
   text        text not null,
@@ -90,7 +90,7 @@ create table sow_lines (
   updated_at  timestamptz not null default now()
 );
 
-create index idx_sow_lines_section on sow_lines(section_id, sort);
+create index if not exists idx_sow_lines_section on sow_lines(section_id, sort);
 
 create trigger trg_sow_lines_updated_at
   before update on sow_lines
@@ -106,9 +106,9 @@ alter table sow_documents enable row level security;
 alter table sow_sections enable row level security;
 alter table sow_lines enable row level security;
 
-create policy "team_all" on sow_documents
-  for all to authenticated using (true) with check (true);
-create policy "team_all" on sow_sections
-  for all to authenticated using (true) with check (true);
-create policy "team_all" on sow_lines
-  for all to authenticated using (true) with check (true);
+drop policy if exists "team_all" on sow_documents;
+create policy "team_all" on sow_documents  for all to authenticated using (true) with check (true);
+drop policy if exists "team_all" on sow_sections;
+create policy "team_all" on sow_sections  for all to authenticated using (true) with check (true);
+drop policy if exists "team_all" on sow_lines;
+create policy "team_all" on sow_lines  for all to authenticated using (true) with check (true);
