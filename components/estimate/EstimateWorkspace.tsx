@@ -7,8 +7,9 @@ import { approvedVariationsTotal, projectRollup, sectionRollup, wholeJobSummary 
 import { EstimateView } from "./EstimateView";
 import { VariationsView } from "./VariationsView";
 import { MeasurementsView } from "./MeasurementsView";
+import { VersionsPanel } from "./VersionsPanel";
 
-type View = "estimate" | "variations" | "measurements";
+type View = "estimate" | "variations" | "measurements" | "versions";
 
 interface Props {
   projectId: string;
@@ -316,6 +317,7 @@ export function EstimateWorkspace({ projectId }: Props) {
             { key: "estimate", label: "Estimate" },
             { key: "variations", label: "Variations" },
             { key: "measurements", label: "Areas & Measurements" },
+            { key: "versions", label: "Versions" },
           ] as { key: View; label: string }[]
         ).map((t) => (
           <button
@@ -370,6 +372,8 @@ export function EstimateWorkspace({ projectId }: Props) {
           onMeasurementRemoved={removeMeasurementLocal}
         />
       )}
+
+      {view === "versions" && <VersionsPanel projectId={projectId} />}
     </div>
   );
 }

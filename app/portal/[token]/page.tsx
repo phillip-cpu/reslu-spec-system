@@ -7,6 +7,7 @@ import { ASSET_BUCKET } from "@/lib/storage";
 import { rateLimit } from "@/lib/rate-limit";
 import { PortalNav } from "@/components/portal/PortalNav";
 import { WhatsNextBlock } from "@/components/portal/WhatsNextBlock";
+import { UpcomingMeetingsCard } from "@/components/portal/UpcomingMeetingsCard";
 import { SelectionsSection } from "@/components/portal/SelectionsSection";
 import { DocumentsSection } from "@/components/portal/DocumentsSection";
 import { ContractsSection, type ContractRow } from "@/components/portal/ContractsSection";
@@ -27,6 +28,7 @@ import type {
   PortalUpdate,
   PortalHandoverPack,
   PortalHandoverFile,
+  PortalClientEvent,
 } from "@/app/portal/types";
 
 /**
@@ -301,6 +303,19 @@ export default async function PortalPage({
   // ---- What's next (derived-only, Phase 11B) ----
   const whatsNext = await getWhatsNext(supabase, project.id);
 
+  // ---- Upcoming client meetings (Phase 12a-B) ----
+  // BUILD-SPEC.md §"Portal — upcoming client meetings": "future events
+  // only, drop past". Sorted soonest-first, same as the team-side list.
+  const { data: clientEventRows } = await supabase
+    .from("client_events")
+    .select("id,title,starts_at,ends_at,location,notes")
+    .eq("project_id", project.id)
+    .is("deleted_at", null)
+    .gte("starts_at", new Date().toISOString())
+    .order("starts_at", { ascending: true });
+
+  const upcomingMeetings: PortalClientEvent[] = clientEventRows ?? [];
+
   // ---- Diary (published only, newest first, with 1-2 photos each) ----
   const { data: updateRows } = await supabase
     .from("portal_updates")
@@ -370,6 +385,7 @@ export default async function PortalPage({
       </header>
 
       <WhatsNextBlock whatsNext={whatsNext} />
+      <UpcomingMeetingsCard events={upcomingMeetings} />
 
       <PortalNav
         visible={{

@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { Header } from "@/components/layout/Header";
 import { ProjectList } from "@/components/projects/ProjectList";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
-import type { ProjectWithCounts } from "@/types";
+import type { ProjectWithCountsAndAlias } from "@/types/phase-12a-b";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -32,7 +32,7 @@ export default async function DashboardPage() {
     );
   }
 
-  const projectsWithCounts: ProjectWithCounts[] = (projects ?? []).map((p: any) => ({
+  const projectsWithCounts: ProjectWithCountsAndAlias[] = (projects ?? []).map((p: any) => ({
     ...p,
     item_count: p.items?.[0]?.count ?? 0,
     cover_image_url: coverUrlByProjectId.get(p.id) ?? null,

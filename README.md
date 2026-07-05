@@ -397,6 +397,46 @@ admin enforcement for financial fields is now in place project-wide
   diary, gallery & notifications (Phase 11B)" section and
   `docs/ARIA.md`'s "Diary workflow" section for full detail.
 
+- **Phase 12a-B — My Work, Board v2, housekeeping, client events.**
+  Migration `020_mywork_board_events.sql`. New sidebar entry **My
+  Work** (`/my-work`) — per-user Overdue / Today / This week / No date
+  feed across board tasks, admin lead follow-ups, diary drafts pending
+  approval, trade-visit proposals, and overdue client decisions, plus a
+  personal notes panel. **Board v2**: cards now support multiple
+  assignees (stacked initials), auto-assign the creator on card create
+  (overridable), a new **Grouped list** view (Monday-style phase tables
+  — Site Prep/Demolition/Rough-in/Waterproofing & Tiling/Fit-off/
+  Handover, seeded on first visit to that view), and new boards seed
+  columns Waiting-first. **Housekeeping**: project `alias` (Settings →
+  shown muted on the dashboard card, project header, My Work — never
+  client-facing), the project name in every sub-tab header now links
+  back to Overview, and the project tab bar gained a right-aligned
+  "View client portal ↗" + "Copy link". **Client events**: the project
+  Client area gained a "Meetings" tab (`client_events` table) and the
+  portal shows an "Upcoming meetings" card next to What's Next; a
+  day-before reminder email sends via `POST /api/client-events/remind`
+  — **this route has NO cron entry yet** (`vercel.json` is out of this
+  change's scope) — see "Cron jobs" note below. See `docs/API.md`'s "My
+  Work, Board v2, housekeeping, client events — Phase 12a-B" section.
+
+## Cron jobs — one still needs wiring up (Phase 12a-B)
+
+`vercel.json` currently schedules `/api/digest/flush` and
+`/api/trade-reminders`. Phase 12a-B adds a THIRD reminder route,
+`POST /api/client-events/remind` (day-before email for upcoming client
+meetings), but does not add its cron entry — that file is out of this
+change's boundary. To wire it up, add this entry to `vercel.json`'s
+`crons` array (same UTC slot as the existing trade-reminders entry —
+both are once-a-day "day before" nudges):
+
+```json
+{ "path": "/api/client-events/remind", "schedule": "0 21 * * *" }
+```
+
+The route already accepts both `GET` and `POST` and authenticates via
+`CRON_SECRET` exactly like the other two cron routes, so no other
+change is needed once the entry is added and deployed.
+
 ## Monday.com and Gmail integrations
 
 Both are optional and dormant until configured — the app works fully

@@ -31,6 +31,7 @@ export function SowBuilder({ projectId }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [applyingTemplate, setApplyingTemplate] = useState(false);
 
   const loadRevisions = useCallback(async () => {
     const res = await fetch(`/api/projects/${projectId}/sow`);
@@ -129,6 +130,33 @@ export function SowBuilder({ projectId }: Props) {
       await loadSow(created.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start a new revision.");
+    }
+  }
+
+  /**
+   * "Start from template" — Phase 12a-A, BUILD-SPEC.md "SOW completion":
+   * appends the standard clause library (Project Overview / General
+   * Notes / Site Management & Handover / Exclusions) plus one section
+   * per current project room (from the `rooms` table) onto the active
+   * draft revision. See app/api/projects/[id]/sow/[sowId]/from-template
+   * and lib/sow-templates.ts. Additive only — never replaces existing
+   * sections, so it's safe to click on a SOW that already has content.
+   */
+  async function applyTemplate() {
+    if (!sow) return;
+    setApplyingTemplate(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/sow/${sow.id}/from-template`, {
+        method: "POST",
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Could not apply the template.");
+      setSections((cur) => [...cur, ...((body.sections ?? []) as SowSectionWithLines[])]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not apply the template.");
+    } finally {
+      setApplyingTemplate(false);
     }
   }
 
@@ -285,6 +313,17 @@ export function SowBuilder({ projectId }: Props) {
         </div>
 
         <div className="flex items-center gap-2">
+          {sow && isDraft && (
+            <button
+              type="button"
+              onClick={applyTemplate}
+              disabled={applyingTemplate}
+              className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white disabled:opacity-60"
+              title="Append the standard clause library + one section per project room"
+            >
+              {applyingTemplate ? "Applying…" : "Start from template"}
+            </button>
+          )}
           {sow && (
             <a
               href={`/api/projects/${projectId}/sow/${sow.id}/pdf`}

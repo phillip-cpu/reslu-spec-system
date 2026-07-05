@@ -7,6 +7,11 @@ import clsx from "clsx";
 
 const NAV_ITEMS = [
   { label: "Projects", href: "/" },
+  // Phase 12a-B — BUILD-SPEC.md §"Phase 12a — My Work": "one page that
+  // answers 'what do I do today'". Team-visible (every signed-in user
+  // has their own feed; the admin-only lead-follow-ups source is gated
+  // inside GET /api/my-work itself, not at this nav/page level).
+  { label: "My Work", href: "/my-work" },
   { label: "Search", href: "/search" },
   { label: "Library", href: "/library" },
   { label: "Address Book", href: "/contacts" },

@@ -30,7 +30,7 @@ export default async function ImportPage({
 
   return (
     <>
-      <Header title="Import Items" subtitle={`${project.name} · ${project.client_name}`} />
+      <Header title="Import Items" subtitle={`${project.name} · ${project.client_name}`} subtitleHref={`/projects/${id}`} />
       <main className="flex-1 px-8 py-8">
         <ImportWizard projectId={id} />
       </main>

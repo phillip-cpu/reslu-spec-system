@@ -1,6 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
-import type { ProjectWithCounts } from "@/types";
+import type { ProjectWithCountsAndAlias } from "@/types/phase-12a-b";
 import { StatusPill } from "./StatusPill";
 
 /**
@@ -8,8 +8,13 @@ import { StatusPill } from "./StatusPill";
  * cream placeholder block when no cover is set. `project.cover_image_url`
  * is a signed URL minted server-side (dashboard page / GET /api/projects
  * both batch this) since the `assets` bucket is private.
+ *
+ * Housekeeping (Phase 12a-B) — BUILD-SPEC.md §"Housekeeping — 5 July
+ * screenshot" point 2: alias renders as a MUTED suffix next to the
+ * project name, internal-only (this card is never rendered anywhere
+ * client-facing).
  */
-export function ProjectCard({ project }: { project: ProjectWithCounts }) {
+export function ProjectCard({ project }: { project: ProjectWithCountsAndAlias }) {
   return (
     <Link
       href={`/projects/${project.id}`}
@@ -34,7 +39,10 @@ export function ProjectCard({ project }: { project: ProjectWithCounts }) {
       <div className="p-6">
         <div className="flex items-start justify-between">
           <div>
-            <h3 className="text-subhead text-nearblack">{project.name}</h3>
+            <h3 className="text-subhead text-nearblack">
+              {project.name}
+              {project.alias && <span className="ml-2 text-body text-charcoal/40">{project.alias}</span>}
+            </h3>
             <p className="text-body text-charcoal/70 mt-1">{project.client_name}</p>
           </div>
           <StatusPill status={project.status} />

@@ -5,7 +5,8 @@ import { Header } from "@/components/layout/Header";
 import { ProjectTabs } from "@/components/projects/ProjectTabs";
 import { ProjectSettingsForm } from "@/components/settings/ProjectSettingsForm";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
-import type { Project } from "@/types";
+import { portalUrlFor } from "@/lib/portal-link";
+import type { ProjectWithAlias } from "@/types/phase-12a-b";
 
 /**
  * /projects/[id]/settings (Week 4 task).
@@ -59,11 +60,11 @@ export default async function ProjectSettingsPage({
 
   return (
     <>
-      <Header title="Project settings" subtitle={project.name} />
-      <ProjectTabs projectId={id} active="settings" isAdmin={isAdmin} />
+      <Header title="Project settings" subtitle={project.name} subtitleHref={`/projects/${id}`} />
+      <ProjectTabs projectId={id} active="settings" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
       <main className="flex-1 px-8 py-8">
         <ProjectSettingsForm
-          project={project as Project}
+          project={project as ProjectWithAlias}
           isAdmin={isAdmin}
           appUrl={appUrl}
           initialCoverImageUrl={coverImageUrl}

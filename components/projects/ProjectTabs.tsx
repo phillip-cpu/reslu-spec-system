@@ -1,4 +1,5 @@
 import clsx from "clsx";
+import { PortalLinkAction } from "./PortalLinkAction";
 
 export type ProjectTabKey =
   | "overview"
@@ -16,6 +17,15 @@ interface Props {
   projectId: string;
   active: ProjectTabKey;
   isAdmin: boolean;
+  /**
+   * Housekeeping (Phase 12a-B) — BUILD-SPEC.md §"Housekeeping — 5 July
+   * screenshot" point 3: full portal URL (appUrl + /portal/{client_token}).
+   * Optional — every existing caller of this component keeps working
+   * unchanged; pages that don't pass it simply don't render the "View
+   * client portal" affordance (rather than making every one of this
+   * component's ten call sites fetch the token immediately).
+   */
+  portalUrl?: string;
 }
 
 /**
@@ -36,7 +46,7 @@ interface Props {
  * (Gantt, §4) — both team-visible (no financial data), so neither is
  * adminOnly, same trust tier as Documents.
  */
-export function ProjectTabs({ projectId, active, isAdmin }: Props) {
+export function ProjectTabs({ projectId, active, isAdmin, portalUrl }: Props) {
   const tabs: { key: ProjectTabKey; label: string; href: string; adminOnly?: boolean }[] = [
     { key: "overview", label: "Overview", href: `/projects/${projectId}` },
     { key: "ffe", label: "FF&E", href: `/projects/${projectId}?tab=ffe` },
@@ -51,23 +61,26 @@ export function ProjectTabs({ projectId, active, isAdmin }: Props) {
   ];
 
   return (
-    <nav className="flex border-b border-[#dcd6cc] bg-cream px-8">
-      {tabs
-        .filter((t) => !t.adminOnly || isAdmin)
-        .map((t) => (
-          <a
-            key={t.key}
-            href={t.href}
-            className={clsx(
-              "border-b-2 px-4 py-3 text-subhead transition-colors",
-              active === t.key
-                ? "border-nearblack text-nearblack"
-                : "border-transparent text-charcoal/60 hover:text-nearblack"
-            )}
-          >
-            {t.label}
-          </a>
-        ))}
+    <nav className="flex items-center justify-between border-b border-[#dcd6cc] bg-cream px-8">
+      <div className="flex">
+        {tabs
+          .filter((t) => !t.adminOnly || isAdmin)
+          .map((t) => (
+            <a
+              key={t.key}
+              href={t.href}
+              className={clsx(
+                "border-b-2 px-4 py-3 text-subhead transition-colors",
+                active === t.key
+                  ? "border-nearblack text-nearblack"
+                  : "border-transparent text-charcoal/60 hover:text-nearblack"
+              )}
+            >
+              {t.label}
+            </a>
+          ))}
+      </div>
+      {portalUrl && <PortalLinkAction portalUrl={portalUrl} />}
     </nav>
   );
 }

@@ -236,3 +236,96 @@ from the human-facing "Publish" button in the client area UI. If
 Aria's credentials were ever compromised, the worst she could do to the
 Diary is draft copy sitting in `pending_approval` for a human to
 review — never push it live herself.
+
+## Plan analysis + SOW drafting workflow (Phase 12a-A)
+
+BUILD-SPEC.md "SOW completion + Aria plan analysis" / "Aria takeoff
+assist". Three new tools: `list_pending_plan_analyses`,
+`submit_plan_analysis`, `draft_sow_section` (see `docs/API.md`'s
+"Aria plan analysis + takeoff assist — Phase 12a-A" section for the
+full request/response shapes — this section is the workflow
+walkthrough).
+
+### The plan-analysis loop
+
+1. A team member uploads a plan set as a project document (`kind:
+   'plans'`, existing Project Documents feature). Aria's automation
+   polls `list_pending_plan_analyses({ project_id })` — files with no
+   analysis yet, each with a signed URL she can actually open and read.
+2. Aria reads the plan set (her own vision/reading capability — nothing
+   in this app extracts anything from a PDF/image; that intelligence
+   is entirely Aria-side) and identifies: every room name annotated,
+   every FF&E item code referenced, and — where actually stated on the
+   drawing — dimension annotations per room (length/width/ceiling
+   height/opening count/whether it's a wet area).
+3. Aria calls `submit_plan_analysis({ project_id, file_id, rooms,
+   item_codes, dimensions? })`. **Nothing about extraction is trusted
+   or re-verified by the server** — but everything downstream of the
+   submission is fully deterministic, computed server-side, never by a
+   model:
+   - The **cross-reference engine** (`lib/takeoff.ts
+     crossReferencePlans()`) diffs Aria's submitted rooms/codes against
+     the live spec register, in both directions, plus a room-name
+     mismatch check against both the plan's own room list and the
+     project's `rooms` table. Result stored as `plan_analyses.discrepancies`
+     and surfaced on the project Overview tab's "Plan Check" card.
+   - If `dimensions` were included, the **takeoff assist**
+     (`lib/takeoff.ts computeTakeoffs()`) computes floor/painting/tiling
+     m² by plain arithmetic over exactly what was stated — see
+     `docs/API.md` for the formulas and default constants (2.4 m
+     ceiling height, 1.8 m² per opening). A room with no stated
+     length/width gets **no measurement row at all** — it is never
+     guessed, and the drawing is never scale-measured. Every written
+     measurement lands as `status: 'draft'`, `source: 'takeoff'`, with
+     a `provenance_note` explaining exactly where the figure came from.
+4. A human reviews the Plan Check card, the register (fixing any
+   flagged mismatches), and the Areas & Measurements tab (site-measuring
+   to confirm each draft measurement — flipping it to `status:
+   'verified'` via `PATCH /api/estimate/measurements/[id]`, the only way
+   a draft becomes trusted). Nothing in this loop writes to the
+   estimate directly — a verified measurement only affects cost lines
+   that are explicitly linked to it (the pre-existing Estimate ↔
+   Schedule integration), same as any hand-entered measurement.
+
+### `draft_sow_section` (MCP tool)
+
+Same "one tool, two modes across two turns" shape as
+`draft_diary_entry` above:
+
+- **Fetch mode** — call with `{ project_id }` only. Returns the
+  project's current rooms (from the `rooms` table), each room's
+  assigned FF&E items (item code, name, description, category,
+  quantity), the latest plan analysis's discrepancies (so a draft can
+  flag a known mismatch rather than silently gloss over it), and a
+  clause-pattern skeleton per room (`lib/sow-templates.ts
+  roomSectionTemplate()` — the recurring Demolition → Partitions &
+  Plastering → Electrical → Waterproofing → Floor Finishes → Wall
+  Tiling → Joinery → Stone → Sanitaryware & Tapware → Shower Screen →
+  Painting → Specialty Items sub-heading shape both reference SOWs
+  follow) to ground her drafting.
+- **Submit mode** — call with `{ section_id, lines }`. `section_id`
+  must already exist — a human (or Aria, via the normal SOW builder
+  API) creates the empty section first (`POST
+  /api/projects/[id]/sow/[sowId]/sections`), then this call populates
+  it, line by line, via the same `POST
+  /api/sow/sections/[sectionId]/lines` route a human's typing already
+  uses. Every written line is an ordinary draft `sow_lines` row —
+  editable, deletable, re-orderable in the builder exactly like a
+  hand-typed one. **Nothing here ever issues or publishes a SOW** — the
+  "Issue" button is a human, session-gated action
+  (`POST /api/projects/[id]/sow/[sowId]/issue`), same structural
+  separation as the Diary's publish boundary above.
+
+### "Start from template" — not an Aria tool, a human one
+
+The clause library itself (`lib/sow-templates.ts`) also powers a plain
+UI button — "Start from template" in `SowBuilder.tsx` — for a team
+member to pre-populate a brand-new draft SOW with the standard General
+Notes / Site Management & Handover / Exclusions boilerplate plus one
+section per project room, WITHOUT involving Aria at all. This is
+deliberately not exposed as an MCP tool: it's a one-click bulk-populate
+action a human triggers directly in the builder
+(`POST /api/projects/[id]/sow/[sowId]/from-template`), not something
+Aria needs to call as part of her drafting loop (her loop instead calls
+`draft_sow_section` above, section by section, grounded in the actual
+plan analysis rather than blanket boilerplate).

@@ -4,6 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import { Header } from "@/components/layout/Header";
 import { ProjectTabs } from "@/components/projects/ProjectTabs";
 import { SowBuilder } from "@/components/sow/SowBuilder";
+import { portalUrlFor } from "@/lib/portal-link";
 
 /**
  * /projects/[id]/sow — the Scope of Works builder (BUILD-SPEC.md
@@ -29,7 +30,7 @@ export default async function SowPage({
 
   const { data: project } = await supabase
     .from("projects")
-    .select("id, name, client_name")
+    .select("id, name, client_name, client_token")
     .eq("id", id)
     .single();
 
@@ -39,8 +40,8 @@ export default async function SowPage({
 
   return (
     <>
-      <Header title={project.name} subtitle={`${project.client_name} · Scope of Works`} />
-      <ProjectTabs projectId={id} active="documents" isAdmin={isAdmin} />
+      <Header title={project.name} subtitle={`${project.client_name} · Scope of Works`} titleHref={`/projects/${id}`} />
+      <ProjectTabs projectId={id} active="documents" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
       <main className="flex-1 px-8 py-8">
         <SowBuilder projectId={id} />
       </main>

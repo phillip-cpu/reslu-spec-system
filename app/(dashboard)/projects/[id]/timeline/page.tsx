@@ -5,6 +5,7 @@ import { Header } from "@/components/layout/Header";
 import { ProjectTabs } from "@/components/projects/ProjectTabs";
 import { GanttChart } from "@/components/gantt/GanttChart";
 import { computeUmbrellaBand } from "@/lib/trade-visits";
+import { portalUrlFor } from "@/lib/portal-link";
 import type { SchedulePhaseWithVisits, TradeVisitWithContact, VisitContactSummary } from "@/lib/trade-visits";
 
 const UMBRELLA_NAME = "Site Setup";
@@ -31,7 +32,7 @@ export default async function ProjectTimelinePage({
   const supabase = await createClient();
 
   const [{ data: project }, info] = await Promise.all([
-    supabase.from("projects").select("id, name, client_name").eq("id", id).single(),
+    supabase.from("projects").select("id, name, client_name, client_token").eq("id", id).single(),
     getUserRole(supabase),
   ]);
 
@@ -164,8 +165,8 @@ export default async function ProjectTimelinePage({
 
   return (
     <>
-      <Header title={project.name} subtitle={`${project.client_name} · Timeline`} />
-      <ProjectTabs projectId={id} active="timeline" isAdmin={isAdmin} />
+      <Header title={project.name} subtitle={`${project.client_name} · Timeline`} titleHref={`/projects/${id}`} />
+      <ProjectTabs projectId={id} active="timeline" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
       <main className="flex-1 px-8 py-8">
         <GanttChart projectId={id} initialPhases={initialPhases} />
       </main>

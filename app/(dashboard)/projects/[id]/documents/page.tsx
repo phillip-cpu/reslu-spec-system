@@ -4,6 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import { Header } from "@/components/layout/Header";
 import { ProjectTabs } from "@/components/projects/ProjectTabs";
 import { ProjectDocuments } from "@/components/projects/ProjectDocuments";
+import { portalUrlFor } from "@/lib/portal-link";
 import type { Project } from "@/types";
 
 /**
@@ -33,7 +34,7 @@ export default async function ProjectDocumentsPage({
 
   const { data: project } = await supabase
     .from("projects")
-    .select("id, name, client_name, document_status")
+    .select("id, name, client_name, client_token, document_status")
     .eq("id", id)
     .single();
 
@@ -45,8 +46,8 @@ export default async function ProjectDocumentsPage({
 
   return (
     <>
-      <Header title={project.name} subtitle={`${project.client_name} · Documents`} />
-      <ProjectTabs projectId={id} active="documents" isAdmin={isAdmin} />
+      <Header title={project.name} subtitle={`${project.client_name} · Documents`} titleHref={`/projects/${id}`} />
+      <ProjectTabs projectId={id} active="documents" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
       <main className="flex-1 px-8 py-8">
         <ProjectDocuments
           projectId={id}

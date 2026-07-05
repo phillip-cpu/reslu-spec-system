@@ -4,6 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import { Header } from "@/components/layout/Header";
 import { ProjectTabs } from "@/components/projects/ProjectTabs";
 import { EstimateWorkspace } from "@/components/estimate/EstimateWorkspace";
+import { portalUrlFor } from "@/lib/portal-link";
 
 /**
  * /projects/[id]/estimate — the Estimate module ("the Excel killer").
@@ -54,7 +55,7 @@ export default async function EstimatePage({
   // re-check the role independently.)
   const { data: project } = await supabase
     .from("projects")
-    .select("id, name, client_name")
+    .select("id, name, client_name, client_token")
     .eq("id", id)
     .single();
 
@@ -64,8 +65,8 @@ export default async function EstimatePage({
 
   return (
     <>
-      <Header title={project.name} subtitle={`${project.client_name} · Estimate`} />
-      <ProjectTabs projectId={id} active="estimate" isAdmin={isAdmin} />
+      <Header title={project.name} subtitle={`${project.client_name} · Estimate`} titleHref={`/projects/${id}`} />
+      <ProjectTabs projectId={id} active="estimate" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
       <main className="flex-1 px-8 py-8">
         <EstimateWorkspace projectId={id} />
       </main>

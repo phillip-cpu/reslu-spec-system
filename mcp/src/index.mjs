@@ -469,7 +469,7 @@ const TOOLS = [
   {
     name: "create_board_task",
     description:
-      "Create a task card on a project's kanban board. column_id must be an existing board_columns id for that project — call get_project or the project's board API first if you don't already know it.",
+      "Create a task card on a project's kanban board. column_id must be an existing board_columns id for that project — call get_project or the project's board API first if you don't already know it. Board v2 (Phase 12a-B): auto-assigns Aria herself if assignee_ids is omitted entirely — pass assignee_ids: [] for no assignee, or a list of profile UUIDs to assign specific people instead.",
     inputSchema: {
       type: "object",
       properties: {
@@ -477,15 +477,164 @@ const TOOLS = [
         column_id: { type: "string", description: "Target board_columns UUID" },
         title: { type: "string" },
         description: { type: "string" },
-        assignee_id: { type: "string", description: "Profile UUID to assign, optional" },
+        assignee_ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Profile UUIDs to assign, optional — omit to auto-assign Aria's own account (Board v2 auto-assign-on-create), pass [] for none.",
+        },
         contact_id: { type: "string", description: "Linked Address Book contact UUID, optional" },
         due_date: { type: "string", description: "ISO date, YYYY-MM-DD, optional" },
+        phase_group_id: { type: "string", description: "Board v2 phase-group UUID, optional — see the project's board response for available groups" },
       },
       required: ["project_id", "column_id", "title"],
       additionalProperties: false,
     },
     handler: async ({ project_id, ...body }) =>
       apiFetch(`/api/projects/${project_id}/board`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+  },
+  // ------------------------------------------------------------
+  // Phase 12a-A — SOW completion + Aria plan analysis + takeoff assist
+  // (BUILD-SPEC.md §"SOW completion + Aria plan analysis", §"Aria
+  // takeoff assist"). Three new tools, all thin fetches like every
+  // tool above — the deterministic cross-reference engine and takeoff
+  // maths live server-side (lib/takeoff.ts), never in this file.
+  // ------------------------------------------------------------
+  {
+    name: "list_pending_plan_analyses",
+    description:
+      "List a project's uploaded plan files (project_files kind 'plans') that have never been analysed yet, with signed URLs so Aria can open and read them. This is the queue Aria's plan-analysis automation polls.",
+    inputSchema: {
+      type: "object",
+      properties: { project_id: { type: "string", description: "Project UUID" } },
+      required: ["project_id"],
+      additionalProperties: false,
+    },
+    handler: async ({ project_id }) => apiFetch(`/api/projects/${project_id}/plan-analysis/pending`),
+  },
+  {
+    name: "submit_plan_analysis",
+    description:
+      "Submit Aria's extraction results for one plan file: room names found on the plans, item codes referenced, and (optional) stated dimensions per room. The server runs a deterministic cross-reference against the spec register (both directions, plus room-name mismatches) and stores the discrepancies — never guessed, only computed from what's actually submitted here. When dimensions are supplied, the server ALSO computes draft takeoff quantities (floor/painting/tiling m²) and writes them to Areas & Measurements with status 'draft' — never auto-verified; a human site-measure confirms them later. Never publishes or issues anything.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project UUID" },
+        file_id: { type: "string", description: "project_files UUID of the analysed plan file (must be kind 'plans')" },
+        revision_label: { type: "string", description: "e.g. 'T3', optional" },
+        rooms: {
+          type: "array",
+          items: { type: "string" },
+          description: "Room names found annotated on the plan set",
+        },
+        item_codes: {
+          type: "array",
+          items: { type: "string" },
+          description: "FF&E item codes found referenced on the plan set",
+        },
+        dimensions: {
+          type: "array",
+          description:
+            "Stated dimension annotations per room, where present. Omit a room entirely if no dimension was annotated for it — the system flags it as 'measure on site' rather than guessing.",
+          items: {
+            type: "object",
+            properties: {
+              room_name: { type: "string" },
+              length_m: { type: "number" },
+              width_m: { type: "number" },
+              height_m: { type: "number", description: "Ceiling height, metres — defaults to 2.4 if omitted" },
+              opening_count: { type: "number", description: "Door/window openings, for the painting area allowance" },
+              wet_area: { type: "boolean", description: "True to also compute a tiling m² figure (floor + walls to stated height)" },
+            },
+            required: ["room_name"],
+            additionalProperties: false,
+          },
+        },
+        analysed_by: { type: "string", description: "Defaults to 'Aria' in practice — free text" },
+      },
+      required: ["project_id", "file_id", "rooms", "item_codes"],
+      additionalProperties: false,
+    },
+    handler: async ({ project_id, ...body }) =>
+      apiFetch(`/api/projects/${project_id}/plan-analysis`, {
+        method: "POST",
+        body: JSON.stringify({ analysed_by: "Aria", ...body }),
+      }),
+  },
+  {
+    name: "draft_sow_section",
+    description:
+      "Two modes, same tool. FETCH mode (omit `lines`): returns the project's current rooms, each room's assigned FF&E items, the latest plan analysis's discrepancies (if any), and the room-section clause pattern skeleton to follow — everything needed to draft a grounded room-by-room SOW section. SUBMIT mode (pass `section_id` + `lines`): writes each line onto that EXISTING draft sow_sections row (create the section itself first via the normal SOW builder API/UI, then call this to populate it) — every line lands with the SAME draft status as any hand-typed line; nothing is issued or published by this tool. Only works while the parent SOW is still a draft.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project UUID — FETCH mode" },
+        section_id: {
+          type: "string",
+          description: "SUBMIT mode only — an existing sow_sections UUID to write lines onto (create it first via POST /api/projects/[id]/sow/[sowId]/sections)",
+        },
+        lines: {
+          type: "array",
+          description: "SUBMIT mode only — the lines to write, in order",
+          items: {
+            type: "object",
+            properties: {
+              text: { type: "string" },
+              kind: { type: "string", enum: ["inclusion", "exclusion", "note"] },
+            },
+            required: ["text"],
+            additionalProperties: false,
+          },
+        },
+      },
+      additionalProperties: false,
+    },
+    handler: async ({ project_id, section_id, lines }) => {
+      if (section_id && Array.isArray(lines)) {
+        const results = [];
+        for (const line of lines) {
+          results.push(
+            await apiFetch(`/api/sow/sections/${section_id}/lines`, {
+              method: "POST",
+              body: JSON.stringify(line),
+            })
+          );
+        }
+        return { section_id, lines_created: results.length, lines: results };
+      }
+      if (!project_id) {
+        throw new Error("FETCH mode requires project_id; SUBMIT mode requires section_id + lines.");
+      }
+      return apiFetch(`/api/projects/${project_id}/sow/draft-context`);
+    },
+  },
+  // ------------------------------------------------------------
+  // Phase 12a-B — client_events (BUILD-SPEC.md §"Portal — upcoming
+  // client meetings": "Team manages from the project client area (and
+  // Aria via API/MCP create_client_event — she already books
+  // meetings)."). Thin fetch, same shape as create_board_task above.
+  // ------------------------------------------------------------
+  {
+    name: "create_client_event",
+    description:
+      "Create a client meeting/event, shown on the client portal's 'Upcoming meetings' card (date, time, location, notes) and reminded to the client by email the day before. notes is CLIENT-FACING — write it as portal copy, not an internal note.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project UUID" },
+        title: { type: "string", description: "e.g. 'Selections meeting — studio'" },
+        starts_at: { type: "string", description: "ISO timestamp" },
+        ends_at: { type: "string", description: "ISO timestamp, optional" },
+        location: { type: "string" },
+        notes: { type: "string", description: "Client-facing — shown verbatim on the portal card" },
+      },
+      required: ["project_id", "title", "starts_at"],
+      additionalProperties: false,
+    },
+    handler: async ({ project_id, ...body }) =>
+      apiFetch(`/api/projects/${project_id}/client-events`, {
         method: "POST",
         body: JSON.stringify(body),
       }),

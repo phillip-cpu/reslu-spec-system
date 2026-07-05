@@ -129,3 +129,26 @@ export const DOCUMENT_STATUS_COLOUR: Record<DocumentStatus, string> = {
 export function isValidDocumentStatus(value: unknown): value is DocumentStatus {
   return value === "na" || value === "not_started" || value === "draft" || value === "done";
 }
+
+// ------------------------------------------------------------
+// Phase 12a-A additive — room-section seeding from the CURRENT rooms
+// schema (migration 015_rooms.sql). seedSowSections() above still
+// drives POST /api/projects/[id]/sow (a project's very first T1
+// revision) unchanged, reading from items.location — that free-text
+// legacy layer is left exactly as it was, per this feature's
+// instruction to not touch existing behaviour there.
+//
+// "Start from template" (POST /api/projects/[id]/sow/[sowId]/from-template,
+// Phase 12a-A) is new call path that seeds room sections from the
+// `rooms` table instead — the richer, current per-project room model —
+// since BUILD-SPEC.md's SOW completion brief explicitly calls for "one
+// section per project room" sourced from the CURRENT schema, not the
+// older item-location convention. Falls back to SOW_FALLBACK_ROOMS
+// when a project has no rooms defined yet, same spirit as
+// seedSowSections()'s own fallback.
+// ------------------------------------------------------------
+
+/** Section heading list sourced from a project's `rooms` table (name, sorted), for the template "Start from template" action. */
+export function roomSectionHeadings(roomNames: string[]): string[] {
+  return roomNames.length > 0 ? roomNames : SOW_FALLBACK_ROOMS;
+}

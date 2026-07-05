@@ -7,6 +7,7 @@ import { ProjectOverview } from "@/components/projects/ProjectOverview";
 import { ProjectWorkspace } from "@/components/items/ProjectWorkspace";
 import { MondayBoardPicker } from "@/components/items/MondayBoardPicker";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
+import { portalUrlFor } from "@/lib/portal-link";
 import type { Category, Item } from "@/types";
 
 /**
@@ -83,6 +84,7 @@ export default async function ProjectPage({
     <>
       <Header
         title={project.name}
+        titleSuffix={project.alias ?? null}
         subtitle={project.client_name}
         subtitleHref="/"
         titleThumbnailUrl={coverImageUrl}
@@ -111,7 +113,12 @@ export default async function ProjectPage({
           ) : undefined
         }
       />
-      <ProjectTabs projectId={id} active={showFfe ? "ffe" : "overview"} isAdmin={isAdmin} />
+      <ProjectTabs
+        projectId={id}
+        active={showFfe ? "ffe" : "overview"}
+        isAdmin={isAdmin}
+        portalUrl={portalUrlFor(project.client_token)}
+      />
       <main className="flex-1 px-8 py-8">
         {showFfe ? (
           <ProjectWorkspace

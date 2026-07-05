@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { DocumentStatusLight } from "./DocumentStatusLight";
+import { PlanCheckCard } from "./PlanCheckCard";
 import type { DocumentStatus, ProjectFileKind, ProjectOverviewResponse } from "@/types";
 
 interface Props {
@@ -186,6 +187,11 @@ export function ProjectOverview({ projectId, isAdmin }: Props) {
           </ul>
         )}
       </Card>
+
+      {/* Plan Check card (Phase 12a-A, additive) — self-contained,
+          renders nothing until a plan analysis has been run at least
+          once for this project. See components/projects/PlanCheckCard.tsx. */}
+      <PlanCheckCard projectId={projectId} />
     </div>
   );
 }

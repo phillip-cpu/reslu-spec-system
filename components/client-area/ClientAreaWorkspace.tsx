@@ -8,6 +8,7 @@ import { DiaryPanel, type DiaryUpdateRow } from "@/components/client-area/DiaryP
 import { ContractsPanel } from "@/components/client-area/ContractsPanel";
 import { VariationSharingPanel } from "@/components/client-area/VariationSharingPanel";
 import { HandoverCurationPanel } from "@/components/client-area/HandoverCurationPanel";
+import { ClientEventsPanel } from "@/components/client-area/ClientEventsPanel";
 
 export interface ClientAreaSummary {
   files: {
@@ -57,6 +58,11 @@ const TABS = [
   { key: "diary", label: "Diary" },
   { key: "contracts", label: "Contracts & signatures" },
   { key: "variations", label: "Variations" },
+  // Phase 12a-B — BUILD-SPEC.md §"Portal — upcoming client meetings":
+  // "Team manages from the project client area". Team-visible tab, no
+  // admin gate (scheduling data, not financial) — same trust tier as
+  // every other tab on this page except Variations' own internal gate.
+  { key: "meetings", label: "Meetings" },
   { key: "handover", label: "Handover pack" },
 ] as const;
 
@@ -167,6 +173,7 @@ export function ClientAreaWorkspace({
               onChange={reload}
             />
           )}
+          {tab === "meetings" && <ClientEventsPanel projectId={projectId} />}
           {tab === "handover" && <HandoverCurationPanel projectId={projectId} />}
         </>
       )}

@@ -1,7 +1,7 @@
-import type { ProjectWithCounts } from "@/types";
+import type { ProjectWithCountsAndAlias } from "@/types/phase-12a-b";
 import { ProjectCard } from "./ProjectCard";
 
-export function ProjectList({ projects }: { projects: ProjectWithCounts[] }) {
+export function ProjectList({ projects }: { projects: ProjectWithCountsAndAlias[] }) {
   if (projects.length === 0) {
     return (
       <div className="border border-dashed border-[#c9c2b4] p-12 text-center">

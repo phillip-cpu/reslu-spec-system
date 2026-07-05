@@ -1797,6 +1797,355 @@ client_email/client_phone/budget, and the name-split heuristic).
 - Signature-request client notification — see `POST /api/signatures`'s
   entry above and "Client email notifications" above.
 
+## Estimate versioning + VM comparison — Phase 12a-A (admin-only, financial)
+
+BUILD-SPEC.md "Phase 12a — My Work + estimate versioning with VM".
+Every route below is whole-route **admin**-gated, same shape as the
+rest of the Estimate module (403 before any query runs for a
+non-admin).
+
+### GET /api/projects/[id]/versions
+Auth: admin. Body: none. Response: `{ versions: EstimateVersionSummary[] }`
+— every version for the project, newest first. **Omits `snapshot`**
+(can be a large jsonb blob) — fetch `GET /api/versions/[id]` for the
+full frozen estimate.
+
+### POST /api/projects/[id]/versions
+Auth: admin. Body: `{ label, kind?, note? }` (`kind ∈ issue | vm`,
+defaults `'issue'`). Response: `{ version }` (201). "Save version" —
+freezes the project's CURRENT live estimate state (sections/lines, FF&E
+rollup, whole-job totals, markup %, every measurement, and the latest
+SOW revision label) into a new `estimate_versions` row. `label` must be
+unique per project — 409 on collision with a clear message.
+
+### GET /api/versions/[id]
+Auth: admin. Body: none. Response: `{ version }` — one version WITH
+its full `snapshot` (the read-only version viewer's data source). Not
+nested under `/api/projects/[id]/...` since a version id is already
+globally unique, mirroring `app/api/estimate/lines/[id]`'s pattern for
+singular child resources.
+
+### DELETE /api/versions/[id]
+Auth: admin. Body: none. Response: `{ ok: true }`. Hard-delete — an
+escape hatch for a mistaken "Save version" click; versions have no
+soft-delete column (kept indefinitely by default, per the migration's
+own comment).
+
+### GET /api/projects/[id]/versions/compare?a=&b=
+Auth: admin. Body: none. Query: `a`, `b` — each either an
+`estimate_versions.id` or the literal string `"current"` (the live,
+unfrozen estimate, built on the fly, never persisted). Response:
+`VersionCompareResponse` — `{ a: {label, created_at}, b: {...},
+sections: SectionDiffEntry[], ffeSubstitutions: FfeSubstitution[],
+totalSavingExGst, totalA, totalB }`. Diff direction is always A → B
+("was" = A, "now" = B — the UI picks which side is which). Per-section
+deltas + changed/removed/added lines from `lib/estimate-versions.ts
+diffSections()` (matched by line id, falling back to description-match
+within the same section; sections matched by name — a rename between
+two versions shows as one section removed + a different one added,
+since a frozen snapshot has no stable cross-version section id).
+`ffeSubstitutions` (matched by `item_code`) is **only populated when at
+least one side is `"current"`** — a frozen version's snapshot stores
+only the aggregated FF&E rollup, not per-item detail, so a
+both-frozen-versions comparison still gets the section/line diff and
+headline saving but an empty substitutions list. `totalSavingExGst =
+a.wholeJob.combinedExGst - b.wholeJob.combinedExGst` (positive = B is
+cheaper, a real saving — the "Total saving: $N ex GST" headline).
+
+### UI
+`components/estimate/VersionsPanel.tsx` — a fourth tab
+("Versions") on `EstimateWorkspace.tsx` alongside
+Estimate/Variations/Areas & Measurements: save-version form, versions
+list (view/delete), a read-only snapshot viewer, and the VM comparison
+picker (`components/estimate/VersionCompare.tsx` renders the compare
+response). `EstimateView.tsx` itself is untouched — versioning lives as
+a sibling tab, not inside the live estimate editor.
+
+---
+
+## SOW clause templates + "Start from template" — Phase 12a-A
+
+BUILD-SPEC.md "SOW completion + Aria plan analysis" — clause library
+extracted from `docs/sow-source-goldsworthy-v42.txt` +
+`docs/sow-source-alley-v6.txt`, structured constants in
+`lib/sow-templates.ts` (no new table/migration — a template is copied
+into ordinary `sow_sections`/`sow_lines` rows, fully editable
+afterwards via the existing builder). Team-visible (not admin-gated).
+
+### POST /api/projects/[id]/sow/[sowId]/from-template
+Auth: session. Body: `ApplyTemplateInput` — `{ groups?: string[],
+include_rooms?: boolean }` (both optional; omitting `groups` applies
+the full standard set — Project Overview, General Notes ×3 subgroups,
+then room sections, then Site Management & Handover + Exclusions, in
+that fixed order; `include_rooms` defaults `true`). Response: `{
+sections: SowSectionWithLines[] }` (201) — the newly-created sections
+(appended after any existing ones; never replaces). 400 if the parent
+SOW isn't `status: 'draft'` (issued revisions are immutable, same rule
+as every other SOW mutation route). Room sections are seeded from the
+project's **`rooms` table** (the current per-project room model,
+migration `015_rooms.sql`) via `lib/sow.ts roomSectionHeadings()` — NOT
+`items.location` (that free-text legacy layer still drives the
+original `POST /api/projects/[id]/sow`'s first-revision seed,
+unchanged) — falling back to `SOW_FALLBACK_ROOMS` when the project has
+no rooms defined yet.
+
+### GET /api/projects/[id]/sow/draft-context
+Auth: session. Body: none. Response: `{ rooms: [{ id, name, items:
+[{item_code, name, description, category, quantity}], clause_pattern:
+SowTemplateSection }], latest_plan_analysis }`. Read-only, no pricing —
+the FETCH half of the MCP tool `draft_sow_section` (see docs/ARIA.md):
+everything Aria needs to draft a grounded room-by-room SOW section
+(the project's current rooms, each room's assigned FF&E items via
+`item_rooms`, the latest plan analysis's discrepancies, and the
+room-section clause skeleton from `lib/sow-templates.ts
+roomSectionTemplate()`). The SUBMIT half reuses the existing
+`POST /api/sow/sections/[sectionId]/lines` route directly — no
+separate submit endpoint.
+
+### UI
+`components/sow/SowBuilder.tsx` gains a "Start from template" button
+(draft SOWs only) next to "Download PDF"/"Issue" — calls the
+from-template route above and folds the returned sections into local
+state, same optimistic-append pattern as "+ Add section".
+
+---
+
+## Aria plan analysis + takeoff assist — Phase 12a-A
+
+BUILD-SPEC.md "SOW completion + Aria plan analysis" (cross-reference
+engine) + "Aria takeoff assist" (deterministic quantity takeoff). Team
+access throughout (not admin-gated — plans/rooms/item-code data, no
+pricing exposed by any route below).
+
+### GET /api/projects/[id]/plan-analysis/pending
+Auth: session. Body: none. Response: `{ files: (ProjectFile & { url:
+string | null })[] }` — every `project_files` row of kind `'plans'`
+that has **never** been analysed (no `plan_analyses` row references its
+`file_id` yet), with signed URLs. This is the queue Aria's
+plan-analysis automation polls.
+
+### GET /api/projects/[id]/plan-analysis
+Auth: session. Body: none. Response: `{ latest: PlanAnalysis | null }`
+— the most recent analysis for the project, or `null`. Backs the
+Overview tab's "Plan Check" card.
+
+### POST /api/projects/[id]/plan-analysis
+Auth: session. Body: `SubmitPlanAnalysisInput` — `{ file_id,
+revision_label?, rooms: string[], item_codes: string[], dimensions?:
+PlanAnalysisRoomDimensions[], analysed_by? }`. `file_id` must be a
+`'plans'`-kind `project_files` row belonging to this project (400/404
+otherwise). Response: `SubmitPlanAnalysisResponse` — `{ analysis,
+measurements_drafted }` (201).
+
+Runs the deterministic cross-reference engine
+(`lib/takeoff.ts crossReferencePlans()`) in both directions plus room-
+name mismatches, storing the result as `plan_analyses.discrepancies`:
+1. **`code_missing_from_register`** — plan item codes not found in the
+   register.
+2. **`register_item_not_on_plan`** — register item codes never
+   referenced on the plan set.
+3. **`room_with_no_ffe_items`** — plan rooms with no register item
+   whose `location` matches (case-insensitive, trimmed).
+4. **`location_name_mismatch`** — register `location` values matching
+   neither a plan room name nor a current `rooms` table entry (the
+   "Plans T3 reference SS-01/SS-02 — register has ST-01/ST-02" case
+   from the build spec).
+
+When `dimensions` are supplied, also runs the takeoff assist
+(`lib/takeoff.ts computeTakeoffs()`): floor m² (length × width),
+painting m² (perimeter × ceiling height − opening allowances, default
+2.4 m height / 1.8 m² per opening if not stated), tiling m² (wet areas
+only — floor + all four walls to stated/default height). Writes one
+`measurements` row per computed figure into a project-level
+`"Takeoff — Draft (from plan analysis)"` measurement group (created on
+first use), each with `status: 'draft'`, `source: 'takeoff'`, and
+`provenance_note` set to one of the build spec's exact two phrasings
+(`"derived from stated dimensions — verify"` or, for a room with no
+stated length/width at all, that room is **skipped entirely** — no
+measurement row is written, never guessed). A human site-measure then
+`PATCH`es that measurement's `status` to `'verified'` (see below) — the
+system never does this automatically, and never scale-measures off the
+drawing.
+
+### PATCH /api/estimate/measurements/[id] (extended)
+Auth: admin (unchanged — the whole Areas & Measurements surface is
+part of the financial-gated Estimate module). Body gains `status?:
+'draft' | 'verified'` alongside the existing editable fields — the
+"Confirm" action once a draft, takeoff-derived measurement has been
+site-measured. `source` itself is not PATCH-able (provenance is fixed
+at creation time).
+
+### Overview card
+`components/projects/PlanCheckCard.tsx` — self-contained, additive slot
+mounted at the end of `ProjectOverview.tsx`'s card grid. Fetches its
+own summary from `GET /api/projects/[id]/plan-analysis`; renders
+nothing until at least one analysis has been run for the project (no
+placeholder clutter for projects with no plans yet).
+
+---
+
+## MCP additions — Phase 12a-A
+
+Three new tools in `mcp/src/index.mjs` (see `docs/ARIA.md` for the full
+walkthrough) — all thin fetches to the routes above, no business logic
+duplicated in the MCP layer:
+
+- **`list_pending_plan_analyses`** — `{ project_id }` →
+  `GET .../plan-analysis/pending`.
+- **`submit_plan_analysis`** — `{ project_id, file_id, revision_label?,
+  rooms, item_codes, dimensions?, analysed_by? }` →
+  `POST .../plan-analysis`.
+- **`draft_sow_section`** — two modes, one tool (matching
+  `draft_diary_entry`'s established pattern): FETCH mode (`{ project_id
+  }` only) → `GET .../sow/draft-context`; SUBMIT mode (`{ section_id,
+  lines }`) → loops `POST /api/sow/sections/[sectionId]/lines` once per
+  line. `section_id` must already exist (create it first via the normal
+  SOW builder API/UI) — this tool only populates lines onto an existing
+  draft section, it never creates the section itself, and never issues
+  or publishes anything.
+
+---
+
+## My Work, Board v2, housekeeping, client events — Phase 12a-B
+
+BUILD-SPEC.md "Phase 12a — My Work" (My Work half), "Board v2",
+"Housekeeping — 5 July screenshot", "Portal — upcoming client
+meetings". Local types in `types/phase-12a-b.ts` (not added to the
+shared `types/index.ts` — the Phase 12a-A agent working concurrently in
+this same tree left the identical pattern with `types/phase-12a-a.ts`,
+for the same reason: avoid a shared-file collision between two agents
+working the same migration window).
+
+### Board v2
+
+`GET /api/projects/[id]/board` — team-visible. Response now
+`{ columns, groups, team }` (was `{ columns }` in Week 9): `columns`
+carries the Kanban lens, `groups` the Grouped-list lens (empty until a
+project's first visit to that view seeds it — see the seed route
+below), `team` the project's roster for the assignee picker. Every task
+now carries `assignees: { id, full_name }[]` (was a single `assignee`)
+via the new `board_task_assignees` join table (migration 020) —
+`board_tasks.assignee_id` still exists and is kept in sync (first
+assignee, or null) for backward-compatible reads elsewhere, but is
+DEPRECATED — nothing new reads it. New boards (first-ever visit, zero
+existing columns) now seed Waiting → To Do → In Progress → Done
+(Waiting first, BUILD-SPEC.md "Board v2" point 2); this reorder is
+NOT retroactively applied to existing boards — see that route's doc
+comment for why the "one-time reorder … if untouched" half of the spec
+sentence is deliberately left as an on-machine follow-up rather than an
+automatic migration-time mutation.
+
+`POST /api/projects/[id]/board` — body adds `assignee_ids?: string[]`
+(omit to auto-assign the creator; `[]` for none; a populated array
+overrides auto-assign outright) and `phase_group_id?: string`.
+
+`PATCH /api/board-tasks/[id]` — body adds `assignee_ids?: string[]`
+(full replace of the task's assignee set) and `phase_group_id?:
+string | null`.
+
+`POST /api/projects/[id]/board/groups` — body `{ name }` → `{ group }`
+(201). Manual single-group creation.
+
+`POST /api/projects/[id]/board/groups/seed` — idempotent, seeds the
+default phase template (Site Prep, Demolition, Rough-in, Waterproofing
+& Tiling, Fit-off, Handover) ONLY if the project has zero `board_groups`
+rows. Called by the Grouped-list view's first render, not by every
+Kanban page load — see that route's doc comment.
+
+`PATCH /api/board-groups/[id]` — body `{ name?, sort? }` → `{ group }`.
+
+`DELETE /api/board-groups/[id]` — hard delete, no "must be empty"
+guard (unlike columns) — cards in the group become ungrouped
+(`phase_group_id` set null via `on delete set null`), never deleted.
+
+### My Work
+
+`GET /api/my-work` — per-user aggregator. Response:
+`{ groups: { overdue, today, this_week, no_date }, is_admin }`. Sources
+(each independently optional, none blocks the others on failure): my
+`board_tasks` (via `board_task_assignees`), lead follow-ups
+(admin-only — silently absent from the response for non-admins, not an
+error), diary drafts pending approval (`portal_updates.status =
+'pending_approval'`), trade-visit proposals awaiting response
+(`trade_visits.status = 'proposed_change'`), items past
+`decision_needed_by` with `client_approved = false AND client_flagged =
+false` (no pricing fields ever selected). Bucketing logic in
+`lib/my-work.ts` (`bucketFor`, `groupMyWorkItems`), pure and shared with
+any future client-side re-derivation, mirroring `lib/leads.ts`'s shape.
+
+`GET /api/my-work/notes` / `POST /api/my-work/notes` — personal
+`user_notes` CRUD, always scoped to the signed-in user. `PATCH
+/api/my-work/notes/[id]` / `DELETE /api/my-work/notes/[id]` — same
+scoping (a forged id belonging to another user's note 404s).
+
+### Housekeeping
+
+- `Header` (`components/layout/Header.tsx`) gains two additive,
+  optional props: `titleHref` (project name becomes a link back to
+  Overview — BUILD-SPEC.md "Housekeeping" point 1) and `titleSuffix`
+  (muted alias suffix next to the title — point 2). Every existing call
+  site with neither prop renders identically to before.
+- `projects.alias` (migration 020, text, nullable) — editable in
+  `ProjectSettingsForm`, saved through the existing unrestricted `PUT
+  /api/projects/[id]` (no new route needed — that route has no field
+  allowlist, see "Known inconsistencies" #5 below). Displayed muted on
+  the dashboard `ProjectCard`, the project Overview header, and My
+  Work's project chips. NEVER read by the client portal or the
+  builder/schedule PDF.
+- `ProjectTabs` (`components/projects/ProjectTabs.tsx`) gains an
+  additive optional `portalUrl` prop — renders a right-aligned "View
+  client portal ↗" link (opens in a new tab) + a "Copy link" button
+  (`components/projects/PortalLinkAction.tsx`) when supplied. Wired
+  into all ten of this component's call sites via `lib/portal-link.ts`'s
+  `portalUrlFor(token)` helper.
+
+### Client events (portal "Upcoming meetings")
+
+`GET /api/projects/[id]/client-events` / `POST
+/api/projects/[id]/client-events` — team-visible, soonest-first list +
+create. `PATCH /api/client-events/[id]` / `DELETE
+/api/client-events/[id]` — edit/soft-delete; editing `starts_at` clears
+`reminder_sent_at` (re-arms the day-before reminder for the new time).
+Managed from the project Client area's new "Meetings" tab
+(`components/client-area/ClientEventsPanel.tsx`). `notes` on this table
+is CLIENT-FACING BY DESIGN (shown verbatim on the portal card) — unlike
+`trade_visits.notes`, which is internal-only.
+
+Portal: `app/portal/[token]/page.tsx` queries future (`starts_at >=
+now`) non-deleted `client_events` and renders
+`components/portal/UpcomingMeetingsCard.tsx` directly below the
+existing "What's next" block. Past events are dropped by the query, not
+rendered-then-hidden.
+
+`POST /api/client-events/remind` (alias `GET`, same handler) —
+day-before reminder trigger. Auth: `authorization: Bearer
+${CRON_SECRET}` OR an authenticated team session — identical dual-path
+pattern to `/api/trade-reminders` and `/api/digest/flush`. Business
+logic in `lib/client-event-reminders.ts`'s `sendDueReminders()`: finds
+events starting "tomorrow" (whole-calendar-day match) with
+`reminder_sent_at IS NULL`, emails the project's client (primary +
+secondary, same recipient-list pattern as `lib/notify-client.ts`),
+stamps `reminder_sent_at` on success. **vercel.json is protected in
+this task** — no cron entry was added. See this task's final report /
+README for the exact line the on-machine engineer should add
+(`{ "path": "/api/client-events/remind", "schedule": "0 21 * * *" }`,
+same UTC slot as the existing `/api/trade-reminders` entry).
+
+### MCP additions — Phase 12a-B
+
+One new tool in `mcp/src/index.mjs`:
+
+- **`create_client_event`** — `{ project_id, title, starts_at, ends_at?,
+  location?, notes? }` → `POST .../client-events`. Description flags
+  that `notes` is client-facing.
+
+`create_board_task`'s schema was updated in place (additive, not a
+breaking rename): `assignee_id` → `assignee_ids?: string[]` (omit to
+auto-assign Aria's own account, Board v2's auto-assign-on-create), plus
+a new optional `phase_group_id`.
+
+---
+
 ## Known inconsistencies (carried over, not fixed this release)
 
 Documented here rather than silently relied upon, since Aria and human

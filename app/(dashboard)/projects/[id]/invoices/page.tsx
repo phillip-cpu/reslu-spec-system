@@ -4,6 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import { Header } from "@/components/layout/Header";
 import { ProjectTabs } from "@/components/projects/ProjectTabs";
 import { InvoiceQueue } from "@/components/invoices/InvoiceQueue";
+import { portalUrlFor } from "@/lib/portal-link";
 
 /**
  * /projects/[id]/invoices — the Invoice queue (admin-only, financial).
@@ -44,7 +45,7 @@ export default async function ProjectInvoicesPage({
 
   const { data: project } = await supabase
     .from("projects")
-    .select("id, name, client_name")
+    .select("id, name, client_name, client_token")
     .eq("id", id)
     .single();
 
@@ -54,8 +55,8 @@ export default async function ProjectInvoicesPage({
 
   return (
     <>
-      <Header title={project.name} subtitle={`${project.client_name} · Invoices`} />
-      <ProjectTabs projectId={id} active="invoices" isAdmin={isAdmin} />
+      <Header title={project.name} subtitle={`${project.client_name} · Invoices`} titleHref={`/projects/${id}`} />
+      <ProjectTabs projectId={id} active="invoices" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
       <main className="flex-1 px-8 py-8">
         <InvoiceQueue projectId={id} />
       </main>

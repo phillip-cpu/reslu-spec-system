@@ -3,11 +3,11 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
-import type { Project } from "@/types";
+import type { ProjectWithAlias } from "@/types/phase-12a-b";
 import { regenerateProjectToken } from "@/app/(dashboard)/projects/[id]/settings/actions";
 
 interface Props {
-  project: Project;
+  project: ProjectWithAlias;
   isAdmin: boolean;
   appUrl: string;
   /** Week 7 — signed URL for the current cover image, minted server-side by the settings page (assets bucket is private). */
@@ -51,6 +51,11 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImag
   const router = useRouter();
 
   const [name, setName] = useState(project.name);
+  // Housekeeping (Phase 12a-B) — BUILD-SPEC.md §"Housekeeping — 5 July
+  // screenshot" point 2: internal-only nickname, e.g. "Nth Adelaide
+  // townhouse". NEVER read by the portal or the schedule PDF — both
+  // keep using project.name exclusively.
+  const [alias, setAlias] = useState(project.alias ?? "");
   const [clientName, setClientName] = useState(project.client_name);
   const [address, setAddress] = useState(project.address ?? "");
   const [budget, setBudget] = useState(project.budget?.toString() ?? "");
@@ -128,6 +133,7 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImag
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: name.trim(),
+          alias: alias.trim() || null,
           client_name: clientName.trim(),
           address: address.trim() || null,
           budget: budget.trim() === "" ? null : Number(budget),
@@ -281,6 +287,20 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImag
             />
           </label>
         </div>
+
+        <label className="flex flex-col gap-1">
+          <span className="label-caps">Alias (internal only)</span>
+          <input
+            value={alias}
+            onChange={(e) => setAlias(e.target.value)}
+            disabled={!isAdmin}
+            placeholder="e.g. Nth Adelaide townhouse"
+            className="border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+          />
+          <span className="text-caption text-charcoal/40">
+            Shown on the dashboard card, this project&apos;s header, and My Work — never on the client portal or PDFs.
+          </span>
+        </label>
 
         <label className="flex flex-col gap-1">
           <span className="label-caps">Address</span>

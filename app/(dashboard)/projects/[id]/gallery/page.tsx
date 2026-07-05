@@ -4,6 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import { Header } from "@/components/layout/Header";
 import { ProjectTabs } from "@/components/projects/ProjectTabs";
 import { GalleryWorkspace } from "@/components/gallery/GalleryWorkspace";
+import { portalUrlFor } from "@/lib/portal-link";
 
 /**
  * /projects/[id]/gallery — internal site-photo staging gallery
@@ -32,7 +33,7 @@ export default async function ProjectGalleryPage({
 
   const { data: project } = await supabase
     .from("projects")
-    .select("id,name,client_name")
+    .select("id,name,client_name,client_token")
     .eq("id", id)
     .single();
 
@@ -42,8 +43,8 @@ export default async function ProjectGalleryPage({
 
   return (
     <>
-      <Header title={project.name} subtitle={`${project.client_name} · Site gallery`} subtitleHref={`/projects/${id}`} />
-      <ProjectTabs projectId={id} active="gallery" isAdmin={info?.role === "admin"} />
+      <Header title={project.name} subtitle={`${project.client_name} · Site gallery`} subtitleHref={`/projects/${id}`} titleHref={`/projects/${id}`} />
+      <ProjectTabs projectId={id} active="gallery" isAdmin={info?.role === "admin"} portalUrl={portalUrlFor(project.client_token)} />
       <main className="flex-1 px-4 py-6 sm:px-8 sm:py-8">
         <GalleryWorkspace projectId={id} />
       </main>

@@ -144,3 +144,24 @@ export interface PortalHandoverPack {
   documents: PortalHandoverFile[];
   gallery: { id: string; url: string; caption: string | null }[];
 }
+
+// ------------------------------------------------------------
+// Phase 12a-B — client_events (BUILD-SPEC.md §"Portal — upcoming
+// client meetings"). Local portal type — the team-side CRUD types
+// (ClientEvent, CreateClientEventInput, etc.) live in
+// types/phase-12a-b.ts (this feature's own isolated types file, kept
+// separate from types/index.ts for the same concurrent-agent reason
+// documented there); this portal-only projection is defined here
+// instead, alongside every other portal-local type, per this file's
+// own established convention.
+// ------------------------------------------------------------
+
+/** A client_events row as shown on the portal's "Upcoming meetings" card — future events only (past ones are dropped by the page query before this shape is even built), no internal-only fields. `notes` IS client-facing on this table (unlike trade_visits.notes) — see lib/client-event-reminders.ts's doc comment for the same point. */
+export interface PortalClientEvent {
+  id: string;
+  title: string;
+  starts_at: string;
+  ends_at: string | null;
+  location: string | null;
+  notes: string | null;
+}
