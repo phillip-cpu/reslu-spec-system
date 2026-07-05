@@ -1,5 +1,5 @@
 import { unstable_cache, revalidateTag } from "next/cache";
-import { createClient } from "@/lib/supabase/server";
+import { createServiceRoleClient } from "@/lib/supabase/server";
 import type { Category, Profile } from "@/types";
 
 /**
@@ -26,12 +26,14 @@ import type { Category, Profile } from "@/types";
  * narrowly to the two genuinely-global, rarely-mutated reference
  * tables named in this task's brief ("categories, profiles list").
  *
- * Each function still creates a request-scoped Supabase client via
- * createClient() — `unstable_cache` caches the RETURN VALUE (the rows),
- * not the client or the auth context, so this stays safe under RLS:
- * both tables' RLS policy is the same permissive "team_all" for any
- * authenticated session, so the cached rows are identical for every
- * team member regardless of who triggered the cache population.
+ * Each function uses the service-role client, not the session-cookie
+ * client — `unstable_cache` forbids touching dynamic APIs like cookies()
+ * inside its callback (Next.js throws at request time otherwise). Safe
+ * here: both tables' RLS policy is the same permissive "team_all" for
+ * any authenticated session, and every current caller of
+ * getCategories()/getProfiles() already sits behind an authenticated
+ * dashboard route, so the cached rows are identical to what the
+ * session-cookie client would have returned for any team member.
  */
 
 const REVALIDATE_SECONDS = 300; // 5 minutes — short enough that even a missed revalidateTag call self-heals quickly
@@ -41,7 +43,15 @@ export const PROFILES_CACHE_TAG = "profiles";
 
 const getCachedCategories = unstable_cache(
   async (): Promise<Category[]> => {
-    const supabase = await createClient();
+    // Service-role client, not the session-cookie client: unstable_cache
+    // forbids touching dynamic APIs like cookies() inside its callback
+    // (Next.js throws "used cookies() inside a function cached with
+    // unstable_cache()" at request time). Safe here — every current
+    // caller of getCategories() already sits behind an authenticated
+    // dashboard route, and categories' RLS policy is the same permissive
+    // team_all for any authenticated session anyway, so this returns
+    // identical rows to what the session-cookie client would have.
+    const supabase = createServiceRoleClient();
     const { data } = await supabase.from("categories").select("*").order("sort_order");
     return (data ?? []) as Category[];
   },
@@ -51,7 +61,8 @@ const getCachedCategories = unstable_cache(
 
 const getCachedProfiles = unstable_cache(
   async (): Promise<Profile[]> => {
-    const supabase = await createClient();
+    // Same reasoning as getCachedCategories above.
+    const supabase = createServiceRoleClient();
     const { data } = await supabase.from("profiles").select("*").order("full_name");
     return (data ?? []) as Profile[];
   },
