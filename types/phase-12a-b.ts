@@ -149,7 +149,14 @@ export type MyWorkItemKind =
   | "lead_follow_up"
   | "diary_draft"
   | "trade_proposal"
-  | "decision_overdue";
+  | "decision_overdue"
+  // Phase 13 — Office board task assigned to me (office_tasks via
+  // office_task_assignees). See app/api/my-work/route.ts source #6 and
+  // types/phase-13.ts's OfficeTask. Kept as a MyWorkItemKind here
+  // (rather than in phase-13.ts) since MyWorkItem/MyWorkItemKind are
+  // this file's own shared aggregator shapes every source kind slots
+  // into — additive, surgical edit per this task's boundary.
+  | "office_task";
 
 /**
  * One row in the My Work feed, normalised across five very different

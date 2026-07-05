@@ -2069,9 +2069,13 @@ error), diary drafts pending approval (`portal_updates.status =
 'pending_approval'`), trade-visit proposals awaiting response
 (`trade_visits.status = 'proposed_change'`), items past
 `decision_needed_by` with `client_approved = false AND client_flagged =
-false` (no pricing fields ever selected). Bucketing logic in
-`lib/my-work.ts` (`bucketFor`, `groupMyWorkItems`), pure and shared with
-any future client-side re-derivation, mirroring `lib/leads.ts`'s shape.
+false` (no pricing fields ever selected), and — **added in Phase 13** —
+my `office_tasks` (via `office_task_assignees`, `kind = 'task'` only,
+`completed_at IS NULL` only — standing rule cards and already-archived
+tasks never appear in My Work; see "Office board — Phase 13" below).
+Bucketing logic in `lib/my-work.ts` (`bucketFor`, `groupMyWorkItems`),
+pure and shared with any future client-side re-derivation, mirroring
+`lib/leads.ts`'s shape.
 
 `GET /api/my-work/notes` / `POST /api/my-work/notes` — personal
 `user_notes` CRUD, always scoped to the signed-in user. `PATCH
@@ -2143,6 +2147,147 @@ One new tool in `mcp/src/index.mjs`:
 breaking rename): `assignee_id` → `assignee_ids?: string[]` (omit to
 auto-assign Aria's own account, Board v2's auto-assign-on-create), plus
 a new optional `phase_group_id`.
+
+---
+
+## Office board — Phase 13
+
+BUILD-SPEC.md §"13 Office" / `docs/OFFICE-BRIEF.md` (Aria's Monday
+board export, 5 Jul 2026). A **global** Monday-style grouped-list board
+— not per-project, no `project_id` anywhere in this schema — covering
+business housekeeping: Marketing, Website, Meta Ads, Google Ads,
+Operations, Systems & Tech, Phillip's personal queue, and Archived.
+Team-visible, no admin gating (none of this data is financial, and the
+"Phillip" group is everyone's view of his queue on the shared board, per
+the brief — not a private one). Sidebar entry: `/office`, placed right
+after My Work.
+
+### GET /api/office
+
+Full-board read: `{ groups: OfficeGroupWithTasks[], team:
+OfficeTeamMember[] }`. Every non-deleted `office_groups` row, ordered by
+`sort`, each with its non-deleted `office_tasks` nested (each task
+carrying `assignees: OfficeAssigneeSummary[]` via
+`office_task_assignees` and `subtasks: OfficeSubtask[]` via
+`office_subtasks`, ordered by `sort`). `team` is the full profile
+roster (`id, full_name, email`) — `email` is included specifically so
+the `create_office_task` MCP tool can resolve an `assignee_email`
+argument without a second route (this codebase has no standalone `GET
+/api/profiles` listing route).
+
+### POST /api/office/tasks
+
+body: `{ group_id, title, description?, kind? ('task' default |
+'rule'), due_date?, assignee_ids? }` → `{ task }` (201). Auto-assign on
+create mirrors Board v2 exactly: omitting `assignee_ids` assigns the
+creator; an explicit array (including `[]`) overrides outright. Rule
+cards (`kind: 'rule'`) never carry assignees or a due date regardless of
+what's passed — a rule is a pinned caution notice (e.g. OFFICE-BRIEF's
+"DO NOT enable Google AI Max when prompted"), not a to-do someone owns.
+
+### PATCH /api/office/tasks/[id]
+
+body (partial): `{ title?, description?, due_date?, sort?, group_id?,
+assignee_ids?, complete? }` → `{ task }`.
+
+**Complete → Archive** is the one non-obvious behaviour here: passing
+`complete: true` sets `completed_at = now()` AND moves the task's
+`group_id` to the Archived group, remembering the original group on a
+dedicated `prev_group_id` column (migration `021_office.sql`) — chosen
+over encoding the origin group into `description` text, since a real FK
+column stays queryable/indexable and survives a description edit made
+while the task sits in Archived. `complete: false` reverses this
+exactly: clears `completed_at`, restores `group_id` from
+`prev_group_id`, clears `prev_group_id` back to `null`. Both directions
+`409` for `kind: 'rule'` — standing rule cards are never completable.
+
+A plain `group_id` edit (e.g. manually re-filing a card) is independent
+of `complete` — moving a task into Archived this way does NOT set
+`completed_at`, and moving one out this way does NOT touch
+`prev_group_id` bookkeeping. This keeps "manually filed under Archived"
+distinguishable from "completed and auto-archived" in the data even
+though both land with `group_id = Archived`.
+
+`assignee_ids` (full replace of `office_task_assignees`) works exactly
+like `PATCH /api/board-tasks/[id]`'s own multi-assignee handling.
+
+### DELETE /api/office/tasks/[id]
+
+Soft-delete (`deleted_at`) — same as `board_tasks`.
+
+### POST /api/office/subtasks / PATCH /api/office/subtasks/[id] / DELETE /api/office/subtasks/[id]
+
+`{ task_id, title }` → `{ subtask }` (201) / `{ title?, done?, sort? }`
+→ `{ subtask }` / hard delete. The Monday "subitems" equivalent (a
+simple tick-list step, not a full nested card) — `done` toggles drive
+the '2/5' progress chip on the parent task row in the grouped list.
+
+### POST /api/office/groups / PATCH /api/office/groups/[id] / DELETE /api/office/groups/[id]
+
+`{ name }` → `{ group }` (201) / `{ name?, sort? }` → `{ group }` /
+soft-delete, refused (`409`) if the group still has active tasks (no
+"ungrouped" fallback here, unlike `board_groups`' `on delete set null` —
+every Office task always belongs to a real department). **The Archived
+group is undeletable and unrenameable** — both the rename and delete
+handlers special-case `name === 'Archived'` and reject with `409`
+before touching the row; `sort` changes on Archived are still allowed
+(re-ordering it relative to other groups is harmless). Archived renders
+collapsed by default in the UI (client-side only, no API involvement).
+
+### Schema reference (migration `021_office.sql`)
+
+- `office_groups` — `id, name, sort, created_at, updated_at,
+  deleted_at`. Seeded once (idempotent, "only if the table is currently
+  empty"), in board order: Marketing, Website, Meta Ads, Google Ads,
+  Operations, Systems & Tech, Phillip, Archived.
+- `office_tasks` — `id, group_id (FK), title, description, kind ('task'
+  | 'rule', default 'task'), due_date, sort, prev_group_id (FK,
+  nullable — archive-on-complete memory), created_by, completed_at,
+  created_at, updated_at, deleted_at`.
+- `office_task_assignees` — `task_id, profile_id` join, mirrors
+  `board_task_assignees` exactly.
+- `office_subtasks` — `id, task_id (cascade), title, done, sort,
+  created_at, updated_at`.
+- RLS: single permissive `team_all` policy per table, same Phase 1
+  shape as every other non-financial table.
+
+### My Work integration
+
+`office_tasks` assigned to me (via `office_task_assignees`), `kind =
+'task'` only, not yet completed, feed `GET /api/my-work` as a sixth
+source (`kind: "office_task"`, `href: "/office"`, `meta`: the
+department group name) — see "My Work" section above. The My Work UI
+(`components/my-work/MyWorkWorkspace.tsx`) renders an "Office" chip for
+these rows (both the `KIND_LABEL` sand chip and, since these items carry
+no `project`, the fallback outline chip that otherwise reads "Lead" for
+project-less items — it now reads "Office" specifically for this kind).
+
+### MCP additions — Phase 13
+
+Two new tools in `mcp/src/index.mjs`, both thin wrappers with one
+resolution step (fetch `GET /api/office` first to fuzzy-match a
+department name / email against the live board, so Aria never needs to
+already know an internal UUID):
+
+- **`create_office_task`** — `{ title, group, description?, due_date?,
+  assignee_email? }`. `group` is matched case-insensitively as a
+  substring against current group names ("meta" → "Meta Ads"); no match
+  fails with the valid group list. `assignee_email` resolves against
+  `team[].email`; omitted, the task auto-assigns the calling account
+  (Aria), matching `create_board_task`'s existing auto-assign shape.
+- **`list_office_tasks`** — `{ group?, status? ('open' | 'completed') }`
+  — filtered read, rule cards included and clearly marked (never
+  "completed").
+
+This is the route Aria's stated "outstanding items" pattern
+(OFFICE-BRIEF.md: "any actionable item from email/WhatsApp/conversation
+that doesn't belong on a job board goes on the Office board ... assigned
+to Phillip with a due date") and her 24-48h resolution turnaround use —
+see `docs/ARIA.md`'s "Office board (Phase 13)" section for the full
+workflow write-up. There is deliberately no `complete_office_task` tool
+— ticking a task done (and the resulting archive-move) stays a human
+action, same structural boundary as the Diary's publish gate and the
+SOW's issue gate elsewhere in this doc.
 
 ---
 

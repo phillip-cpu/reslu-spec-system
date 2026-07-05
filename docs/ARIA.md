@@ -329,3 +329,81 @@ action a human triggers directly in the builder
 Aria needs to call as part of her drafting loop (her loop instead calls
 `draft_sow_section` above, section by section, grounded in the actual
 plan analysis rather than blanket boilerplate).
+
+## Office board (Phase 13)
+
+BUILD-SPEC.md §"13 Office" / `docs/OFFICE-BRIEF.md` (Aria's own Monday
+board export, 5 Jul 2026). The Office board is **global** — not
+per-project, not part of any job — it's RESLU's internal business
+housekeeping board: Marketing, Website, Meta Ads, Google Ads,
+Operations, Systems & Tech, Phillip's personal queue, and Archived.
+Two new MCP tools: `create_office_task`, `list_office_tasks`.
+
+### Her stated inbound-work pattern
+
+Per OFFICE-BRIEF.md's "What Aria automates today": the old morning-brief
+surfacing of this board was abolished 4 Jul 2026 (Phillip checks his own
+inbox frequently now). What replaced it is a create -> resolve loop:
+
+1. **Create** — any actionable item Aria encounters via email, WhatsApp,
+   or conversation that doesn't belong on a client job board gets
+   written to the Office board via `create_office_task`, assigned to
+   whoever should own it (Phillip, by default, per the brief's
+   "Outstanding items rule" — assigned to Phillip with a due date) with
+   a due date.
+2. **Resolve in 24-48 hours** — this is Aria's own stated turnaround for
+   inbound work she's created a task for. She (or a human) works the
+   item, then the task is completed via the normal UI (checkbox tick in
+   the Office board grouped list) — completing moves it into the
+   Archived group automatically (see BUILD-SPEC.md "13 Office" point 2
+   / migration `021_office.sql`'s `prev_group_id` column). There is no
+   MCP "complete" tool — Aria's role in this loop is creating and
+   tracking via `list_office_tasks`, not marking her own work done
+   unsupervised; a human (or Aria being told to, via a future tool if
+   ever added) ticks the box.
+3. **Track** — `list_office_tasks({ status: "open" })`, optionally
+   filtered by `group`, is the read side of the same loop: checking
+   what's still outstanding before creating a duplicate, or reviewing
+   what's overdue.
+
+### `create_office_task`
+
+`{ title, group, description?, due_date?, assignee_email? }` -> `POST
+/api/office/tasks`. `group` is **fuzzy-matched** (case-insensitive
+substring) against the live Office groups fetched from `GET /api/office`
+first — "meta" matches "Meta Ads", "website" matches "Website" — so
+Aria never needs to know an internal group UUID; passing something that
+matches nothing fails with the current valid group-name list so the
+call can be retried correctly. `assignee_email` is resolved the same
+way against the team roster (`GET /api/office`'s `team` array, which
+carries `email` for exactly this purpose); omitting it falls through to
+`POST /api/office/tasks`' own auto-assign-on-create (the calling
+account — Aria — is assigned automatically, mirroring
+`create_board_task`'s existing behaviour). Never pass `group: "Archived"`
+— new tasks should never be filed directly into Archived; that group is
+populated only by the complete-task archive-move.
+
+### `list_office_tasks`
+
+`{ group?, status? }` -> filtered `GET /api/office` read. `status:
+"open"` / `"completed"` filters on `completed_at`; omit for both.
+Standing rule cards (`kind: "rule"` — e.g. OFFICE-BRIEF.md's "DO NOT
+enable Google AI Max when prompted") are included in every list call and
+clearly marked — they are pinned cautions, never "completed", and
+`create_office_task` has no way to create one (rule cards are
+UI-authored only, via the board's own composer's "Standing rule" radio
+option — deliberately not exposed to Aria, since a caution notice
+sitting on a shared board is exactly the kind of thing that should be
+human-authored, not agent-authored).
+
+### What's deliberately NOT an Aria tool here
+
+There is no `complete_office_task` / `move_office_task` MCP tool. Aria's
+role in this workflow, per her own stated pattern, is to **create** the
+task and **track** it via `list_office_tasks` — ticking it done (and
+the resulting archive-move) is left to the human loop the same way
+`draft_diary_entry`'s publish boundary and `draft_sow_section`'s issue
+boundary are both human-only actions elsewhere in this file. If a
+future automation genuinely needs Aria to close out her own inbound
+items programmatically, that's an explicit, separate addition — not
+assumed here.

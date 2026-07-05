@@ -639,6 +639,96 @@ const TOOLS = [
         body: JSON.stringify(body),
       }),
   },
+  // ------------------------------------------------------------
+  // Phase 13 — Office board (BUILD-SPEC.md §"13 Office",
+  // docs/OFFICE-BRIEF.md). The Office board is GLOBAL (no project_id at
+  // all) — this is exactly Aria's stated "outstanding items" pattern
+  // from the brief: "Any actionable item from email, WhatsApp, or
+  // conversation that doesn't belong on a job board goes on the Office
+  // board" and her "creates Monday items for actionable inbound work
+  // and resolves them within 24-48 hours" automation description. See
+  // docs/ARIA.md's new "Office board (Phase 13)" section for the full
+  // workflow write-up.
+  //
+  // Both tools below fetch GET /api/office once to resolve free-text
+  // arguments (group name, assignee email) against the live board,
+  // rather than requiring Aria to already know internal UUIDs — the
+  // brief specifically asks for "group name fuzzy-match" since Aria
+  // (or whoever prompts her) will say "put this on Meta Ads", not quote
+  // a group_id.
+  // ------------------------------------------------------------
+  {
+    name: "create_office_task",
+    description:
+      "Create a task on the Office board (global business-housekeeping board — Marketing, Website, Meta Ads, Google Ads, Operations, Systems & Tech, Phillip, Archived). Use this for Aria's 'outstanding items' pattern: any actionable item from email/WhatsApp/conversation that doesn't belong on a client project board. group matches a department name loosely (case-insensitive substring, e.g. 'meta' matches 'Meta Ads') — if nothing matches, the call fails with the current list of valid group names so you can retry. assignee_email is optional and resolved against the team roster; omit it to auto-assign nobody in particular (the API itself auto-assigns the calling account, i.e. Aria, unless assignee_email is given).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        group: {
+          type: "string",
+          description:
+            "Department name, fuzzy-matched case-insensitively against the current Office groups (e.g. 'website', 'meta', 'phillip'). Do not pass 'Archived' — new tasks should never be filed directly into Archived.",
+        },
+        description: { type: "string" },
+        due_date: { type: "string", description: "ISO date, YYYY-MM-DD, optional" },
+        assignee_email: {
+          type: "string",
+          description:
+            "Team member email to assign, optional — resolved against the team roster (case-insensitive exact match). Omit to auto-assign the calling account (Aria), matching create_board_task's own auto-assign-on-create behaviour.",
+        },
+      },
+      required: ["title", "group"],
+      additionalProperties: false,
+    },
+    handler: async ({ title, group, description, due_date, assignee_email }) => {
+      const board = await apiFetch("/api/office");
+      const target = board.groups.find((g) => g.name.toLowerCase().includes(group.trim().toLowerCase()));
+      if (!target) {
+        const names = board.groups.map((g) => g.name).join(", ");
+        throw new Error(`No Office group matches "${group}". Valid groups: ${names}`);
+      }
+
+      const body = { group_id: target.id, title, description, due_date };
+      if (assignee_email) {
+        const member = board.team.find(
+          (t) => t.email && t.email.toLowerCase() === assignee_email.trim().toLowerCase()
+        );
+        if (!member) {
+          throw new Error(`No team member found with email "${assignee_email}".`);
+        }
+        body.assignee_ids = [member.id];
+      }
+
+      return apiFetch("/api/office/tasks", { method: "POST", body: JSON.stringify(body) });
+    },
+  },
+  {
+    name: "list_office_tasks",
+    description:
+      "List Office board tasks (global business-housekeeping board), optionally filtered by department group name (fuzzy match, same as create_office_task) and open/completed status. Standing rule cards (kind 'rule', e.g. 'DO NOT enable Google AI Max') are included and clearly marked — they are never 'completed'.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        group: { type: "string", description: "Department name, fuzzy-matched (e.g. 'operations') — omit for all groups" },
+        status: { type: "string", enum: ["open", "completed"], description: "Omit for both" },
+      },
+      additionalProperties: false,
+    },
+    handler: async ({ group, status } = {}) => {
+      const board = await apiFetch("/api/office");
+      let groups = board.groups;
+      if (group) {
+        groups = groups.filter((g) => g.name.toLowerCase().includes(group.trim().toLowerCase()));
+      }
+      const tasks = groups.flatMap((g) =>
+        g.tasks.map((t) => ({ ...t, group_name: g.name }))
+      );
+      if (!status) return { tasks };
+      if (status === "completed") return { tasks: tasks.filter((t) => !!t.completed_at) };
+      return { tasks: tasks.filter((t) => !t.completed_at) };
+    },
+  },
 ];
 
 const toolsByName = new Map(TOOLS.map((t) => [t.name, t]));

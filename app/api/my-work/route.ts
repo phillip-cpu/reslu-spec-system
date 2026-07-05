@@ -15,7 +15,7 @@ export const runtime = "nodejs";
  * decisions (decision_needed_by past)." This task's brief additionally
  * names a fourth "No date" bucket (see lib/my-work.ts's doc comment).
  *
- * Five source queries, each independently optional (a query failing or
+ * Six source queries, each independently optional (a query failing or
  * returning nothing never blocks the others — this route degrades
  * gracefully rather than 500ing the whole page because, say, no leads
  * table rows match):
@@ -38,8 +38,15 @@ export const runtime = "nodejs";
  *      matching the portal's own PORTAL_FIELDS whitelist philosophy —
  *      no price_trade/price_rrp/markup_pct/price_client column is ever
  *      touched by this route).
+ *   6. Phase 13 — Office board tasks assigned to me, via
+ *      office_task_assignees, EXCLUDING kind 'rule' (standing rule
+ *      cards are never "my work" — they're pinned notices, not
+ *      to-dos an individual owns) and excluding already-completed
+ *      tasks (completed_at not null — a done task shouldn't keep
+ *      nagging in My Work once archived). due_date drives bucketing,
+ *      same as board_task.
  *
- * None of these five sources require a project-membership check (this
+ * None of these six sources require a project-membership check (this
  * codebase has no per-project team assignment — every team member sees
  * every project, per BUILD-SPEC.md §Security's Phase 1 "all team equal"
  * baseline), so no extra ownership filtering is needed beyond the
@@ -215,6 +222,42 @@ export async function GET() {
         due: i.decision_needed_by,
         href: `/projects/${i.project_id}?tab=ffe`,
         meta: i.location ?? "Awaiting client decision",
+      });
+    }
+  }
+
+  // ---- 6. Office board tasks assigned to me (Phase 13) ----
+  const { data: myOfficeAssignments } = await supabase
+    .from("office_task_assignees")
+    .select("task_id")
+    .eq("profile_id", userId);
+
+  const myOfficeTaskIds = (myOfficeAssignments ?? []).map((a) => a.task_id);
+  if (myOfficeTaskIds.length > 0) {
+    const { data: officeTasks } = await supabase
+      .from("office_tasks")
+      .select("id,group_id,title,due_date,kind,completed_at")
+      .in("id", myOfficeTaskIds)
+      .is("deleted_at", null)
+      .eq("kind", "task")
+      .is("completed_at", null);
+
+    const officeTaskRows = officeTasks ?? [];
+    const groupIds = [...new Set(officeTaskRows.map((t) => t.group_id))];
+    const { data: officeGroups } = groupIds.length
+      ? await supabase.from("office_groups").select("id,name").in("id", groupIds)
+      : { data: [] as { id: string; name: string }[] };
+    const groupById = new Map((officeGroups ?? []).map((g) => [g.id, g]));
+
+    for (const t of officeTaskRows) {
+      items.push({
+        kind: "office_task",
+        id: t.id,
+        title: t.title,
+        project: null,
+        due: t.due_date,
+        href: "/office",
+        meta: groupById.get(t.group_id)?.name ?? "Office",
       });
     }
   }

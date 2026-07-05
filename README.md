@@ -419,6 +419,20 @@ admin enforcement for financial fields is now in place project-wide
   change's scope) — see "Cron jobs" note below. See `docs/API.md`'s "My
   Work, Board v2, housekeeping, client events — Phase 12a-B" section.
 
+- **Phase 13 — Office board.** Migration `021_office.sql`. New sidebar
+  entry **Office** (`/office`) — a GLOBAL (not per-project) Monday-style
+  grouped list covering business housekeeping: Marketing, Website, Meta
+  Ads, Google Ads, Operations, Systems & Tech, Phillip (personal queue),
+  Archived. Multi-assignee + subtasks ('2/5' progress chip, expand a
+  row to tick them) on every task card; **standing rule cards**
+  (pinned, sand-left-border, no checkbox/due date, un-completable — e.g.
+  "DO NOT enable Google AI Max"). Ticking a task complete moves it into
+  the Archived group automatically (original group remembered so
+  un-completing restores it); Archived renders collapsed by default.
+  Feeds `/my-work` as a new source. See `docs/API.md`'s "Office board —
+  Phase 13" section and `docs/ARIA.md`'s "Office board (Phase 13)"
+  section (new MCP tools `create_office_task` / `list_office_tasks`).
+
 ## Cron jobs — one still needs wiring up (Phase 12a-B)
 
 `vercel.json` currently schedules `/api/digest/flush` and

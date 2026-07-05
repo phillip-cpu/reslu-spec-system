@@ -11,6 +11,9 @@ const KIND_LABEL: Record<MyWorkItem["kind"], string> = {
   diary_draft: "Diary draft",
   trade_proposal: "Trade proposal",
   decision_overdue: "Client decision",
+  // Phase 13 — Office board task assigned to me (GET /api/my-work
+  // source #6). Additive entry, same shape as every other kind here.
+  office_task: "Office",
 };
 
 const SECTIONS: { key: keyof MyWorkGroups; label: string; emptyLabel: string }[] = [
@@ -124,9 +127,13 @@ function ItemRow({ item, overdue }: { item: MyWorkItem; overdue: boolean }) {
                 {item.project.alias && <span className="text-charcoal/35"> · {item.project.alias}</span>}
               </span>
             )}
+            {/* project is null for both leads (pre-project) and Phase 13
+                Office tasks (global board, no project at all) — the
+                fallback chip distinguishes the two rather than always
+                saying "Lead". */}
             {!item.project && (
               <span className="label-caps shrink-0 border border-[#c9c2b4] px-1.5 py-0.5 !text-charcoal/50">
-                Lead
+                {item.kind === "office_task" ? "Office" : "Lead"}
               </span>
             )}
             <span className="label-caps shrink-0 !text-sand">{KIND_LABEL[item.kind]}</span>

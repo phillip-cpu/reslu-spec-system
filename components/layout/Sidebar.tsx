@@ -12,6 +12,12 @@ const NAV_ITEMS = [
   // has their own feed; the admin-only lead-follow-ups source is gated
   // inside GET /api/my-work itself, not at this nav/page level).
   { label: "My Work", href: "/my-work" },
+  // Phase 13 — BUILD-SPEC.md §"13 Office": global Office board (not
+  // per-project) — business housekeeping, department groups. Placed
+  // right after My Work (both are "what needs doing" surfaces, above
+  // Projects' client-work surfaces) and before Search, mirroring how
+  // My Work itself slotted in right after Projects in Phase 12a-B.
+  { label: "Office", href: "/office" },
   { label: "Search", href: "/search" },
   { label: "Library", href: "/library" },
   { label: "Address Book", href: "/contacts" },
