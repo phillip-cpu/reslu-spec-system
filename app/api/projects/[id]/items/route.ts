@@ -61,7 +61,29 @@ const SPEC_VIEW_COLUMNS = [
  * Query filters: ?category=TW&status=Specced&q=basin — category and status
  * are exact matches against the stored values; q does a case-insensitive
  * partial match across name, item_code, supplier, and brand.
+ *
+ * Phase 14A pagination (BUILD-SPEC.md Phase 14 "pagination/windowing
+ * for 200+ item registers"): optional ?limit / ?offset, additive.
+ * SpecRegister.tsx (protected, not touched by this change) calls this
+ * route with no limit/offset params at all, so it now implicitly gets
+ * DEFAULT_LIMIT (500) items rather than a truly unbounded result set.
+ * HONEST CAVEAT (not "byte-for-byte unchanged"): a project with MORE
+ * than 500 active items would see the register silently show only the
+ * first 500 rather than erroring or paging — no project in this
+ * studio's real data is anywhere near that today (BUILD-SPEC.md's own
+ * framing is "200+ item registers" as the stress case this task
+ * future-proofs for, an order of magnitude below DEFAULT_LIMIT), but
+ * if that ever changes, the register UI needs to actually adopt
+ * limit/offset (or the on-machine engineer should raise DEFAULT_LIMIT)
+ * before it silently truncates — flagged here explicitly rather than
+ * glossed over. `total` is returned alongside `items` (a `count:
+ * "exact"` head query) so a future paged UI has something to page
+ * against without a second round trip; any caller destructuring only
+ * `{ items }` is unaffected by the extra field.
  */
+const DEFAULT_LIMIT = 500;
+const MAX_LIMIT = 2000;
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -82,9 +104,18 @@ export async function GET(
   const status = searchParams.get("status");
   const q = searchParams.get("q");
 
+  const limitParam = Number(searchParams.get("limit"));
+  const offsetParam = Number(searchParams.get("offset"));
+  const limit =
+    Number.isFinite(limitParam) && limitParam > 0
+      ? Math.min(Math.floor(limitParam), MAX_LIMIT)
+      : DEFAULT_LIMIT;
+  const offset =
+    Number.isFinite(offsetParam) && offsetParam > 0 ? Math.floor(offsetParam) : 0;
+
   let query = supabase
     .from("items")
-    .select(SPEC_VIEW_COLUMNS)
+    .select(SPEC_VIEW_COLUMNS, { count: "exact" })
     .eq("project_id", id)
     .is("deleted_at", null);
 
@@ -101,15 +132,21 @@ export async function GET(
     );
   }
 
-  const { data: items, error } = await query
+  const { data: items, error, count } = await query
     .order("category", { ascending: true })
-    .order("item_code", { ascending: true });
+    .order("item_code", { ascending: true })
+    .range(offset, offset + limit - 1);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ items });
+  return NextResponse.json({
+    items,
+    total: count ?? items?.length ?? 0,
+    limit,
+    offset,
+  });
 }
 
 /**

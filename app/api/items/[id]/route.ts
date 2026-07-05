@@ -3,6 +3,7 @@ import { ensureStoredImage } from "@/lib/images";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { isAdmin } from "@/lib/auth";
 import { syncItemToMonday } from "@/lib/monday/sync";
+import { reportError } from "@/lib/report-error";
 import { normalizeProductUrl } from "@/lib/scraper";
 import type { Item } from "@/types";
 
@@ -346,6 +347,9 @@ export async function PATCH(
       } catch (err) {
         // Errors: log + write nothing — sync is non-critical to the edit.
         console.error(`[monday sync] item ${typedItem.id} failed:`, err);
+        // Phase 14A error visibility — see lib/report-error.ts, admin
+        // Settings "System health".
+        await reportError("monday-sync", err);
       }
     });
   }

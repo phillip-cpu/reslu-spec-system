@@ -8,6 +8,7 @@ import { ProjectWorkspace } from "@/components/items/ProjectWorkspace";
 import { MondayBoardPicker } from "@/components/items/MondayBoardPicker";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
 import { portalUrlFor } from "@/lib/portal-link";
+import { getCategories } from "@/lib/reference-data";
 import type { Category, Item } from "@/types";
 
 /**
@@ -66,7 +67,10 @@ export default async function ProjectPage({
   let items: Item[] = [];
   let categories: Category[] = [];
   if (showFfe) {
-    const [itemsRes, categoriesRes] = await Promise.all([
+    // Phase 14A caching: categories are stable reference data — see
+    // lib/reference-data.ts. items stays a live, per-project,
+    // uncached fetch (correctly so — it changes constantly).
+    const [itemsRes, cachedCategories] = await Promise.all([
       supabase
         .from("items")
         .select("*")
@@ -74,10 +78,10 @@ export default async function ProjectPage({
         .is("deleted_at", null)
         .order("category", { ascending: true })
         .order("item_code", { ascending: true }),
-      supabase.from("categories").select("*").order("sort_order"),
+      getCategories(),
     ]);
     items = (itemsRes.data ?? []) as Item[];
-    categories = (categoriesRes.data ?? []) as Category[];
+    categories = cachedCategories;
   }
 
   return (

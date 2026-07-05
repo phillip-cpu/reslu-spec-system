@@ -33,7 +33,10 @@ export function ProgressPhotosSection({ photos }: { photos: PortalProgressPhoto[
             onClick={() => setOpenId(p.id)}
             className="relative aspect-square overflow-hidden bg-cream"
           >
-            <Image src={p.url} alt={p.caption ?? ""} fill sizes="220px" className="object-cover" />
+            {/* Phase 14A perf: grid tile uses the smaller thumb_url
+                rendition when present (see lib/image-url.ts); full-size
+                `url` is reserved for the lightbox below. */}
+            <Image src={p.thumb_url ?? p.url} alt={p.caption ?? ""} fill sizes="220px" className="object-cover" />
           </button>
         ))}
       </div>

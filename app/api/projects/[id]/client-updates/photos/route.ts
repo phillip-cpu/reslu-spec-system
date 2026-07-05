@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS, slugFilename } from "@/lib/storage";
+import { signedRenditionUrl, RENDITION_SIZES } from "@/lib/image-url";
 
 export const runtime = "nodejs";
 
@@ -26,7 +27,20 @@ interface ProgressPhotoRow {
   created_at: string;
 }
 
+// Phase 14A perf: ProgressPhotosPanel.tsx (the team client-area upload
+// grid this feeds) renders every photo as a 200px grid tile with no
+// full-size lightbox, so mint the signed URL at grid size directly
+// (see lib/image-url.ts) — falls back to the untransformed signed URL
+// if the transform call errors.
 async function withUrl(supabase: SupabaseServerClient, row: ProgressPhotoRow) {
+  const rendition = await signedRenditionUrl(
+    supabase,
+    ASSET_BUCKET,
+    row.storage_path,
+    SIGNED_URL_TTL_SECONDS,
+    { width: RENDITION_SIZES.grid }
+  );
+  if (rendition) return { ...row, url: rendition };
   const { data, error } = await supabase.storage
     .from(ASSET_BUCKET)
     .createSignedUrl(row.storage_path, SIGNED_URL_TTL_SECONDS);

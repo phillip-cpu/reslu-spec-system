@@ -91,12 +91,24 @@ added Week 6 to close an API-parity gap (this action previously had no
 REST route). **Aria-relevant** (admin-scoped agent use only).
 
 ### GET /api/projects/[id]/pdf
-Auth: session. Body: none. Query: `?revision=`, `?subtitle=`. Response:
-raw PDF binary (`Content-Disposition: inline`, `Cache-Control: no-store`).
+Auth: session. Body: none. Query: `?revision=`, `?subtitle=`, `?nocache=1`
+(Phase 14A — force a fresh render, bypassing the cache check below).
+Response: raw PDF binary (`Content-Disposition: inline`,
+`Cache-Control: no-store`, `X-Pdf-Cache: hit|miss` header — Phase 14A).
 Uses an explicit `PDF_ITEM_FIELDS` whitelist that excludes all
 pricing/ordering columns — the builder-facing PDF never contains
 financial data regardless of caller role. Items filtered to
 non-deleted, ordered category then item_code.
+
+**Phase 14A caching:** before rendering, a cheap key query (max item
+`updated_at` + active item count + `revision`/`subtitle`) is hashed
+(SHA-256) and checked against a Storage object at
+`assets/pdf-cache/{projectId}/{hash}.pdf`; a hit streams the cached
+bytes back with no render/image-copy work at all. A miss renders as
+before and best-effort writes the result to that path (via `after()`)
+for next time. Render failures are now caught and logged to
+`app_errors` (see "System health" below) instead of surfacing as an
+unhandled crash.
 
 ### GET /api/projects/[id]/cover
 Auth: session. Body: none. Response: `{ url: string | null }` — a
@@ -141,6 +153,14 @@ name/item_code/supplier/brand). Response: `{ items }` via an explicit
 role — this route is the Spec register's read path, not the Pricing &
 Procurement view. **Aria-relevant** for schedule/spec reads; use
 `GET /api/items/[id]` for pricing fields (admin/service context only).
+
+**Phase 14A pagination:** optional `?limit=` (default 500, max 2000)
+and `?offset=` (default 0). Response also carries `total` (exact count)
+and the effective `limit`/`offset`. A caller passing no limit/offset —
+every existing UI call — implicitly gets up to 500 items; see the
+route's own doc comment for the honest caveat that this is a real cap,
+not a guaranteed-unchanged unbounded read, if any single project's
+active item count ever exceeds it.
 
 ### POST /api/projects/[id]/items
 Auth: session. Body: `CreateItemInput` (`name`, `category` required;
@@ -273,7 +293,9 @@ full name, falling back to email, then `"Team member"`.
 ### GET /api/library
 Auth: session (financial fields admin-only). Body: none. Query:
 `?q=`, `?category=`. Response: `{ items }`, ordered
-`usage_count desc, name asc`, capped at 200. `FINANCIAL_FIELDS =
+`usage_count desc, name asc`, capped at 200 (Phase 14A: `?limit=`
+override, max 1000; `?offset=` for paging; response also carries
+`total` (exact count), `limit`, `offset`). `FINANCIAL_FIELDS =
 ["price_trade", "trade_price_received_at", "trade_price_source"]`
 stripped for non-admins; `price_rrp` is NOT gated (public reference
 price). **Aria-relevant.**
@@ -930,7 +952,9 @@ routes for everything (Aria operates boards/contacts too)").
 Auth: session. Query: `?q=` (search across company/contact_name/
 specialty, ILIKE), `?category=` (exact match). Response:
 `{ contacts: Contact[] }`, non-deleted, ordered `company asc`.
-**Aria-relevant** (`list_contacts` MCP tool).
+Phase 14A: previously unbounded; now capped at `?limit=` (default 500,
+max 2000) with `?offset=` paging and `total`/`limit`/`offset` in the
+response. **Aria-relevant** (`list_contacts` MCP tool).
 
 #### POST /api/contacts
 Auth: session (any team member — same trust tier as
@@ -1168,7 +1192,10 @@ this time; this is exactly what a lead-monitor automation should poll),
 avg_days_in_stage }] }` — computed over the WHOLE pipeline, independent
 of any `?stage`/`?q` filter applied to the `leads` array itself, so the
 dashboard strip never appears to change just because the list below it
-is filtered). Response: `{ leads: Lead[] }` or `{ leads, summary }`.
+is filtered), `?limit=`/`?offset=` (Phase 14A pagination — default 500,
+max 2000; response also carries `total`/`limit`/`offset`; NEVER applied
+to the `?summary=1` whole-pipeline aggregate, only to the `leads` array
+itself). Response: `{ leads: Lead[] }` or `{ leads, summary }`.
 Non-deleted only, newest-updated first. **Aria-relevant** (`list_leads`
 MCP tool).
 
@@ -2288,6 +2315,56 @@ workflow write-up. There is deliberately no `complete_office_task` tool
 — ticking a task done (and the resulting archive-move) stays a human
 action, same structural boundary as the Diary's publish gate and the
 SOW's issue gate elsewhere in this doc.
+
+---
+
+## Phase 14A — Performance & Backups (cross-cutting, not new routes)
+
+BUILD-SPEC.md Phase 14 "Speed, Security & Backups". No new user-facing
+routes beyond what's already noted inline above (PDF caching,
+pagination on items/library/contacts/leads) — this section is a single
+place to find the non-route additions:
+
+- **`lib/image-url.ts`** — `renditionUrl()` (public-bucket URL rewrite
+  to Supabase's image-transform endpoint, sync, no network call) and
+  `signedRenditionUrl()` (private-bucket signed URL + inline transform
+  in one call). Applied to: dashboard project cards, gallery grid,
+  portal progress-photo/diary/handover photo grids, procurement board
+  cards, portal Selections compact-row thumbnails. **NOT** applied to
+  `components/items/SpecRegister.tsx` (protected/owned elsewhere this
+  round) — see this task's build report for the one-line adoption note
+  left for whoever owns that file next.
+- **`lib/reference-data.ts`** — `getCategories()`/`getProfiles()`,
+  `unstable_cache`-wrapped (5 min revalidate + explicit `revalidateTag`
+  on every category/profile mutation route). Replaces ad-hoc
+  `select("*")` calls on `categories`/`profiles` in the dashboard,
+  library, project, and settings pages.
+- **`app_errors` table** (migration 022) + **`lib/report-error.ts`** —
+  rate-limited (5 per 5 min per call-site label) error logging from the
+  PDF route, scrape pipeline, Monday sync (both the fire-and-forget and
+  manual-retry paths), Gmail send (both the team digest and
+  client-notification paths), and the signature route. Surfaced in
+  Settings → **System health** (admin-only, last 50, most recent
+  first). Sentry (or similar) remains the documented upgrade path —
+  see `docs/RUNBOOK.md` §9 — deliberately not added as a dependency.
+- **`scripts/backup-offsite.mjs`** — weekly, zero-dep, run on the mini
+  (not Vercel): `pg_dump` (if available) + an incremental mirror of
+  every Storage bucket (`assets`, `item-images`) with a `manifest.json`
+  per week, 8-week retention. See `docs/RUNBOOK.md` for full
+  disaster-recovery procedure, launchd scheduling, and the quarterly
+  restore-drill checklist.
+- **Migration 022** also adds two indexes for cross-project queries
+  `GET /api/my-work` runs with no `project_id` predicate
+  (`idx_items_mywork_decisions`, `idx_portal_updates_pending_approval`)
+  — every other "heaviest query pattern" named in this task's brief
+  already had a serving index from migrations 001-021; see the
+  migration file's own header comment for the full audit trail.
+- **Portal page caching decision:** deliberately did NOT add
+  `revalidate`/ISR to `app/portal/[token]/page.tsx` — it already calls
+  `headers()` (rate limiter), which forces fully dynamic rendering by
+  Next.js's own semantics, so there is no stale cache to accidentally
+  serve stale approval state from. See the page's own doc comment for
+  the full reasoning.
 
 ---
 

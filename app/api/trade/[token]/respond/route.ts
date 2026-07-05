@@ -64,7 +64,9 @@ export async function POST(
 
   const { data: visit } = await supabase
     .from("trade_visits")
-    .select("*")
+    .select(
+      "id,project_id,phase_id,contact_id,start_date,end_date,arrival_slot,arrival_time,status,proposed_start,proposed_end,proposed_slot,confirm_token,confirmed_at,confirmed_by,notes,deleted_at"
+    )
     .eq("confirm_token", token)
     .maybeSingle();
 

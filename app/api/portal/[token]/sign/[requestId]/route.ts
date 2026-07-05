@@ -14,6 +14,7 @@ import {
 } from "@/lib/signatures";
 import { SignatureCertificatePdf } from "@/components/portal/SignatureCertificatePdf";
 import { sendTeamEmail, isGmailConfigured } from "@/lib/gmail/send";
+import { reportError } from "@/lib/report-error";
 import type { PortalSigningTarget } from "@/app/portal/types";
 
 export const runtime = "nodejs";
@@ -266,6 +267,10 @@ export async function POST(
   if (eventError) {
     // Best-effort cleanup of the orphaned signature image.
     await supabase.storage.from(ASSET_BUCKET).remove([sigPath]);
+    // Phase 14A error visibility — a failure to record signature
+    // evidence is about as high-value as this route gets to know
+    // about (see lib/report-error.ts, admin Settings "System health").
+    await reportError("signature-route", eventError);
     return NextResponse.json(
       { error: `Could not record signature evidence: ${eventError.message}` },
       { status: 500 }
@@ -369,9 +374,15 @@ export async function POST(
         }).catch(() => {});
       }
     }
-  } catch {
+  } catch (err) {
     // Certificate/email failures never fail the sign response — the
     // signature_events row is already the durable evidence record.
+    // Phase 14A error visibility — this used to be a silent swallow;
+    // now it's recorded so a repeatedly-failing certificate/email step
+    // is visible in admin Settings "System health" instead of only
+    // discoverable by a client asking "where's my copy?" (see
+    // lib/report-error.ts).
+    await reportError("signature-route", err);
   }
 
   return NextResponse.json({

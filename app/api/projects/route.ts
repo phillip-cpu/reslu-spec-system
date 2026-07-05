@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
+import { signedRenditionUrl, RENDITION_SIZES } from "@/lib/image-url";
 import type { CreateProjectInput, ProjectWithCounts } from "@/types";
 
 /**
@@ -35,9 +36,22 @@ export async function GET() {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  // Phase 14A perf: this list feeds card-style consumers (dashboard-
+  // equivalent grids and Aria's API reads), so the cover is signed with
+  // an inline resize transform rather than shipping the full-size
+  // original — see lib/image-url.ts. Falls back to a plain signed URL
+  // if the transform call errors.
   const withCovers: ProjectWithCounts[] = await Promise.all(
     (projects ?? []).map(async (p) => {
       if (!p.cover_image_path) return { ...p, cover_image_url: null };
+      const rendition = await signedRenditionUrl(
+        supabase,
+        ASSET_BUCKET,
+        p.cover_image_path,
+        SIGNED_URL_TTL_SECONDS,
+        { width: RENDITION_SIZES.card }
+      );
+      if (rendition) return { ...p, cover_image_url: rendition };
       const { data: signed } = await supabase.storage
         .from(ASSET_BUCKET)
         .createSignedUrl(p.cover_image_path, SIGNED_URL_TTL_SECONDS);

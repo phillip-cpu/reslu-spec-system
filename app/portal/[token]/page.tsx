@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { ASSET_BUCKET } from "@/lib/storage";
 import { rateLimit } from "@/lib/rate-limit";
+import { signedRenditionUrl, RENDITION_SIZES } from "@/lib/image-url";
 import { PortalNav } from "@/components/portal/PortalNav";
 import { WhatsNextBlock } from "@/components/portal/WhatsNextBlock";
 import { UpcomingMeetingsCard } from "@/components/portal/UpcomingMeetingsCard";
@@ -58,6 +59,33 @@ import type {
 export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
+
+/**
+ * Phase 14A caching decision — BUILD-SPEC.md Phase 14 "Speed": "portal
+ * page: add revalidate where the page is a server component IF it
+ * doesn't break token-gated freshness of approvals ... approvals must
+ * reflect immediately after a client action".
+ *
+ * Deliberately NOT adding `export const revalidate` (or any ISR/static
+ * treatment) to this page. This component already calls headers() a
+ * few lines below (for the rate limiter's client-IP key) — per Next.js
+ * semantics, any use of a dynamic API (headers/cookies/searchParams)
+ * opts a route into fully dynamic rendering automatically, so this
+ * page is already rendered fresh on every request; there is no stale
+ * cache to accidentally serve. Adding a `revalidate` value here would
+ * only be meaningful if the page were otherwise eligible for static/
+ * ISR caching, which it isn't — so doing so would add a false sense of
+ * "cached for N seconds" without changing actual behaviour, and risks
+ * a future refactor (e.g. someone removing the headers() call) quietly
+ * turning it into a real staleness bug. What WAS cached this round,
+ * safely, is narrower: item-image renditions (lib/image-url.ts,
+ * Supabase-edge-cached, keyed on the image bytes+size — never on
+ * approval state) and the generated builder PDF (content-hash keyed on
+ * item updated_at/count — see app/api/projects/[id]/pdf/route.ts).
+ * Neither can ever serve stale approval/flag state: approvals live in
+ * `items.client_approved`/`client_flagged` and `approval_events`,
+ * queried fresh on every portal page load exactly as before.
+ */
 
 const PORTAL_FIELDS =
   "id,item_code,name,description,supplier,quantity,location,status,selected_image_url,client_approved,client_flagged,client_flag_note,decision_needed_by";
@@ -271,20 +299,41 @@ export default async function PortalPage({
       .order("created_at", { ascending: false }),
   ]);
 
-  const photos: PortalProgressPhoto[] = [];
-  for (const row of [...(sitePhotoRows ?? []), ...(legacyPhotoRows ?? [])]) {
-    const { data: signed, error: signError } = await supabase.storage
-      .from(ASSET_BUCKET)
-      .createSignedUrl(row.storage_path, SIGNED_URL_TTL_SECONDS);
-    if (signError || !signed?.signedUrl) continue;
-    photos.push({
-      id: row.id,
-      url: signed.signedUrl,
-      caption: row.caption,
-      taken_at: row.taken_at,
-      created_at: row.created_at,
-    });
-  }
+  // Phase 14A perf: ProgressPhotosSection.tsx renders a grid (thumb_url,
+  // sized via lib/image-url.ts) PLUS a full-size lightbox on click
+  // (url, unmodified signed URL) — so each photo needs both. Both
+  // signing calls per photo, AND every photo, run in parallel
+  // (Promise.all) rather than the sequential-per-photo loop this would
+  // otherwise become with two awaits per iteration — signing calls are
+  // independent Storage API requests with no shared state, so there's
+  // no correctness reason to serialise them (unlike e.g. lib/images.ts's
+  // deliberately-sequential external-image re-hosting, which is
+  // sequential for its OWN stated reason: bounding total time spent on
+  // potentially-slow third-party hosts, not applicable here since both
+  // calls here hit Supabase's own Storage API). thumb_url errors (e.g.
+  // transform add-on unavailable) fall back to the same full-size url
+  // rather than dropping the photo.
+  const photoResults = await Promise.all(
+    [...(sitePhotoRows ?? []), ...(legacyPhotoRows ?? [])].map(async (row) => {
+      const [{ data: signed, error: signError }, thumb] = await Promise.all([
+        supabase.storage.from(ASSET_BUCKET).createSignedUrl(row.storage_path, SIGNED_URL_TTL_SECONDS),
+        signedRenditionUrl(supabase, ASSET_BUCKET, row.storage_path, SIGNED_URL_TTL_SECONDS, {
+          width: RENDITION_SIZES.grid,
+        }),
+      ]);
+      if (signError || !signed?.signedUrl) return null;
+      const photo: PortalProgressPhoto = {
+        id: row.id,
+        url: signed.signedUrl,
+        thumb_url: thumb ?? signed.signedUrl,
+        caption: row.caption,
+        taken_at: row.taken_at,
+        created_at: row.created_at,
+      };
+      return photo;
+    })
+  );
+  const photos: PortalProgressPhoto[] = photoResults.filter((p): p is PortalProgressPhoto => p !== null);
   photos.sort((a, b) => (b.taken_at ?? b.created_at).localeCompare(a.taken_at ?? a.created_at));
 
   // ---- Timeline (Week 9 portal mirror, owned by the Phase 11A agent's
@@ -337,12 +386,27 @@ export default async function PortalPage({
     for (const link of links ?? []) {
       const photo = Array.isArray(link.site_photos) ? link.site_photos[0] : link.site_photos;
       if (!photo) continue;
-      const { data: signed, error: signError } = await supabase.storage
-        .from(ASSET_BUCKET)
-        .createSignedUrl(photo.storage_path, SIGNED_URL_TTL_SECONDS);
-      if (signError || !signed?.signedUrl) continue;
+      // Phase 14A perf: DiarySection.tsx renders these at a fixed
+      // aspect-[4/3] tile (max ~500px, no lightbox) — mint directly at
+      // card size via lib/image-url.ts rather than a full-size image
+      // that's immediately downscaled by the browser.
+      const rendition = await signedRenditionUrl(
+        supabase,
+        ASSET_BUCKET,
+        photo.storage_path,
+        SIGNED_URL_TTL_SECONDS,
+        { width: RENDITION_SIZES.card }
+      );
+      const url =
+        rendition ??
+        (
+          await supabase.storage
+            .from(ASSET_BUCKET)
+            .createSignedUrl(photo.storage_path, SIGNED_URL_TTL_SECONDS)
+        ).data?.signedUrl;
+      if (!url) continue;
       const list = diaryPhotosByUpdate.get(link.update_id) ?? [];
-      list.push({ id: photo.id, url: signed.signedUrl, caption: photo.caption });
+      list.push({ id: photo.id, url, caption: photo.caption });
       diaryPhotosByUpdate.set(link.update_id, list);
     }
   }
@@ -484,8 +548,23 @@ async function buildHandoverPack(
     else documents.push(file);
   }
 
+  // Phase 14A perf: HandoverSection.tsx's "Final gallery" is a plain
+  // aspect-square grid with no lightbox — mint directly at grid size
+  // (see lib/image-url.ts), falling back to the full-size signed URL
+  // if the transform call errors.
   const gallery: PortalHandoverPack["gallery"] = [];
   for (const row of galleryRows ?? []) {
+    const rendition = await signedRenditionUrl(
+      supabase,
+      ASSET_BUCKET,
+      row.storage_path,
+      SIGNED_URL_TTL_SECONDS,
+      { width: RENDITION_SIZES.grid }
+    );
+    if (rendition) {
+      gallery.push({ id: row.id, url: rendition, caption: row.caption });
+      continue;
+    }
     const { data: signed, error } = await supabase.storage
       .from(ASSET_BUCKET)
       .createSignedUrl(row.storage_path, SIGNED_URL_TTL_SECONDS);

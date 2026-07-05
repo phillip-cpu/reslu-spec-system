@@ -6,6 +6,7 @@ import Image from "next/image";
 import type { PortalItemWithFiles } from "@/app/portal/types";
 import { PortalSection } from "@/components/portal/PortalSection";
 import { SelectionsStepper } from "@/components/portal/SelectionsStepper";
+import { renditionUrl, RENDITION_SIZES } from "@/lib/image-url";
 
 const UNASSIGNED = "Other";
 
@@ -288,7 +289,18 @@ export function SelectionsSection({
                       >
                         {item.selected_image_url ? (
                           <div className="relative h-12 w-12 shrink-0 overflow-hidden bg-cream">
-                            <Image src={item.selected_image_url} alt="" fill sizes="48px" className="object-cover" />
+                            {/* Phase 14A perf: compact-row thumb at scale
+                                (this list must handle 200+ items —
+                                BUILD-SPEC.md) — rewritten to a small
+                                Supabase image-transform rendition rather
+                                than the full-size original. */}
+                            <Image
+                              src={renditionUrl(item.selected_image_url, { width: RENDITION_SIZES.thumb }) ?? item.selected_image_url}
+                              alt=""
+                              fill
+                              sizes="48px"
+                              className="object-cover"
+                            />
                           </div>
                         ) : (
                           <div className="h-12 w-12 shrink-0 bg-cream" />

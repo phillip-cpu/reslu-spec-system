@@ -1,5 +1,6 @@
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { ensureStoredImage } from "@/lib/images";
+import { reportError } from "@/lib/report-error";
 import { fetchSafely, UnsafeUrlError } from "./guard";
 import { extractFromHtml, type DetectedDocument } from "./extract";
 import { normalizeProductUrl } from "./normalize";
@@ -145,6 +146,16 @@ export async function scrapeProductUrl(itemId: string, url: string): Promise<Scr
         : err instanceof Error
           ? err.message
           : "Unknown scrape error.";
+    // Phase 14A error visibility: a blocked/disallowed URL is an
+    // EXPECTED, already-handled outcome of this pipeline's own SSRF
+    // guard (BUILD-SPEC.md's "never block item creation" — a bad
+    // supplier link is routine, not a system fault) — logging every
+    // one to app_errors would drown the admin "System health" panel in
+    // noise from ordinary bad URLs. Only genuinely unexpected failures
+    // (extraction bugs, unhandled exceptions) are recorded.
+    if (!(err instanceof UnsafeUrlError)) {
+      await reportError("scrape-pipeline", err);
+    }
     return await markFailed(supabase, itemId, note);
   }
 }

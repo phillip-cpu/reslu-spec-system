@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { sendTeamEmail, isGmailConfigured } from "./send";
+import { reportError } from "@/lib/report-error";
 
 /**
  * Team digest on client-portal actions (BUILD-SPEC.md §9 / Review §1.8:
@@ -194,6 +195,9 @@ export async function flushDigest(
       errors.push(
         `${projectName}: ${err instanceof Error ? err.message : "send failed"}`
       );
+      // Phase 14A error visibility — see lib/report-error.ts, admin
+      // Settings "System health".
+      await reportError("gmail-send", err);
     }
   }
 

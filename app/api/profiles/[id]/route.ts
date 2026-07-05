@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { isAdmin } from "@/lib/auth";
+import { invalidateProfilesCache } from "@/lib/reference-data";
 import type { ProfileRole } from "@/types";
 
 const VALID_ROLES = new Set<ProfileRole>(["admin", "designer", "viewer"]);
@@ -72,6 +73,10 @@ export async function PATCH(
   if (!profile) {
     return NextResponse.json({ error: "Profile not found" }, { status: 404 });
   }
+
+  // Phase 14A caching: invalidate lib/reference-data.ts's cached
+  // profiles read so a role change is never stale.
+  invalidateProfilesCache();
 
   return NextResponse.json({ profile });
 }

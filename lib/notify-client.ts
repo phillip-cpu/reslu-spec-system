@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { sendTeamEmail, isGmailConfigured } from "@/lib/gmail/send";
+import { reportError } from "@/lib/report-error";
 
 /**
  * Client-facing email notifications (BUILD-SPEC.md §"Phase 11
@@ -111,7 +112,11 @@ const TRIGGER_VERB: Record<NotifyClientTrigger, string> = {
 };
 
 function appUrl(): string {
-  return (process.env.NEXT_PUBLIC_APP_URL ?? "https://app.reslu.com.au").replace(/\/+$/, "");
+  return (
+    process.env.NEXT_PUBLIC_APP_URL ??
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null) ??
+    "https://spec.reslu.com.au"
+  ).replace(/\/+$/, "");
 }
 
 function portalLink(token: string, section: NotifyClientEvent["section"]): string {
@@ -205,6 +210,9 @@ export async function notifyClientBatch(
     return { sent: true };
   } catch (err) {
     // Best-effort — never throw out to the caller's primary action.
+    // Phase 14A error visibility — see lib/report-error.ts, admin
+    // Settings "System health".
+    await reportError("gmail-send", err);
     return { sent: false, skipped: err instanceof Error ? err.message : "Notification failed" };
   }
 }

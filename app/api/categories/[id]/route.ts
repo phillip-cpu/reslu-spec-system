@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
+import { invalidateCategoriesCache } from "@/lib/reference-data";
 
 /** PATCH /api/categories/[id] — admin only. body { name?, sort_order? } */
 export async function PATCH(
@@ -38,6 +39,8 @@ export async function PATCH(
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+  // Phase 14A caching: invalidate lib/reference-data.ts's cached read.
+  invalidateCategoriesCache();
   return NextResponse.json({ category: data });
 }
 
@@ -66,5 +69,7 @@ export async function DELETE(
         : error.message;
     return NextResponse.json({ error: msg }, { status: 400 });
   }
+  // Phase 14A caching: invalidate lib/reference-data.ts's cached read.
+  invalidateCategoriesCache();
   return NextResponse.json({ ok: true });
 }

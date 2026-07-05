@@ -82,7 +82,9 @@ export async function POST(
   // item → MUST belong to this project and not be soft-deleted.
   const { data: item } = await supabase
     .from("items")
-    .select("*")
+    .select(
+      "id,project_id,deleted_at,item_code,name,supplier,brand,selected_image_url,client_approved,client_flagged"
+    )
     .eq("id", itemId)
     .eq("project_id", project.id)
     .is("deleted_at", null)

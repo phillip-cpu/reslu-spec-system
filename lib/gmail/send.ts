@@ -88,7 +88,9 @@ export async function sendTeamEmail({
     [
       `From: ${SENDER}`,
       `To: ${to.join(", ")}`,
-      `Subject: ${subject}`,
+      // RFC 2047 encoded-word: subjects with em-dashes/accents arrive
+      // garbled ("â€”") in some clients if sent raw. Always base64-encode.
+      `Subject: =?UTF-8?B?${Buffer.from(subject, "utf8").toString("base64")}?=`,
       "MIME-Version: 1.0",
       'Content-Type: text/plain; charset="UTF-8"',
       "",

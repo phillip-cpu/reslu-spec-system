@@ -23,7 +23,28 @@ export const runtime = "nodejs";
  *                      monitor scripts poll")
  *   ?summary=1        also returns a `summary` block (dashboard
  *                      totals — BUILD-SPEC.md "Pipeline dashboard")
+ *   ?limit / ?offset  Phase 14A pagination (BUILD-SPEC.md Phase 14
+ *                      "pagination/windowing"). Previously unbounded.
+ *                      HONEST CAVEAT: NOT byte-for-byte identical for
+ *                      every dataset size — a pipeline that ever
+ *                      exceeds DEFAULT_LIMIT (500) leads would see this
+ *                      route silently return only the first 500 to any
+ *                      existing caller that doesn't pass ?limit
+ *                      (LeadsWorkspace.tsx, needs-attention poller,
+ *                      Aria's MCP list_leads). This studio's real
+ *                      pipeline size today is nowhere near 500 — but if
+ *                      that changes, those callers need to adopt
+ *                      ?limit/?offset (or DEFAULT_LIMIT needs raising)
+ *                      before it silently truncates. `total` is
+ *                      returned so a consumer can notice "total >
+ *                      leads.length". Deliberately NOT applied to the
+ *                      ?summary=1 whole-pipeline queries below — the
+ *                      dashboard summary must always reflect every
+ *                      lead regardless of the list view's current page.
  */
+const DEFAULT_LIMIT = 500;
+const MAX_LIMIT = 2000;
+
 export async function GET(request: NextRequest) {
   const supabase = await createClient();
 
@@ -41,15 +62,25 @@ export async function GET(request: NextRequest) {
   const since = searchParams.get("since")?.trim();
   const wantSummary = searchParams.get("summary") === "1";
 
+  const limitParam = Number(searchParams.get("limit"));
+  const offsetParam = Number(searchParams.get("offset"));
+  const limit =
+    Number.isFinite(limitParam) && limitParam > 0
+      ? Math.min(Math.floor(limitParam), MAX_LIMIT)
+      : DEFAULT_LIMIT;
+  const offset =
+    Number.isFinite(offsetParam) && offsetParam > 0 ? Math.floor(offsetParam) : 0;
+
   if (stage && !LEAD_STAGES.includes(stage as LeadStage)) {
     return NextResponse.json({ error: `Invalid stage: ${stage}` }, { status: 400 });
   }
 
   let query = supabase
     .from("leads")
-    .select("*")
+    .select("*", { count: "exact" })
     .is("deleted_at", null)
-    .order("updated_at", { ascending: false });
+    .order("updated_at", { ascending: false })
+    .range(offset, offset + limit - 1);
 
   if (stage) {
     query = query.eq("stage", stage);
@@ -68,13 +99,18 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const { data: leads, error } = await query;
+  const { data: leads, error, count } = await query;
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
   if (!wantSummary) {
-    return NextResponse.json({ leads: (leads ?? []) as Lead[] });
+    return NextResponse.json({
+      leads: (leads ?? []) as Lead[],
+      total: count ?? leads?.length ?? 0,
+      limit,
+      offset,
+    });
   }
 
   // Dashboard summary needs stage-change history for the avg-days-

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { syncItemToMonday } from "@/lib/monday/sync";
+import { reportError } from "@/lib/report-error";
 import type { Item } from "@/types";
 
 export const runtime = "nodejs";
@@ -82,6 +83,9 @@ export async function POST(
     // path we DO report failure back to the caller (as a 502) rather
     // than swallowing it silently; nothing is persisted either way.
     console.error(`[monday sync] item ${itemId} failed:`, err);
+    // Phase 14A error visibility — see lib/report-error.ts, admin
+    // Settings "System health".
+    await reportError("monday-sync", err);
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Monday sync failed" },
       { status: 502 }

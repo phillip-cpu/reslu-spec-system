@@ -84,10 +84,16 @@ export interface RespondVariationInput {
   note?: string;
 }
 
-/** A progress photo with a signed URL. */
+/** A progress photo with a signed URL.
+ * Phase 14A perf: `thumb_url` is an optional grid-sized rendition
+ * (see lib/image-url.ts) for the grid tile; `url` remains the
+ * full-size signed URL used by the lightbox. Optional so any older
+ * caller that only ever set `url` keeps compiling — ProgressPhotosSection
+ * falls back to `url` when `thumb_url` is absent. */
 export interface PortalProgressPhoto {
   id: string;
   url: string;
+  thumb_url?: string;
   caption: string | null;
   taken_at: string | null;
   created_at: string;

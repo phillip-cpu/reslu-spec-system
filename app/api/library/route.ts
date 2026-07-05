@@ -28,10 +28,20 @@ function stripFinancials<T extends Record<string, unknown>>(item: T): T {
 }
 
 /**
- * GET /api/library?q=&category=
+ * GET /api/library?q=&category=&limit=&offset=
  * Global product library (BUILD-SPEC.md §Everything else / Review §1.9).
  * Optional full-text-ish filter across name/brand/supplier.
+ *
+ * Phase 14A pagination (BUILD-SPEC.md Phase 14 "pagination/windowing"):
+ * the old hardcoded `.limit(200)` becomes the DEFAULT — every existing
+ * caller (LibraryBrowser.tsx passes no limit/offset) sees byte-for-byte
+ * the same behaviour as before (200 results max). `total` (exact count)
+ * is returned alongside `items`, additive, so a future paged UI has
+ * something to page against without a second round trip.
  */
+const DEFAULT_LIMIT = 200;
+const MAX_LIMIT = 1000;
+
 export async function GET(request: NextRequest) {
   const supabase = await createClient();
   const {
@@ -45,12 +55,21 @@ export async function GET(request: NextRequest) {
   const q = request.nextUrl.searchParams.get("q")?.trim();
   const category = request.nextUrl.searchParams.get("category")?.trim();
 
+  const limitParam = Number(request.nextUrl.searchParams.get("limit"));
+  const offsetParam = Number(request.nextUrl.searchParams.get("offset"));
+  const limit =
+    Number.isFinite(limitParam) && limitParam > 0
+      ? Math.min(Math.floor(limitParam), MAX_LIMIT)
+      : DEFAULT_LIMIT;
+  const offset =
+    Number.isFinite(offsetParam) && offsetParam > 0 ? Math.floor(offsetParam) : 0;
+
   let query = supabase
     .from("library_items")
-    .select("*")
+    .select("*", { count: "exact" })
     .order("usage_count", { ascending: false })
     .order("name", { ascending: true })
-    .limit(200);
+    .range(offset, offset + limit - 1);
 
   if (category) query = query.eq("category", category);
   if (q) {
@@ -60,12 +79,12 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const { data: items, error } = await query;
+  const { data: items, error, count } = await query;
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-  const payload = admin ? items : (items ?? []).map(stripFinancials);
-  return NextResponse.json({ items: payload });
+  const payload = admin ? items ?? [] : (items ?? []).map(stripFinancials);
+  return NextResponse.json({ items: payload, total: count ?? payload.length, limit, offset });
 }
 
 /** POST /api/library — create a library item. name + category required. */

@@ -10,6 +10,10 @@
  * call sites should use).
  */
 export function portalUrlFor(token: string): string {
-  const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+  const appUrl = (
+    process.env.NEXT_PUBLIC_APP_URL ??
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null) ??
+    "https://spec.reslu.com.au"
+  ).replace(/\/+$/, "");
   return `${appUrl}/portal/${token}`;
 }

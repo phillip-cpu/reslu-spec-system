@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS, slugFilename } from "@/lib/storage";
+import { signedRenditionUrl, RENDITION_SIZES } from "@/lib/image-url";
 
 export const runtime = "nodejs";
 
@@ -37,7 +38,21 @@ interface SitePhotoRow {
   created_at: string;
 }
 
+// Phase 14A perf: this list only ever renders as GalleryGrid.tsx's
+// aspect-square grid tiles (no separate full-size lightbox in that
+// component), so every URL is minted at grid size via
+// lib/image-url.ts's signedRenditionUrl rather than shipping the
+// full-size original to every card. Falls back to an untransformed
+// signed URL if the transform call errors.
 async function withUrl(supabase: SupabaseServerClient, row: SitePhotoRow) {
+  const rendition = await signedRenditionUrl(
+    supabase,
+    ASSET_BUCKET,
+    row.storage_path,
+    SIGNED_URL_TTL_SECONDS,
+    { width: RENDITION_SIZES.grid }
+  );
+  if (rendition) return { ...row, url: rendition };
   const { data, error } = await supabase.storage
     .from(ASSET_BUCKET)
     .createSignedUrl(row.storage_path, SIGNED_URL_TTL_SECONDS);

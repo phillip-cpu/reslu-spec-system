@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Image from "next/image";
 import clsx from "clsx";
 import type { Contact, Item, ItemStatus } from "@/types";
+import { renditionUrl, RENDITION_SIZES } from "@/lib/image-url";
 
 interface Props {
   items: Item[];
@@ -132,7 +133,13 @@ export function ProcurementBoardView({ items, onPatch }: Props) {
               >
                 <div className="relative h-10 w-10 shrink-0 overflow-hidden border border-[#dcd6cc] bg-cream">
                   {item.selected_image_url ? (
-                    <Image src={item.selected_image_url} alt="" fill sizes="40px" className="object-cover" />
+                    <Image
+                      src={renditionUrl(item.selected_image_url, { width: RENDITION_SIZES.thumb }) ?? item.selected_image_url}
+                      alt=""
+                      fill
+                      sizes="40px"
+                      className="object-cover"
+                    />
                   ) : (
                     <span className="flex h-full w-full items-center justify-center text-caption text-charcoal/25">
                       —

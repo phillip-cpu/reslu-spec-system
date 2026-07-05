@@ -1,11 +1,12 @@
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
+import { getCategories, getProfiles } from "@/lib/reference-data";
 import { Header } from "@/components/layout/Header";
 import { CategorySettings } from "@/components/settings/CategorySettings";
 import { TeamSettings } from "@/components/settings/TeamSettings";
 import { IntegrationStatus } from "@/components/settings/IntegrationStatus";
 import { QuickLinks } from "@/components/settings/QuickLinks";
-import type { Category, Profile } from "@/types";
+import { SystemHealth } from "@/components/settings/SystemHealth";
 
 /**
  * Settings — category management, team roster + role editing (both
@@ -25,10 +26,14 @@ export default async function SettingsPage() {
   const info = await getUserRole(supabase);
   const isAdmin = info?.role === "admin";
 
-  const [{ data: categories }, { data: team }] = await Promise.all([
-    supabase.from("categories").select("*").order("sort_order"),
-    supabase.from("profiles").select("*").order("full_name"),
-  ]);
+  // Phase 14A caching: both are stable reference data re-queried on
+  // nearly every page in the app — see lib/reference-data.ts. This is
+  // also the ONE page where a mutation to either can happen (category
+  // create/edit/delete, role change), so its own forms call
+  // invalidateCategoriesCache()/invalidateProfilesCache() from their
+  // API routes — see app/api/categories/route.ts, app/api/categories/[id]/route.ts,
+  // app/api/profiles/[id]/route.ts.
+  const [categories, team] = await Promise.all([getCategories(), getProfiles()]);
 
   const mondayConfigured = Boolean(process.env.MONDAY_API_TOKEN);
   const gmailConfigured = Boolean(
@@ -36,6 +41,29 @@ export default async function SettingsPage() {
       process.env.GMAIL_CLIENT_SECRET &&
       process.env.ARIA_GMAIL_REFRESH_TOKEN
   );
+
+  // Phase 14A error visibility (BUILD-SPEC.md Phase 14 "admin Settings
+  // section 'System health'") — admin-only, last 50 app_errors rows
+  // (migration 022_perf_indexes.sql), most recent first. Queried
+  // directly here rather than via a client fetch (same server-rendered
+  // pattern as IntegrationStatus above) since it's a simple read-only
+  // admin list with no interactivity. isAdmin gates the section
+  // entirely — non-admins never even trigger this query.
+  let recentErrors: {
+    id: string;
+    where_at: string;
+    message: string;
+    stack: string | null;
+    created_at: string;
+  }[] = [];
+  if (isAdmin) {
+    const { data } = await supabase
+      .from("app_errors")
+      .select("id,where_at,message,stack,created_at")
+      .order("created_at", { ascending: false })
+      .limit(50);
+    recentErrors = data ?? [];
+  }
 
   return (
     <>
@@ -50,7 +78,7 @@ export default async function SettingsPage() {
             {!isAdmin && " Only admins can make changes."}
           </p>
           <CategorySettings
-            initialCategories={(categories ?? []) as Category[]}
+            initialCategories={categories}
             canEdit={isAdmin}
           />
         </section>
@@ -63,7 +91,7 @@ export default async function SettingsPage() {
             {!isAdmin && " Only admins can change roles."}
           </p>
           <TeamSettings
-            initialTeam={(team ?? []) as Profile[]}
+            initialTeam={team}
             canEdit={isAdmin}
             currentUserId={info?.userId ?? ""}
           />
@@ -91,6 +119,13 @@ export default async function SettingsPage() {
           </p>
           <QuickLinks />
         </section>
+
+        {isAdmin && (
+          <section>
+            <h2 className="mb-1 text-subhead text-nearblack">System health</h2>
+            <SystemHealth errors={recentErrors} />
+          </section>
+        )}
       </main>
     </>
   );

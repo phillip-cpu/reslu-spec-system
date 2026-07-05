@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
+import { invalidateCategoriesCache } from "@/lib/reference-data";
 
 /** GET /api/categories — any authenticated team member. */
 export async function GET() {
@@ -61,5 +62,10 @@ export async function POST(request: NextRequest) {
         : error.message;
     return NextResponse.json({ error: msg }, { status: 400 });
   }
+  // Phase 14A caching: invalidate the cached reference-data read
+  // (lib/reference-data.ts's getCategories()) so every page that
+  // depends on it sees the new category immediately rather than
+  // waiting out the cache's revalidate window.
+  invalidateCategoriesCache();
   return NextResponse.json({ category: data }, { status: 201 });
 }
