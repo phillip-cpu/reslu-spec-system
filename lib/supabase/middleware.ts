@@ -37,7 +37,22 @@ export async function updateSession(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
 
+  // Agent/API access (Aria via MCP, see lib/supabase/server.ts's
+  // createClient()): a request presenting a Bearer token authenticates
+  // via that JWT instead of a session cookie, so it never reaches this
+  // point with a cookie-derived `user`. Scoped to /api/** only (Aria's
+  // MCP tools are thin fetches to the REST API, never dashboard page
+  // loads) — the real authentication/authorization decision still
+  // happens inside the route handler itself via createClient() +
+  // .auth.getUser(), exactly like the CRON_SECRET-gated routes below;
+  // this only avoids bouncing a Bearer-bearing API request to /login
+  // before it can reach that check.
+  const isBearerApiRequest =
+    pathname.startsWith("/api/") &&
+    !!request.headers.get("authorization")?.startsWith("Bearer ");
+
   const isPublicPath =
+    isBearerApiRequest ||
     pathname.startsWith("/login") ||
     pathname.startsWith("/portal") ||
     pathname.startsWith("/api/portal") ||

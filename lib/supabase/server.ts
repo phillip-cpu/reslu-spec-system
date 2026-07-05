@@ -1,6 +1,6 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { createClient as createSupabaseJsClient } from "@supabase/supabase-js";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 
 /**
  * Server Supabase client for use in Server Components, Route Handlers,
@@ -10,6 +10,27 @@ import { cookies } from "next/headers";
  */
 export async function createClient() {
   const cookieStore = await cookies();
+
+  // Agent/API access (Aria via MCP): a Bearer token in the Authorization
+  // header authenticates instead of session cookies. supabase-js resolves
+  // auth.getUser() against the provided JWT, and RLS applies to that
+  // user exactly as it would to a cookie session. Cookie flow is
+  // completely unchanged when the header is absent.
+  // NOTE: requires the middleware to let Authorization-bearing requests
+  // through to route handlers (middleware is owned on-machine).
+  const headerStore = await headers();
+  const authHeader = headerStore.get("authorization");
+  if (authHeader?.startsWith("Bearer ")) {
+    const jwt = authHeader.slice("Bearer ".length);
+    return createSupabaseJsClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        global: { headers: { Authorization: `Bearer ${jwt}` } },
+        auth: { persistSession: false, autoRefreshToken: false },
+      }
+    );
+  }
 
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
