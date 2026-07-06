@@ -53,9 +53,15 @@ create unique index if not exists idx_projects_job_number_active
 -- Step 1: Goldsworthy gets its real-world number directly, independent
 -- of creation-date ordering. Only runs if such a project exists and
 -- doesn't already have a job_number (idempotent re-run safety).
+-- LIKE, not exact equality: the real project row is named "Goldsworthy
+-- Virgo", not bare "Goldsworthy" — an exact match here silently matched
+-- zero rows on the first apply (caught post-backfill, 7 July 2026: the
+-- project had been assigned '001' by step 2 instead of its real '026'
+-- until manually corrected). Matches step 2's exclusion below, which
+-- has the same fix.
 update projects
 set job_number = '026'
-where lower(name) = 'goldsworthy'
+where lower(name) like '%goldsworthy%'
   and job_number is null;
 
 -- Step 2: every other project (explicitly excluding Goldsworthy, even
@@ -73,7 +79,7 @@ begin
     select id
     from projects
     where job_number is null
-      and lower(name) <> 'goldsworthy'
+      and lower(name) not like '%goldsworthy%'
     order by created_at asc
   loop
     -- Advance past any number already in use (e.g. '026' from step 1,
