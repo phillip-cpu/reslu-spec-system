@@ -126,10 +126,33 @@ export const SHEET_SIZES_MM = [
 ] as const;
 export type SheetSizeMm = (typeof SHEET_SIZES_MM)[number];
 
-/** One opening (door/window) in a wall run — width only, per BUILD-SPEC.md's "openings list (width each)". */
+/**
+ * One opening (door/window) in a wall run.
+ * (7 July 2026, Phillip: openings need a height, and an option to
+ * double the jack studs either side for wider/load-bearing openings.)
+ */
 export interface FrameOpening {
   /** mm. */
   width_mm: number | null;
+  /**
+   * mm — the opening's head height. Used to (a) cut jack studs to the
+   * opening's own height rather than the full wall height, and (b) net
+   * the plasterboard area calc more precisely when an opening doesn't
+   * reach the ceiling (e.g. a window with a sill). Null falls back to
+   * the full wall height for both, matching this calculator's
+   * behaviour before this field existed — an opening with no stated
+   * height is conservatively assumed to run floor-to-ceiling.
+   */
+  height_mm: number | null;
+  /**
+   * Double the jack studs either side of this opening (2 -> 4 total) —
+   * common practice for wider spans or a load-bearing header. Only
+   * meaningful for the timber frame calculator (ignored by the
+   * plasterboard calculator's math, which doesn't count studs);
+   * defaults false, matching the single-stud-each-side behaviour every
+   * opening had before this field existed.
+   */
+  double_stud: boolean;
 }
 
 /**

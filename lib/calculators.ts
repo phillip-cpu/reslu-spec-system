@@ -32,11 +32,6 @@ import { STOCK_LENGTHS_M } from "@/types/round-b";
 
 const MM_PER_M = 1000;
 
-/** Sum of opening widths (mm), ignoring any opening with a null/empty width — an incomplete opening row simply doesn't count yet, rather than blocking the whole calculation. */
-function totalOpeningWidthMm(openings: FrameOpening[]): number {
-  return openings.reduce((sum, o) => sum + (o.width_mm ?? 0), 0);
-}
-
 // ------------------------------------------------------------
 // Timber frame calculator
 //
@@ -97,8 +92,12 @@ export function timberFrameMembers(inputs: TimberFrameInputs): TimberFrameMember
   const plateRuns = double_top_plate ? 3 : 2;
   const plate_lm = (plateRuns * wall_length_mm) / MM_PER_M;
 
-  const openingCount = openings.filter((o) => (o.width_mm ?? 0) > 0).length;
-  const jack_studs = openingCount * 2;
+  // Jack studs: 2 per opening (one either side), or 4 if that opening
+  // has "double stud" checked (2 either side — wider spans/load-
+  // bearing headers) — 7 July 2026, Phillip.
+  const validOpenings = openings.filter((o) => (o.width_mm ?? 0) > 0);
+  const openingCount = validOpenings.length;
+  const jack_studs = validOpenings.reduce((sum, o) => sum + (o.double_stud ? 4 : 2), 0);
   const lintels = openingCount;
 
   const noggin_rows = nogginRowCount(wall_height_mm);
@@ -194,10 +193,14 @@ export function binPackLengths(
 
 /**
  * Expands a TimberFrameMemberList into individual cut lengths (metres)
- * ready for binPackLengths(). Studs and jack studs are cut to wall
- * height (mm→m); plates and noggins are already linear-metre totals
- * from timberFrameMembers() and are treated as single "pieces" of
- * that total length each (a plate run longer than the longest stock
+ * ready for binPackLengths(). Studs are cut to wall height (mm→m).
+ * Jack studs are cut to EACH opening's own head height when given (they
+ * run from the bottom plate to the underside of the lintel, not the
+ * full wall height) — falling back to the full wall height for an
+ * opening with no stated height, same as before this field existed
+ * (7 July 2026, Phillip). Plates and noggins are already linear-metre
+ * totals from timberFrameMembers() and are treated as single "pieces"
+ * of that total length each (a plate run longer than the longest stock
  * length will, per binPackLengths' fallback, be flagged via waste
  * rather than silently mis-packed — splitting a plate run into
  * per-stock-length segments is a follow-up refinement, not attempted
@@ -212,10 +215,16 @@ export function timberFrameCutLengths(
   const lengths: number[] = [];
 
   for (let i = 0; i < members.studs; i++) lengths.push(heightM);
-  for (let i = 0; i < members.jack_studs; i++) lengths.push(heightM);
-  // Lintels: cut to the opening width they span (not wall height).
+  // Jack studs (per-opening height, doubled if flagged) + lintels (cut
+  // to the opening width they span, not wall height) — one pass over
+  // the openings for both, so each opening's own height/double-stud
+  // choice is respected rather than an aggregate wall-height count.
   for (const o of inputs.openings) {
-    if ((o.width_mm ?? 0) > 0) lengths.push((o.width_mm as number) / MM_PER_M);
+    if ((o.width_mm ?? 0) <= 0) continue;
+    const jackHeightM = (o.height_mm ?? inputs.wall_height_mm ?? 0) / MM_PER_M;
+    const jackCount = o.double_stud ? 4 : 2;
+    for (let i = 0; i < jackCount; i++) lengths.push(jackHeightM);
+    lengths.push((o.width_mm as number) / MM_PER_M);
   }
   if (members.plate_lm > 0) lengths.push(members.plate_lm);
   if (members.noggins > 0) {
@@ -260,14 +269,16 @@ export function calculateTimberFrame(
 // ------------------------------------------------------------
 
 /**
- * Net wall area in m²: (length × height) − sum(opening widths × wall
- * height), mm inputs. Assumes each opening spans the full wall height
- * (a simplifying assumption for a quick takeoff calculator — a window
- * that doesn't reach the ceiling would over-subtract slightly, which
- * is the conservative/safe direction for a "how much board do I need"
- * estimate: it very slightly UNDER-estimates area needed in that case,
- * so BUILD-SPEC.md's calculator is paired with the wastage the sheet
- * rounding below naturally provides).
+ * Net wall area in m²: (length × height) − sum(opening width × opening
+ * height), mm inputs. Each opening subtracts its OWN height when
+ * given (7 July 2026, Phillip) — capped at the wall height so a typo'd
+ * taller-than-wall value can't invert the subtraction — falling back
+ * to the full wall height for an opening with no stated height, same
+ * assumption this calculator always made before the height field
+ * existed (the conservative direction for a "how much board do I
+ * need" estimate: assuming full height very slightly UNDER-estimates
+ * area needed for a window that doesn't reach the ceiling, paired with
+ * the wastage the sheet rounding below naturally provides).
  */
 export function netWallAreaM2(
   wallLengthMm: number,
@@ -276,8 +287,12 @@ export function netWallAreaM2(
 ): number {
   if (wallLengthMm <= 0 || wallHeightMm <= 0) return 0;
   const grossM2 = (wallLengthMm / MM_PER_M) * (wallHeightMm / MM_PER_M);
-  const openingsM2 =
-    (totalOpeningWidthMm(openings) / MM_PER_M) * (wallHeightMm / MM_PER_M);
+  const openingsM2 = openings.reduce((sum, o) => {
+    const widthMm = o.width_mm ?? 0;
+    if (widthMm <= 0) return sum;
+    const heightMm = Math.min(o.height_mm ?? wallHeightMm, wallHeightMm);
+    return sum + (widthMm / MM_PER_M) * (heightMm / MM_PER_M);
+  }, 0);
   return Math.max(0, grossM2 - openingsM2);
 }
 
@@ -359,6 +374,7 @@ export function timberFrameLineDescription(inputs: TimberFrameInputs): {
     inputs.stud_spacing_mm ? `studs @${inputs.stud_spacing_mm}mm` : null,
     inputs.double_top_plate ? "double top plate" : null,
     inputs.openings.length ? `${inputs.openings.length} opening(s)` : null,
+    inputs.openings.some((o) => o.double_stud) ? "double-studded opening(s)" : null,
     inputs.timber_profile.trim() ? `profile ${inputs.timber_profile.trim()}` : null,
   ]
     .filter(Boolean)

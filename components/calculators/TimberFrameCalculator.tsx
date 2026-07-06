@@ -83,10 +83,10 @@ export function TimberFrameCalculator({
   const result = ready ? calculateTimberFrame(inputs, pricePerMetre) : null;
 
   function addOpening() {
-    setOpenings((cur) => [...cur, { width_mm: null }]);
+    setOpenings((cur) => [...cur, { width_mm: null, height_mm: null, double_stud: false }]);
   }
-  function updateOpening(i: number, width_mm: number | null) {
-    setOpenings((cur) => cur.map((o, idx) => (idx === i ? { width_mm } : o)));
+  function updateOpening(i: number, patch: Partial<FrameOpening>) {
+    setOpenings((cur) => cur.map((o, idx) => (idx === i ? { ...o, ...patch } : o)));
   }
   function removeOpening(i: number) {
     setOpenings((cur) => cur.filter((_, idx) => idx !== i));
@@ -178,9 +178,22 @@ export function TimberFrameCalculator({
               <div key={i} className="flex items-center gap-2">
                 <NumInput
                   value={o.width_mm}
-                  onChange={(v) => updateOpening(i, v)}
+                  onChange={(v) => updateOpening(i, { width_mm: v })}
                   placeholder="width mm"
                 />
+                <NumInput
+                  value={o.height_mm}
+                  onChange={(v) => updateOpening(i, { height_mm: v })}
+                  placeholder="height mm"
+                />
+                <label className="flex items-center gap-1.5 whitespace-nowrap text-caption text-charcoal">
+                  <input
+                    type="checkbox"
+                    checked={o.double_stud}
+                    onChange={(e) => updateOpening(i, { double_stud: e.target.checked })}
+                  />
+                  Double stud
+                </label>
                 <button
                   type="button"
                   onClick={() => removeOpening(i)}
