@@ -39,12 +39,15 @@ import {
 } from "@/lib/gantt";
 import { applyDrag, snapDeltaDays, type DragMode } from "@/lib/phase-drag";
 import { VisitBar, VisitStatusLabel } from "./VisitBar";
+import { VisitSubBar } from "./VisitSubBar";
+import { ReconfirmAffordance } from "./ReconfirmAffordance";
 import { UmbrellaBand } from "./UmbrellaBand";
 import { CompletedPhasesGroup } from "./CompletedPhasesGroup";
 import { VisitBottomSheet } from "./VisitBottomSheet";
 import { ContextMenu, type ContextMenuItem } from "@/components/shared/ContextMenu";
 import { ContactPicker } from "@/components/shared/ContactPicker";
 import type { GanttTimelineMarker } from "@/types/board-cockpit";
+import type { VisitExpansionState } from "@/types/round-c";
 
 /** Pixel width of the invisible edge zone at each end of a bar that resizes instead of moves — BUILD-SPEC "grab 6px edge zones = resize start or end". */
 const EDGE_ZONE_PX = 6;
@@ -75,6 +78,44 @@ const WIDE_GRID_THRESHOLD = 12; // weeks — kept for reference (see showZoomTog
 
 /** Board cockpit round — Day zoom's decorative day-of-week header initials, Monday-first to match lib/gantt.ts's own Monday-aligned week grid (startOfWeek()). */
 const DAY_INITIALS = ["M", "T", "W", "T", "F", "S", "S"];
+
+/**
+ * localStorage key for this round's per-project visit-row expansion
+ * memory (BUILD-SPEC.md "Internal timeline — trade visit sub-bars":
+ * "Expansion state remembered per project (localStorage)"). Scoped by
+ * projectId so two different projects' expand states never collide in
+ * the same browser — see loadVisitExpansion/saveVisitExpansion below.
+ * A plain client-only preference, never sent to the server (same tier
+ * as e.g. the zoom toggle, which is also NOT persisted across
+ * sessions — expansion goes one step further and IS persisted, per the
+ * brief's explicit ask, but through localStorage only, never a
+ * database write).
+ */
+function visitExpansionStorageKey(projectId: string): string {
+  return `reslu:gantt:visit-expansion:${projectId}`;
+}
+
+function loadVisitExpansion(projectId: string): VisitExpansionState {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(visitExpansionStorageKey(projectId));
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? (parsed as VisitExpansionState) : {};
+  } catch {
+    return {}; // corrupt/blocked storage — fall back to "nothing expanded", never throw
+  }
+}
+
+function saveVisitExpansion(projectId: string, state: VisitExpansionState): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(visitExpansionStorageKey(projectId), JSON.stringify(state));
+  } catch {
+    // Storage full/blocked (private browsing etc.) — expansion just
+    // won't persist this session; never breaks the timeline itself.
+  }
+}
 
 /**
  * Bar fill colours — brand-muted per BUILD-SPEC.md ("brand-muted bar
@@ -148,6 +189,51 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
     mode: DragMode;
     deltaDays: number;
   } | null>(null);
+  // Internal timeline — trade visit sub-bars (BUILD-SPEC.md): per-phase
+  // expand/collapse, seeded from localStorage on mount (client-only —
+  // starts empty on the server render, then hydrates once in the effect
+  // below; harmless one-frame flash of "collapsed" on first paint,
+  // same tradeoff every localStorage-backed UI preference in this app
+  // already accepts, e.g. no existing precedent stores this kind of
+  // pure-UI state any differently).
+  const [expanded, setExpanded] = useState<VisitExpansionState>({});
+  useEffect(() => {
+    setExpanded(loadVisitExpansion(projectId));
+  }, [projectId]);
+  function toggleExpanded(phaseId: string) {
+    setExpanded((cur) => {
+      const next = { ...cur, [phaseId]: !cur[phaseId] };
+      saveVisitExpansion(projectId, next);
+      return next;
+    });
+  }
+  // Visit sub-bar drag state — mirrors dragState above exactly (same
+  // shape, one level down: phaseId -> visitId), kept as a SEPARATE
+  // piece of state rather than folded into dragState since a visit
+  // drag and a phase drag are mutually exclusive gestures but need
+  // independent "which row is this" keys (a visitId is never a
+  // phaseId) — reusing one field would need a discriminant anyway, so
+  // two fields is simpler and keeps PhaseRow's existing dragState
+  // wiring completely untouched.
+  const [visitDragState, setVisitDragState] = useState<{
+    visitId: string;
+    mode: DragMode;
+    deltaDays: number;
+    /** Captured at drag-START (BUILD-SPEC: "if the visit was status 'confirmed'" — the ORIGINAL status, before this drag's own PATCH potentially changes it via the reconfirm flow's own status reset) — decides whether commitVisitDrag shows the reconfirm affordance afterwards. */
+    wasConfirmed: boolean;
+  } | null>(null);
+  // "Dates changed — re-send confirmation?" — which visit ids currently
+  // show the affordance (a Set, not a single id, since more than one
+  // confirmed visit could be dragged in the same session before either
+  // is dismissed/resent).
+  const [reconfirmPrompts, setReconfirmPrompts] = useState<Set<string>>(new Set());
+  function dismissReconfirm(visitId: string) {
+    setReconfirmPrompts((cur) => {
+      const next = new Set(cur);
+      next.delete(visitId);
+      return next;
+    });
+  }
   const gridBodyRef = useRef<HTMLDivElement>(null);
 
   const umbrella = phases.find((p) => p.kind === "umbrella") ?? null;
@@ -312,6 +398,110 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
     );
   }
 
+  /**
+   * Internal timeline — trade visit sub-bars: PATCH a single visit's
+   * dates, optimistic (mirrors patchPhase's exact optimistic-update/
+   * revert-on-failure shape) — updates the visit in place inside its
+   * parent phase's `visits` array via replaceVisit, reverting the whole
+   * `phases` array on a failed request.
+   */
+  async function patchVisit(visit: TradeVisitWithContact, patch: Record<string, unknown>) {
+    const prev = phases;
+    replaceVisit(visit.phase_id, { ...visit, ...patch } as TradeVisitWithContact);
+    setError(null);
+    try {
+      const res = await fetch(`/api/visits/${visit.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? "Could not update visit.");
+      const { visit: updated } = await res.json();
+      replaceVisit(visit.phase_id, updated);
+      return updated as TradeVisitWithContact;
+    } catch (err) {
+      setPhases(prev);
+      setError(err instanceof Error ? err.message : "Could not update visit.");
+      return null;
+    }
+  }
+
+  /**
+   * Visit sub-bar drag commit — mirrors commitDrag (phase bars) exactly,
+   * one level down: same applyDrag/no-op-on-zero-delta shape, using
+   * patchVisit instead of patchPhase. After a successful, actually-
+   * changed PATCH, if the visit's status WAS 'confirmed' at drag-start
+   * (captured in visitDragState.wasConfirmed, since patchVisit's own
+   * response reflects the NEW row, not what it was before this drag),
+   * surface the "Dates changed — re-send confirmation?" affordance —
+   * BUILD-SPEC.md: "re-confirmation NOT auto-triggered on drag ... show
+   * [the] affordance instead, since silently moving a confirmed trade's
+   * dates without re-confirming is how no-shows happen." The affordance
+   * itself never fires an email on its own — only the explicit
+   * "Re-send" button inside it does (see ReconfirmAffordance.tsx +
+   * POST /api/visits/[id]/resend-confirmation).
+   */
+  async function commitVisitDrag(
+    visit: TradeVisitWithContact,
+    mode: DragMode,
+    deltaDays: number,
+    wasConfirmed: boolean
+  ) {
+    if (deltaDays === 0) return;
+    const result = applyDrag(visit, mode, deltaDays);
+    if (result.start_date === visit.start_date && result.end_date === visit.end_date) return;
+    const updated = await patchVisit(visit, { start_date: result.start_date, end_date: result.end_date });
+    if (updated && wasConfirmed) {
+      setReconfirmPrompts((cur) => new Set(cur).add(visit.id));
+    }
+  }
+
+  /**
+   * Visit sub-bar drag lifecycle — byte-for-byte the same pattern as
+   * startDrag (phase bars) below: one pointermove/pointerup pair
+   * attached to `document` for the gesture's duration, columnPx
+   * measured once at drag-start from the SAME gridBodyRef (visits
+   * render inside the identical week-grid width phase bars do, so this
+   * measurement is valid for both without any adjustment). Deliberately
+   * NOT wrapped in useCallback for the identical reason startDrag isn't
+   * (see that function's own doc comment) — commitVisitDrag closes over
+   * the current render's `phases` via patchVisit's optimistic-update
+   * path.
+   */
+  function startVisitDrag(visit: TradeVisitWithContact, mode: DragMode, startClientX: number) {
+    const body = gridBodyRef.current;
+    if (!body) return;
+    const nameColumnPx = 200;
+    const bodyWidth = body.getBoundingClientRect().width - nameColumnPx;
+    const columnPx = bodyWidth / grid.weekCount;
+    const wasConfirmed = visit.status === "confirmed";
+
+    setVisitDragState({ visitId: visit.id, mode, deltaDays: 0, wasConfirmed });
+
+    function onMove(e: PointerEvent) {
+      const deltaPx = e.clientX - startClientX;
+      const deltaDays = snapDeltaDays(deltaPx, columnPx);
+      setVisitDragState({ visitId: visit.id, mode, deltaDays, wasConfirmed });
+    }
+    function onUp(e: PointerEvent) {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      const deltaPx = e.clientX - startClientX;
+      const deltaDays = snapDeltaDays(deltaPx, columnPx);
+      setVisitDragState(null);
+      commitVisitDrag(visit, mode, deltaDays, wasConfirmed);
+    }
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+  }
+
+  async function resendConfirmation(visitId: string): Promise<void> {
+    const res = await fetch(`/api/visits/${visitId}/resend-confirmation`, { method: "POST" });
+    if (!res.ok) throw new Error((await res.json()).error ?? "Could not re-send confirmation.");
+    const { visit } = await res.json();
+    replaceVisit(visit.phase_id, visit);
+  }
+
   // Round A drag lifecycle — a single pointer-move/pointer-up listener
   // pair attached to `document` for the duration of one drag gesture
   // (attached in startDrag, torn down on pointerup), rather than one
@@ -372,6 +562,12 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
   function renderPhaseRow(phase: SchedulePhaseWithVisits) {
     const pos = phaseGridPosition(phase, grid);
     const drag = dragState && dragState.phaseId === phase.id ? dragState : null;
+    // Internal timeline — trade visit sub-bars: auto-expanded at Day
+    // zoom (BUILD-SPEC "auto-expanded at Day zoom"), otherwise the
+    // persisted per-project localStorage state (defaults to collapsed
+    // — `expanded[phase.id]` is undefined, falsy, for a phase never
+    // toggled before).
+    const isExpanded = zoom === "day" || !!expanded[phase.id];
     return (
       <PhaseRow
         key={phase.id}
@@ -395,6 +591,14 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
         onAddVisitOpened={() => setBookTradePhaseId(null)}
         markers={markersByPhase.get(phase.id) ?? []}
         grid={grid}
+        zoom={zoom}
+        isExpanded={isExpanded}
+        onToggleExpanded={zoom === "day" ? undefined : () => toggleExpanded(phase.id)}
+        visitDragState={visitDragState}
+        onStartVisitDrag={startVisitDrag}
+        reconfirmPrompts={reconfirmPrompts}
+        onResendConfirmation={resendConfirmation}
+        onDismissReconfirm={dismissReconfirm}
       />
     );
   }
@@ -639,6 +843,14 @@ function PhaseRow({
   onAddVisitOpened,
   markers,
   grid,
+  zoom,
+  isExpanded,
+  onToggleExpanded,
+  visitDragState,
+  onStartVisitDrag,
+  reconfirmPrompts,
+  onResendConfirmation,
+  onDismissReconfirm,
 }: {
   /** Board cockpit round — needed to build the timeline marker click-through link (?focus=board_task-<id> on the Board tab). */
   projectId: string;
@@ -665,6 +877,17 @@ function PhaseRow({
   markers: GanttTimelineMarker[];
   /** Board cockpit round — the shared week grid (lib/gantt.ts's GanttGrid), needed to position markers via phaseGridPosition. weekCount alone (the pre-existing prop) isn't enough since phaseGridPosition also needs gridStart/weeks. */
   grid: GanttGrid;
+  /** Internal timeline — trade visit sub-bars (this round). Current zoom level — Day zoom shows the label on-bar and forces every row expanded (see isExpanded/onToggleExpanded below). */
+  zoom: "day" | "week" | "month";
+  /** Whether this phase's sub-bar row is currently shown — true at Day zoom regardless of the persisted preference (GanttChart.tsx's renderPhaseRow computes this), or the persisted per-project localStorage value otherwise. */
+  isExpanded: boolean;
+  /** undefined at Day zoom (the chevron is hidden — there is nothing to toggle since every row is force-expanded there); a callback otherwise. */
+  onToggleExpanded: (() => void) | undefined;
+  visitDragState: { visitId: string; mode: DragMode; deltaDays: number; wasConfirmed: boolean } | null;
+  onStartVisitDrag: (visit: TradeVisitWithContact, mode: DragMode, clientX: number) => void;
+  reconfirmPrompts: Set<string>;
+  onResendConfirmation: (visitId: string) => Promise<void>;
+  onDismissReconfirm: (visitId: string) => void;
 }) {
   const dragging = dragMode !== null;
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -707,13 +930,42 @@ function PhaseRow({
   return (
     <>
       <div className="sticky left-0 z-10 col-start-1 border-b border-r border-[#e5e0d6] bg-nearwhite px-3 py-2">
-        <button
-          type="button"
-          onClick={onToggleEdit}
-          className="text-left text-body text-nearblack hover:text-sand"
-        >
-          {phase.name}
-        </button>
+        <div className="flex items-center gap-1">
+          {/* Internal timeline — trade visit sub-bars: expand/collapse
+              chevron, only shown when there's something to expand
+              (BUILD-SPEC "expandable phase rows (chevron; auto-expanded
+              at Day zoom; expansion remembered per project in
+              localStorage)") and only interactive when
+              onToggleExpanded is defined — undefined at Day zoom, where
+              every row is already force-expanded (see PhaseRow's own
+              doc comment on that prop), so the chevron is shown but
+              inert there rather than hidden outright (keeps the row's
+              layout stable across zoom changes instead of the label
+              jumping left/right). */}
+          {phase.visits.length > 0 && (
+            <button
+              type="button"
+              onClick={onToggleExpanded}
+              disabled={!onToggleExpanded}
+              aria-label={isExpanded ? "Collapse trade visits" : "Expand trade visits"}
+              aria-expanded={isExpanded}
+              className={clsx(
+                "shrink-0 text-charcoal/50 transition-transform",
+                isExpanded && "rotate-90",
+                onToggleExpanded ? "hover:text-nearblack" : "cursor-default opacity-50"
+              )}
+            >
+              ▸
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onToggleEdit}
+            className="text-left text-body text-nearblack hover:text-sand"
+          >
+            {phase.name}
+          </button>
+        </div>
         <p className="text-caption text-charcoal/40">
           {phase.start_date} → {phase.end_date}
         </p>
@@ -810,6 +1062,53 @@ function PhaseRow({
           );
         })}
       </div>
+
+      {/* Internal timeline — trade visit sub-bars (BUILD-SPEC.md
+          "Internal timeline — trade visit sub-bars"): one thin sub-row
+          per visit, shown when this phase row is expanded. A separate
+          grid row (col 1 = a blank sticky spacer matching the name
+          column's own sticky/border treatment so the row reads as
+          "part of" the phase above it, col 2 = spans the same
+          `2 / span weekCount` the phase's own bar row uses) — NOT a
+          second bar layered inside the phase bar's own row, so each
+          visit gets genuine vertical space of its own rather than
+          overlapping. declined visits are excluded (nothing useful to
+          show/drag for a trade who said no) — every other status is
+          rendered by VisitSubBar. Portal TimelineSection.tsx is
+          untouched: this entire block only exists inside GanttChart.tsx,
+          which the read-only portal mirror never imports from. */}
+      {isExpanded && phase.visits.length > 0 && (
+        <>
+          <div className="sticky left-0 z-10 col-start-1 border-b border-r border-[#e5e0d6] bg-nearwhite" />
+          <div className="relative border-b border-[#e5e0d6] py-1" style={{ gridColumn: `2 / span ${weekCount}` }}>
+            {phase.visits
+              .filter((v) => v.status !== "declined")
+              .map((visit) => {
+                const drag = visitDragState && visitDragState.visitId === visit.id ? visitDragState : null;
+                return (
+                  <div key={visit.id}>
+                    <VisitSubBar
+                      visit={visit}
+                      grid={grid}
+                      weekCount={weekCount}
+                      zoom={zoom}
+                      dragMode={drag?.mode ?? null}
+                      dragDeltaDays={drag?.deltaDays ?? 0}
+                      onStartDrag={(mode, clientX) => onStartVisitDrag(visit, mode, clientX)}
+                      onClick={() => onTapVisit(visit)}
+                    />
+                    {reconfirmPrompts.has(visit.id) && (
+                      <ReconfirmAffordance
+                        onResend={() => onResendConfirmation(visit.id)}
+                        onDismiss={() => onDismissReconfirm(visit.id)}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+          </div>
+        </>
+      )}
 
       {editing && (
         <div className="col-span-full border-b border-[#dcd6cc] bg-offwhite px-3 py-3">

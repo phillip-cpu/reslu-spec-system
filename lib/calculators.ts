@@ -314,6 +314,39 @@ export function sheetAreaM2(sheet: SheetSizeMm): number {
 }
 
 /**
+ * "Two from Phillip — 7 July 2026" item 1: derives a linked material's
+ * $/m² rate from its per-sheet price ÷ the SELECTED sheet size's area
+ * (e.g. $18.90 ÷ 2.88m² = $6.56/m²) — a pure display/derivation helper,
+ * no schema change. Returns null whenever either input is missing/zero
+ * (no material linked/priced yet, or no sheet size chosen), same
+ * "un-filled input yields no result" rule every other calculator
+ * function in this module already follows — never a fallback/assumed
+ * rate.
+ *
+ * LIMITATION (documented per this round's "no schema" boundary): sheet
+ * size is NOT a column on the `materials` table (see migration
+ * 027_quantity_links_materials.sql — materials only has
+ * name/product_url/unit/price/coverage_per_unit/notes; there is no
+ * width/length/dimensions field). This function therefore only ever
+ * runs INSIDE a calculator that already knows the sheet size from its
+ * own form state (PlasterboardCalculator's `sheetSize` select) — it
+ * cannot be used to derive a $/m² rate for an arbitrary material row on
+ * its own (e.g. from MaterialLinkControl's materials <select>, which has
+ * no sheet-size context at all), and does not attempt to guess one from
+ * `unit === 'sheet'` + `coverage_per_unit`, since coverage_per_unit is a
+ * generic "covers X per unit" figure used differently across material
+ * types (tiles, paint, etc.) and is not reliably "this sheet's m² area"
+ * for every 'sheet'-unit material — misreading it that way would show a
+ * confidently wrong number, which is worse than showing none.
+ */
+export function sheetRatePerM2(price: number | null, sheetSize: SheetSizeMm | null): number | null {
+  if (price === null || price === undefined || !sheetSize) return null;
+  const areaM2 = sheetAreaM2(sheetSize);
+  if (areaM2 <= 0) return null;
+  return roundMoney(price / areaM2);
+}
+
+/**
  * Full plasterboard calculation. Returns zeroed results when a
  * required input (wall dims, sheet size) is missing — same "no
  * defaults" rule as the timber frame calc: an unfilled sheet-size
@@ -394,7 +427,19 @@ export function timberFrameLineDescription(inputs: TimberFrameInputs): {
   return { description, provenance };
 }
 
-export function plasterboardLineDescription(inputs: PlasterboardInputs): {
+/**
+ * `ratePerM2` (optional, "Two from Phillip — 7 July 2026" item 1):
+ * caller passes sheetRatePerM2()'s result so the inserted estimate
+ * line's provenance note carries the derived $/m² rate alongside the
+ * calculator inputs, e.g. "..., @ $6.56/m² materials" — omitted
+ * entirely (not "@ $?/m²") when null, same "don't show a figure that
+ * wasn't actually computed" discipline as every other optional
+ * provenance segment below.
+ */
+export function plasterboardLineDescription(
+  inputs: PlasterboardInputs,
+  ratePerM2?: number | null
+): {
   description: string;
   provenance: string;
 } {
@@ -409,6 +454,7 @@ export function plasterboardLineDescription(inputs: PlasterboardInputs): {
     `wall ${lenM}m × ${heightM}m`,
     `sheet size ${sheet}mm`,
     inputs.openings.length ? `${inputs.openings.length} opening(s)` : null,
+    ratePerM2 !== null && ratePerM2 !== undefined ? `@ $${ratePerM2.toFixed(2)}/m² materials` : null,
   ]
     .filter(Boolean)
     .join(", ");

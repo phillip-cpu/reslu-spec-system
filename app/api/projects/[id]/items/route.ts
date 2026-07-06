@@ -76,7 +76,11 @@ const SPEC_VIEW_COLUMNS = [
  * together in one string — see the GET query below where they're
  * combined.
  */
-const MEASUREMENT_EMBED = "measurements(id, label, value, unit)";
+// PostgREST hint required: items↔measurements has TWO FK paths
+// (items.measurement_id from 027, measurements.item_id from 007) —
+// unhinted embed 500s with "more than one relationship" (Aria, 7 Jul).
+const MEASUREMENT_EMBED =
+  "measurements!items_measurement_id_fkey(id, label, value, unit)";
 
 /**
  * GET /api/projects/[id]/items

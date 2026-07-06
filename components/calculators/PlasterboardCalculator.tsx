@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import {
   calculatePlasterboard,
   plasterboardLineDescription,
+  sheetRatePerM2,
   PLASTERBOARD_FIXINGS_NOTE,
 } from "@/lib/calculators";
 import { SHEET_SIZES_MM } from "@/types/round-b";
@@ -70,6 +71,13 @@ export function PlasterboardCalculator({
 
   const ready = Boolean(wallLengthMm && wallHeightMm && sheetSize);
   const result = ready ? calculatePlasterboard(inputs, pricePerSheet) : null;
+  // "Two from Phillip — 7 July 2026" item 1 — $/m² derivation, display-
+  // only (no schema change): price ÷ the SELECTED sheet size's area.
+  // null whenever no priced material is linked or no sheet size is
+  // chosen yet — see sheetRatePerM2's doc comment in lib/calculators.ts
+  // for why this can't be shown from MaterialLinkControl's materials
+  // list itself (no sheet-size context there).
+  const ratePerM2 = sheetRatePerM2(pricePerSheet, sheetSize);
 
   function addOpening() {
     // double_stud is meaningless for board area — always false here,
@@ -89,7 +97,7 @@ export function PlasterboardCalculator({
     setInserting(true);
     setInsertError(null);
     try {
-      const { description, provenance } = plasterboardLineDescription(inputs);
+      const { description, provenance } = plasterboardLineDescription(inputs, ratePerM2);
       await onInsertLine({
         sectionId,
         description,
@@ -202,6 +210,15 @@ export function PlasterboardCalculator({
                 ? `Cost: $${result.cost.toFixed(2)} ex GST${material ? ` (via ${material.name})` : ""}`
                 : "Cost: link a priced material to see a total."}
             </p>
+            {/* "Two from Phillip — 7 July 2026" item 1 — shown only once
+                a priced material is linked AND a sheet size is selected
+                (ratePerM2 is null otherwise, see sheetRatePerM2's doc
+                comment) — pure display, feeds the SAME string into the
+                inserted estimate line's provenance note below via
+                plasterboardLineDescription(inputs, ratePerM2). */}
+            {ratePerM2 !== null && (
+              <p className="text-caption text-charcoal/60">@ ${ratePerM2.toFixed(2)}/m² materials</p>
+            )}
 
             <div className="flex flex-wrap items-center gap-2 border-t border-[#e5e0d6] pt-2">
               <select

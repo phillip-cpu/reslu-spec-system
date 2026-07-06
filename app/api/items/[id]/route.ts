@@ -229,7 +229,7 @@ export async function GET(
 
   const { data: row, error } = await supabase
     .from("items")
-    .select("*, measurements(id, label, value, unit)")
+    .select("*, measurements!items_measurement_id_fkey(id, label, value, unit)")
     .eq("id", id)
     .is("deleted_at", null)
     .single();

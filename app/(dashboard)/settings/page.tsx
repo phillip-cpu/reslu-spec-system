@@ -9,9 +9,13 @@ import { QuickLinks } from "@/components/settings/QuickLinks";
 import { SystemHealth } from "@/components/settings/SystemHealth";
 import { PhaseTemplateSettings } from "@/components/settings/PhaseTemplateSettings";
 import { PhaseTaskTemplateSettings } from "@/components/settings/PhaseTaskTemplateSettings";
+import { DesignTaskTemplateSettings } from "@/components/settings/DesignTaskTemplateSettings";
 import { FALLBACK_PHASE_TEMPLATE } from "@/lib/phase-template";
+import { FALLBACK_DESIGN_TASK_TEMPLATES } from "@/lib/design-task-templates";
+import { DESIGN_PHASE_TEMPLATE } from "@/types/phase-12b";
 import type { AppSettingsPhaseTemplateRow } from "@/types/phase-fix-a";
 import type { PhaseTaskTemplatesMap } from "@/types/board-cockpit";
+import type { DesignTaskTemplatesMap } from "@/types/round-c";
 
 /**
  * Settings — category management, team roster + role editing (both
@@ -64,6 +68,23 @@ export default async function SettingsPage() {
     .eq("key", "phase_task_templates")
     .maybeSingle();
   const phaseTaskTemplates = (phaseTaskTemplatesRow?.value as PhaseTaskTemplatesMap | undefined) ?? {};
+
+  // "Two from Phillip — 7 July 2026" item 2 — design task templates
+  // (app_settings 'design_task_templates'), read directly here same as
+  // phase_task_templates right above (server component, no round-trip
+  // through its own GET route needed). Falls back to
+  // lib/design-task-templates.ts's FALLBACK_DESIGN_TASK_TEMPLATES
+  // (code-level fallback, not a migration seed — see that file's header
+  // comment) rather than an empty object, so Settings shows the
+  // extracted starting-point checklist even before anyone has ever
+  // saved this key.
+  const { data: designTaskTemplatesRow } = await supabase
+    .from("app_settings")
+    .select("value")
+    .eq("key", "design_task_templates")
+    .maybeSingle();
+  const designTaskTemplates =
+    (designTaskTemplatesRow?.value as DesignTaskTemplatesMap | undefined) ?? FALLBACK_DESIGN_TASK_TEMPLATES;
 
   const mondayConfigured = Boolean(process.env.MONDAY_API_TOKEN);
   const gmailConfigured = Boolean(
@@ -136,6 +157,23 @@ export default async function SettingsPage() {
           <PhaseTaskTemplateSettings
             phaseNames={phaseTemplate.map((p) => p.name)}
             initialTemplates={phaseTaskTemplates}
+            canEdit={isAdmin}
+          />
+        </section>
+
+        <section>
+          <h2 className="mb-1 text-subhead text-nearblack">Design task templates</h2>
+          <p className="mb-4 text-body text-charcoal/60">
+            Starting-point checklist seeded into each Design Framework phase the
+            next time a new project&apos;s Design tab is first opened. Extracted
+            from the Monday design board as editable defaults, not a fixed
+            checklist — edit freely. Editing here never touches an
+            already-seeded project.
+            {!isAdmin && " Only admins can make changes."}
+          </p>
+          <DesignTaskTemplateSettings
+            phaseNames={DESIGN_PHASE_TEMPLATE}
+            initialTemplates={designTaskTemplates}
             canEdit={isAdmin}
           />
         </section>

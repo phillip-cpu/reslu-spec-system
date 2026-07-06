@@ -539,6 +539,30 @@ admin enforcement for financial fields is now in place project-wide
   `docs/API.md`'s "Board cockpit round — 7 July 2026" section for the
   full breakdown.
 
+- **Round — visit sub-bars, $/m² rate, design task templates (7 July
+  2026, no new migration)**. The internal Timeline gains an
+  **expandable trade-visits layer**: each phase row gets a chevron
+  (auto-expanded at Day zoom; expansion remembered per project via
+  `localStorage`) revealing one thin, drag/resize-able sub-bar per
+  trade visit — status-styled (confirmed solid, unconfirmed/tentative
+  dashed, proposed-change amber), reusing the exact same grid math and
+  drag helpers (`lib/gantt.ts`, `lib/phase-drag.ts`) phase bars already
+  use. Dragging a **confirmed** visit's dates now surfaces a
+  non-blocking **"Dates changed — re-send confirmation?"** button
+  (new `POST /api/visits/[id]/resend-confirmation`) — see
+  `docs/API.md` for the state-machine finding this uncovered (creating
+  a visit never sent an email in the first place). The **plasterboard
+  calculator** now derives and shows a **$/m² materials rate** from the
+  linked material's price ÷ the selected sheet size, included in the
+  inserted estimate line's note — display-only, no schema change (sheet
+  size still isn't stored on `materials`). **Design task templates**
+  (Settings → "Design task templates") seed each of the 7 Design
+  Framework phases with a starting checklist extracted from
+  `docs/DESIGN-FRAMEWORK-BRIEF.md`'s real Monday board content, created
+  alongside a project's Design phases on first visit — editable,
+  code-level fallback (no migration seed this round). See
+  `docs/API.md`'s matching section for the full breakdown.
+
 ## Cron jobs — one still needs wiring up (Phase 12a-B)
 
 `vercel.json` currently schedules `/api/digest/flush` and

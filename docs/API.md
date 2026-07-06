@@ -3633,3 +3633,195 @@ into `binPackLengths()`/`calculateTimberFrame()`'s cost — not just added
 to the display list. UI: `components/calculators/TimberFrameCalculator.tsx`
 gains the toggle (next to "Double top plate") and a member-list line
 ("Opening doublers · 2 per opening") shown only when the count is > 0.
+
+## Round — trade visit sub-bars, plasterboard $/m², design task templates (7 July 2026)
+
+No new migration this round — every item below is rendering,
+derivation, or `app_settings` (existing key/value table). Verified: the
+protected files list (`lib/supabase/middleware.ts`, `vercel.json`,
+`app/api/digest/**`, `components/items/SpecRegister.tsx`/
+`RoomAssignBar.tsx`/`RoomBuilder.tsx`/`ItemRoomsEditor.tsx`, `lib/csv.ts`,
+`app/api/projects/[id]/import/**`, `types/index.ts`) was left untouched.
+
+### Internal timeline — trade visit sub-bars
+
+`components/gantt/GanttChart.tsx`'s `PhaseRow` gains an expand/collapse
+chevron (shown only when the phase has ≥1 visit) revealing one thin
+sub-row per `trade_visit`, rendered as a genuine second CSS grid row
+beneath the phase's own bar row (col 1 = blank sticky spacer, col 2 =
+`2 / span weekCount`, matching the phase bar's own grid-column span
+exactly) — declined visits are excluded. Auto-expanded at Day zoom
+(`isExpanded = zoom === "day" || !!expanded[phase.id]`); otherwise the
+per-project state persists to `localStorage` under
+`reslu:gantt:visit-expansion:<projectId>` (see `GanttChart.tsx`'s
+`loadVisitExpansion`/`saveVisitExpansion` — a pure client preference,
+never written to the server).
+
+**`components/gantt/VisitSubBar.tsx`** (new) renders each sub-bar,
+positioned via `lib/gantt.ts`'s existing `visitGridPosition()` — the
+SAME grid math phase bars use (`visitGridPosition` is a thin wrapper
+around `phaseGridPosition`, unchanged this round). Status styling:
+`confirmed` = solid charcoal fill; `unconfirmed`/`tentative` = dashed
+sand border, no fill; `proposed_change` = amber fill (`#B98A4A`, the
+same swatch as an amber phase). Day zoom shows `"{company} ·
+{arrival}"` directly on the bar; Week/Month show the same detail (plus
+finishes date, status, notes) in a hover `title` tooltip instead
+(bars are too narrow at those zooms for on-bar text). Clicking a
+sub-bar (a plain click, not a drag — see below) opens the existing
+`VisitBottomSheet` (unchanged component, already used for the mobile
+tap-a-dot flow), same as every other visit-detail entry point in this
+app.
+
+**Drag/resize** reuses `lib/phase-drag.ts`'s `applyDrag`/
+`snapDeltaDays` — the exact same pure functions phase-bar dragging
+already uses, not a fork. `GanttChart.tsx` gains `patchVisit` (PATCH
+`/api/visits/[id]`, optimistic, byte-for-byte the same
+optimistic-update/revert-on-failure shape as `patchPhase`),
+`commitVisitDrag`, and `startVisitDrag` (a pointermove/pointerup pair on
+`document`, measuring `columnPx` from the same `gridBodyRef` phase bars
+use) — a parallel `visitDragState` (separate from the existing
+`dragState`, since a visit id is never a phase id) so phase-bar dragging
+is completely untouched. Phase-bar drag paths were verified unchanged —
+`dragState`/`startDrag`/`commitDrag`/`patchPhase` still read exactly as
+before this round.
+
+**"Dates changed — re-send confirmation?"** — BUILD-SPEC: "if the visit
+was `confirmed`, after a successful date change show a non-blocking
+affordance ... re-confirmation NOT auto-triggered on drag." `startVisitDrag`
+captures `wasConfirmed = visit.status === 'confirmed'` at drag-start;
+`commitVisitDrag` shows `components/gantt/ReconfirmAffordance.tsx` (new,
+a small dismissible strip under the sub-bar) only when that PATCH
+actually changed the dates AND `wasConfirmed` was true.
+
+**State-machine finding** (see
+`app/api/visits/[id]/resend-confirmation/route.ts`'s own doc comment
+for the full trace): this codebase has no prior "re-send confirmation"
+mechanism — and, more surprisingly, no "send initial confirmation
+request" email either. `POST /api/projects/[id]/visits` (create) sends
+nothing; the only two places `trade_visits` ever emails a contact are
+`POST /api/visits/[id]/resolve-proposal` (accept/counter a trade's own
+proposed date) and the once-only `GET /api/trade-reminders` cron (fires
+1–2 days before `start_date`, gated by `reminder_sent_at IS NULL`,
+never for an already-`confirmed` visit). So "wire the same send used at
+creation" has no literal target. **New route: `POST
+/api/visits/[id]/resend-confirmation`** — callable only when
+`status === 'confirmed'` (400 otherwise); on success, resets
+`status → 'unconfirmed'`, clears `confirmed_at`/`confirmed_by` (they
+described the now-superseded confirmation) and `reminder_sent_at` (so
+the cron can nudge again if the trade doesn't respond to this
+immediate resend); sends one email immediately (unconditional, no
+`reminder_sent_at` gate — reusing `trade-reminders`' own email
+template/tone, the closest existing content to "the same send used at
+creation") via the existing `sendTeamEmail`, fire-and-forget (a Gmail
+failure never blocks the status reset, matching every other
+`trade_visits` email site's identical choice). Response: `{ visit }`.
+
+Portal `TimelineSection.tsx` is verified untouched and unaffected — it
+consumes `PortalPhase` (`types/index.ts`), which has no `visits` field
+at all; it was never imported into and never imports from
+`GanttChart.tsx`, `VisitSubBar.tsx`, or `lib/phase-drag.ts`.
+
+### Plasterboard $/m² derivation
+
+`lib/calculators.ts` gains `sheetRatePerM2(price, sheetSize)` — pure
+derivation, `price / sheetAreaM2(sheetSize)`, returns `null` if either
+input is missing (no defaults, same rule every calculator function in
+this module already follows). `plasterboardLineDescription()` gains an
+optional third-arg-equivalent `ratePerM2` param, appending
+`"@ $X.XX/m² materials"` to the inserted estimate line's provenance
+note when known; omitted entirely (not "@ $?/m²") when `null`.
+`components/calculators/PlasterboardCalculator.tsx` computes
+`sheetRatePerM2(pricePerSheet, sheetSize)` from its own existing
+`sheetSize` select + linked material's price, shows
+`"@ $X.XX/m² materials"` in the output summary beneath the
+fixings note, and passes it through to the inserted line.
+
+**Limitation (documented in code, not schema)**: sheet size is not a
+column on `materials` (migration 027 —
+`name/product_url/unit/price/coverage_per_unit/notes` only). The
+derivation therefore only ever runs inside `PlasterboardCalculator`,
+which already knows the sheet size from its own form state — it cannot
+be shown from `MaterialLinkControl`'s materials `<select>` (no
+sheet-size context there), and deliberately does NOT infer a rate from
+`unit === 'sheet'` + `coverage_per_unit`, since `coverage_per_unit` is a
+generic per-material figure used differently across material types and
+is not reliably "this sheet's m² area" — see `sheetRatePerM2`'s own doc
+comment in `lib/calculators.ts`.
+
+### Design task templates — `app_settings('design_task_templates')`
+
+Structural mirror of the existing `phase_task_templates` key (Board
+cockpit round) one phase-model over: an object keyed by Design
+Framework phase NAME (`types/phase-12b.ts`'s fixed
+`DESIGN_PHASE_TEMPLATE` — Project Milestones / Presentation / Concepts
+/ 3D Working Model / WD Package / Renders / Sampling & Furniture) →
+array of `{ title }` (no `kind` — `design_tasks` has no
+task/milestone concept). New types in `types/round-c.ts`
+(`DesignTaskTemplateRow`, `DesignTaskTemplatesMap`, request/response
+shapes).
+
+**Seed content** — `lib/design-task-templates.ts`'s
+`FALLBACK_DESIGN_TASK_TEMPLATES`, extracted from
+`docs/DESIGN-FRAMEWORK-BRIEF.md`'s "What Currently Happens at Each
+Phase" section (the real Monday board, board ID 5027297754):
+
+- **Project Milestones**: Initial Consult & Concept Development, Design
+  Fee Proposal, Design Development Presentation, Working Drawings for
+  Approval, Final WD Design Revision, Construction Scope Of Works.
+- **Presentation**: Concept Meeting, Design Development Meeting,
+  Working Drawing Presentation, Final Client Review Meeting.
+- **Concepts**: Pinterest / mood board direction, 3D concept model,
+  Materials board (the brief has no bulleted list for this phase —
+  these three are the deliverables named in its prose).
+- **3D Working Model**: Base Model, Joinery, Windows & Doors, External
+  Works, Appliances, Bathroom, Ensuite, Powder Room, Site Measure.
+- **WD Package**: Site & Location Plans, Demolition Plan, Proposed
+  Plan, RCP, Electrical Plan, Window & Door Schedule, Internal Glazing
+  Elevations, Stone Cutout Plans, Internal Elevations, Wet Area Detail
+  Plans & Elevations.
+- **Renders**: Bedroom render, Kitchen render, Bathroom render.
+- **Sampling & Furniture**: none — the brief states both source Monday
+  groups ("Sampling", "Furniture") are "currently empty in the
+  template," so this phase seeds with no starter tasks rather than
+  inventing a checklist nobody asked for.
+
+These are editable starting points, not a fixed checklist — Settings >
+"Design task templates" (mirrors `PhaseTaskTemplateSettings.tsx`) lets
+Tenille/Phillip add, reorder, or delete any of these at any time;
+editing there never touches an already-seeded project.
+
+- **`GET /api/settings/design-task-templates`** — Auth: session
+  (team-visible). Returns `{ templates: DesignTaskTemplatesMap }`,
+  falling back to `FALLBACK_DESIGN_TASK_TEMPLATES` (not `{}`) if the
+  `app_settings` row is absent, so Settings always shows the extracted
+  starting-point checklist even before anyone has ever saved this key.
+- **`PUT /api/settings/design-task-templates`** — Auth: admin only
+  (mirrors `PUT /api/settings/phase-task-templates`'s gating). Body:
+  `{ templates }`, full replace/upsert onto `app_settings`. Validates
+  every phase name is non-blank and every row has a non-empty `title`.
+- **Seed-time consumption**: `GET /api/projects/[id]/design` — inside
+  its existing `phases.length === 0` seed branch (never on a
+  subsequent visit), after inserting the 7 `design_phases` rows, reads
+  `app_settings('design_task_templates')` (same
+  `FALLBACK_DESIGN_TASK_TEMPLATES` fallback as the GET route above) and,
+  for each just-seeded phase whose name has a non-empty checklist,
+  inserts one `design_tasks` row per item — unassigned, no due date,
+  in list order. A phase with no template entry (or an empty one) is
+  skipped, best-effort (one phase's insert failing doesn't fail the
+  phases that already committed).
+- **Delivery mechanism** (mirrors how `phase_task_templates`' own
+  defaults were delivered — checked before building this): that
+  sibling key's default ("Site Setup" checklist only) came from a
+  migration-time SQL `INSERT ... ON CONFLICT DO NOTHING` (migration
+  029). This round's explicit "no new migration" boundary means
+  `design_task_templates` uses a CODE-LEVEL fallback constant instead
+  (`FALLBACK_DESIGN_TASK_TEMPLATES`, read by both the GET route and the
+  design-phase seed path when the `app_settings` row is missing) — the
+  task brief calls this "acceptable and preferred here." No SQL seed
+  was written for this key at all.
+- **Settings UI**: `components/settings/DesignTaskTemplateSettings.tsx`
+  (mounted in `app/(dashboard)/settings/page.tsx`, directly below
+  "Phase task templates") — one tab per fixed Design Framework phase
+  name (not itself editable/reorderable, unlike the schedule phase
+  template), each with its own ordered title-only task list, add/
+  reorder/delete.

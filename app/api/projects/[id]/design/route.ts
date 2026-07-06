@@ -1,14 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { DESIGN_PHASE_TEMPLATE, allPhaseProgress } from "@/lib/design-framework";
+import { FALLBACK_DESIGN_TASK_TEMPLATES } from "@/lib/design-task-templates";
 import type {
   DesignAssigneeSummary,
   DesignFrameworkResponse,
   DesignPhaseWithTasks,
   DesignTaskWithAssignees,
 } from "@/types/phase-12b";
+import type { DesignTaskTemplatesMap } from "@/types/round-c";
 
 const SORT_STEP = 1000;
+const TASK_SORT_STEP = 1000;
 
 /**
  * GET /api/projects/[id]/design
@@ -30,6 +33,25 @@ const SORT_STEP = 1000;
  * tasks nested (each task carrying its assignees), plus the team roster
  * for assignee pickers — one fetch renders the whole Design tab, same
  * shape as GET /api/office / GET /api/projects/[id]/board.
+ *
+ * "Two from Phillip — 7 July 2026" item 2 addition — "Design board
+ * tasks pre-populated from the Monday template": immediately after
+ * phases are freshly seeded above (the `phases.length === 0` branch —
+ * this is intentionally INSIDE that branch, so it only ever runs
+ * alongside phase seeding, never on a subsequent visit to an
+ * already-seeded project, same "seed once, alongside the thing it
+ * depends on" discipline lib/phase-seed.ts's own task-template seeding
+ * uses for board_tasks/phase_task_templates), this route also reads
+ * app_settings('design_task_templates') (falls back to
+ * lib/design-task-templates.ts's FALLBACK_DESIGN_TASK_TEMPLATES if that
+ * row is absent — a code-level fallback, not a migration seed; see that
+ * file's header comment for why and where the seed content came from)
+ * and, for each just-seeded phase whose name has a non-empty checklist,
+ * inserts one design_tasks row per checklist item — unassigned, no due
+ * date, sorted in list order. A phase name with no template entry (or
+ * an empty one, e.g. "Sampling & Furniture") is simply skipped — no
+ * fabricated checklist, same discipline lib/phase-seed.ts's own doc
+ * comment states for its sibling mechanism.
  */
 export async function GET(
   _request: NextRequest,
@@ -80,6 +102,31 @@ export async function GET(
       return NextResponse.json({ error: seedError.message }, { status: 500 });
     }
     phases = (seeded ?? []).sort((a, b) => a.sort - b.sort);
+
+    // "Two from Phillip — 7 July 2026" item 2 — seed each phase's task
+    // checklist from app_settings('design_task_templates'), best-effort
+    // (a single phase's template insert failing must not fail the
+    // overall seed/response — the phases themselves already committed
+    // above and are more important than their optional starter tasks).
+    const { data: templatesRow } = await supabase
+      .from("app_settings")
+      .select("value")
+      .eq("key", "design_task_templates")
+      .maybeSingle();
+    const taskTemplates =
+      (templatesRow?.value as DesignTaskTemplatesMap | undefined) ?? FALLBACK_DESIGN_TASK_TEMPLATES;
+
+    for (const phase of phases) {
+      const checklist = taskTemplates[phase.name];
+      if (!checklist || checklist.length === 0) continue;
+      const taskRows = checklist.map((item, i) => ({
+        design_phase_id: phase.id,
+        title: item.title,
+        sort: i * TASK_SORT_STEP,
+        created_by: null,
+      }));
+      await supabase.from("design_tasks").insert(taskRows);
+    }
   }
 
   const phaseIds = phases.map((p) => p.id);
