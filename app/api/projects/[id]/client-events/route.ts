@@ -1,5 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { notifyAriaClientEventCreated } from "@/lib/aria-webhook";
+import { reportError } from "@/lib/report-error";
 import type { ClientEventsResponse, CreateClientEventInput } from "@/types/phase-12a-b";
 
 /**
@@ -65,7 +67,7 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { data: project } = await supabase.from("projects").select("id").eq("id", projectId).single();
+  const { data: project } = await supabase.from("projects").select("id,name").eq("id", projectId).single();
   if (!project) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
@@ -102,6 +104,29 @@ export async function POST(
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  // Push to Aria's calendar-sync webhook — fire-and-forget via
+  // next/server's after() (same pattern as the Monday sync kickoff in
+  // app/api/items/[id]/route.ts) so this never blocks or fails the
+  // response; a delivery failure (or the webhook simply not being
+  // configured yet) is invisible to the team member who just saved
+  // the event.
+  after(async () => {
+    try {
+      await notifyAriaClientEventCreated({
+        id: event.id,
+        project_id: projectId,
+        project_name: project.name,
+        title: event.title,
+        starts_at: event.starts_at,
+        ends_at: event.ends_at,
+        location: event.location,
+        notes: event.notes,
+      });
+    } catch (err) {
+      await reportError("aria-client-event-webhook", err);
+    }
+  });
 
   return NextResponse.json({ event }, { status: 201 });
 }
