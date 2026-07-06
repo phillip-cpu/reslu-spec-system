@@ -515,6 +515,30 @@ admin enforcement for financial fields is now in place project-wide
   `docs/API.md`'s "Three from Phillip — 6 July 2026 evening" section
   for the full breakdown.
 
+- **Board cockpit round (7 July 2026)**. Migration `029_board_cockpit.sql`.
+  Board cards can now be **booked directly to a trade** ("Book trade"
+  button on the card editor — kanban and grouped-list share the same
+  full editor now) with a live status badge, and carry a distinct
+  **booking date (works)** alongside the existing **due date (to-do)**.
+  Cards can be marked **milestones** (diamond marker on the card and the
+  Gantt timeline), which prompt a dismissible "start a diary draft?"
+  nudge when moved to Done. **Phase task templates** (Settings) seed a
+  checklist of board cards automatically whenever a phase is seeded —
+  ships with a default Site Setup checklist (fencing/toilet/skip/
+  signage). New **shared searchable ContactPicker** (keyboard-navigable)
+  replaces five separate hand-rolled contact pickers across the Board,
+  Timeline, and Estimate tabs. The Gantt timeline now shows tick markers
+  for every linked card's due/booking date (plus milestone diamonds),
+  clickable straight back to the card, and a proper **Day/Week/Month**
+  zoom toggle. **Aria booking-chase** and **blocked-site pricing**
+  attention feeds (`bookings_overdue`, `price_refreshes_pending`) plus
+  two new MCP tools (`book_trade_visit`, `submit_material_price`) close
+  the loop on trades that need chasing and Bunnings/Wilbrad-type
+  supplier pages that hang on a plain fetch. Timber frame calculator
+  gains a "Double studs each side of openings" toggle. See
+  `docs/API.md`'s "Board cockpit round — 7 July 2026" section for the
+  full breakdown.
+
 ## Cron jobs — one still needs wiring up (Phase 12a-B)
 
 `vercel.json` currently schedules `/api/digest/flush` and

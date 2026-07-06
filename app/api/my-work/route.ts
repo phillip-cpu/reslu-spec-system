@@ -7,6 +7,12 @@ import type { MyWorkItem, MyWorkResponse } from "@/types/phase-12a-b";
 
 export const runtime = "nodejs";
 
+/** Board cockpit round — "DD/MM" formatting for the My Work board_task title suffix (see source #1 below). Deliberately NOT locale-formatted (no Intl/toLocaleDateString) — a fixed DD/MM matches this codebase's other short inline date renderings (e.g. GanttChart.tsx's formatShortDate-style helpers) and avoids any timezone-shift surprise for a date-only (yyyy-mm-dd) column. */
+function formatWorksDate(dateOnly: string): string {
+  const [, month, day] = dateOnly.split("-");
+  return `${day}/${month}`;
+}
+
 /**
  * GET /api/my-work
  * Per-user aggregator — BUILD-SPEC.md §"Phase 12a — My Work": "today /
@@ -105,7 +111,7 @@ export async function GET() {
   if (myTaskIds.length > 0) {
     const { data: tasks } = await supabase
       .from("board_tasks")
-      .select("id,project_id,column_id,title,due_date")
+      .select("id,project_id,column_id,title,due_date,booking_date")
       .in("id", myTaskIds)
       .is("deleted_at", null);
 
@@ -130,7 +136,14 @@ export async function GET() {
       items.push({
         kind: "board_task",
         id: t.id,
-        title: t.title,
+        // Board cockpit round — additive "works <DD/MM>" suffix when
+        // this card carries a booking_date (the booked trade-visit
+        // window's start, migration 029), so a My Work row surfaces
+        // the booking date alongside the ordinary due-date bucketing
+        // without a new MyWorkItem field: behaviour is UNCHANGED for
+        // every card with no booking_date (the common case, and every
+        // other source in this route), the suffix only ever appends.
+        title: t.booking_date ? `${t.title} — works ${formatWorksDate(t.booking_date)}` : t.title,
         project: project ? { id: project.id, name: project.name, alias: project.alias } : null,
         due: t.due_date,
         href: `/projects/${t.project_id}/board?focus=board_task-${t.id}`,

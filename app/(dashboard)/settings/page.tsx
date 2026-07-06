@@ -8,8 +8,10 @@ import { IntegrationStatus } from "@/components/settings/IntegrationStatus";
 import { QuickLinks } from "@/components/settings/QuickLinks";
 import { SystemHealth } from "@/components/settings/SystemHealth";
 import { PhaseTemplateSettings } from "@/components/settings/PhaseTemplateSettings";
+import { PhaseTaskTemplateSettings } from "@/components/settings/PhaseTaskTemplateSettings";
 import { FALLBACK_PHASE_TEMPLATE } from "@/lib/phase-template";
 import type { AppSettingsPhaseTemplateRow } from "@/types/phase-fix-a";
+import type { PhaseTaskTemplatesMap } from "@/types/board-cockpit";
 
 /**
  * Settings — category management, team roster + role editing (both
@@ -51,6 +53,17 @@ export default async function SettingsPage() {
     .maybeSingle();
   const phaseTemplate =
     (phaseTemplateRow?.value as AppSettingsPhaseTemplateRow[] | undefined) ?? FALLBACK_PHASE_TEMPLATE;
+
+  // Board cockpit round — phase task templates (app_settings
+  // 'phase_task_templates'), read directly here same as phase_template
+  // right above (server component, no round-trip through its own GET
+  // route needed).
+  const { data: phaseTaskTemplatesRow } = await supabase
+    .from("app_settings")
+    .select("value")
+    .eq("key", "phase_task_templates")
+    .maybeSingle();
+  const phaseTaskTemplates = (phaseTaskTemplatesRow?.value as PhaseTaskTemplatesMap | undefined) ?? {};
 
   const mondayConfigured = Boolean(process.env.MONDAY_API_TOKEN);
   const gmailConfigured = Boolean(
@@ -109,6 +122,22 @@ export default async function SettingsPage() {
             {!isAdmin && " Only admins can make changes."}
           </p>
           <PhaseTemplateSettings initialTemplate={phaseTemplate} canEdit={isAdmin} />
+        </section>
+
+        <section>
+          <h2 className="mb-1 text-subhead text-nearblack">Phase task templates</h2>
+          <p className="mb-4 text-body text-charcoal/60">
+            Optional checklist of board cards seeded into each phase&apos;s Grouped-list
+            section the next time a new project&apos;s phases are seeded (from the
+            default phase template above). Editing here never touches an
+            already-seeded project.
+            {!isAdmin && " Only admins can make changes."}
+          </p>
+          <PhaseTaskTemplateSettings
+            phaseNames={phaseTemplate.map((p) => p.name)}
+            initialTemplates={phaseTaskTemplates}
+            canEdit={isAdmin}
+          />
         </section>
 
         <section>

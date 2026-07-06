@@ -7,6 +7,7 @@ import { GanttChart } from "@/components/gantt/GanttChart";
 import { seedPhaseTemplateIfEmpty } from "@/lib/phase-seed";
 import { portalUrlFor } from "@/lib/portal-link";
 import type { SchedulePhaseWithVisits, TradeVisitWithContact, VisitContactSummary } from "@/lib/trade-visits";
+import type { GanttTimelineMarker } from "@/types/board-cockpit";
 
 const UMBRELLA_SECTION_NAME_MATCH = "preliminaries & site";
 
@@ -152,12 +153,49 @@ export default async function ProjectTimelinePage({
     ...(p.kind === "umbrella" ? { cost_section_lines: costSectionLines } : {}),
   }));
 
+  // Board cockpit round — Gantt tick markers: board_tasks due_date/
+  // booking_date + milestone diamonds. Joined via board_groups.phase_id
+  // (a board_tasks row carries phase_group_id -> board_groups, not
+  // schedule_phases directly — see Round A's phase-unification
+  // invariant, migration 023) so a marker lands in the correct phase
+  // row. This is read-only rendering data, computed once here
+  // server-side — GanttChart.tsx's drag math (lib/phase-drag.ts) never
+  // sees or touches these rows.
+  const { data: groupsForMarkers } = await supabase
+    .from("board_groups")
+    .select("id,phase_id")
+    .eq("project_id", id)
+    .not("phase_id", "is", null);
+  const phaseIdByGroupId = new Map((groupsForMarkers ?? []).map((g) => [g.id, g.phase_id as string]));
+  const groupIds = [...phaseIdByGroupId.keys()];
+
+  const { data: markerTasks } = groupIds.length
+    ? await supabase
+        .from("board_tasks")
+        .select("id,title,kind,due_date,booking_date,phase_group_id")
+        .in("phase_group_id", groupIds)
+        .is("deleted_at", null)
+    : { data: [] as { id: string; title: string; kind: string; due_date: string | null; booking_date: string | null; phase_group_id: string | null }[] };
+
+  const timelineMarkers: GanttTimelineMarker[] = [];
+  for (const t of markerTasks ?? []) {
+    const phase_id = t.phase_group_id ? phaseIdByGroupId.get(t.phase_group_id) ?? null : null;
+    if (t.kind === "milestone" && t.due_date) {
+      timelineMarkers.push({ task_id: t.id, title: t.title, kind: "milestone", date: t.due_date, phase_id });
+    } else if (t.due_date) {
+      timelineMarkers.push({ task_id: t.id, title: t.title, kind: "due_date", date: t.due_date, phase_id });
+    }
+    if (t.booking_date) {
+      timelineMarkers.push({ task_id: t.id, title: t.title, kind: "booking_date", date: t.booking_date, phase_id });
+    }
+  }
+
   return (
     <>
       <Header title={project.name} subtitle={`${project.client_name} · Timeline`} titleHref={`/projects/${id}`} />
       <ProjectTabs projectId={id} active="timeline" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
       <main className="flex-1 px-8 py-8">
-        <GanttChart projectId={id} initialPhases={initialPhases} />
+        <GanttChart projectId={id} initialPhases={initialPhases} timelineMarkers={timelineMarkers} />
       </main>
     </>
   );

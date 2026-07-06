@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import type { AssigneeSummary, CreateBoardTaskInputV2 } from "@/types/phase-12a-b";
+import type { BoardTaskKind } from "@/types/board-cockpit";
+
+/** POST body — Phase 12a-B's CreateBoardTaskInputV2 plus this round's optional `kind` (milestone toggle at creation time). Intersection type rather than editing that interface directly, per this file's own edit-boundary discipline (types/phase-12a-b.ts is a prior, already-completed round's own file). */
+type CreateBoardTaskInputCockpit = CreateBoardTaskInputV2 & { kind?: BoardTaskKind };
 import type {
-  AssigneeSummary,
-  BoardColumnWithAssigneeTasks,
-  BoardGroupWithTasks,
-  BoardV2Response,
-  BoardTaskWithAssignees,
-  CreateBoardTaskInputV2,
-} from "@/types/phase-12a-b";
+  BoardColumnCockpit,
+  BoardGroupCockpit,
+  BoardTaskCockpit,
+  BoardV2CockpitResponse,
+  LinkedVisitSummary,
+} from "@/types/board-cockpit";
 
 /**
  * Board v2 (BUILD-SPEC.md §"Board v2"). This route supersedes the
@@ -138,18 +142,28 @@ export async function GET(
   const taskRows = tasks ?? [];
   const taskIds = taskRows.map((t) => t.id);
   const contactIds = [...new Set(taskRows.map((t) => t.contact_id).filter(Boolean))] as string[];
+  // Board cockpit round (migration 029) — batch-fetch the linked
+  // trade_visits rows for every card that has one, so the card's live
+  // status badge renders from this same single board fetch (no N+1 per
+  // card, same batching discipline as the assignee/contact fetches
+  // right below).
+  const visitIds = [...new Set(taskRows.map((t) => t.visit_id).filter(Boolean))] as string[];
 
-  const [{ data: assigneeLinks }, { data: contacts }] = await Promise.all([
+  const [{ data: assigneeLinks }, { data: contacts }, { data: visits }] = await Promise.all([
     taskIds.length
       ? supabase.from("board_task_assignees").select("task_id,profile_id").in("task_id", taskIds)
       : Promise.resolve({ data: [] as { task_id: string; profile_id: string }[] }),
     contactIds.length
       ? supabase.from("contacts").select("id,company,contact_name").in("id", contactIds)
       : Promise.resolve({ data: [] as { id: string; company: string; contact_name: string | null }[] }),
+    visitIds.length
+      ? supabase.from("trade_visits").select("id,status,start_date,end_date,contact_id").in("id", visitIds)
+      : Promise.resolve({ data: [] as { id: string; status: string; start_date: string; end_date: string; contact_id: string | null }[] }),
   ]);
 
   const teamById = new Map((team ?? []).map((p) => [p.id, p]));
   const contactById = new Map((contacts ?? []).map((c) => [c.id, c]));
+  const visitById = new Map((visits ?? []).map((v) => [v.id, v]));
 
   const assigneesByTask = new Map<string, AssigneeSummary[]>();
   for (const link of assigneeLinks ?? []) {
@@ -160,14 +174,27 @@ export async function GET(
     assigneesByTask.set(link.task_id, list);
   }
 
-  const tasksWithRefs: BoardTaskWithAssignees[] = taskRows.map((t) => ({
-    ...t,
-    assignees: assigneesByTask.get(t.id) ?? [],
-    contact: t.contact_id ? contactById.get(t.contact_id) ?? null : null,
-  }));
+  const tasksWithRefs: BoardTaskCockpit[] = taskRows.map((t) => {
+    const linkedVisit = t.visit_id ? visitById.get(t.visit_id) : undefined;
+    const visitSummary: LinkedVisitSummary | null = linkedVisit
+      ? {
+          id: linkedVisit.id,
+          status: linkedVisit.status as LinkedVisitSummary["status"],
+          start_date: linkedVisit.start_date,
+          end_date: linkedVisit.end_date,
+          contact: linkedVisit.contact_id ? contactById.get(linkedVisit.contact_id) ?? null : null,
+        }
+      : null;
+    return {
+      ...t,
+      assignees: assigneesByTask.get(t.id) ?? [],
+      contact: t.contact_id ? contactById.get(t.contact_id) ?? null : null,
+      visit: visitSummary,
+    };
+  });
 
-  const tasksByColumn = new Map<string, BoardTaskWithAssignees[]>();
-  const tasksByGroup = new Map<string, BoardTaskWithAssignees[]>();
+  const tasksByColumn = new Map<string, BoardTaskCockpit[]>();
+  const tasksByGroup = new Map<string, BoardTaskCockpit[]>();
   for (const t of tasksWithRefs) {
     const colList = tasksByColumn.get(t.column_id) ?? [];
     colList.push(t);
@@ -180,12 +207,12 @@ export async function GET(
     }
   }
 
-  const columnsResult: BoardColumnWithAssigneeTasks[] = columns.map((c) => ({
+  const columnsResult: BoardColumnCockpit[] = columns.map((c) => ({
     ...c,
     tasks: tasksByColumn.get(c.id) ?? [],
   }));
 
-  const groupsResult: BoardGroupWithTasks[] = (groups ?? []).map((g) => {
+  const groupsResult: BoardGroupCockpit[] = (groups ?? []).map((g) => {
     const linkedPhase = g.phase_id ? phaseDatesById.get(g.phase_id) : undefined;
     return {
       ...g,
@@ -195,7 +222,7 @@ export async function GET(
     };
   });
 
-  const body: BoardV2Response = {
+  const body: BoardV2CockpitResponse = {
     columns: columnsResult,
     groups: groupsResult,
     team: team ?? [],
@@ -236,7 +263,7 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: CreateBoardTaskInputV2;
+  let body: CreateBoardTaskInputCockpit;
   try {
     body = await request.json();
   } catch {
@@ -248,6 +275,9 @@ export async function POST(
       { error: "column_id and title are required" },
       { status: 400 }
     );
+  }
+  if (body.kind && body.kind !== "task" && body.kind !== "milestone") {
+    return NextResponse.json({ error: "kind must be 'task' or 'milestone'" }, { status: 400 });
   }
 
   const { data: column } = await supabase
@@ -303,6 +333,7 @@ export async function POST(
       contact_id: body.contact_id || null,
       due_date: body.due_date || null,
       phase_group_id: body.phase_group_id || null,
+      kind: body.kind || "task",
       sort: nextSort,
       created_by: user.id,
     })

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { Contact } from "@/types";
+import { ContactPicker } from "@/components/shared/ContactPicker";
 
 interface Props {
   supplierContactId: string | null;
@@ -20,6 +21,21 @@ interface Props {
  * made by the caller (SpecRegister's ItemRow, which has the live item)
  * and passed in as props — this component only resolves WHICH contact
  * was picked, never inspects item state directly.
+ *
+ * Board cockpit round (item 6, "shared searchable ContactPicker
+ * replacing existing pickers"): internals now wrap the shared
+ * components/shared/ContactPicker.tsx (button+dropdown mode, same as
+ * every other non-embedded call site) instead of a second hand-rolled
+ * open/search/list implementation — this gets keyboard nav for free.
+ * The autofill side-effect (the entire reason this file exists rather
+ * than just using ContactPicker directly at its one call site) is
+ * PRESERVED exactly: ContactPicker's onSelect only carries a contact
+ * id, so this wrapper resolves the full Contact from its own fetched
+ * list before computing the same `{ supplier?, supplier_email? }`
+ * autofill object as before and calling this component's own `onLink`
+ * — components/items/SpecRegister.tsx (protected, this round must not
+ * touch it) keeps calling this component with the exact same props,
+ * completely unaware of the internal swap.
  */
 export function SupplierContactPicker({
   supplierContactId,
@@ -27,14 +43,11 @@ export function SupplierContactPicker({
   supplierEmailEmpty,
   onLink,
 }: Props) {
-  const [open, setOpen] = useState(false);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [linked, setLinked] = useState<Contact | null>(null);
-  const [q, setQ] = useState("");
-  const [loading, setLoading] = useState(false);
 
   // Resolve the currently-linked contact's display name (company),
-  // independent of whether the picker is open.
+  // independent of whether the picker is open — unchanged from before.
   useEffect(() => {
     if (!supplierContactId) {
       setLinked(null);
@@ -52,29 +65,29 @@ export function SupplierContactPicker({
     };
   }, [supplierContactId]);
 
+  // Fetch-once-on-mount (this round's documented fetch-strategy
+  // decision — see ContactPicker.tsx's own header comment — studio
+  // contact counts are small, so one fetch handed to ContactPicker's
+  // client-side filtering is simpler than a debounced per-keystroke
+  // fetch; this mirrors every other non-embedded call site now).
   useEffect(() => {
-    if (!open) return;
-    const ctrl = new AbortController();
-    const t = setTimeout(() => {
-      setLoading(true);
-      const params = new URLSearchParams();
-      if (q.trim()) params.set("q", q.trim());
-      fetch(`/api/contacts?${params}`, { signal: ctrl.signal })
-        .then((r) => r.json())
-        .then((body) => setContacts(body.contacts ?? []))
-        .catch(() => {})
-        .finally(() => setLoading(false));
-    }, 200);
-    return () => {
-      clearTimeout(t);
-      ctrl.abort();
-    };
-  }, [open, q]);
+    fetch("/api/contacts")
+      .then((r) => r.json())
+      .then((body) => setContacts(body.contacts ?? []))
+      .catch(() => {});
+  }, []);
 
-  function pick(contact: Contact | null) {
-    setOpen(false);
-    if (!contact) {
+  function pick(contactId: string | null) {
+    if (!contactId) {
       onLink(null, {});
+      return;
+    }
+    const contact = contacts.find((c) => c.id === contactId) ?? null;
+    if (!contact) {
+      // Shouldn't happen (ContactPicker only ever calls onSelect with
+      // an id from the same `contacts` list it was handed) — fall back
+      // to linking with no autofill rather than silently doing nothing.
+      onLink(contactId, {});
       return;
     }
     const autofill: { supplier?: string; supplier_email?: string } = {};
@@ -84,61 +97,11 @@ export function SupplierContactPicker({
   }
 
   return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="border border-[#c9c2b4] px-2 py-1 text-caption text-charcoal transition-colors hover:border-nearblack hover:text-nearblack"
-        title="Link to an Address Book contact — autofills supplier/email if empty"
-      >
-        {linked ? `☏ ${linked.company}` : "☏ Link contact"}
-      </button>
-      {open && (
-        <div className="absolute right-0 z-20 mt-1 w-72 max-w-[calc(100vw-2rem)] space-y-2 border border-[#dcd6cc] bg-nearwhite p-3 shadow-sm">
-          <div className="flex items-center justify-between gap-3">
-            <p className="label-caps">Link a contact</p>
-            <button type="button" onClick={() => setOpen(false)} className="text-caption text-charcoal/50 hover:text-nearblack">
-              Close
-            </button>
-          </div>
-          <input
-            autoFocus
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search company…"
-            className="w-full border border-[#c9c2b4] bg-cream px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
-          />
-          <div className="max-h-48 overflow-y-auto">
-            <button
-              type="button"
-              onClick={() => pick(null)}
-              className="block w-full border-b border-[#e5e0d6] px-2 py-1.5 text-left text-body text-charcoal/60 hover:bg-cream"
-            >
-              No link
-            </button>
-            {loading ? (
-              <p className="px-2 py-2 text-caption text-charcoal/50">Loading…</p>
-            ) : contacts.length === 0 ? (
-              <p className="px-2 py-2 text-caption text-charcoal/50">No contacts match.</p>
-            ) : (
-              contacts.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => pick(c)}
-                  className={
-                    "block w-full border-b border-[#e5e0d6] px-2 py-1.5 text-left text-body hover:bg-cream " +
-                    (supplierContactId === c.id ? "bg-cream text-nearblack" : "text-charcoal")
-                  }
-                >
-                  {c.company}
-                  {c.contact_name ? ` — ${c.contact_name}` : ""}
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-    </div>
+    <ContactPicker
+      contacts={contacts}
+      selectedId={supplierContactId}
+      onSelect={pick}
+      placeholder={linked ? `☏ ${linked.company}` : "☏ Link contact"}
+    />
   );
 }

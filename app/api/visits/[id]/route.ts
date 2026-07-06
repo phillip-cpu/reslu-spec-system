@@ -119,6 +119,22 @@ export async function PATCH(
     return NextResponse.json({ error: error.message }, { status });
   }
 
+  // Board cockpit round (migration 029) — if a board_tasks card is
+  // linked to this visit (visit_id), keep its denormalized
+  // booking_date/booking_end_date in sync whenever the visit's own
+  // dates change from here (e.g. a Timeline drag on the same visit —
+  // see migration 029's board_tasks.booking_date comment for the full
+  // "why denormalized, why synced at both write sites" rationale).
+  // Best-effort: a sync failure here must not fail the visit update
+  // itself, which has already committed successfully above.
+  if (update.start_date !== undefined || update.end_date !== undefined) {
+    await supabase
+      .from("board_tasks")
+      .update({ booking_date: visit.start_date, booking_end_date: visit.end_date })
+      .eq("visit_id", id)
+      .is("deleted_at", null);
+  }
+
   return NextResponse.json({ visit });
 }
 

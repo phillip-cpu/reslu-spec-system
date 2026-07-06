@@ -3377,3 +3377,259 @@ this file; previously nothing needed a "default column" shortcut.
 Auto-assigns to the creator (`currentUserId`, threaded into `GroupTable`
 as a new prop), same "assign the creator unless overridden" convention
 `StackedColumnSection` already used.
+
+## Board cockpit round — 7 July 2026
+
+Migration `029_board_cockpit.sql`. BUILD-SPEC.md "Board refinement
+batch (Phillip screenshots, 7 July 2026)" + four chat-agreed
+improvements: book-trade-from-card, milestone cards, phase task
+templates, Aria booking-chase attention feed, plus two-dates-per-card,
+a shared searchable ContactPicker, Gantt tick markers, and the
+Bunnings/blocked-site pricing loop.
+
+### `board_tasks` additions
+
+`kind` (`'task'` default | `'milestone'`), `visit_id` (nullable FK to
+`trade_visits`, `on delete set null`), `booking_date`/`booking_end_date`
+(date, nullable — the booked trade-visit window, denormalized copies of
+the linked visit's own `start_date`/`end_date`, distinct from
+`due_date`). See migration 029's own comments for the full "why
+denormalized" rationale. Kept in sync at exactly two write sites:
+`POST .../book-visit` below (creates/links) and `PATCH /api/visits/[id]`
+(already existed — now additionally pushes `booking_date`/
+`booking_end_date` onto any linked `board_tasks` row whenever the
+visit's own dates change, e.g. a Timeline drag).
+
+### `materials` additions
+
+`price_refresh_status` (nullable text, only allowed non-null value
+`'needs_aria'`) + `price_refresh_requested_at` (nullable timestamptz) —
+see "Bunnings/blocked-site pricing" below.
+
+### Book trade from a board card
+
+- **`POST /api/board-tasks/[id]/book-visit`** — Auth: session. Body
+  EITHER `{ phase_id, start_date, end_date, contact_id?, arrival_slot?,
+  arrival_time?, notes? }` (creates a new `trade_visits` row, same
+  required fields as `POST /api/projects/[id]/visits`) OR
+  `{ existing_visit_id }` (links to an already-booked visit from the
+  same project, not already linked to a different card). `400` if the
+  card already has a booking (unlink first). `404`/`400` on bad
+  phase/contact/visit references, same validation as the Timeline's own
+  add-visit form. Returns `201 { task: BoardTaskCockpit, insurance_warning:
+  string | null }` — `task` includes the freshly-set `visit_id`/
+  `booking_date`/`booking_end_date` AND a joined `visit` summary (id,
+  status, dates, contact) so the card's status badge renders
+  immediately without a second fetch.
+- **`DELETE /api/board-tasks/[id]/book-visit`** — Auth: session. Clears
+  `visit_id`/`booking_date`/`booking_end_date` on the card WITHOUT
+  deleting the underlying `trade_visits` row (the visit may still be a
+  real booking on the Timeline — this only removes the card's link to
+  it). Returns `{ task }`.
+- **`GET /api/projects/[id]/board`** — unchanged route, richer response:
+  every task now carries `kind`, `visit_id`, `booking_date`,
+  `booking_end_date`, and (when `visit_id` is set) a joined `visit: {
+  id, status, start_date, end_date, contact }` summary — batch-fetched
+  alongside the existing assignee/contact joins (no N+1).
+- **`POST /api/projects/[id]/board`** (create card) and
+  **`PATCH /api/board-tasks/[id]`** — both gain an optional `kind`
+  field (`'task'` default | `'milestone'`) on top of their existing
+  bodies. `booking_date`/`booking_end_date`/`visit_id` are NOT
+  independently PATCHable here — only ever set via the book-visit route
+  above or cleared via its DELETE, so a card's booking state always has
+  one auditable write path.
+
+### Milestone cards
+
+`kind: 'milestone'` cards render as a diamond marker (kanban card,
+grouped-list row, and Gantt timeline — see below) instead of an
+ordinary card shape. When a milestone card moves into a Done-like
+column (matched by column NAME — "done"/"complete"/"completed",
+case-insensitive — not a fixed `column_id`, since column sets are
+per-project/editable; see `lib/board-cockpit.ts`
+`shouldPromptMilestoneDiary()`), the UI offers a dismissible prompt
+("Start a diary draft?") that POSTs a bare `portal_updates` draft via
+the existing `POST /api/projects/[id]/client-updates/posts` route,
+pre-filled with the milestone's title. Dismissing is a no-op (local
+component state only, no schema) — the milestone still completes
+either way; this is a nudge, not a workflow gate.
+
+### Aria booking-chase attention feed — `bookings_overdue`
+
+- **`GET /api/board-tasks/attention`** — Auth: session, no admin gate
+  (scheduling data). Returns `{ bookings_overdue: BookingsOverdueItem[]
+  }` — cards matching either: a `booking_date` in the past with the
+  linked visit still `unconfirmed`/`tentative`/`proposed_change`
+  (reason `booking_unconfirmed`), or a `kind: 'milestone'` card with an
+  overdue `due_date` (reason `milestone_overdue`, only when the first
+  reason doesn't already apply). See `lib/board-cockpit.ts`
+  `computeBookingsOverdue()` for the exact rule. Each item carries
+  `task_id`, `title`, `project_id`, `project_name`, `reason`, `date`,
+  `visit_status`, `contact`.
+
+### Phase task templates — `app_settings('phase_task_templates')`
+
+Second `app_settings` key alongside the existing `phase_template`
+(migration 023) — same table, no new schema. Shape: an object keyed by
+phase-template NAME (matching `phase_template` row names, e.g.
+`"Demolition"`) → array of `{ title, kind: 'task' | 'milestone' }`.
+Seeded with one default checklist for `"Site Setup"` (site fencing,
+site toilet, skip bin, site signage — the same "site establishment,
+fencing, amenities, skips" list BUILD-SPEC.md's own umbrella-phase note
+already describes) — every other phase name starts with no checklist.
+
+- **`GET /api/settings/phase-task-templates`** — Auth: session (team-
+  visible, studio config, not financial). Returns `{ templates:
+  PhaseTaskTemplatesMap }`, `{}` fallback if the row is missing.
+- **`PUT /api/settings/phase-task-templates`** — Auth: admin only
+  (mirrors `PUT /api/settings/phase-template`'s gating). Body: `{
+  templates }`, full replace. Validates every phase name is non-blank,
+  every row has a non-empty `title` and `kind` in `('task',
+  'milestone')`. Does NOT retroactively touch any already-seeded
+  project.
+- **Seed-time consumption**: `lib/phase-seed.ts`
+  `seedPhaseTemplateIfEmpty()` (the shared seed path — GET
+  `/api/projects/[id]/phases`, the Timeline page's first load, and POST
+  `/api/projects/[id]/board/groups/seed`) now ALSO reads
+  `phase_task_templates` alongside `phase_template` and, for each
+  seeded phase whose name has a non-empty checklist, creates one
+  `board_tasks` row per checklist item — unassigned, no due date,
+  `phase_group_id` set to that phase's just-created group, using the
+  project's first `board_columns` entry (seeding a minimal "Waiting"
+  column first if none exist yet). Missing/empty checklist for a phase
+  name is a no-op for that phase.
+- **Settings UI**: `components/settings/PhaseTaskTemplateSettings.tsx`
+  (mounted in `app/(dashboard)/settings/page.tsx`, directly below the
+  existing `PhaseTemplateSettings` section) — one tab per phase name,
+  each with its own ordered task list (title + kind), add/reorder/
+  delete, same interaction shape as `PhaseTemplateSettings.tsx`.
+
+### Two dates per card + grouped-list edit parity
+
+Kanban card and grouped-list row both show a sand-coloured booking chip
+("📅 21 Jul" or "📅 21–22 Jul" for a range, plus the linked visit's
+status when present) and a due chip (red when overdue), sourced from
+the SAME `GET /api/projects/[id]/board` response — no per-view
+divergence. Both views' full card editor is now the SAME shared
+component (`BoardTaskEditorBody` in `components/board/ProjectBoard.tsx`)
+— clicking a grouped-list row expands it inline (a `colSpan` sub-row),
+exposing description, assignees, "Due (to-do)" date input, "Booking
+date (works)" (read-only display + Book trade/Unlink booking actions —
+see the single-write-path note above), contact picker, milestone
+toggle, and Remove card — identical fields/behaviour to the kanban
+card's expand-in-place editor, previously a much thinner due/status/
+phase-only set of inline cells.
+
+`GET /api/my-work` source #1 (board tasks assigned to me): when a task
+carries a `booking_date`, its `title` gains an additive
+`" — works <DD/MM>"` suffix (e.g. "Book carpenter — works 21/07");
+unchanged when `booking_date` is absent.
+
+### Shared searchable ContactPicker
+
+`components/shared/ContactPicker.tsx` — button+dropdown (or `embedded`,
+an always-open inline mode with no trigger button) contact picker with
+a search box, "No link" clear option, and full keyboard nav
+(ArrowUp/ArrowDown moves a highlighted row, Enter selects it — or the
+top match if nothing's been arrow-key-touched yet — Escape closes).
+Fetch-strategy decision (documented in that file's own header comment):
+does NOT fetch `/api/contacts?q=` itself — callers fetch the global
+list ONCE and hand it down; studio contact counts are small enough that
+client-side filtering is simpler than per-keystroke debounced fetches.
+Wired at: the board card editor (kanban + grouped-list, both via
+`BoardTaskEditorBody`), `BookVisitPanel.tsx`, `GanttChart.tsx`'s
+`PhaseEditPanel` (phase-level contact) and `AddVisitForm` (the
+Timeline's own booking form — previously a plain `<select>`),
+`components/estimate/ContactLinkPicker.tsx` (now a thin wrapper in
+`embedded` mode), and `components/items/SupplierContactPicker.tsx` (now
+wraps it internally, preserving its supplier/supplier_email autofill
+side-effect exactly).
+
+### Gantt timeline tick markers + Day/Week/Month zoom
+
+`components/gantt/GanttChart.tsx` renders sand ticks (3px wide) on each
+phase row at every linked board-task's `due_date` (shorter, duller —
+`h-3`, `charcoal/50`) and `booking_date` (taller, full-strength sand —
+`h-5`), plus milestone diamonds at `kind: 'milestone'` tasks' own
+`due_date`. Absolutely positioned, in a layer that sits alongside (never
+on top of, except its own 3px click target) the phase bar's drag/resize
+surface — the drag/resize pointer handlers and `lib/gantt.ts`'s grid
+math are completely unmodified by this round; markers reuse the exact
+same `phaseGridPosition()` on a synthetic single-day range. Hovering
+shows a tooltip (title + "Due"/"Booking"/"Milestone"); clicking
+navigates to `/projects/[id]/board?focus=board_task-<id>` (the same
+`?focus=`/`FocusOnLoad` mechanism the My Work feed's board-task links
+already use). Markers are supplied by the Timeline page
+(`app/(dashboard)/projects/[id]/timeline/page.tsx`), joined server-side
+via `board_groups.phase_id`.
+
+Zoom: an always-visible Day/Week/Month toggle (previously Week/Month
+only, and only shown above a 12-week span) — Week stays the fixed
+default. Every level reuses the SAME week-column grid (`lib/gantt.ts`
+untouched); "day" and "month" only change the CSS column min-width
+(wider for day, narrower for month) plus, in day mode, adds decorative
+day-of-week initials under each week's header label. The grid wrapper's
+existing horizontal scroll (`overflow-x-auto`) is what makes Day mode
+usable — this is the one place in the app horizontal scroll is the
+expected interaction. Drag snapping stays day-grain at every zoom level
+(unaffected — `columnPx` is measured from the actual rendered grid
+width at drag-start, so widening/narrowing columns changes what that
+measurement returns, never the snap formula). The read-only portal
+mirror (`components/portal/TimelineSection.tsx`) is untouched and stays
+fixed at week-mode — it imports the same unmodified `lib/gantt.ts`
+functions.
+
+### Bunnings/blocked-site pricing — `materials.price_refresh_status`
+
+`bunnings.com.au`/`wilbrad.com.au` are VERIFIED to hang on a plain
+server-side fetch. `POST /api/materials/[id]/refresh-price` (unchanged
+request/response shape — see "Round B" above) now, on ANY failed
+refresh (bad fetch, non-HTML response, or no price found), additionally
+sets `price_refresh_status: 'needs_aria'` + `price_refresh_requested_at:
+now()`. A successful refresh (or any `PATCH /api/materials/[id]` that
+includes `price`) clears both back to `null` — a hand-entered or
+Aria-submitted price resolves the outstanding request the same way a
+successful scrape would.
+
+- **`GET /api/materials/attention`** — Auth: session, no admin gate.
+  Returns `{ price_refreshes_pending: MaterialNeedingAriaItem[] }` —
+  every material currently `needs_aria`, each with `material_id`,
+  `name`, `requested_at`.
+- **Materials UI** (`components/calculators/MaterialLinkControl.tsx`) —
+  shows a "Waiting for Aria" caption (with the request date) on any
+  linked material in this state.
+
+### MCP additions
+
+`mcp/src/index.mjs` gains four tools:
+
+- **`get_bookings_overdue`** — thin fetch to `GET
+  /api/board-tasks/attention`.
+- **`book_trade_visit({ task_id, phase_id, contact_id?, start_date,
+  end_date, arrival_slot?, arrival_time?, notes? })`** — thin fetch to
+  `POST /api/board-tasks/[id]/book-visit`. Booking EXECUTION (not just
+  drafting) is deliberately allowed here — see `docs/ARIA.md`'s "Board
+  cockpit round" section for the full reasoning (trades confirm
+  themselves; nothing becomes final until they do).
+- **`get_materials_needing_aria`** — thin fetch to `GET
+  /api/materials/attention`.
+- **`submit_material_price({ material_id, price, source_note? })`** —
+  thin fetch to `PATCH /api/materials/[id]` with `{ price, notes:
+  source_note }`. `source_note` REPLACES the material's `notes` field
+  (a single flat field, not an append-only log).
+
+### Timber frame calculator — "Double studs each side of openings"
+
+`lib/calculators.ts` `TimberFrameInputs` gains
+`double_studs_at_openings: boolean` (off by default). When true,
+`timberFrameMembers()` adds `opening_doublers = openingCount * 2` — 2
+extra FULL-HEIGHT studs per opening (one doubler per side), IN ADDITION
+to that opening's existing jack-stud/lintel members (doublers and jack
+studs are different members: a doubler carries load either side of a
+large opening at full wall height; a jack stud is shorter, supporting
+the lintel at the opening's head height). Flows through
+`timberFrameCutLengths()` (full-height pieces, same as ordinary studs)
+into `binPackLengths()`/`calculateTimberFrame()`'s cost — not just added
+to the display list. UI: `components/calculators/TimberFrameCalculator.tsx`
+gains the toggle (next to "Double top plate") and a member-list line
+("Opening doublers · 2 per opening") shown only when the count is > 0.

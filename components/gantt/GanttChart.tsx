@@ -35,6 +35,7 @@ import {
   monthLabel,
   phaseGridPosition,
   todayGridPosition,
+  type GanttGrid,
 } from "@/lib/gantt";
 import { applyDrag, snapDeltaDays, type DragMode } from "@/lib/phase-drag";
 import { VisitBar, VisitStatusLabel } from "./VisitBar";
@@ -42,6 +43,8 @@ import { UmbrellaBand } from "./UmbrellaBand";
 import { CompletedPhasesGroup } from "./CompletedPhasesGroup";
 import { VisitBottomSheet } from "./VisitBottomSheet";
 import { ContextMenu, type ContextMenuItem } from "@/components/shared/ContextMenu";
+import { ContactPicker } from "@/components/shared/ContactPicker";
+import type { GanttTimelineMarker } from "@/types/board-cockpit";
 
 /** Pixel width of the invisible edge zone at each end of a bar that resizes instead of moves — BUILD-SPEC "grab 6px edge zones = resize start or end". */
 const EDGE_ZONE_PX = 6;
@@ -51,10 +54,27 @@ const LONG_PRESS_MS = 500;
 interface Props {
   projectId: string;
   initialPhases: SchedulePhaseWithVisits[];
+  /**
+   * Board cockpit round — "timeline tick markers for task due/booking
+   * dates" + milestone diamonds. Optional/defaults to [] so this prop
+   * is additive — every existing caller of GanttChart (there is
+   * currently only app/(dashboard)/projects/[id]/timeline/page.tsx,
+   * updated in this same round to pass it) keeps compiling even if a
+   * future caller omits it. Read-only rendering data; see PhaseRow's
+   * marker rendering below for the render approach (an absolutely-
+   * positioned, pointer-events-none layer, same pattern as the
+   * existing today-line marker — see this file's own "Today line" doc
+   * comment) — this never touches lib/phase-drag.ts or the drag
+   * pointer handlers in PhaseRow/UmbrellaBand.
+   */
+  timelineMarkers?: GanttTimelineMarker[];
 }
 
 const COLOR_KEYS: PhaseColorKey[] = ["sand", "charcoal", "teal", "amber"];
-const WIDE_GRID_THRESHOLD = 12; // weeks — above this, the zoom toggle appears (BUILD-SPEC "week/month zoom")
+const WIDE_GRID_THRESHOLD = 12; // weeks — kept for reference (see showZoomToggle's doc comment); no longer gates the toggle's visibility as of this round.
+
+/** Board cockpit round — Day zoom's decorative day-of-week header initials, Monday-first to match lib/gantt.ts's own Monday-aligned week grid (startOfWeek()). */
+const DAY_INITIALS = ["M", "T", "W", "T", "F", "S", "S"];
 
 /**
  * Bar fill colours — brand-muted per BUILD-SPEC.md ("brand-muted bar
@@ -85,7 +105,7 @@ const COLOR_SWATCH: Record<PhaseColorKey, string> = {
  * sticky phase-name column for mobile horizontal scroll, and a mobile
  * bottom sheet for tapping a visit dot.
  */
-export function GanttChart({ projectId, initialPhases }: Props) {
+export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: Props) {
   const [phases, setPhases] = useState<SchedulePhaseWithVisits[]>(initialPhases);
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -96,7 +116,17 @@ export function GanttChart({ projectId, initialPhases }: Props) {
   // closes/submits so a later plain "+ Add phase" click doesn't carry a
   // stale prefill over.
   const [addPrefillStart, setAddPrefillStart] = useState<string | null>(null);
-  const [zoom, setZoom] = useState<"week" | "month">("week");
+  // Board cockpit round — extended to a third "day" level (was
+  // week/month only, Round A). "week" stays the fixed default per this
+  // round's brief ("Week is the current default/fixed mode — keep it
+  // as the simplest baseline"); "day" is purely a wider rendering of
+  // the SAME week-column grid (see colMinWidth below) plus day-grain
+  // gridlines/labels in the header — it does not introduce a second
+  // coordinate system, so drag/resize math (columnPx measured from the
+  // actual rendered grid at drag-start, see startDrag below) keeps
+  // working unmodified at every zoom level: widening columns only
+  // changes what that measurement returns, never the formula itself.
+  const [zoom, setZoom] = useState<"day" | "week" | "month">("week");
   const [sheetVisit, setSheetVisit] = useState<TradeVisitWithContact | null>(null);
   // Round A right-click context menu state — see components/shared/ContextMenu.tsx.
   const [menu, setMenu] = useState<{
@@ -123,23 +153,52 @@ export function GanttChart({ projectId, initialPhases }: Props) {
   const umbrella = phases.find((p) => p.kind === "umbrella") ?? null;
   const ordinaryPhases = useMemo(() => phases.filter((p) => p.kind === "phase"), [phases]);
 
+  // Board cockpit round — group timeline markers by phase_id so each
+  // PhaseRow only renders the markers belonging to it. Purely a lookup
+  // built from the read-only `timelineMarkers` prop; touches no drag
+  // state.
+  const markersByPhase = useMemo(() => {
+    const map = new Map<string, GanttTimelineMarker[]>();
+    for (const m of timelineMarkers) {
+      if (!m.phase_id) continue;
+      const list = map.get(m.phase_id) ?? [];
+      list.push(m);
+      map.set(m.phase_id, list);
+    }
+    return map;
+  }, [timelineMarkers]);
+
   const grid = useMemo(
     () => computeGanttGrid(ordinaryPhases.length > 0 ? ordinaryPhases : phases),
     [ordinaryPhases, phases]
   );
 
   const todayPos = useMemo(() => todayGridPosition(grid), [grid]);
-  const showZoomToggle = grid.weekCount > WIDE_GRID_THRESHOLD;
-  // Week/month zoom (BUILD-SPEC "week/month zoom toggle for >12-week
-  // grids"): rather than re-deriving a whole separate month-column
-  // grid (which would need its own math in lib/gantt.ts and its own
-  // bar-position formula), "month" mode reuses the EXACT SAME week
-  // grid and instead widens each week column's minmax floor so fewer
-  // columns are visible without scrolling and only every 4th week
-  // renders a visible gridline/label — a defensible, low-risk way to
-  // get a "zoomed out" feel within lib/gantt.ts's existing math
-  // without a rewrite.
-  const colMinWidth = zoom === "month" ? "10px" : "28px";
+  // Board cockpit round — the zoom toggle is now ALWAYS shown (Day
+  // view is useful on any job length, not just >12-week ones); the
+  // >12-week threshold still exists as WIDE_GRID_THRESHOLD but no
+  // longer gates visibility, only kept as an exported constant in case
+  // a future "auto-suggest month zoom" nudge wants it (none exists
+  // today — this round's brief is explicit that zoom must be an
+  // explicit toggle, not auto-detection).
+  const showZoomToggle = true;
+  // Day/Week/Month zoom (BUILD-SPEC "week/month zoom toggle for
+  // >12-week grids", extended this round to a third Day level):
+  // rather than re-deriving a whole separate day- or month-column grid
+  // (which would need its own math in lib/gantt.ts and its own
+  // bar-position formula), every zoom level reuses the EXACT SAME
+  // week grid and instead only widens/narrows each week column's
+  // minmax floor — "month" squeezes columns so more weeks fit without
+  // scrolling, "day" widens columns enough that individual days become
+  // visually distinguishable (with day-grain gridlines/labels added in
+  // the header, see the week-header map below) and horizontal scroll
+  // becomes the expected interaction (the grid wrapper below already
+  // has overflow-x-auto at every zoom level — this is the one place in
+  // the app horizontal scroll is expected/sanctioned, matching a
+  // Gantt/Timeline's normal interaction model). A defensible, low-risk
+  // way to get three "zoom" feels within lib/gantt.ts's existing week-
+  // grid math without a rewrite or a second coordinate system.
+  const colMinWidth = zoom === "month" ? "10px" : zoom === "day" ? "140px" : "28px";
 
   const today = new Date().toISOString().slice(0, 10);
   const completedPhases = useMemo(
@@ -316,6 +375,7 @@ export function GanttChart({ projectId, initialPhases }: Props) {
     return (
       <PhaseRow
         key={phase.id}
+        projectId={projectId}
         phase={phase}
         gridPos={pos}
         weekCount={grid.weekCount}
@@ -333,6 +393,8 @@ export function GanttChart({ projectId, initialPhases }: Props) {
         onContextMenu={(position) => openPhaseMenu(phase, position)}
         forceOpenAddVisit={bookTradePhaseId === phase.id}
         onAddVisitOpened={() => setBookTradePhaseId(null)}
+        markers={markersByPhase.get(phase.id) ?? []}
+        grid={grid}
       />
     );
   }
@@ -399,6 +461,17 @@ export function GanttChart({ projectId, initialPhases }: Props) {
           <span className="label-caps">Zoom</span>
           <button
             type="button"
+            onClick={() => setZoom("day")}
+            title="Day view — wider columns, horizontal scroll, day-grain gridlines"
+            className={clsx(
+              "border px-3 py-1 text-caption",
+              zoom === "day" ? "border-nearblack bg-nearblack text-white" : "border-[#c9c2b4] text-charcoal"
+            )}
+          >
+            Day
+          </button>
+          <button
+            type="button"
             onClick={() => setZoom("week")}
             className={clsx(
               "border px-3 py-1 text-caption",
@@ -459,6 +532,24 @@ export function GanttChart({ projectId, initialPhases }: Props) {
               >
                 {isNewMonth(grid.weeks, i) && (
                   <span className="label-caps whitespace-nowrap">{monthLabel(week)}</span>
+                )}
+                {/* Board cockpit round — Day zoom's day-grain gridlines/
+                    labels: purely decorative, header-row-only (never
+                    touches the bar row below, so it cannot interfere
+                    with drag/resize) — seven day-of-week initials
+                    spanning this SAME week column, giving the "day"
+                    feel without a second grid/coordinate system. Only
+                    rendered when zoom === 'day' — week/month zoom keep
+                    the exact unchanged header they had before this
+                    round. */}
+                {zoom === "day" && (
+                  <div className="mt-1 grid grid-cols-7 gap-px">
+                    {DAY_INITIALS.map((d, dayIdx) => (
+                      <span key={dayIdx} className="text-caption text-charcoal/30">
+                        {d}
+                      </span>
+                    ))}
+                  </div>
                 )}
               </div>
             ))}
@@ -528,6 +619,7 @@ export function GanttChart({ projectId, initialPhases }: Props) {
 }
 
 function PhaseRow({
+  projectId,
   phase,
   gridPos,
   weekCount,
@@ -545,7 +637,11 @@ function PhaseRow({
   onContextMenu,
   forceOpenAddVisit,
   onAddVisitOpened,
+  markers,
+  grid,
 }: {
+  /** Board cockpit round — needed to build the timeline marker click-through link (?focus=board_task-<id> on the Board tab). */
+  projectId: string;
   phase: SchedulePhaseWithVisits;
   gridPos: { startCol: number; span: number };
   weekCount: number;
@@ -565,6 +661,10 @@ function PhaseRow({
   /** Round A "Book trade" context-menu action — see VisitsPanel's own forceOpen handling below. */
   forceOpenAddVisit: boolean;
   onAddVisitOpened: () => void;
+  /** Board cockpit round — this phase's own timeline markers (due_date/booking_date/milestone), already filtered by GanttChart's markersByPhase map. */
+  markers: GanttTimelineMarker[];
+  /** Board cockpit round — the shared week grid (lib/gantt.ts's GanttGrid), needed to position markers via phaseGridPosition. weekCount alone (the pre-existing prop) isn't enough since phaseGridPosition also needs gridStart/weeks. */
+  grid: GanttGrid;
 }) {
   const dragging = dragMode !== null;
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -658,6 +758,57 @@ function PhaseRow({
           }}
           title={`${phase.name}: ${phase.start_date} to ${phase.end_date}`}
         />
+
+        {/* Board cockpit round — timeline tick markers (due_date/
+            booking_date/milestone diamonds). Absolutely positioned,
+            pointer-events-none WRAPPER (see markerWrapperClass below —
+            the wrapper itself never intercepts pointer events; only the
+            small clickable tick/diamond inside re-enables them), computed
+            from the SAME grid math as the phase bar above
+            (phaseGridPosition on a synthetic single-day range) but
+            rendered as an independent sibling layer — this never reads
+            dragMode/dragDeltaDays and has no drag pointer handlers of
+            its own, so it cannot intercept or shift the bar's own drag
+            gestures (mirrors this file's existing today-line marker,
+            which uses the identical "absolute + pointer-events-none +
+            calc() from grid math" approach one level up at the
+            whole-grid scope; this is the same technique at the
+            single-row scope).
+            Sizing: due/booking ticks are 3px wide (BUILD-SPEC "sand
+            ticks (3px)"); booking ticks render TALLER (h-5) and in the
+            full-strength brand sand, due ticks render SHORTER (h-3) and
+            in a duller charcoal tone, so the two read as visually
+            distinct without needing a legend. Milestone diamonds are
+            unaffected (their own shape already differentiates them).
+            Click navigates to the Board, focused on the source card —
+            same ?focus=board_task-<id> + FocusOnLoad mechanism the My
+            Work feed's board_task links already use (see
+            app/api/my-work/route.ts source #1's href and
+            components/shared/FocusOnLoad.tsx) — this is a plain <a>,
+            not a client-side-only onClick, so it works with a normal
+            navigation (new tab / cmd-click) too. */}
+        {markers.map((marker) => {
+          const markerPos = phaseGridPosition({ start_date: marker.date, end_date: marker.date }, grid);
+          const label = `${marker.kind === "milestone" ? "Milestone" : marker.kind === "booking_date" ? "Booking" : "Due"}: ${marker.title} (${marker.date})`;
+          return (
+            <a
+              key={`${marker.kind}-${marker.task_id}`}
+              href={`/projects/${projectId}/board?focus=board_task-${marker.task_id}`}
+              title={label}
+              aria-label={label}
+              className="absolute top-0 flex h-5 items-start justify-center pointer-events-auto"
+              style={{ left: `calc((100% / ${weekCount}) * ${markerPos.startCol - 1})` }}
+            >
+              {marker.kind === "milestone" ? (
+                <span className="block h-2.5 w-2.5 rotate-45 border border-sand bg-sand" />
+              ) : marker.kind === "booking_date" ? (
+                <span className="block h-5 w-[3px] bg-sand" />
+              ) : (
+                <span className="mt-1 block h-3 w-[3px] bg-charcoal/50" />
+              )}
+            </a>
+          );
+        })}
       </div>
 
       {editing && (
@@ -702,18 +853,19 @@ function PhaseEditPanel({
   const [start, setStart] = useState(phase.start_date);
   const [end, setEnd] = useState(phase.end_date);
   const [notes, setNotes] = useState(phase.notes ?? "");
-  const [contactPickerOpen, setContactPickerOpen] = useState(false);
   const [contacts, setContacts] = useState<Contact[]>([]);
 
-  function openContactPicker() {
-    setContactPickerOpen((o) => !o);
-    if (!contactPickerOpen && contacts.length === 0) {
-      fetch("/api/contacts")
-        .then((r) => r.json())
-        .then((body) => setContacts(body.contacts ?? []))
-        .catch(() => {});
-    }
-  }
+  // Board cockpit round — fetch-once-on-mount (this panel is already
+  // only mounted once a phase row is expanded, so "on mount" here is
+  // already equivalent to BookVisitPanel's own "fetch on open" — no
+  // extra open/close toggle state needed now that the shared
+  // ContactPicker owns its own dropdown-open state internally).
+  useEffect(() => {
+    fetch("/api/contacts")
+      .then((r) => r.json())
+      .then((body) => setContacts(body.contacts ?? []))
+      .catch(() => {});
+  }, []);
 
   // Umbrella phases render via components/gantt/UmbrellaBand.tsx
   // instead of this ordinary edit form (UmbrellaBand has its own
@@ -799,43 +951,27 @@ function PhaseEditPanel({
         </label>
         <div className="flex flex-col gap-1">
           <span className="label-caps">Contact</span>
-          <button
-            type="button"
-            onClick={openContactPicker}
-            className="border border-[#c9c2b4] px-2 py-1.5 text-left text-body text-charcoal hover:border-nearblack"
-          >
-            {phase.contact ? phase.contact.company : "None"}
-          </button>
-          {contactPickerOpen && (
-            <div className="max-h-32 overflow-y-auto border border-[#c9c2b4] bg-nearwhite">
-              <button
-                type="button"
-                onClick={() => {
-                  onPatch({ contact_id: null }, { contact: null });
-                  setContactPickerOpen(false);
-                }}
-                className="block w-full border-b border-[#e5e0d6] px-2 py-1 text-left text-caption text-charcoal/60 hover:bg-cream"
-              >
-                No link
-              </button>
-              {contacts.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => {
-                    onPatch(
-                      { contact_id: c.id },
-                      { contact: { id: c.id, company: c.company, contact_name: c.contact_name } }
-                    );
-                    setContactPickerOpen(false);
-                  }}
-                  className="block w-full border-b border-[#e5e0d6] px-2 py-1 text-left text-caption text-charcoal hover:bg-cream"
-                >
-                  {c.company}
-                </button>
-              ))}
-            </div>
-          )}
+          {/* Board cockpit round — swapped the inline open/close +
+              manual list for the shared ContactPicker (item 6: "shared
+              searchable ContactPicker replacing existing pickers").
+              Same onPatch/refUpdate call-site behaviour as before —
+              only the picker UI internals changed. */}
+          <ContactPicker
+            contacts={contacts}
+            selectedId={phase.contact_id}
+            placeholder="None"
+            onSelect={(contactId) => {
+              if (!contactId) {
+                onPatch({ contact_id: null }, { contact: null });
+                return;
+              }
+              const c = contacts.find((x) => x.id === contactId);
+              onPatch(
+                { contact_id: contactId },
+                { contact: c ? { id: c.id, company: c.company, contact_name: c.contact_name } : null }
+              );
+            }}
+          />
         </div>
         <div className="flex items-end">
           <button
@@ -1065,18 +1201,21 @@ function AddVisitForm({
       )}
       <div className="min-w-[140px]">
         <label className="text-caption text-charcoal/60">Trade</label>
-        <select
-          value={contactId}
-          onChange={(e) => setContactId(e.target.value)}
-          className="block w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-caption focus:border-nearblack focus:outline-none"
-        >
-          <option value="">None</option>
-          {contacts.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.company}
-            </option>
-          ))}
-        </select>
+        {/* Board cockpit round — item 6: this booking form's Trade
+            field was a plain <select> (no search, no keyboard nav
+            beyond the browser's own native select behaviour) — swapped
+            for the shared ContactPicker. Same call-site behaviour as
+            before: contactId stays a plain string (empty = none) so
+            the rest of this form/submit() is untouched, only the
+            picker UI itself changed. */}
+        <div className="mt-1">
+          <ContactPicker
+            contacts={contacts}
+            selectedId={contactId || null}
+            placeholder="None"
+            onSelect={(id) => setContactId(id ?? "")}
+          />
+        </div>
       </div>
       <div>
         <label className="text-caption text-charcoal/60">Start</label>

@@ -483,7 +483,7 @@ human loop. If a future automation genuinely needs Aria to update
 phase/task state programmatically, that's an explicit, separate
 addition — not assumed here.
 
-## Round B — materials price list (not yet an Aria tool)
+## Round B — materials price list (list/create still not an Aria tool)
 
 BUILD-SPEC.md "Phillip's ideas list — 6 July 2026" item 4 added a
 global `materials` price list (`GET/POST /api/materials`,
@@ -502,10 +502,13 @@ control — there was no immediate driver for Aria to read or write this
 list programmatically the way she already does for `items`/`invoices`/
 `leads`. If a future automation needs it (e.g. Aria bulk-importing a
 supplier's price list), add `list_materials` (`GET /api/materials`,
-straightforward passthrough) and `create_material`/`update_material`
-(same shape as `create_office_task`/`create_design_task` above) as an
-explicit, separate addition — the underlying REST routes already
-support it fully; only the MCP tool wrapper is missing.
+straightforward passthrough) and `create_material` (same shape as
+`create_office_task`/`create_design_task` above) as an explicit,
+separate addition — the underlying REST routes already support it
+fully; only the MCP tool wrapper is missing. (`submit_material_price`
+— the PRICE-RESOLUTION half of materials — DOES now exist; see "Board
+cockpit round" below. This gap is specifically about bulk list/create,
+which remains unaddressed.)
 
 The calculators themselves (timber frame / plasterboard) are NOT, and
 are never expected to become, an Aria tool — they are pure client-side
@@ -516,3 +519,69 @@ calculation unsupervised, only the resulting `POST
 /api/estimate/sections/[sectionId]/lines` call (already Aria-visible,
 unchanged by this round) if she were ever asked to add an estimate
 line directly.
+
+## Board cockpit round (7 July 2026) — booking chase + blocked-site pricing
+
+Two new tool PAIRS, each a "see what's outstanding" read tool plus a
+"resolve it" write tool — same shape as the plan-analysis and diary
+loops above, just single-call rather than two-turn.
+
+### Booking chase: `get_bookings_overdue` + `book_trade_visit`
+
+`get_bookings_overdue({})` → `GET /api/board-tasks/attention`. Cross-
+project (no `project_id` filter, like `get_needs_attention`). Surfaces
+two situations: a booked trade visit whose `booking_date` has passed
+and is still `unconfirmed`/`tentative`/`proposed_change` (i.e. nobody
+has actually locked it in), or a `kind: 'milestone'` card whose
+`due_date` has passed. See `lib/board-cockpit.ts`'s
+`computeBookingsOverdue()` for the exact rule.
+
+`book_trade_visit({ task_id, phase_id, contact_id?, start_date,
+end_date, arrival_slot?, arrival_time?, notes? })` → `POST
+/api/board-tasks/[id]/book-visit`. Creates the `trade_visits` row and
+links it to the card in one call (same route the Board's "Book trade"
+button uses). **Booking EXECUTION is deliberately allowed here** — a
+narrower exception to this file's usual "Aria drafts/creates, a human
+publishes/confirms" pattern (Diary's publish gate, SOW's issue gate,
+Office/Design's complete gates, all above). The reason booking is
+different: booking a trade visit does not commit RESLU to anything
+irreversible or client-facing by itself — the visit is created in
+`status: 'unconfirmed'` and the **trade themselves** are the ones who
+actually confirm it (via their own token link, `POST
+/api/trade/[token]/respond` — see `docs/API.md`'s trade-confirmation
+section). Aria proposing a date is exactly as provisional as a human
+staff member proposing one from the Board UI; nothing becomes final
+until the trade confirms. There is no `unlink`/`cancel` tool
+(unlinking a booking is left to a human via the Board UI's "Unlink
+booking" action) — Aria's role in this loop is chase-and-book, not
+undo.
+
+### Blocked-site pricing: `get_materials_needing_aria` + `submit_material_price`
+
+BUILD-SPEC.md/verification note: `bunnings.com.au` and
+`wilbrad.com.au` — two of the most commonly linked supplier sites for
+`materials.product_url` — are VERIFIED to hang on a plain server-side
+fetch (not a hypothetical edge case). `POST /api/materials/[id]/
+refresh-price` already never hard-fails the request either way (see
+`docs/API.md`), but until this round a hung/blocked refresh just left
+the material's price stale with no signal that it needed a different
+approach. It now sets `materials.price_refresh_status = 'needs_aria'` +
+`price_refresh_requested_at` on any failed refresh (bad fetch, non-HTML
+response, or no price found on the page).
+
+`get_materials_needing_aria({})` → `GET /api/materials/attention`.
+Every material currently flagged `needs_aria`, so Aria can pick these
+up the same way she works `get_bookings_overdue`/`get_needs_attention`.
+
+`submit_material_price({ material_id, price, source_note? })` → `PATCH
+/api/materials/[id]` with `{ price, notes: source_note }`. Sets the new
+price, stamps `price_refreshed_at`, and clears `price_refresh_status`
+back to `null` — resolving the outstanding request the same way a
+successful automated scrape would have. `source_note` REPLACES the
+material's `notes` field (materials have one flat `notes` field, not an
+append-only log like item notes) — Aria should mention where the price
+came from (e.g. "Bunnings product page, checked by phone 7 Jul") so a
+human reviewing the materials list later has context. The Materials UI
+(`components/calculators/MaterialLinkControl.tsx`) shows a "Waiting for
+Aria" caption on any material in this state, so a team member browsing
+the calculator sees the same signal Aria is working from.

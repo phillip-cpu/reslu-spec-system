@@ -1,21 +1,25 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
-import type {
-  AssigneeSummary,
-  BoardColumnWithAssigneeTasks,
-  BoardGroup,
-  BoardGroupWithTasks,
-  BoardTaskWithAssignees,
-} from "@/types/phase-12a-b";
+import type { AssigneeSummary, BoardGroup } from "@/types/phase-12a-b";
 import type { Contact } from "@/types";
 import { BOARD_LAYOUT_STORAGE_KEY, type BoardLayoutMode } from "@/types/phase-fix-a";
+import type {
+  BoardColumnCockpit,
+  BoardGroupCockpit,
+  BoardTaskCockpit,
+  ContactPickerOption,
+} from "@/types/board-cockpit";
+import { shouldPromptMilestoneDiary } from "@/lib/board-cockpit";
+import { ContactPicker } from "@/components/shared/ContactPicker";
+import { BookVisitPanel } from "./BookVisitPanel";
+import { MilestoneDiaryPrompt } from "./MilestoneDiaryPrompt";
 
 interface Props {
   projectId: string;
-  initialColumns: BoardColumnWithAssigneeTasks[];
-  initialGroups: BoardGroupWithTasks[];
+  initialColumns: BoardColumnCockpit[];
+  initialGroups: BoardGroupCockpit[];
   team: AssigneeSummary[];
   currentUserId: string;
 }
@@ -84,8 +88,8 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   // Grouped list (phases) is the daily-driver view — Phillip, 6 Jul.
   const [view, setView] = useState<"kanban" | "grouped">("grouped");
   const [layout, setLayout] = useState<BoardLayoutMode>("stacked");
-  const [columns, setColumns] = useState<BoardColumnWithAssigneeTasks[]>(initialColumns);
-  const [groups, setGroups] = useState<BoardGroupWithTasks[]>(initialGroups);
+  const [columns, setColumns] = useState<BoardColumnCockpit[]>(initialColumns);
+  const [groups, setGroups] = useState<BoardGroupCockpit[]>(initialGroups);
   const [error, setError] = useState<string | null>(null);
   const [addingColumn, setAddingColumn] = useState(false);
   const [newColumnName, setNewColumnName] = useState("");
@@ -93,6 +97,13 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   const [groupsSeeded, setGroupsSeeded] = useState(initialGroups.length > 0);
   const [addingGroup, setAddingGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
+  // Board cockpit round — milestone-complete diary prompt (see
+  // lib/board-cockpit.ts's shouldPromptMilestoneDiary(), triggered from
+  // updateTaskField below whenever a milestone-kind card's column_id
+  // changes into a Done-like column).
+  const [milestonePrompt, setMilestonePrompt] = useState<{ title: string } | null>(null);
+  // Board cockpit round — which card's "Book trade" popover is open.
+  const [bookingTaskId, setBookingTaskId] = useState<string | null>(null);
 
   // Layout preference — read once on mount (SSR-safe: localStorage
   // doesn't exist server-side, so the initial render always uses the
@@ -220,7 +231,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
       if (!res.ok) throw new Error((await res.json()).error ?? "Could not add card.");
       const { task } = await res.json();
       const assignees = assigneeIds.map((id) => teamById.get(id)).filter((p): p is AssigneeSummary => !!p);
-      const withRefs: BoardTaskWithAssignees = { ...task, assignees, contact: null };
+      const withRefs: BoardTaskCockpit = { ...task, assignees, contact: null };
       setColumns((cur) =>
         cur.map((c) => (c.id === columnId ? { ...c, tasks: [...c.tasks, withRefs] } : c))
       );
@@ -234,7 +245,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     }
   }
 
-  async function patchTask(task: BoardTaskWithAssignees, patch: Record<string, unknown>) {
+  async function patchTask(task: BoardTaskCockpit, patch: Record<string, unknown>) {
     const res = await fetch(`/api/board-tasks/${task.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -245,7 +256,49 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     return updated;
   }
 
-  function applyTaskPatch(taskId: string, patch: Partial<BoardTaskWithAssignees>) {
+  /**
+   * Board cockpit round — "Book-trade-from-card with visit_id linkage
+   * + live status badge." POSTs to /api/board-tasks/[id]/book-visit
+   * (creates the trade_visits row + links it in one call — see that
+   * route's doc comment) and merges the returned task (now carrying
+   * visit_id/booking_date/booking_end_date/visit) into both column and
+   * group state via applyTaskPatch, same targeted-merge approach every
+   * other card mutation in this file uses.
+   */
+  /**
+   * Returns the trade-insurance warning (or null) from the book-visit
+   * response — same non-blocking check every other booking path in the
+   * app surfaces (GanttChart's AddVisitForm, VisitBottomSheet); this
+   * was the one booking path that silently dropped it.
+   */
+  async function bookVisit(
+    taskId: string,
+    input: { phase_id: string; contact_id?: string | null; start_date: string; end_date: string }
+  ): Promise<string | null> {
+    const res = await fetch(`/api/board-tasks/${taskId}/book-visit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) throw new Error((await res.json()).error ?? "Could not book the visit.");
+    const { task: updated, insurance_warning } = await res.json();
+    applyTaskPatch(taskId, updated as Partial<BoardTaskCockpit>);
+    return insurance_warning ?? null;
+  }
+
+  /** Unlinks a card's booking without deleting the underlying visit — see DELETE /api/board-tasks/[id]/book-visit's doc comment. */
+  async function unlinkVisit(taskId: string) {
+    setError(null);
+    try {
+      const res = await fetch(`/api/board-tasks/${taskId}/book-visit`, { method: "DELETE" });
+      if (!res.ok) throw new Error((await res.json()).error ?? "Could not unlink the booking.");
+      applyTaskPatch(taskId, { visit_id: null, booking_date: null, booking_end_date: null, visit: null });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not unlink the booking.");
+    }
+  }
+
+  function applyTaskPatch(taskId: string, patch: Partial<BoardTaskCockpit>) {
     setColumns((cur) =>
       cur.map((c) => ({ ...c, tasks: c.tasks.map((t) => (t.id === taskId ? { ...t, ...patch } : t)) }))
     );
@@ -254,14 +307,34 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     );
   }
 
+  /**
+   * Board cockpit round — "completion prompts diary": whenever a card
+   * moves INTO a Done-like column, check lib/board-cockpit.ts's
+   * shouldPromptMilestoneDiary() (milestone-kind + previous column
+   * wasn't already Done) and, if it fires, open the
+   * MilestoneDiaryPrompt. Called from BOTH card-move paths — the
+   * Stacked/Grouped "Move to" dropdown & drag (via updateTaskField
+   * below) and the side-by-side kanban's native HTML5 drag-and-drop
+   * (via onDrop below) — since either can move a card into Done.
+   */
+  function maybePromptMilestoneDiary(task: BoardTaskCockpit, previousColumnId: string, nextColumnId: string) {
+    if (previousColumnId === nextColumnId) return;
+    const previousColumn = columnById.get(previousColumnId);
+    const nextColumn = columnById.get(nextColumnId);
+    if (!nextColumn) return;
+    if (shouldPromptMilestoneDiary(task.kind, previousColumn?.name ?? null, nextColumn.name)) {
+      setMilestonePrompt({ title: task.title });
+    }
+  }
+
   async function updateTaskField(
-    task: BoardTaskWithAssignees,
+    task: BoardTaskCockpit,
     patch: Record<string, unknown>,
-    refUpdate: Partial<BoardTaskWithAssignees>
+    refUpdate: Partial<BoardTaskCockpit>
   ) {
     const prevColumns = columns;
     const prevGroups = groups;
-    applyTaskPatch(task.id, { ...patch, ...refUpdate } as Partial<BoardTaskWithAssignees>);
+    applyTaskPatch(task.id, { ...patch, ...refUpdate } as Partial<BoardTaskCockpit>);
     // A column_id change (the Stacked layout's "Move to" dropdown and
     // drag-onto-a-section drop, per-row Fix Round A additions) moves
     // the task between column buckets — same targeted re-slot approach
@@ -271,6 +344,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     // see StackedColumnSection's own doc comment).
     if ("column_id" in patch) {
       const targetColumnId = patch.column_id as string;
+      maybePromptMilestoneDiary(task, task.column_id, targetColumnId);
       setColumns((cur) => {
         const withoutTask = cur.map((c) => ({ ...c, tasks: c.tasks.filter((t) => t.id !== task.id) }));
         return withoutTask.map((c) =>
@@ -301,7 +375,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     }
   }
 
-  async function deleteTask(task: BoardTaskWithAssignees) {
+  async function deleteTask(task: BoardTaskCockpit) {
     if (!confirm(`Remove card "${task.title}"?`)) return;
     const prevColumns = columns;
     const prevGroups = groups;
@@ -382,7 +456,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
    * /api/phases/[id], the exact same route Timeline's own edit panel
    * already uses), never board_groups itself — board_groups carries no
    * date columns of its own; `phase_start_date`/`phase_end_date` on
-   * BoardGroupWithTasks are a read-only projection of the linked
+   * BoardGroupCockpit are a read-only projection of the linked
    * phase's own dates (see that type's own doc comment). Optimistic,
    * reverts on failure — same pattern every other inline edit in this
    * file already uses. Only ever called for a group with `phase_id`
@@ -440,6 +514,8 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     const destColumn = columns.find((c) => c.id === targetColumnId);
     if (!destColumn) return;
 
+    maybePromptMilestoneDiary(task, task.column_id, targetColumnId);
+
     const destTasksWithoutDragged = destColumn.tasks.filter((t) => t.id !== taskId);
     const index = targetIndex === null ? destTasksWithoutDragged.length : targetIndex;
     const before = destTasksWithoutDragged[index - 1];
@@ -493,6 +569,23 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
         <p className="border border-red-700/40 bg-red-50 px-3 py-2 text-body text-red-700">
           {error}
         </p>
+      )}
+
+      {bookingTaskId && (
+        <BookVisitPanel
+          projectId={projectId}
+          onBook={(input) => bookVisit(bookingTaskId, input)}
+          onClose={() => setBookingTaskId(null)}
+        />
+      )}
+
+      {milestonePrompt && (
+        <MilestoneDiaryPrompt
+          projectId={projectId}
+          milestoneTitle={milestonePrompt.title}
+          onDismiss={() => setMilestonePrompt(null)}
+          onCreated={() => setMilestonePrompt(null)}
+        />
       )}
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#dcd6cc] pb-0">
@@ -623,6 +716,8 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               onAddTask={(title, assigneeIds) => addTask(column.id, title, assigneeIds)}
               onPatchTask={(task, patch, refUpdate) => updateTaskField(task, patch, refUpdate ?? {})}
               onDeleteTask={deleteTask}
+              onBookVisit={(taskId) => setBookingTaskId(taskId)}
+              onUnlinkVisit={unlinkVisit}
             />
           ))}
 
@@ -673,11 +768,15 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               group={group}
               columnById={columnById}
               teamById={teamById}
+              team={team}
               groups={groups}
               currentUserId={currentUserId}
               onRename={(name) => renameGroup(group.id, name)}
               onDelete={() => deleteGroup(group.id, group.name)}
               onPatchTask={(task, patch, refUpdate) => updateTaskField(task, patch, refUpdate ?? {})}
+              onDeleteTask={(task) => deleteTask(task)}
+              onBookVisit={(taskId) => setBookingTaskId(taskId)}
+              onUnlinkVisit={(taskId) => unlinkVisit(taskId)}
               onPatchPhaseDates={(patch) => group.phase_id && patchGroupPhaseDates(group.id, group.phase_id, patch)}
               onAddTask={(title, assigneeIds) => {
                 // "Three from Phillip — 6 July 2026 evening" item 3:
@@ -701,8 +800,12 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               tasks={allTasks.filter((t) => !t.phase_group_id)}
               columnById={columnById}
               teamById={teamById}
+              team={team}
               groups={groups}
               onPatchTask={(task, patch, refUpdate) => updateTaskField(task, patch, refUpdate ?? {})}
+              onDeleteTask={(task) => deleteTask(task)}
+              onBookVisit={(taskId) => setBookingTaskId(taskId)}
+              onUnlinkVisit={(taskId) => unlinkVisit(taskId)}
             />
           )}
 
@@ -771,15 +874,15 @@ function StackedColumnSection({
   onMoveTo,
   onAddTask,
 }: {
-  column: BoardColumnWithAssigneeTasks;
-  columns: BoardColumnWithAssigneeTasks[];
+  column: BoardColumnCockpit;
+  columns: BoardColumnCockpit[];
   teamById: Map<string, AssigneeSummary>;
   currentUserId: string;
   onDragStart: (taskId: string) => void;
   onDropOnColumn: () => void;
   onRename: (name: string) => void;
   onDelete: () => void;
-  onMoveTo: (task: BoardTaskWithAssignees, targetColumnId: string) => void;
+  onMoveTo: (task: BoardTaskCockpit, targetColumnId: string) => void;
   onAddTask: (title: string, assigneeIds: string[]) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
@@ -854,6 +957,7 @@ function StackedColumnSection({
               <th className="px-3 py-1.5 font-normal">Title</th>
               <th className="px-3 py-1.5 font-normal">Assignees</th>
               <th className="px-3 py-1.5 font-normal">Contact</th>
+              <th className="px-3 py-1.5 font-normal">Booking</th>
               <th className="px-3 py-1.5 font-normal">Due</th>
               <th className="px-3 py-1.5 font-normal">Move to</th>
             </tr>
@@ -868,15 +972,23 @@ function StackedColumnSection({
                   onDragStart={() => onDragStart(task.id)}
                   className="cursor-move border-b border-[#e5e0d6] last:border-b-0 hover:bg-nearwhite"
                 >
-                  <td className="px-3 py-2 text-body text-nearblack">{task.title}</td>
+                  <td className="px-3 py-2 text-body text-nearblack">
+                    <span className="flex items-center gap-1.5">
+                      {task.kind === "milestone" && <MilestoneDiamond />}
+                      {task.title}
+                    </span>
+                  </td>
                   <td className="px-3 py-2">
                     <AssigneeStack assignees={task.assignees} />
                   </td>
                   <td className="px-3 py-2 text-caption text-charcoal/60">{task.contact?.company ?? "—"}</td>
-                  <td className={clsx("px-3 py-2 text-caption", pastDue ? "text-red-700" : "text-charcoal/60")}>
-                    {task.due_date
-                      ? new Date(task.due_date + "T00:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" })
+                  <td className="px-3 py-2 text-caption !text-sand">
+                    {task.booking_date
+                      ? `${formatShortDate(task.booking_date)}${task.visit ? ` · ${BOOKING_STATUS_LABEL[task.visit.status]}` : ""}`
                       : "—"}
+                  </td>
+                  <td className={clsx("px-3 py-2 text-caption", pastDue ? "text-red-700" : "text-charcoal/60")}>
+                    {task.due_date ? formatShortDate(task.due_date) : "—"}
                   </td>
                   <td className="px-3 py-2">
                     <select
@@ -955,8 +1067,10 @@ function BoardColumnView({
   onAddTask,
   onPatchTask,
   onDeleteTask,
+  onBookVisit,
+  onUnlinkVisit,
 }: {
-  column: BoardColumnWithAssigneeTasks;
+  column: BoardColumnCockpit;
   team: AssigneeSummary[];
   teamById: Map<string, AssigneeSummary>;
   currentUserId: string;
@@ -965,8 +1079,10 @@ function BoardColumnView({
   onRename: (name: string) => void;
   onDelete: () => void;
   onAddTask: (title: string, assigneeIds: string[]) => void;
-  onPatchTask: (task: BoardTaskWithAssignees, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskWithAssignees>) => void;
-  onDeleteTask: (task: BoardTaskWithAssignees) => void;
+  onPatchTask: (task: BoardTaskCockpit, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskCockpit>) => void;
+  onDeleteTask: (task: BoardTaskCockpit) => void;
+  onBookVisit: (taskId: string) => void;
+  onUnlinkVisit: (taskId: string) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(column.name);
@@ -1052,6 +1168,8 @@ function BoardColumnView({
             onDropBefore={() => onDrop(column.id, i)}
             onPatch={(patch, refUpdate) => onPatchTask(task, patch, refUpdate)}
             onDelete={() => onDeleteTask(task)}
+            onBookVisit={() => onBookVisit(task.id)}
+            onUnlinkVisit={() => onUnlinkVisit(task.id)}
           />
         ))}
 
@@ -1155,27 +1273,32 @@ function BoardCard({
   onDropBefore,
   onPatch,
   onDelete,
+  onBookVisit,
+  onUnlinkVisit,
 }: {
-  task: BoardTaskWithAssignees;
+  task: BoardTaskCockpit;
   team: AssigneeSummary[];
   teamById: Map<string, AssigneeSummary>;
   onDragStart: () => void;
   onDropBefore: () => void;
-  onPatch: (patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskWithAssignees>) => void;
+  onPatch: (patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskCockpit>) => void;
   onDelete: () => void;
+  /** Board cockpit round — opens ProjectBoard's BookVisitPanel for this card. */
+  onBookVisit: () => void;
+  /** Board cockpit round — unlinks (does not delete) this card's booked visit. */
+  onUnlinkVisit: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const [contactPickerOpen, setContactPickerOpen] = useState(false);
   const [contacts, setContacts] = useState<Contact[]>([]);
 
   useEffect(() => {
-    if (!contactPickerOpen) return;
+    if (!expanded) return;
     fetch("/api/contacts")
       .then((r) => r.json())
       .then((body) => setContacts(body.contacts ?? []))
       .catch(() => {});
-  }, [contactPickerOpen]);
+  }, [expanded]);
 
   const pastDue = isPastDue(task.due_date);
 
@@ -1212,8 +1335,9 @@ function BoardCard({
       <button
         type="button"
         onClick={() => setExpanded((e) => !e)}
-        className="block w-full text-left text-body text-nearblack"
+        className="flex w-full items-center gap-1.5 text-left text-body text-nearblack"
       >
+        {task.kind === "milestone" && <MilestoneDiamond />}
         {task.title}
       </button>
 
@@ -1224,106 +1348,249 @@ function BoardCard({
             {task.contact.company}
           </span>
         )}
+        {/* Board cockpit round — booking_date/booking_end_date shown
+            distinctly from due_date (two-dates-per-card): the booking
+            window carries a live status badge from the linked visit. */}
+        {task.booking_date && (
+          <span className="label-caps border border-sand px-1.5 py-0.5 !text-sand" title="Booked trade visit window">
+            📅 {formatShortDate(task.booking_date)}
+            {task.booking_end_date && task.booking_end_date !== task.booking_date
+              ? `–${formatShortDate(task.booking_end_date)}`
+              : ""}
+            {task.visit ? ` · ${BOOKING_STATUS_LABEL[task.visit.status]}` : ""}
+          </span>
+        )}
         {task.due_date && (
-          <span className={clsx("text-caption", pastDue ? "text-red-700" : "text-charcoal/50")}>
+          <span className={clsx("text-caption", pastDue ? "text-red-700" : "text-charcoal/50")} title="Due date">
             {pastDue ? "⚠ " : ""}
-            {new Date(task.due_date + "T00:00:00").toLocaleDateString("en-AU", {
-              day: "numeric",
-              month: "short",
-            })}
+            {formatShortDate(task.due_date)}
           </span>
         )}
       </div>
 
       {expanded && (
-        <div className="mt-2 space-y-2 border-t border-[#dcd6cc] pt-2">
-          <textarea
-            defaultValue={task.description ?? ""}
-            placeholder="Description"
-            onBlur={(e) => {
-              const v = e.target.value.trim() || null;
-              if (v !== task.description) onPatch({ description: v });
-            }}
-            rows={2}
-            className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-body focus:border-nearblack focus:outline-none"
-          />
-
-          <div>
-            <p className="label-caps mb-1 !text-sand">Assigned</p>
-            <div className="flex flex-wrap gap-2">
-              {team.map((t) => (
-                <label key={t.id} className="flex items-center gap-1 text-caption text-charcoal/70">
-                  <input
-                    type="checkbox"
-                    checked={task.assignees.some((a) => a.id === t.id)}
-                    onChange={() => toggleAssignee(t.id)}
-                    className="h-3 w-3"
-                  />
-                  {t.full_name}
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              type="date"
-              defaultValue={task.due_date ?? ""}
-              onBlur={(e) => {
-                const v = e.target.value || null;
-                if (v !== task.due_date) onPatch({ due_date: v });
-              }}
-              className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none"
-            />
-            <button
-              type="button"
-              onClick={() => setContactPickerOpen((o) => !o)}
-              className="border border-[#c9c2b4] px-1.5 py-1 text-caption text-charcoal hover:border-nearblack"
-            >
-              {task.contact ? task.contact.company : "Link contact"}
-            </button>
-          </div>
-          {contactPickerOpen && (
-            <div className="max-h-32 overflow-y-auto border border-[#c9c2b4] bg-nearwhite">
-              <button
-                type="button"
-                onClick={() => {
-                  onPatch({ contact_id: null }, { contact: null });
-                  setContactPickerOpen(false);
-                }}
-                className="block w-full border-b border-[#e5e0d6] px-2 py-1 text-left text-caption text-charcoal/60 hover:bg-cream"
-              >
-                No link
-              </button>
-              {contacts.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => {
-                    onPatch(
-                      { contact_id: c.id },
-                      { contact: { id: c.id, company: c.company, contact_name: c.contact_name } }
-                    );
-                    setContactPickerOpen(false);
-                  }}
-                  className="block w-full border-b border-[#e5e0d6] px-2 py-1 text-left text-caption text-charcoal hover:bg-cream"
-                >
-                  {c.company}
-                </button>
-              ))}
-            </div>
-          )}
-          <button
-            type="button"
-            onClick={onDelete}
-            className="text-caption text-red-700/70 hover:text-red-700"
-          >
-            Remove card
-          </button>
-        </div>
+        <BoardTaskEditorBody
+          task={task}
+          team={team}
+          teamById={teamById}
+          contacts={contacts}
+          onPatch={onPatch}
+          onDelete={onDelete}
+          onBookVisit={onBookVisit}
+          onUnlinkVisit={onUnlinkVisit}
+        />
       )}
     </div>
   );
+}
+
+/**
+ * Board cockpit round — item 9 "Grouped-list edit parity": the FULL
+ * card editor body (description, assignees, due date, booking date,
+ * contact, milestone toggle, book-trade/unlink, remove), extracted out
+ * of BoardCard so BOTH the kanban card's expand-in-place editor AND the
+ * grouped-list row's expand-in-place editor (see GroupRows below) share
+ * the exact same component rather than the grouped-list view carrying
+ * a second, thinner, divergent editor (its previous inline
+ * due_date/status/phase-only cells were exactly this "two divergent
+ * implementations" the round brief called out to fix). Pure
+ * presentational props in, callbacks out — no drag/expand state of its
+ * own, that stays owned by each shell (BoardCard / GroupRows) since
+ * kanban and grouped-list want different trigger affordances around
+ * it (a draggable card shell vs. a table row).
+ *
+ * Field labels: "Due (to-do)" and "Booking date (works)" per this
+ * round's brief — distinguishing the task's own deadline from the
+ * booked trade-visit window at the editor level, not just the card's
+ * display chips (which already distinguished them via the icon).
+ * booking_date/booking_end_date are NOT directly editable inputs here
+ * (migration 029's board_tasks.visit_id comment: those two columns are
+ * only ever written via POST/DELETE .../book-visit so a card's booking
+ * state always has one auditable write path) — "editable from both
+ * editors" is satisfied via the Book trade / Unlink booking actions
+ * below, present in both BoardCard and GroupRows now.
+ */
+function BoardTaskEditorBody({
+  task,
+  team,
+  teamById,
+  contacts,
+  onPatch,
+  onDelete,
+  onBookVisit,
+  onUnlinkVisit,
+}: {
+  task: BoardTaskCockpit;
+  team: AssigneeSummary[];
+  teamById: Map<string, AssigneeSummary>;
+  contacts: Contact[];
+  onPatch: (patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskCockpit>) => void;
+  onDelete: () => void;
+  onBookVisit: () => void;
+  onUnlinkVisit: () => void;
+}) {
+  function toggleAssignee(id: string) {
+    const current = task.assignees.map((a) => a.id);
+    const next = current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+    onPatch(
+      { assignee_ids: next },
+      { assignees: next.map((x) => teamById.get(x)).filter((p): p is AssigneeSummary => !!p) }
+    );
+  }
+
+  return (
+    <div className="mt-2 space-y-2 border-t border-[#dcd6cc] pt-2">
+      <textarea
+        defaultValue={task.description ?? ""}
+        placeholder="Description"
+        onBlur={(e) => {
+          const v = e.target.value.trim() || null;
+          if (v !== task.description) onPatch({ description: v });
+        }}
+        rows={2}
+        className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-body focus:border-nearblack focus:outline-none"
+      />
+
+      <div>
+        <p className="label-caps mb-1 !text-sand">Assigned</p>
+        <div className="flex flex-wrap gap-2">
+          {team.map((t) => (
+            <label key={t.id} className="flex items-center gap-1 text-caption text-charcoal/70">
+              <input
+                type="checkbox"
+                checked={task.assignees.some((a) => a.id === t.id)}
+                onChange={() => toggleAssignee(t.id)}
+                className="h-3 w-3"
+              />
+              {t.full_name}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="flex flex-col gap-0.5">
+          <span className="label-caps !text-charcoal/40">Due (to-do)</span>
+          <input
+            type="date"
+            defaultValue={task.due_date ?? ""}
+            onBlur={(e) => {
+              const v = e.target.value || null;
+              if (v !== task.due_date) onPatch({ due_date: v });
+            }}
+            className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="label-caps !text-sand">Contact</span>
+          <ContactPicker
+            contacts={contacts}
+            selectedId={task.contact_id}
+            onSelect={(contactId) => {
+              const contact = contactId ? contacts.find((c) => c.id === contactId) ?? null : null;
+              onPatch(
+                { contact_id: contactId },
+                { contact: contact ? { id: contact.id, company: contact.company, contact_name: contact.contact_name } : null }
+              );
+            }}
+          />
+        </label>
+      </div>
+
+      {/* Board cockpit round — "Booking date (works)" — the booking
+          window here (booking_date/booking_end_date themselves are
+          only writable via Book trade/Unlink below, per migration
+          029's single-write-path discipline), so both dates are
+          visible side by side in the one editor even though only one
+          of them (due) is a free-typed input. */}
+      <div className="flex flex-col gap-0.5">
+        <span className="label-caps !text-sand">Booking date (works)</span>
+        {task.booking_date ? (
+          <span className="text-caption text-charcoal/70">
+            {formatShortDate(task.booking_date)}
+            {task.booking_end_date && task.booking_end_date !== task.booking_date
+              ? `–${formatShortDate(task.booking_end_date)}`
+              : ""}
+            {task.visit ? ` · ${BOOKING_STATUS_LABEL[task.visit.status]}` : ""}
+          </span>
+        ) : (
+          <span className="text-caption text-charcoal/40">Not booked — use &quot;Book trade&quot; below.</span>
+        )}
+      </div>
+
+      {/* Board cockpit round — milestone toggle: kind='milestone' renders as a diamond on the Gantt timeline and prompts a diary entry on completion (see ProjectBoard's maybePromptMilestoneDiary()). */}
+      <label className="flex items-center gap-2 text-caption text-charcoal/70">
+        <input
+          type="checkbox"
+          checked={task.kind === "milestone"}
+          onChange={(e) => onPatch({ kind: e.target.checked ? "milestone" : "task" }, { kind: e.target.checked ? "milestone" : "task" })}
+          className="h-3 w-3"
+        />
+        Milestone (shows on Timeline, prompts a diary entry when completed)
+      </label>
+
+      {/* Board cockpit round — book-trade-from-card + live status badge. */}
+      <div className="flex flex-wrap items-center gap-2 border-t border-[#e5e0d6] pt-2">
+        {task.visit ? (
+          <>
+            <span className="text-caption text-charcoal/70">
+              Booked: {formatShortDate(task.booking_date!)}
+              {task.booking_end_date && task.booking_end_date !== task.booking_date
+                ? `–${formatShortDate(task.booking_end_date)}`
+                : ""}{" "}
+              · {BOOKING_STATUS_LABEL[task.visit.status]}
+              {task.visit.contact ? ` · ${task.visit.contact.company}` : ""}
+            </span>
+            <button
+              type="button"
+              onClick={onUnlinkVisit}
+              className="text-caption text-charcoal/50 hover:text-red-700"
+            >
+              Unlink booking
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={onBookVisit}
+            className="border border-[#c9c2b4] px-1.5 py-1 text-caption text-charcoal hover:border-nearblack"
+          >
+            Book trade
+          </button>
+        )}
+      </div>
+
+      <button
+        type="button"
+        onClick={onDelete}
+        className="text-caption text-red-700/70 hover:text-red-700"
+      >
+        Remove card
+      </button>
+    </div>
+  );
+}
+
+/** Board cockpit round — the diamond marker shown inline on a milestone card's title, matching the same diamond shape used on the Gantt timeline (see components/gantt/GanttChart.tsx's milestone markers). */
+function MilestoneDiamond() {
+  return (
+    <span
+      title="Milestone"
+      className="inline-block h-2.5 w-2.5 shrink-0 rotate-45 border border-sand bg-sand/40"
+    />
+  );
+}
+
+const BOOKING_STATUS_LABEL: Record<string, string> = {
+  unconfirmed: "Unconfirmed",
+  confirmed: "Confirmed",
+  tentative: "Tentative",
+  declined: "Declined",
+  proposed_change: "Trade proposed a change",
+};
+
+function formatShortDate(dateStr: string): string {
+  return new Date(dateStr + "T00:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" });
 }
 
 // ------------------------------------------------------------
@@ -1334,23 +1601,35 @@ function GroupTable({
   group,
   columnById,
   teamById,
+  team,
   groups,
   currentUserId,
   onRename,
   onDelete,
   onPatchTask,
+  onDeleteTask,
+  onBookVisit,
+  onUnlinkVisit,
   onPatchPhaseDates,
   onAddTask,
 }: {
-  group: BoardGroupWithTasks;
-  columnById: Map<string, BoardColumnWithAssigneeTasks>;
+  group: BoardGroupCockpit;
+  columnById: Map<string, BoardColumnCockpit>;
   teamById: Map<string, AssigneeSummary>;
-  groups: BoardGroupWithTasks[];
+  /** Board cockpit round — item 9 parity: threaded through to GroupRows' shared BoardTaskEditorBody. */
+  team: AssigneeSummary[];
+  groups: BoardGroupCockpit[];
   /** Auto-assign-to-me default for the new composer below — same convention as StackedColumnSection's own currentUserId prop. */
   currentUserId: string;
   onRename: (name: string) => void;
   onDelete: () => void;
-  onPatchTask: (task: BoardTaskWithAssignees, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskWithAssignees>) => void;
+  onPatchTask: (task: BoardTaskCockpit, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskCockpit>) => void;
+  /** Board cockpit round — item 9 parity: "Remove card" from the shared editor. */
+  onDeleteTask: (task: BoardTaskCockpit) => void;
+  /** Board cockpit round — item 9 parity: "Book trade" from the shared editor. */
+  onBookVisit: (taskId: string) => void;
+  /** Board cockpit round — item 9 parity: "Unlink booking" from the shared editor. */
+  onUnlinkVisit: (taskId: string) => void;
   /** Round A "Board group date inputs" — omitted (or a no-op) for groups with no linked phase; the header only renders the inputs when group.phase_id is set (see JSX below). */
   onPatchPhaseDates: (patch: { start_date?: string; end_date?: string }) => void;
   /**
@@ -1429,7 +1708,17 @@ function GroupTable({
           ✕
         </button>
       </div>
-      <GroupRows tasks={group.tasks} columnById={columnById} teamById={teamById} groups={groups} onPatchTask={onPatchTask} />
+      <GroupRows
+        tasks={group.tasks}
+        columnById={columnById}
+        teamById={teamById}
+        team={team}
+        groups={groups}
+        onPatchTask={onPatchTask}
+        onDeleteTask={onDeleteTask}
+        onBookVisit={onBookVisit}
+        onUnlinkVisit={onUnlinkVisit}
+      />
       {/* "Three from Phillip — 6 July 2026 evening" item 3: inline
           "+ Add task" composer, one per group — mirrors
           StackedColumnSection's footer composer above (same title-only
@@ -1514,21 +1803,40 @@ function UngroupedTable({
   tasks,
   columnById,
   teamById,
+  team,
   groups,
   onPatchTask,
+  onDeleteTask,
+  onBookVisit,
+  onUnlinkVisit,
 }: {
-  tasks: BoardTaskWithAssignees[];
-  columnById: Map<string, BoardColumnWithAssigneeTasks>;
+  tasks: BoardTaskCockpit[];
+  columnById: Map<string, BoardColumnCockpit>;
   teamById: Map<string, AssigneeSummary>;
-  groups: BoardGroupWithTasks[];
-  onPatchTask: (task: BoardTaskWithAssignees, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskWithAssignees>) => void;
+  /** Board cockpit round — item 9 parity: threaded through to GroupRows' shared BoardTaskEditorBody. */
+  team: AssigneeSummary[];
+  groups: BoardGroupCockpit[];
+  onPatchTask: (task: BoardTaskCockpit, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskCockpit>) => void;
+  onDeleteTask: (task: BoardTaskCockpit) => void;
+  onBookVisit: (taskId: string) => void;
+  onUnlinkVisit: (taskId: string) => void;
 }) {
   return (
     <div className="border border-dashed border-[#c9c2b4]">
       <div className="border-b border-dashed border-[#c9c2b4] bg-transparent px-3 py-2">
         <p className="label-caps !text-charcoal/40">Ungrouped · {tasks.length}</p>
       </div>
-      <GroupRows tasks={tasks} columnById={columnById} teamById={teamById} groups={groups} onPatchTask={onPatchTask} />
+      <GroupRows
+        tasks={tasks}
+        columnById={columnById}
+        teamById={teamById}
+        team={team}
+        groups={groups}
+        onPatchTask={onPatchTask}
+        onDeleteTask={onDeleteTask}
+        onBookVisit={onBookVisit}
+        onUnlinkVisit={onUnlinkVisit}
+      />
     </div>
   );
 }
@@ -1537,18 +1845,48 @@ function GroupRows({
   tasks,
   columnById,
   teamById,
+  team,
   groups,
   onPatchTask,
+  onDeleteTask,
+  onBookVisit,
+  onUnlinkVisit,
 }: {
-  tasks: BoardTaskWithAssignees[];
-  columnById: Map<string, BoardColumnWithAssigneeTasks>;
+  tasks: BoardTaskCockpit[];
+  columnById: Map<string, BoardColumnCockpit>;
   teamById: Map<string, AssigneeSummary>;
-  groups: BoardGroupWithTasks[];
-  onPatchTask: (task: BoardTaskWithAssignees, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskWithAssignees>) => void;
+  /** Board cockpit round — item 9 parity: full assignee roster, needed by the shared BoardTaskEditorBody's "Assigned" checklist when a row expands. */
+  team: AssigneeSummary[];
+  groups: BoardGroupCockpit[];
+  onPatchTask: (task: BoardTaskCockpit, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskCockpit>) => void;
+  /** Board cockpit round — item 9 parity: "Remove card" action, matching kanban's BoardCard. */
+  onDeleteTask: (task: BoardTaskCockpit) => void;
+  /** Board cockpit round — item 9 parity: opens ProjectBoard's shared BookVisitPanel for this row's task. */
+  onBookVisit: (taskId: string) => void;
+  /** Board cockpit round — item 9 parity: unlinks (does not delete) this row's booked visit. */
+  onUnlinkVisit: (taskId: string) => void;
 }) {
+  // Board cockpit round — item 9 "Grouped-list edit parity": clicking a
+  // row expands the SAME full card editor component the kanban view
+  // uses (BoardTaskEditorBody), instead of only exposing due/status/
+  // phase as bare inline cells. Local expand state + a lazy contacts
+  // fetch on first expand — same shape as BoardCard's own expanded/
+  // contacts state, just owned per-row here instead of per-card.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [contacts, setContacts] = useState<Contact[]>([]);
+
+  useEffect(() => {
+    if (!expandedId) return;
+    fetch("/api/contacts")
+      .then((r) => r.json())
+      .then((body) => setContacts(body.contacts ?? []))
+      .catch(() => {});
+  }, [expandedId]);
+
   if (tasks.length === 0) {
     return <p className="px-3 py-3 text-caption text-charcoal/40">No cards yet.</p>;
   }
+  const columnOptions = [...columnById.values()];
   return (
     <table className="w-full text-left">
       <thead>
@@ -1556,6 +1894,7 @@ function GroupRows({
           <th className="px-3 py-1.5 font-normal">Title</th>
           <th className="px-3 py-1.5 font-normal">Assignees</th>
           <th className="px-3 py-1.5 font-normal">Contact</th>
+          <th className="px-3 py-1.5 font-normal">Booking</th>
           <th className="px-3 py-1.5 font-normal">Due</th>
           <th className="px-3 py-1.5 font-normal">Status</th>
           <th className="px-3 py-1.5 font-normal">Phase</th>
@@ -1564,38 +1903,102 @@ function GroupRows({
       <tbody>
         {tasks.map((task) => {
           const pastDue = isPastDue(task.due_date);
+          const isExpanded = expandedId === task.id;
           return (
-            <tr key={task.id} id={`focus-board_task-${task.id}`} className="border-b border-[#e5e0d6] last:border-b-0 hover:bg-nearwhite">
-              <td className="px-3 py-2 text-body text-nearblack">{task.title}</td>
-              <td className="px-3 py-2">
-                <AssigneeStack assignees={task.assignees} />
-              </td>
-              <td className="px-3 py-2 text-caption text-charcoal/60">{task.contact?.company ?? "—"}</td>
-              <td className={clsx("px-3 py-2 text-caption", pastDue ? "text-red-700" : "text-charcoal/60")}>
-                {task.due_date
-                  ? new Date(task.due_date + "T00:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" })
-                  : "—"}
-              </td>
-              <td className="px-3 py-2">
-                <span className="label-caps border border-[#c9c2b4] px-1.5 py-0.5 !text-charcoal/60">
-                  {columnById.get(task.column_id)?.name ?? "—"}
-                </span>
-              </td>
-              <td className="px-3 py-2">
-                <select
-                  value={task.phase_group_id ?? ""}
-                  onChange={(e) => onPatchTask(task, { phase_group_id: e.target.value || null }, { phase_group_id: e.target.value || null })}
-                  className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none"
-                >
-                  <option value="">Ungrouped</option>
-                  {groups.map((g) => (
-                    <option key={g.id} value={g.id}>
-                      {g.name}
-                    </option>
-                  ))}
-                </select>
-              </td>
-            </tr>
+            <Fragment key={task.id}>
+              <tr
+                id={`focus-board_task-${task.id}`}
+                className="border-b border-[#e5e0d6] last:border-b-0 hover:bg-nearwhite"
+              >
+                <td className="px-3 py-2 text-body text-nearblack">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedId(isExpanded ? null : task.id)}
+                    className="flex items-center gap-1.5 text-left hover:text-sand"
+                    title="Expand to edit the full card"
+                  >
+                    {task.kind === "milestone" && <MilestoneDiamond />}
+                    {task.title}
+                  </button>
+                </td>
+                <td className="px-3 py-2">
+                  <AssigneeStack assignees={task.assignees} />
+                </td>
+                <td className="px-3 py-2 text-caption text-charcoal/60">{task.contact?.company ?? "—"}</td>
+                <td className="px-3 py-2 text-caption !text-sand">
+                  {task.booking_date
+                    ? `${formatShortDate(task.booking_date)}${task.visit ? ` · ${BOOKING_STATUS_LABEL[task.visit.status]}` : ""}`
+                    : "—"}
+                </td>
+                <td className="px-3 py-2">
+                  {/* Grouped-list edit parity with kanban — due_date is
+                      editable here too (was display-only before this
+                      round), same inline date-input pattern GroupPhaseDateInputs
+                      already uses on this same view. */}
+                  <input
+                    type="date"
+                    defaultValue={task.due_date ?? ""}
+                    onBlur={(e) => {
+                      const v = e.target.value || null;
+                      if (v !== task.due_date) onPatchTask(task, { due_date: v }, { due_date: v });
+                    }}
+                    className={clsx(
+                      "border bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none",
+                      pastDue ? "border-red-700/40 text-red-700" : "border-[#c9c2b4] text-charcoal/60"
+                    )}
+                  />
+                </td>
+                <td className="px-3 py-2">
+                  {/* Grouped-list edit parity with kanban — status
+                      (column_id) is now an editable select here too,
+                      matching the Stacked kanban section's "Move to"
+                      dropdown, instead of a read-only chip. */}
+                  <select
+                    value={task.column_id}
+                    onChange={(e) => {
+                      if (e.target.value !== task.column_id) onPatchTask(task, { column_id: e.target.value }, { column_id: e.target.value });
+                    }}
+                    className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none"
+                  >
+                    {columnOptions.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+                <td className="px-3 py-2">
+                  <select
+                    value={task.phase_group_id ?? ""}
+                    onChange={(e) => onPatchTask(task, { phase_group_id: e.target.value || null }, { phase_group_id: e.target.value || null })}
+                    className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none"
+                  >
+                    <option value="">Ungrouped</option>
+                    {groups.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.name}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+              </tr>
+              {isExpanded && (
+                <tr className="border-b border-[#e5e0d6] bg-nearwhite last:border-b-0">
+                  <td colSpan={7} className="px-3 pb-3">
+                    <BoardTaskEditorBody
+                      task={task}
+                      team={team}
+                      teamById={teamById}
+                      contacts={contacts}
+                      onPatch={(patch, refUpdate) => onPatchTask(task, patch, refUpdate)}
+                      onDelete={() => onDeleteTask(task)}
+                      onBookVisit={() => onBookVisit(task.id)}
+                      onUnlinkVisit={() => onUnlinkVisit(task.id)}
+                    />
+                  </td>
+                </tr>
+              )}
+            </Fragment>
           );
         })}
       </tbody>

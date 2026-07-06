@@ -145,6 +145,22 @@ export function MaterialLinkControl({
         </p>
       )}
 
+      {/* Board cockpit round — "Waiting for Aria" state: the last
+          automated refresh (Bunnings/Wilbrad-type pages are VERIFIED to
+          hang on plain fetch) failed and is now waiting on Aria's
+          submit_material_price MCP tool or a hand-entered price
+          (PATCH, via the price field's own edit path elsewhere) to
+          clear it. Shown as a standalone caption rather than folded
+          into the price line above, since it's a distinct "outstanding
+          request" state, not just another price/refresh fact. */}
+      {selected?.price_refresh_status === "needs_aria" && (
+        <p className="border border-sand bg-cream px-2 py-1 text-caption !text-sand">
+          Waiting for Aria
+          {selected.price_refresh_requested_at &&
+            ` · requested ${new Date(selected.price_refresh_requested_at).toLocaleDateString("en-AU")}`}
+        </p>
+      )}
+
       {adding && (
         <div className="flex flex-wrap items-end gap-2 border-t border-[#e5e0d6] pt-2">
           <div>

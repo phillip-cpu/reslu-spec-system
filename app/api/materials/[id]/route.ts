@@ -100,8 +100,18 @@ export async function PATCH(
   // stale "refreshed 3 days ago" caption next to a number that was
   // just hand-typed over the scraped one. Only when price itself is
   // part of THIS patch (editing product_url alone shouldn't touch it).
+  //
+  // Board cockpit round (migration 029) — a price edit ALSO resolves
+  // any outstanding "needs_aria" refresh request the same way a
+  // successful automated scrape would (see that migration's PART 3
+  // comment): whether the new price came from a team member typing it
+  // in here or from Aria's submit_material_price MCP tool (which PATCHes
+  // this same route with { price, notes } — see mcp/src/index.mjs, this
+  // round), the outstanding request is now resolved either way.
   if ("price" in update) {
     update.price_refreshed_at = null;
+    update.price_refresh_status = null;
+    update.price_refresh_requested_at = null;
   }
 
   const { data: material, error } = await supabase

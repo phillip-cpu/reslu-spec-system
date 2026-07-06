@@ -98,15 +98,34 @@ export async function POST(
     }
   }
 
+  // Board cockpit round (migration 029) — "needs_aria" fallback: a
+  // successful refresh clears any outstanding request (price_refresh_
+  // status back to null); a FAILED refresh (newPrice === null, whether
+  // from a caught fetch/timeout error above or simply "no price found
+  // on the page") sets price_refresh_status='needs_aria' +
+  // price_refresh_requested_at=now() so Aria (MCP tool
+  // submit_material_price) or a human can pick it up — see that
+  // migration's PART 3 comment for the full "why" (Bunnings/Wilbrad-
+  // type pages are VERIFIED to hang on plain fetch, not hypothetical).
   const update: Record<string, unknown> =
     newPrice !== null
-      ? { price: newPrice, price_refreshed_at: new Date().toISOString() }
-      : {};
+      ? {
+          price: newPrice,
+          price_refreshed_at: new Date().toISOString(),
+          price_refresh_status: null,
+          price_refresh_requested_at: null,
+        }
+      : {
+          price_refresh_status: "needs_aria",
+          price_refresh_requested_at: new Date().toISOString(),
+        };
 
-  const { data: updated, error: updateError } =
-    Object.keys(update).length > 0
-      ? await supabase.from("materials").update(update).eq("id", id).select().single()
-      : { data: material, error: null };
+  const { data: updated, error: updateError } = await supabase
+    .from("materials")
+    .update(update)
+    .eq("id", id)
+    .select()
+    .single();
 
   if (updateError) {
     return NextResponse.json({ error: updateError.message }, { status: 500 });

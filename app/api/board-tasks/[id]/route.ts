@@ -10,7 +10,18 @@ const EDITABLE_FIELDS = new Set([
   "due_date",
   "sort",
   "phase_group_id",
+  // Board cockpit round (migration 029): milestone toggle. Note
+  // booking_date/booking_end_date/visit_id are deliberately NOT in this
+  // whitelist — those are only ever written via POST/DELETE
+  // /api/board-tasks/[id]/book-visit, which keeps the trio in sync with
+  // the linked trade_visits row (see that route's own doc comment);
+  // allowing a bare PATCH to touch them here would let a caller set a
+  // booking_date with no linked visit at all, or desync it from the
+  // visit's real dates.
+  "kind",
 ]);
+
+const VALID_KINDS = new Set(["task", "milestone"]);
 
 /**
  * PATCH /api/board-tasks/[id]
@@ -133,6 +144,11 @@ export async function PATCH(
         return NextResponse.json({ error: "title cannot be empty" }, { status: 400 });
       }
       update.title = trimmed;
+    } else if (key === "kind") {
+      if (typeof raw !== "string" || !VALID_KINDS.has(raw)) {
+        return NextResponse.json({ error: "kind must be 'task' or 'milestone'" }, { status: 400 });
+      }
+      update.kind = raw;
     } else if (typeof raw === "string") {
       update[key] = raw.trim() || null;
     } else {

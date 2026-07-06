@@ -32,6 +32,10 @@ export interface Material {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  /** Board cockpit round (migration 029) — null (no outstanding request) or 'needs_aria' (last automated refresh failed/timed out, waiting on Aria/a human — see app/api/materials/[id]/refresh-price/route.ts). */
+  price_refresh_status: "needs_aria" | null;
+  /** Board cockpit round (migration 029) — timestamp of the failed refresh attempt that set price_refresh_status. Null whenever price_refresh_status is null. */
+  price_refresh_requested_at: string | null;
 }
 
 export interface MaterialsListResponse {

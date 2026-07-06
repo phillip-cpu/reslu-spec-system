@@ -905,6 +905,86 @@ const TOOLS = [
       return apiFetch("/api/design-tasks", { method: "POST", body: JSON.stringify(body) });
     },
   },
+  // ------------------------------------------------------------
+  // Board cockpit round (7 July 2026) — "Aria booking-chase attention
+  // feed 'bookings_overdue' + MCP tool book_trade_visit." Both thin
+  // fetches like every tool above — the overdue-chase rule
+  // (lib/board-cockpit.ts computeBookingsOverdue) and the booking
+  // validation (phase/contact/date checks) live server-side, never
+  // duplicated here.
+  // ------------------------------------------------------------
+  {
+    name: "get_bookings_overdue",
+    description:
+      "Aria's booking-chase attention feed: board cards with an overdue, still-unconfirmed trade booking (booking_date in the past, linked visit status still unconfirmed/tentative/proposed_change), or an overdue milestone card (kind='milestone' with a past due_date). Use this to find bookings that need chasing across ALL projects — no project_id filter, this is a cross-project feed like get_needs_attention.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    handler: async () => apiFetch("/api/board-tasks/attention"),
+  },
+  {
+    name: "book_trade_visit",
+    description:
+      "Book a trade visit directly from a board card (Board cockpit round). Creates a trade_visits row under the given phase and links it to the card (card.visit_id), also stamping the card's booking_date/booking_end_date so its status badge shows immediately. Fails if the card already has a booking linked — unlink it first (not exposed as an Aria tool; ask a team member to unlink from the Board UI) before rebooking. phase_id must belong to the same project as the card and must not be the Site Setup umbrella phase.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string", description: "board_tasks UUID (the card to book against)" },
+        phase_id: { type: "string", description: "schedule_phases UUID — the phase this visit belongs to (must not be the Site Setup umbrella phase)" },
+        contact_id: { type: "string", description: "Trade contact UUID, optional" },
+        start_date: { type: "string", description: "ISO date, YYYY-MM-DD" },
+        end_date: { type: "string", description: "ISO date, YYYY-MM-DD, same day or after start_date" },
+        arrival_slot: { type: "string", enum: ["first_thing", "midday", "afternoon"], description: "Optional nominated arrival slot" },
+        arrival_time: { type: "string", description: "Optional specific time, HH:MM:SS, overrides arrival_slot for display" },
+        notes: { type: "string", description: "Optional internal notes for the visit" },
+      },
+      required: ["task_id", "phase_id", "start_date", "end_date"],
+      additionalProperties: false,
+    },
+    handler: async ({ task_id, ...body }) =>
+      apiFetch(`/api/board-tasks/${task_id}/book-visit`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+  },
+  // ------------------------------------------------------------
+  // Board cockpit round (7 July 2026) — "Bunnings/blocked-site
+  // pricing" loop. bunnings.com.au and wilbrad.com.au are VERIFIED to
+  // hang on a plain server-side fetch (not hypothetical) — POST
+  // /api/materials/[id]/refresh-price now flags this instead of
+  // failing silently (materials.price_refresh_status='needs_aria'),
+  // and these two tools close the loop: one to see what's waiting, one
+  // to resolve it. Same thin-fetch pattern as every tool above — no
+  // business logic duplicated here.
+  // ------------------------------------------------------------
+  {
+    name: "get_materials_needing_aria",
+    description:
+      "Materials whose last automated price refresh failed and is waiting on Aria (price_refresh_status='needs_aria') — typically because the supplier's product page hangs on a plain fetch (Bunnings/Wilbrad-type sites are known to do this). Use this to find pricing gaps to fill, then resolve each with submit_material_price.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    handler: async () => apiFetch("/api/materials/attention"),
+  },
+  {
+    name: "submit_material_price",
+    description:
+      "Supply a price for a material whose automated refresh failed (see get_materials_needing_aria). Updates the material's price and clears its 'needs_aria' outstanding-request state, the same as a successful automated scrape would. source_note, if given, REPLACES the material's notes field (materials have a single flat notes field, not an append-only log like item notes) — mention where the price came from (e.g. 'Bunnings product page, priced-checked by phone 7 Jul').",
+    inputSchema: {
+      type: "object",
+      properties: {
+        material_id: { type: "string", description: "materials UUID" },
+        price: { type: "number", description: "New price, in dollars" },
+        source_note: { type: "string", description: "Optional — where this price came from. Replaces the material's notes field." },
+      },
+      required: ["material_id", "price"],
+      additionalProperties: false,
+    },
+    handler: async ({ material_id, price, source_note }) => {
+      const patch = { price };
+      if (source_note) patch.notes = source_note;
+      return apiFetch(`/api/materials/${material_id}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      });
+    },
+  },
 ];
 
 const toolsByName = new Map(TOOLS.map((t) => [t.name, t]));
