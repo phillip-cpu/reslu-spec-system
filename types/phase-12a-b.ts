@@ -38,8 +38,13 @@ import type { BoardColumn, BoardTask, ContactSummary, Profile, Project, ProjectW
 // `alias` uses one of these intersection types instead.
 // ------------------------------------------------------------
 
-export type ProjectWithAlias = Project & { alias: string | null };
-export type ProjectWithCountsAndAlias = ProjectWithCounts & { alias: string | null };
+// job_number (migration 028_job_numbers.sql, "Three from Phillip — 6
+// July 2026 evening" item 2) is added here for the same reason as
+// alias above — types/index.ts is out of this task's edit boundary —
+// and reuses the exact same intersection-type pattern rather than
+// introducing a third parallel convention.
+export type ProjectWithAlias = Project & { alias: string | null; job_number: string | null };
+export type ProjectWithCountsAndAlias = ProjectWithCounts & { alias: string | null; job_number: string | null };
 
 // ------------------------------------------------------------
 // Board v2 — multi-assignee
@@ -88,6 +93,20 @@ export interface BoardGroup {
 /** A board_groups row with its (non-deleted) tasks nested — Grouped list view. */
 export interface BoardGroupWithTasks extends BoardGroup {
   tasks: BoardTaskWithAssignees[];
+  /**
+   * Round A "Board owns dates, Timeline is the visual" — the linked
+   * schedule_phases row's own start_date/end_date (GET
+   * /api/projects/[id]/board merges these in via a lightweight second
+   * query keyed by every group's phase_id, see that route's doc
+   * comment). Both null when phase_id is null (unlinked/legacy group —
+   * the Grouped-list header renders no date inputs for these, per this
+   * round's brief) — never independently editable state on
+   * board_groups itself; PATCHing them goes through the EXISTING PATCH
+   * /api/phases/[id] route, same single source of truth THE INVARIANT
+   * already established for `name` (see that route's own doc comment).
+   */
+  phase_start_date: string | null;
+  phase_end_date: string | null;
 }
 
 export interface BoardColumnWithAssigneeTasks extends BoardColumn {

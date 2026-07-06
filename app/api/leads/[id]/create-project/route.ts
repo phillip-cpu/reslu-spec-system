@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
+import { nextJobNumber } from "@/lib/job-number";
 import type { Lead, Project } from "@/types";
 
 export const runtime = "nodejs";
@@ -109,24 +110,50 @@ export async function POST(
   const clientName = typedLead.first_name
     ? `${typedLead.first_name} ${surname}`.trim()
     : surname;
+  // Captured outside insertProject() below — TS narrowing on `info`
+  // (from the `if (!info)` guard above) doesn't propagate into a
+  // nested function's body, so this closure needs its own
+  // already-non-null reference.
+  const createdBy = info.userId;
 
-  const { data: project, error: projectError } = await supabase
-    .from("projects")
-    .insert({
-      name: typedLead.surname_project,
-      client_name: clientName,
-      client_email: typedLead.email || null,
-      client_phone: typedLead.phone || null,
-      address: typedLead.location || null,
-      budget: typedLead.construction_value ?? null,
-      lead_id: typedLead.id,
-      created_by: info.userId,
-    })
-    .select()
-    .single();
+  // Job number (migration 028_job_numbers.sql, BUILD-SPEC.md "Three
+  // from Phillip — 6 July 2026 evening" item 2): both project-creation
+  // paths must generate one — this is the second path (the first is
+  // POST /api/projects). Retry once on a unique-violation race, same
+  // pattern as that route.
+  async function insertProject(jobNumber: string) {
+    return supabase
+      .from("projects")
+      .insert({
+        name: typedLead.surname_project,
+        client_name: clientName,
+        client_email: typedLead.email || null,
+        client_phone: typedLead.phone || null,
+        address: typedLead.location || null,
+        budget: typedLead.construction_value ?? null,
+        lead_id: typedLead.id,
+        created_by: createdBy,
+        job_number: jobNumber,
+      })
+      .select()
+      .single();
+  }
+
+  let jobNumber = await nextJobNumber(supabase);
+  let { data: project, error: projectError } = await insertProject(jobNumber);
+
+  if (projectError && projectError.code === "23505") {
+    jobNumber = await nextJobNumber(supabase);
+    ({ data: project, error: projectError } = await insertProject(jobNumber));
+  }
 
   if (projectError) {
-    return NextResponse.json({ error: projectError.message }, { status: 500 });
+    const status = projectError.code === "23505" ? 409 : 500;
+    const message =
+      projectError.code === "23505"
+        ? `Job number "${jobNumber}" is already in use by another project.`
+        : projectError.message;
+    return NextResponse.json({ error: message }, { status });
   }
 
   const { data: updatedLead, error: linkError } = await supabase

@@ -82,6 +82,18 @@ This downloads everything the app needs. It can take a few minutes the first tim
    - `supabase/migrations/014_leads.sql` (Leads pipeline: `leads` +
      `lead_stage_events` tables, `projects.lead_id` link column — see
      `docs/API.md` §"Leads pipeline — Week 10" and "Leads + Aria" below)
+   - ... migrations 015–027 (see `docs/API.md`'s dated sections for
+     each — Trade visits & Timeline v2, Portal v2/diary/gallery,
+     My Work/Board v2/housekeeping, Office board, Insurance flag,
+     Design Framework, Fix Round A, Round A, Round B)
+   - `supabase/migrations/028_job_numbers.sql` (adds `projects.job_number`
+     — auto-generated 3-digit job number per project, unique;
+     **backfills existing projects sequentially by creation date, and
+     specifically sets any project literally named "Goldsworthy" to
+     `026`** — that's their real pre-existing job number, not a
+     placeholder, so don't rename the demo project away from
+     "Goldsworthy" before running this migration if you want that
+     backfill rule to apply to it)
    - `supabase/seed.sql` (adds the category codes and a demo project)
    - `supabase/seed_contacts.sql` (optional — Address Book seed data
      parsed from RESLU's Monday.com export, ~109 companies across 30
@@ -458,6 +470,50 @@ admin enforcement for financial fields is now in place project-wide
   — codes are sticky and never auto-renumber; see `docs/API.md`'s
   "Small round" section). The item-code edit UI itself is a follow-up
   — see `docs/HANDOFF-code-editing.md`.
+
+- **Round A (6 July 2026)** — Timeline bars are now drag/resize
+  interactive (day-snapped, optimistic PATCH) with a right-click
+  context menu (edit dates, shift ±1 week, book trade, change colour,
+  add phase at a clicked week — long-press on touch); the Board's
+  Grouped-list view gained compact start/end date inputs on
+  phase-linked group headers (PATCHes the same phase Timeline edits);
+  and the project tab bar now animates a sliding underline instead of
+  a static border. See `docs/API.md`'s "Round A" section for the full
+  breakdown.
+
+- **Round B (6 July 2026)** — Spec-register items can now link to a
+  measurement (Areas & Measurements) so their quantity is DERIVED
+  (value × wastage%, coverage-converted to boxes/lengths) instead of
+  hand-typed — same UX the Estimate module's cost lines already had,
+  now on items too, wired into the Pricing & Procurement view (Spec
+  view follow-up documented in `docs/HANDOFF-item-qty-links.md`); the
+  FF&E rollup uses this derived quantity when a link is present. New
+  global **materials price list** (`/api/materials`, with a
+  "Refresh price" button that reuses the item scraper's price
+  extraction) backs two new **Calculators** — timber frame (studs,
+  plates, noggins, jack studs/lintels, greedy bin-packing onto stock
+  lengths) and plasterboard (net area → sheets) — in a new
+  Calculators tab on the Estimate workspace, each able to insert its
+  result straight in as a real estimate line. See `docs/API.md`'s
+  "Round B" section for the full breakdown.
+
+- **Round — focus links, job numbers, grouped add (6 July 2026
+  evening)**. Migration `028_job_numbers.sql`. **Auto job numbers**:
+  every project gets a 3-digit number (`#026` style) auto-assigned on
+  creation (rolls to 4 digits naturally past 999), overridable in
+  Settings, shown muted next to the project name in the header and
+  dashboard card, and printed as "Project No. 026" on both the FF&E
+  schedule PDF (cover + footer) and the SOW PDF cover (replacing the
+  old UUID-prefix stand-in). **My Work focus deep-links**: clicking a
+  My Work item now scrolls straight to that exact card/row on the
+  target page and pulses a sand outline around it for two seconds
+  (board tasks, office tasks, diary drafts, trade proposals, design
+  tasks; item/register rows are an interim wire-up — see
+  `docs/HANDOFF-focus-register.md`). **Grouped-list add-task**: each
+  phase group in the Board's Grouped list view now has its own inline
+  "+ Add task" composer (previously only the kanban columns did). See
+  `docs/API.md`'s "Three from Phillip — 6 July 2026 evening" section
+  for the full breakdown.
 
 ## Cron jobs — one still needs wiring up (Phase 12a-B)
 

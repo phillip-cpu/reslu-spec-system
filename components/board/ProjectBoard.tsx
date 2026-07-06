@@ -5,6 +5,7 @@ import clsx from "clsx";
 import type {
   AssigneeSummary,
   BoardColumnWithAssigneeTasks,
+  BoardGroup,
   BoardGroupWithTasks,
   BoardTaskWithAssignees,
 } from "@/types/phase-12a-b";
@@ -80,7 +81,8 @@ function isPastDue(dueDate: string | null): boolean {
  * override before submitting (BUILD-SPEC.md "Board v2" point 1).
  */
 export function ProjectBoard({ projectId, initialColumns, initialGroups, team, currentUserId }: Props) {
-  const [view, setView] = useState<"kanban" | "grouped">("kanban");
+  // Grouped list (phases) is the daily-driver view — Phillip, 6 Jul.
+  const [view, setView] = useState<"kanban" | "grouped">("grouped");
   const [layout, setLayout] = useState<BoardLayoutMode>("stacked");
   const [columns, setColumns] = useState<BoardColumnWithAssigneeTasks[]>(initialColumns);
   const [groups, setGroups] = useState<BoardGroupWithTasks[]>(initialGroups);
@@ -120,7 +122,15 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
         const res = await fetch(`/api/projects/${projectId}/board/groups/seed`, { method: "POST" });
         if (res.ok) {
           const { groups: seeded } = await res.json();
-          setGroups(seeded.map((g: BoardGroupWithTasks) => ({ ...g, tasks: [] })));
+          // The seed route returns bare BoardGroup rows (no nested
+          // tasks/phase dates — a freshly seeded group has neither yet).
+          // Round A's phase_start_date/phase_end_date default to null
+          // here; they're populated properly on the NEXT full board GET
+          // (e.g. a page reload), same as `tasks: []` already did before
+          // this round for a brand new group.
+          setGroups(
+            seeded.map((g: BoardGroup) => ({ ...g, tasks: [], phase_start_date: null, phase_end_date: null }))
+          );
         }
       } catch {
         // Non-fatal — the grouped view still renders with an
@@ -181,13 +191,31 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     }
   }
 
-  async function addTask(columnId: string, title: string, assigneeIds: string[]) {
+  /**
+   * "Three from Phillip — 6 July 2026 evening" item 3 (grouped-list
+   * add-task): `phaseGroupId` is a new optional 4th param — every
+   * existing call site (both kanban composers) omits it, so behaviour
+   * there is unchanged. When provided (the new grouped-view composer,
+   * see GroupTable below), the created task is ALSO appended into
+   * `groups` state so it shows up immediately in the grouped list
+   * without a reload — `columns` state is still updated too (a task
+   * always belongs to a status column regardless of which view created
+   * it), matching how `patchTask`'s phase_group_id branch already keeps
+   * both `columns` and `groups` in sync for existing tasks (see that
+   * function's own `targetGroupId` handling below).
+   */
+  async function addTask(columnId: string, title: string, assigneeIds: string[], phaseGroupId?: string) {
     setError(null);
     try {
       const res = await fetch(`/api/projects/${projectId}/board`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ column_id: columnId, title, assignee_ids: assigneeIds }),
+        body: JSON.stringify({
+          column_id: columnId,
+          title,
+          assignee_ids: assigneeIds,
+          ...(phaseGroupId ? { phase_group_id: phaseGroupId } : {}),
+        }),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? "Could not add card.");
       const { task } = await res.json();
@@ -196,6 +224,11 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
       setColumns((cur) =>
         cur.map((c) => (c.id === columnId ? { ...c, tasks: [...c.tasks, withRefs] } : c))
       );
+      if (phaseGroupId) {
+        setGroups((cur) =>
+          cur.map((g) => (g.id === phaseGroupId ? { ...g, tasks: [...g.tasks, withRefs] } : g))
+        );
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not add card.");
     }
@@ -293,8 +326,15 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
         body: JSON.stringify({ name: newGroupName.trim() }),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? "Could not add phase group.");
-      const { group } = await res.json();
-      setGroups((cur) => [...cur, { ...group, tasks: [] }]);
+      const { group }: { group: BoardGroup } = await res.json();
+      // POST .../board/groups always links (or creates) a schedule_phases
+      // row server-side (see that route's own "unification invariant"
+      // doc comment) but its response is a bare board_groups row — no
+      // joined phase dates. Round A's compact date inputs simply show
+      // nothing for this brand-new group until the next full board GET
+      // (e.g. a reload), same "populates properly on next load" gap the
+      // groups/seed path already has above.
+      setGroups((cur) => [...cur, { ...group, tasks: [], phase_start_date: null, phase_end_date: null }]);
       setNewGroupName("");
       setAddingGroup(false);
     } catch (err) {
@@ -333,6 +373,52 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
           tasks: c.tasks.map((t) => (t.phase_group_id === groupId ? { ...t, phase_group_id: null } : t)),
         }))
       );
+    }
+  }
+
+  /**
+   * Round A "Board group date inputs" — a group's compact start/end
+   * date inputs PATCH the LINKED schedule_phases row directly (PATCH
+   * /api/phases/[id], the exact same route Timeline's own edit panel
+   * already uses), never board_groups itself — board_groups carries no
+   * date columns of its own; `phase_start_date`/`phase_end_date` on
+   * BoardGroupWithTasks are a read-only projection of the linked
+   * phase's own dates (see that type's own doc comment). Optimistic,
+   * reverts on failure — same pattern every other inline edit in this
+   * file already uses. Only ever called for a group with `phase_id`
+   * set (the header only renders these inputs in that case — see
+   * GroupTable below), so `phaseId` here is never null in practice.
+   */
+  async function patchGroupPhaseDates(groupId: string, phaseId: string, patch: { start_date?: string; end_date?: string }) {
+    const prev = groups;
+    setGroups((cur) =>
+      cur.map((g) =>
+        g.id === groupId
+          ? {
+              ...g,
+              phase_start_date: patch.start_date ?? g.phase_start_date,
+              phase_end_date: patch.end_date ?? g.phase_end_date,
+            }
+          : g
+      )
+    );
+    setError(null);
+    try {
+      const res = await fetch(`/api/phases/${phaseId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? "Could not update phase dates.");
+      const { phase: updated } = await res.json();
+      setGroups((cur) =>
+        cur.map((g) =>
+          g.id === groupId ? { ...g, phase_start_date: updated.start_date, phase_end_date: updated.end_date } : g
+        )
+      );
+    } catch (err) {
+      setGroups(prev);
+      setError(err instanceof Error ? err.message : "Could not update phase dates.");
     }
   }
 
@@ -588,9 +674,25 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               columnById={columnById}
               teamById={teamById}
               groups={groups}
+              currentUserId={currentUserId}
               onRename={(name) => renameGroup(group.id, name)}
               onDelete={() => deleteGroup(group.id, group.name)}
               onPatchTask={(task, patch, refUpdate) => updateTaskField(task, patch, refUpdate ?? {})}
+              onPatchPhaseDates={(patch) => group.phase_id && patchGroupPhaseDates(group.id, group.phase_id, patch)}
+              onAddTask={(title, assigneeIds) => {
+                // "Three from Phillip — 6 July 2026 evening" item 3:
+                // default column = first column (columns is already
+                // ordered by the server query — see this file's own
+                // research note on there being no prior "first column"
+                // shortcut; this is the new one, scoped to this single
+                // call site only).
+                const defaultColumnId = columns[0]?.id;
+                if (!defaultColumnId) {
+                  setError("Add a status column before adding tasks.");
+                  return;
+                }
+                addTask(defaultColumnId, title, assigneeIds, group.id);
+              }}
             />
           ))}
 
@@ -1088,6 +1190,7 @@ function BoardCard({
 
   return (
     <div
+      id={`focus-board_task-${task.id}`}
       draggable
       onDragStart={onDragStart}
       onDragOver={(e) => {
@@ -1232,53 +1335,177 @@ function GroupTable({
   columnById,
   teamById,
   groups,
+  currentUserId,
   onRename,
   onDelete,
   onPatchTask,
+  onPatchPhaseDates,
+  onAddTask,
 }: {
   group: BoardGroupWithTasks;
   columnById: Map<string, BoardColumnWithAssigneeTasks>;
   teamById: Map<string, AssigneeSummary>;
   groups: BoardGroupWithTasks[];
+  /** Auto-assign-to-me default for the new composer below — same convention as StackedColumnSection's own currentUserId prop. */
+  currentUserId: string;
   onRename: (name: string) => void;
   onDelete: () => void;
   onPatchTask: (task: BoardTaskWithAssignees, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskWithAssignees>) => void;
+  /** Round A "Board group date inputs" — omitted (or a no-op) for groups with no linked phase; the header only renders the inputs when group.phase_id is set (see JSX below). */
+  onPatchPhaseDates: (patch: { start_date?: string; end_date?: string }) => void;
+  /**
+   * "Three from Phillip — 6 July 2026 evening" item 3: inline
+   * "+ Add task" composer per group, reusing the exact same
+   * title-only-input shape as the stacked-kanban composer
+   * (StackedColumnSection above) rather than the richer side-by-side
+   * one with an assignee picker — this view's rows are already dense
+   * (title/assignees/contact/due/status/phase columns), so a minimal
+   * composer matching the simpler of the two existing ones keeps the
+   * footer from competing with the table for attention. The caller
+   * (this file's main return block) resolves the default column +
+   * calls addTask with this group's id as phaseGroupId.
+   */
+  onAddTask: (title: string, assigneeIds: string[]) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(group.name);
+  const [composing, setComposing] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+
+  function submitNewTask(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newTitle.trim()) return;
+    onAddTask(newTitle.trim(), [currentUserId]);
+    setNewTitle("");
+    setComposing(false);
+  }
 
   return (
     <div className="border border-[#dcd6cc]">
-      <div className="flex items-center justify-between gap-2 border-b border-[#dcd6cc] bg-offwhite px-3 py-2">
-        {renaming ? (
-          <input
-            autoFocus
-            value={nameDraft}
-            onChange={(e) => setNameDraft(e.target.value)}
-            onBlur={() => {
-              setRenaming(false);
-              if (nameDraft.trim() && nameDraft.trim() !== group.name) onRename(nameDraft.trim());
-            }}
-            onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-            className="flex-1 border border-nearblack bg-nearwhite px-2 py-1 text-subhead text-nearblack focus:outline-none"
-          />
-        ) : (
-          <button
-            type="button"
-            onClick={() => {
-              setNameDraft(group.name);
-              setRenaming(true);
-            }}
-            className="label-caps !text-nearblack hover:!text-sand"
-          >
-            {group.name} · {group.tasks.length}
-          </button>
-        )}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#dcd6cc] bg-offwhite px-3 py-2">
+        <div className="flex flex-wrap items-center gap-3">
+          {renaming ? (
+            <input
+              autoFocus
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onBlur={() => {
+                setRenaming(false);
+                if (nameDraft.trim() && nameDraft.trim() !== group.name) onRename(nameDraft.trim());
+              }}
+              onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+              className="flex-1 border border-nearblack bg-nearwhite px-2 py-1 text-subhead text-nearblack focus:outline-none"
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setNameDraft(group.name);
+                setRenaming(true);
+              }}
+              className="label-caps !text-nearblack hover:!text-sand"
+            >
+              {group.name} · {group.tasks.length}
+            </button>
+          )}
+          {/* Round A "Board owns dates, Timeline is the visual" — compact
+              start/end inputs, ONLY for groups linked to a phase
+              (phase_id present); unlinked/legacy groups render nothing
+              extra here, per this round's brief. PATCHes the linked
+              phase directly (PATCH /api/phases/[id]) via
+              onPatchPhaseDates, optimistic — same single-source-of-truth
+              path Timeline's own phase edit panel already uses, so a
+              date changed here shows up on the Timeline tab and vice
+              versa without any extra sync code. */}
+          {group.phase_id && (
+            <GroupPhaseDateInputs
+              startDate={group.phase_start_date}
+              endDate={group.phase_end_date}
+              onPatch={onPatchPhaseDates}
+            />
+          )}
+        </div>
         <button type="button" onClick={onDelete} className="text-caption text-charcoal/40 hover:text-red-700">
           ✕
         </button>
       </div>
       <GroupRows tasks={group.tasks} columnById={columnById} teamById={teamById} groups={groups} onPatchTask={onPatchTask} />
+      {/* "Three from Phillip — 6 July 2026 evening" item 3: inline
+          "+ Add task" composer, one per group — mirrors
+          StackedColumnSection's footer composer above (same title-only
+          input + Add/Cancel shape), reusing this file's single addTask()
+          mutator with this group's id preset as phase_group_id (see the
+          onAddTask wiring at this component's call site). */}
+      <div className="border-t border-[#e5e0d6] px-3 py-1.5">
+        {composing ? (
+          <form onSubmit={submitNewTask} className="flex gap-2">
+            <input
+              autoFocus
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              onKeyDown={(e) => e.key === "Escape" && setComposing(false)}
+              placeholder="Task title"
+              className="flex-1 border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-body focus:border-nearblack focus:outline-none"
+            />
+            <button type="submit" className="border border-nearblack px-2 py-1 text-caption text-nearblack hover:bg-nearblack hover:text-white">
+              Add
+            </button>
+            <button type="button" onClick={() => { setComposing(false); setNewTitle(""); }} className="text-caption text-charcoal/50 hover:text-nearblack">
+              Cancel
+            </button>
+          </form>
+        ) : (
+          <button type="button" onClick={() => setComposing(true)} className="w-full px-1 py-1 text-left text-caption text-charcoal/50 hover:text-nearblack">
+            + Add task
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Round A "Board group date inputs" — compact start/end date pair
+ * shown next to a phase-linked group's name in the Grouped-list header.
+ * Local draft state + onBlur/onChange commit, same interaction pattern
+ * every other inline date field in this codebase uses (see
+ * GanttChart.tsx's PhaseEditPanel start/end inputs) — kept as its own
+ * small component only because GroupTable's header needed re-syncing
+ * local drafts whenever the group's phase dates change from elsewhere
+ * (e.g. a Timeline drag on the SAME phase, next board refetch).
+ */
+function GroupPhaseDateInputs({
+  startDate,
+  endDate,
+  onPatch,
+}: {
+  startDate: string | null;
+  endDate: string | null;
+  onPatch: (patch: { start_date?: string; end_date?: string }) => void;
+}) {
+  const [start, setStart] = useState(startDate ?? "");
+  const [end, setEnd] = useState(endDate ?? "");
+
+  useEffect(() => setStart(startDate ?? ""), [startDate]);
+  useEffect(() => setEnd(endDate ?? ""), [endDate]);
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <input
+        type="date"
+        value={start}
+        onChange={(e) => setStart(e.target.value)}
+        onBlur={() => start && start !== startDate && onPatch({ start_date: start })}
+        className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-0.5 text-caption focus:border-nearblack focus:outline-none"
+      />
+      <span className="text-caption text-charcoal/40">→</span>
+      <input
+        type="date"
+        value={end}
+        onChange={(e) => setEnd(e.target.value)}
+        onBlur={() => end && end !== endDate && onPatch({ end_date: end })}
+        className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-0.5 text-caption focus:border-nearblack focus:outline-none"
+      />
     </div>
   );
 }
@@ -1338,7 +1565,7 @@ function GroupRows({
         {tasks.map((task) => {
           const pastDue = isPastDue(task.due_date);
           return (
-            <tr key={task.id} className="border-b border-[#e5e0d6] last:border-b-0 hover:bg-nearwhite">
+            <tr key={task.id} id={`focus-board_task-${task.id}`} className="border-b border-[#e5e0d6] last:border-b-0 hover:bg-nearwhite">
               <td className="px-3 py-2 text-body text-nearblack">{task.title}</td>
               <td className="px-3 py-2">
                 <AssigneeStack assignees={task.assignees} />

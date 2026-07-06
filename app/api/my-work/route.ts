@@ -133,7 +133,7 @@ export async function GET() {
         title: t.title,
         project: project ? { id: project.id, name: project.name, alias: project.alias } : null,
         due: t.due_date,
-        href: `/projects/${t.project_id}/board`,
+        href: `/projects/${t.project_id}/board?focus=board_task-${t.id}`,
         meta: columnById.get(t.column_id)?.name ?? null,
       });
     }
@@ -186,7 +186,7 @@ export async function GET() {
         // it was submitted for approval) as the sort/bucket anchor, per
         // this file's MyWorkItem doc comment.
         due: d.updated_at ? d.updated_at.slice(0, 10) : null,
-        href: `/projects/${d.project_id}/client?tab=diary`,
+        href: `/projects/${d.project_id}/client?tab=diary&focus=diary_draft-${d.id}`,
         meta: "Awaiting publish",
       });
     }
@@ -221,7 +221,7 @@ export async function GET() {
           : "Trade proposed a new time",
         project: project ? { id: project.id, name: project.name, alias: project.alias } : null,
         due: p.proposed_start ?? (p.updated_at ? p.updated_at.slice(0, 10) : null),
-        href: `/projects/${p.project_id}/timeline`,
+        href: `/projects/${p.project_id}/timeline?focus=trade_proposal-${p.id}`,
         meta: "Needs a response",
       });
     }
@@ -252,7 +252,11 @@ export async function GET() {
         title: `${i.item_code} — ${i.name}`,
         project: project ? { id: project.id, name: project.name, alias: project.alias } : null,
         due: i.decision_needed_by,
-        href: `/projects/${i.project_id}?tab=ffe`,
+        // "items may target the P&P view row (ProcurementView) as
+        // interim" (see docs/HANDOFF-focus-register.md) — SpecRegister
+        // itself is protected for this task, so the focus id this
+        // points at lives in ProcurementView.tsx, not the register.
+        href: `/projects/${i.project_id}?tab=ffe&focus=decision_overdue-${i.id}`,
         meta: i.location ?? "Awaiting client decision",
       });
     }
@@ -288,7 +292,7 @@ export async function GET() {
         title: t.title,
         project: null,
         due: t.due_date,
-        href: "/office",
+        href: `/office?focus=office_task-${t.id}`,
         meta: groupById.get(t.group_id)?.name ?? "Office",
       });
     }
@@ -377,7 +381,7 @@ export async function GET() {
         title: t.title,
         project: project ? { id: project.id, name: project.name, alias: project.alias } : null,
         due: t.due_date,
-        href: project ? `/projects/${project.id}/design` : "/",
+        href: project ? `/projects/${project.id}/design?focus=design_task-${t.id}` : "/",
         meta: "Design",
       });
     }

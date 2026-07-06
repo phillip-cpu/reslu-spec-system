@@ -80,9 +80,16 @@ export async function GET(
       .select("status, cost_ex_gst")
       .eq("project_id", projectId)
       .is("deleted_at", null),
+    // Round B additive: measurement_id/wastage_pct/coverage_per_unit
+    // (migration 027) selected too, so ffeRollup() below can derive a
+    // takeoff-linked item's quantity instead of trusting a possibly-
+    // stale `quantity` column — see lib/estimate.ts ffeRollup()'s doc
+    // comment for the backwards-compatible cascade.
     supabase
       .from("items")
-      .select("id, category, quantity, price_trade, price_rrp")
+      .select(
+        "id, category, quantity, price_trade, price_rrp, measurement_id, wastage_pct, coverage_per_unit"
+      )
       .eq("project_id", projectId)
       .is("deleted_at", null),
     // measurement_groups(name) nested for group_name — Week 7, needed
@@ -136,7 +143,25 @@ export async function GET(
     measurementsById,
   });
 
-  const ffe = ffeRollup(items ?? []);
+  // Round B additive: same measurementsById map already built above for
+  // cost-line effectiveQty() now also drives ffeRollup()'s derived
+  // quantity for takeoff-linked FF&E items (see lib/estimate.ts
+  // ffeRollup()'s doc comment) — one shared map, two rollups.
+  const ffe = ffeRollup(items ?? [], measurementsById);
+  // Category prefixes alone (DR, FA, HD…) read as cryptic in the FF&E
+  // block (Phillip, 6 Jul) — attach display names from the categories
+  // table so rows render "DR — Doors".
+  {
+    const { data: cats } = await supabase
+      .from("categories")
+      .select("prefix,name");
+    const nameByPrefix = new Map(
+      (cats ?? []).map((c: { prefix: string; name: string }) => [c.prefix, c.name])
+    );
+    for (const row of ffe.categories as Array<{ category: string; category_name?: string }>) {
+      row.category_name = nameByPrefix.get(row.category) ?? "";
+    }
+  }
   const wholeJob = wholeJobSummary(rollup, ffe);
 
   const payload: EstimateResponse = {

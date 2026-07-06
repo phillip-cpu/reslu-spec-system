@@ -24,7 +24,7 @@
 // since they're laid out as a simple flex strip, not positioned bars).
 // ============================================================
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import type { Contact, PhaseColorKey } from "@/types";
 import type { SchedulePhaseWithVisits, TradeVisitWithContact, ArrivalSlot } from "@/lib/trade-visits";
@@ -36,10 +36,17 @@ import {
   phaseGridPosition,
   todayGridPosition,
 } from "@/lib/gantt";
+import { applyDrag, snapDeltaDays, type DragMode } from "@/lib/phase-drag";
 import { VisitBar, VisitStatusLabel } from "./VisitBar";
 import { UmbrellaBand } from "./UmbrellaBand";
 import { CompletedPhasesGroup } from "./CompletedPhasesGroup";
 import { VisitBottomSheet } from "./VisitBottomSheet";
+import { ContextMenu, type ContextMenuItem } from "@/components/shared/ContextMenu";
+
+/** Pixel width of the invisible edge zone at each end of a bar that resizes instead of moves — BUILD-SPEC "grab 6px edge zones = resize start or end". */
+const EDGE_ZONE_PX = 6;
+/** Long-press duration (ms) that opens the context menu on touch — BUILD-SPEC "Long-press (~500ms) on touch = same menu." */
+const LONG_PRESS_MS = 500;
 
 interface Props {
   projectId: string;
@@ -83,8 +90,35 @@ export function GanttChart({ projectId, initialPhases }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  // Round A "Add phase starting this week" (right-click empty timeline
+  // space) — prefills the existing AddPhaseForm's start date rather than
+  // inventing a second add-phase entry point. Cleared whenever the form
+  // closes/submits so a later plain "+ Add phase" click doesn't carry a
+  // stale prefill over.
+  const [addPrefillStart, setAddPrefillStart] = useState<string | null>(null);
   const [zoom, setZoom] = useState<"week" | "month">("week");
   const [sheetVisit, setSheetVisit] = useState<TradeVisitWithContact | null>(null);
+  // Round A right-click context menu state — see components/shared/ContextMenu.tsx.
+  const [menu, setMenu] = useState<{
+    position: { x: number; y: number };
+    phase: SchedulePhaseWithVisits | null; // null = empty row/timeline space
+    weekStart?: string; // ISO date — the week column right-clicked, for "Add phase starting this week"
+  } | null>(null);
+  // Round A "Book trade" context-menu action — prefills the phase's own
+  // edit panel with the Visits panel's add-visit mini-form already open
+  // (reuses the existing AddVisitForm inside VisitsPanel rather than a
+  // new booking UI), instead of only expanding the phase row.
+  const [bookTradePhaseId, setBookTradePhaseId] = useState<string | null>(null);
+  // Round A drag state — which phase (by id) is currently being
+  // dragged/resized, its mode, and a live day-delta preview so the bar
+  // can render its dragged position before the PATCH round-trip
+  // resolves (BUILD-SPEC "visual feedback while dragging").
+  const [dragState, setDragState] = useState<{
+    phaseId: string;
+    mode: DragMode;
+    deltaDays: number;
+  } | null>(null);
+  const gridBodyRef = useRef<HTMLDivElement>(null);
 
   const umbrella = phases.find((p) => p.kind === "umbrella") ?? null;
   const ordinaryPhases = useMemo(() => phases.filter((p) => p.kind === "phase"), [phases]);
@@ -134,6 +168,7 @@ export function GanttChart({ projectId, initialPhases }: Props) {
       const { phase } = await res.json();
       setPhases((cur) => [...cur, { ...phase, contact: null, visits: [] }]);
       setAdding(false);
+      setAddPrefillStart(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not add phase.");
     }
@@ -162,6 +197,30 @@ export function GanttChart({ projectId, initialPhases }: Props) {
       setPhases(prev);
       setError(err instanceof Error ? err.message : "Could not update phase.");
     }
+  }
+
+  /**
+   * Round A context-menu "Shift −1 week / Shift +1 week" — an
+   * immediate PATCH (no intermediate edit-panel step), reusing
+   * patchPhase's exact same optimistic-update/revert-on-failure path.
+   * Both dates shift equally, same as a drag "move".
+   */
+  function shiftPhaseWeek(phase: SchedulePhaseWithVisits, weeks: 1 | -1) {
+    const result = applyDrag(phase, "move", weeks * 7);
+    patchPhase(phase, { start_date: result.start_date, end_date: result.end_date });
+  }
+
+  /**
+   * Round A "Timeline slider bars" drag commit — called on pointerup
+   * once a drag/resize gesture has accumulated a non-zero day delta.
+   * Reuses patchPhase's optimistic-update/revert-on-failure path so a
+   * failed PATCH snaps the bar back exactly like any other edit.
+   */
+  function commitDrag(phase: SchedulePhaseWithVisits, mode: DragMode, deltaDays: number) {
+    if (deltaDays === 0) return;
+    const result = applyDrag(phase, mode, deltaDays);
+    if (result.start_date === phase.start_date && result.end_date === phase.end_date) return;
+    patchPhase(phase, { start_date: result.start_date, end_date: result.end_date });
   }
 
   async function deletePhase(phase: SchedulePhaseWithVisits) {
@@ -194,8 +253,66 @@ export function GanttChart({ projectId, initialPhases }: Props) {
     );
   }
 
+  // Round A drag lifecycle — a single pointer-move/pointer-up listener
+  // pair attached to `document` for the duration of one drag gesture
+  // (attached in startDrag, torn down on pointerup), rather than one
+  // listener per bar, so a fast drag that outruns the bar's own
+  // boundaries (pointer leaves the row while dragging) keeps tracking
+  // correctly. `columnPx` is measured ONCE at drag-start from the
+  // actual rendered grid (gridBodyRef), per lib/phase-drag.ts's own
+  // "zero DOM access, caller measures" contract — this keeps the drag
+  // math byte-for-byte consistent with lib/gantt.ts's
+  // `(100% / weekCount)` column-width formula, since both this
+  // measurement and that CSS calc() divide the exact same grid body
+  // width by the exact same weekCount.
+  //
+  // Deliberately NOT wrapped in useCallback: commitDrag (called from
+  // onUp) closes over patchPhase, which closes over the CURRENT
+  // render's `phases` state (its optimistic-update/revert-on-failure
+  // path reads `phases` directly, not via a ref) — a memoised
+  // startDrag would freeze that closure at whatever render created it,
+  // so a second drag started without an intervening re-render of this
+  // exact function could revert to a stale `phases` snapshot on
+  // failure. Recreating this function every render (cheap: it only
+  // attaches listeners inside an actual drag gesture, never on
+  // render itself) keeps it always closing over the latest state.
+  function startDrag(phase: SchedulePhaseWithVisits, mode: DragMode, startClientX: number) {
+    const body = gridBodyRef.current;
+    if (!body) return;
+    const nameColumnPx = 200;
+    const bodyWidth = body.getBoundingClientRect().width - nameColumnPx;
+    const columnPx = bodyWidth / grid.weekCount;
+
+    setDragState({ phaseId: phase.id, mode, deltaDays: 0 });
+
+    function onMove(e: PointerEvent) {
+      const deltaPx = e.clientX - startClientX;
+      const deltaDays = snapDeltaDays(deltaPx, columnPx);
+      setDragState({ phaseId: phase.id, mode, deltaDays });
+    }
+    function onUp(e: PointerEvent) {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      const deltaPx = e.clientX - startClientX;
+      const deltaDays = snapDeltaDays(deltaPx, columnPx);
+      setDragState(null);
+      commitDrag(phase, mode, deltaDays);
+    }
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+  }
+
+  function openPhaseMenu(phase: SchedulePhaseWithVisits, position: { x: number; y: number }) {
+    setMenu({ position, phase });
+  }
+
+  function openEmptyMenu(position: { x: number; y: number }, weekStart?: string) {
+    setMenu({ position, phase: null, weekStart });
+  }
+
   function renderPhaseRow(phase: SchedulePhaseWithVisits) {
     const pos = phaseGridPosition(phase, grid);
+    const drag = dragState && dragState.phaseId === phase.id ? dragState : null;
     return (
       <PhaseRow
         key={phase.id}
@@ -210,9 +327,64 @@ export function GanttChart({ projectId, initialPhases }: Props) {
         onAddVisit={(v) => addVisitToPhase(phase.id, v)}
         onPatchVisit={(v) => replaceVisit(phase.id, v)}
         onDeleteVisit={(id) => removeVisitFromPhase(phase.id, id)}
+        dragMode={drag?.mode ?? null}
+        dragDeltaDays={drag?.deltaDays ?? 0}
+        onStartDrag={(mode, clientX) => startDrag(phase, mode, clientX)}
+        onContextMenu={(position) => openPhaseMenu(phase, position)}
+        forceOpenAddVisit={bookTradePhaseId === phase.id}
+        onAddVisitOpened={() => setBookTradePhaseId(null)}
       />
     );
   }
+
+  // Round A "Change colour" submenu items — reused by both the phase
+  // and umbrella context-menu wiring below (umbrella bars are
+  // draggable/right-clickable too per BUILD-SPEC "umbrella bars
+  // draggable too").
+  function colorSubmenu(phase: SchedulePhaseWithVisits): ContextMenuItem[] {
+    return COLOR_KEYS.map((key) => ({
+      key,
+      label: key[0].toUpperCase() + key.slice(1),
+      swatch: COLOR_SWATCH[key],
+      onSelect: () => patchPhase(phase, { color_key: key }),
+    }));
+  }
+
+  const menuItems: ContextMenuItem[] = menu?.phase
+    ? (() => {
+        const phase = menu.phase;
+        return [
+          { key: "edit", label: "Edit dates", onSelect: () => setEditingId(phase.id) },
+          { key: "shift-back", label: "Shift −1 week", onSelect: () => shiftPhaseWeek(phase, -1) },
+          { key: "shift-fwd", label: "Shift +1 week", onSelect: () => shiftPhaseWeek(phase, 1) },
+          {
+            key: "book-trade",
+            label: "Book trade",
+            onSelect: () => {
+              setEditingId(phase.id);
+              setBookTradePhaseId(phase.id);
+            },
+          },
+          { key: "colour", label: "Change colour", items: colorSubmenu(phase) },
+          // "Mark complete" — SKIPPED per this round's brief:
+          // schedule_phases has no complete/status column (a phase's
+          // only date-shaped state is start_date/end_date; "done" is
+          // inferred client-side from end_date < today, see
+          // completedPhases above, not stored). Adding one would need a
+          // migration, which is out of this round's "no new migration"
+          // boundary — documented here rather than silently omitted.
+        ];
+      })()
+    : [
+        {
+          key: "add-phase",
+          label: "Add phase starting this week",
+          onSelect: () => {
+            setAddPrefillStart(menu?.weekStart ?? grid.weeks[0]?.toISOString().slice(0, 10) ?? null);
+            setAdding(true);
+          },
+        },
+      ];
 
   return (
     <div className="space-y-4">
@@ -255,6 +427,7 @@ export function GanttChart({ projectId, initialPhases }: Props) {
       ) : (
         <div className="overflow-x-auto border border-[#dcd6cc]">
           <div
+            ref={gridBodyRef}
             className="relative grid"
             style={{ gridTemplateColumns: `200px repeat(${grid.weekCount}, minmax(${colMinWidth}, 1fr))` }}
           >
@@ -278,6 +451,10 @@ export function GanttChart({ projectId, initialPhases }: Props) {
             {grid.weeks.map((week, i) => (
               <div
                 key={i}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  openEmptyMenu({ x: e.clientX, y: e.clientY }, week.toISOString().slice(0, 10));
+                }}
                 className="border-b border-[#e5e0d6] bg-cream px-1 py-2 text-center"
               >
                 {isNewMonth(grid.weeks, i) && (
@@ -299,6 +476,10 @@ export function GanttChart({ projectId, initialPhases }: Props) {
                 grid={grid}
                 costSectionLines={umbrella.cost_section_lines ?? []}
                 onPatch={(patch) => patchPhase(umbrella, patch)}
+                dragMode={dragState && dragState.phaseId === umbrella.id ? dragState.mode : null}
+                dragDeltaDays={dragState && dragState.phaseId === umbrella.id ? dragState.deltaDays : 0}
+                onStartDrag={(mode, clientX) => startDrag(umbrella, mode, clientX)}
+                onContextMenu={(position) => openPhaseMenu(umbrella, position)}
               />
             )}
 
@@ -312,7 +493,14 @@ export function GanttChart({ projectId, initialPhases }: Props) {
       )}
 
       {adding ? (
-        <AddPhaseForm onAdd={addPhase} onCancel={() => setAdding(false)} />
+        <AddPhaseForm
+          initialStart={addPrefillStart}
+          onAdd={addPhase}
+          onCancel={() => {
+            setAdding(false);
+            setAddPrefillStart(null);
+          }}
+        />
       ) : (
         <button
           type="button"
@@ -333,6 +521,8 @@ export function GanttChart({ projectId, initialPhases }: Props) {
           }}
         />
       )}
+
+      {menu && <ContextMenu position={menu.position} items={menuItems} onClose={() => setMenu(null)} />}
     </div>
   );
 }
@@ -349,6 +539,12 @@ function PhaseRow({
   onAddVisit,
   onPatchVisit,
   onDeleteVisit,
+  dragMode,
+  dragDeltaDays,
+  onStartDrag,
+  onContextMenu,
+  forceOpenAddVisit,
+  onAddVisitOpened,
 }: {
   phase: SchedulePhaseWithVisits;
   gridPos: { startCol: number; span: number };
@@ -361,7 +557,53 @@ function PhaseRow({
   onAddVisit: (visit: TradeVisitWithContact) => void;
   onPatchVisit: (visit: TradeVisitWithContact) => void;
   onDeleteVisit: (visitId: string) => void;
+  /** Round A drag preview state — null dragMode means this row isn't the one being dragged. */
+  dragMode: DragMode | null;
+  dragDeltaDays: number;
+  onStartDrag: (mode: DragMode, clientX: number) => void;
+  onContextMenu: (position: { x: number; y: number }) => void;
+  /** Round A "Book trade" context-menu action — see VisitsPanel's own forceOpen handling below. */
+  forceOpenAddVisit: boolean;
+  onAddVisitOpened: () => void;
 }) {
+  const dragging = dragMode !== null;
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function clearLongPress() {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }
+
+  /**
+   * Pointer-down on the bar body — BUILD-SPEC "grab bar body = move
+   * whole phase, grab 6px edge zones = resize start or end". Mouse only
+   * (see the EDGE_ZONE_PX-based mode below); touch deliberately does
+   * NOT start a drag here (BUILD-SPEC "Touch: do NOT attempt edge-drag
+   * ... tap opens the existing edit panel"), it only starts the
+   * long-press-to-menu timer via onTouchStart below.
+   */
+  function handlePointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (e.pointerType === "touch") return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const offsetX = e.clientX - rect.left;
+    const mode: DragMode =
+      offsetX <= EDGE_ZONE_PX ? "resize-start" : offsetX >= rect.width - EDGE_ZONE_PX ? "resize-end" : "move";
+    onStartDrag(mode, e.clientX);
+  }
+
+  function handleTouchStart(e: React.TouchEvent<HTMLDivElement>) {
+    const touch = e.touches[0];
+    if (!touch) return;
+    const x = touch.clientX;
+    const y = touch.clientY;
+    clearLongPress();
+    longPressTimer.current = setTimeout(() => {
+      onContextMenu({ x, y });
+    }, LONG_PRESS_MS);
+  }
+
   return (
     <>
       <div className="sticky left-0 z-10 col-start-1 border-b border-r border-[#e5e0d6] bg-nearwhite px-3 py-2">
@@ -396,10 +638,22 @@ function PhaseRow({
         style={{ gridColumn: `2 / span ${weekCount}` }}
       >
         <div
-          className="h-4"
+          onPointerDown={handlePointerDown}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            onContextMenu({ x: e.clientX, y: e.clientY });
+          }}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={clearLongPress}
+          onTouchMove={clearLongPress}
+          onTouchCancel={clearLongPress}
+          className={clsx(
+            "h-4 cursor-grab transition-opacity",
+            dragging && "cursor-grabbing opacity-60 outline outline-2 outline-nearblack"
+          )}
           style={{
-            marginLeft: `calc((100% / ${weekCount}) * ${gridPos.startCol - 1})`,
-            width: `calc((100% / ${weekCount}) * ${gridPos.span})`,
+            marginLeft: `calc((100% / ${weekCount}) * ${gridPos.startCol - 1 + (dragMode === "move" || dragMode === "resize-start" ? dragDeltaDays / 7 : 0)})`,
+            width: `calc((100% / ${weekCount}) * ${gridPos.span + (dragMode === "resize-start" ? -dragDeltaDays / 7 : dragMode === "resize-end" ? dragDeltaDays / 7 : 0)})`,
             backgroundColor: COLOR_SWATCH[phase.color_key],
           }}
           title={`${phase.name}: ${phase.start_date} to ${phase.end_date}`}
@@ -415,6 +669,8 @@ function PhaseRow({
             onAddVisit={onAddVisit}
             onPatchVisit={onPatchVisit}
             onDeleteVisit={onDeleteVisit}
+            forceOpenAddVisit={forceOpenAddVisit}
+            onAddVisitOpened={onAddVisitOpened}
           />
         </div>
       )}
@@ -429,6 +685,8 @@ function PhaseEditPanel({
   onAddVisit,
   onPatchVisit,
   onDeleteVisit,
+  forceOpenAddVisit,
+  onAddVisitOpened,
 }: {
   phase: SchedulePhaseWithVisits;
   onPatch: (patch: Record<string, unknown>, refUpdate?: Partial<SchedulePhaseWithVisits>) => void;
@@ -436,6 +694,9 @@ function PhaseEditPanel({
   onAddVisit: (visit: TradeVisitWithContact) => void;
   onPatchVisit: (visit: TradeVisitWithContact) => void;
   onDeleteVisit: (visitId: string) => void;
+  /** Round A "Book trade" context-menu action. */
+  forceOpenAddVisit: boolean;
+  onAddVisitOpened: () => void;
 }) {
   const [name, setName] = useState(phase.name);
   const [start, setStart] = useState(phase.start_date);
@@ -587,7 +848,14 @@ function PhaseEditPanel({
         </div>
       </div>
 
-      <VisitsPanel phase={phase} onAddVisit={onAddVisit} onPatchVisit={onPatchVisit} onDeleteVisit={onDeleteVisit} />
+      <VisitsPanel
+        phase={phase}
+        onAddVisit={onAddVisit}
+        onPatchVisit={onPatchVisit}
+        onDeleteVisit={onDeleteVisit}
+        forceOpenAdding={forceOpenAddVisit}
+        onAddingOpened={onAddVisitOpened}
+      />
     </div>
   );
 }
@@ -604,13 +872,26 @@ function VisitsPanel({
   onAddVisit,
   onPatchVisit,
   onDeleteVisit,
+  forceOpenAdding,
+  onAddingOpened,
 }: {
   phase: SchedulePhaseWithVisits;
   onAddVisit: (visit: TradeVisitWithContact) => void;
   onPatchVisit: (visit: TradeVisitWithContact) => void;
   onDeleteVisit: (visitId: string) => void;
+  /** Round A "Book trade" context-menu action — opens this panel's add-visit mini-form immediately, on top of the phase edit panel GanttChart.tsx already expands. */
+  forceOpenAdding?: boolean;
+  onAddingOpened?: () => void;
 }) {
   const [adding, setAdding] = useState(false);
+
+  useEffect(() => {
+    if (forceOpenAdding && !adding) {
+      setAdding(true);
+      onAddingOpened?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forceOpenAdding]);
 
   return (
     <div className="border-t border-[#dcd6cc] pt-3">
@@ -679,7 +960,7 @@ function VisitRow({
   }
 
   return (
-    <li className="flex flex-wrap items-center gap-2 border-b border-[#e5e0d6] pb-1.5 text-body">
+    <li id={`focus-trade_proposal-${visit.id}`} className="flex flex-wrap items-center gap-2 border-b border-[#e5e0d6] pb-1.5 text-body">
       <span className="min-w-[110px] text-charcoal">{visit.contact?.company ?? "No trade"}</span>
       <input
         type="date"
@@ -862,12 +1143,15 @@ function AddVisitForm({
 function AddPhaseForm({
   onAdd,
   onCancel,
+  initialStart,
 }: {
   onAdd: (input: { name: string; start_date: string; end_date: string; color_key: PhaseColorKey }) => void;
   onCancel: () => void;
+  /** Round A "Add phase starting this week" (right-click empty timeline space) — prefills the start date; the form otherwise behaves identically to the plain "+ Add phase" entry point. */
+  initialStart?: string | null;
 }) {
   const [name, setName] = useState("");
-  const [start, setStart] = useState("");
+  const [start, setStart] = useState(initialStart ?? "");
   const [end, setEnd] = useState("");
   const [color, setColor] = useState<PhaseColorKey>("sand");
   const [submitting, setSubmitting] = useState(false);

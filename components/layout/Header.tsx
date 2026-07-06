@@ -27,6 +27,18 @@ interface HeaderProps {
    * all) or the PDF cover.
    */
   titleSuffix?: string | null;
+  /**
+   * "Three from Phillip — 6 July 2026 evening" item 2 (migration
+   * 028_job_numbers.sql): job number rendered "muted, near alias" in
+   * the project header. Slotted in BEFORE titleSuffix (alias), same
+   * muted class, so the two read as one consistent metadata cluster
+   * next to the title (e.g. "Smith Residence  #026  Nth Adelaide
+   * townhouse") rather than two competing styles. Unlike alias, this
+   * one also appears on PDFs — but never in this internal-only Header
+   * component's own client-portal counterpart, since that's a separate
+   * component entirely (see titleSuffix's own doc comment above).
+   */
+  jobNumber?: string | null;
 }
 
 export function Header({
@@ -37,10 +49,12 @@ export function Header({
   titleThumbnailUrl,
   titleHref,
   titleSuffix,
+  jobNumber,
 }: HeaderProps) {
   const titleEl = (
     <h1 className="text-section font-display text-nearblack">
       {title}
+      {jobNumber && <span className="ml-2 text-body font-sans text-charcoal/40">#{jobNumber}</span>}
       {titleSuffix && <span className="ml-2 text-body font-sans text-charcoal/40">{titleSuffix}</span>}
     </h1>
   );

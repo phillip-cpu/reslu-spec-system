@@ -110,7 +110,18 @@ export async function GET(
     .eq("project_id", id)
     .is("deleted_at", null);
 
-  const cacheKeyInput = `${id}|${maxUpdatedAt}|${itemCount ?? 0}|${revisionLabel ?? ""}|${scheduleSubtitle ?? ""}`;
+  // job_number (migration 028_job_numbers.sql) is rendered on the cover
+  // + footer independent of the item set — folded into the cache key
+  // (same reasoning as revisionLabel/scheduleSubtitle above it) so a
+  // project renumbered in Settings never serves a stale cached PDF
+  // showing the old number.
+  const { data: keyProject } = await supabase
+    .from("projects")
+    .select("job_number")
+    .eq("id", id)
+    .single();
+
+  const cacheKeyInput = `${id}|${maxUpdatedAt}|${itemCount ?? 0}|${revisionLabel ?? ""}|${scheduleSubtitle ?? ""}|${keyProject?.job_number ?? ""}`;
   const contentHash = createHash("sha256").update(cacheKeyInput).digest("hex").slice(0, 32);
   const cachePath = `${PDF_CACHE_PREFIX}/${id}/${contentHash}.pdf`;
 
@@ -138,8 +149,10 @@ export async function GET(
   const [{ data: project }, { data: items }, { data: categories }] =
     await Promise.all([
       supabase
+        // job_number added (migration 028_job_numbers.sql) for the
+        // cover + footer "Project No." line — see SchedulePdf.tsx.
         .from("projects")
-        .select("id,name,client_name,address")
+        .select("id,name,client_name,address,job_number")
         .eq("id", id)
         .single(),
       supabase

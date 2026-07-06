@@ -30,7 +30,9 @@ export async function GET(
   }
 
   const [{ data: project }, { data: sow, error: sowError }] = await Promise.all([
-    supabase.from("projects").select("id,name,client_name,address").eq("id", projectId).single(),
+    // job_number added (migration 028_job_numbers.sql) — see projectNo
+    // below, which now prefers the real assigned number.
+    supabase.from("projects").select("id,name,client_name,address,job_number").eq("id", projectId).single(),
     supabase
       .from("sow_documents")
       .select("*")
@@ -72,13 +74,15 @@ export async function GET(
     year: "numeric",
   });
 
-  // The build spec's cover reference lists a "Project No." field; this
-  // schema has no dedicated project-number column, so the short id
-  // prefix stands in as a stable per-project reference until/unless a
-  // real numbering scheme is introduced — visually identical in intent
-  // to the .dotx placeholder, just DB-id-derived rather than
-  // hand-assigned.
-  const projectNo = projectId.slice(0, 8).toUpperCase();
+  // The build spec's cover reference lists a "Project No." field.
+  // Migration 028_job_numbers.sql introduced a real numbering scheme
+  // (projects.job_number, auto-assigned on create, overridable in
+  // Settings) — this is now the primary source. The short id-prefix
+  // stand-in (pre-migration-028 behaviour) is kept as a fallback only
+  // for the edge case of a project whose job_number is still null
+  // (shouldn't happen post-backfill, but a defensive fallback here
+  // costs nothing and avoids ever rendering a blank "Project No." line).
+  const projectNo = project.job_number ?? projectId.slice(0, 8).toUpperCase();
 
   const buffer = await renderToBuffer(
     SowPdf({

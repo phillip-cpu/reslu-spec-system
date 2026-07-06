@@ -524,7 +524,7 @@ function TaskRow({
   }
 
   return (
-    <div className={clsx("px-3 py-2.5", isDone && "opacity-60")}>
+    <div id={`focus-office_task-${task.id}`} className={clsx("px-3 py-2.5", isDone && "opacity-60")}>
       <div className="flex items-center gap-3">
         <input
           type="checkbox"

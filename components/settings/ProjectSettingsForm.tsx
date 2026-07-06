@@ -56,6 +56,13 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImag
   // townhouse". NEVER read by the portal or the schedule PDF — both
   // keep using project.name exclusively.
   const [alias, setAlias] = useState(project.alias ?? "");
+  // job_number (migration 028_job_numbers.sql, "Three from Phillip — 6
+  // July 2026 evening" item 2) — unlike alias, THIS one is meant to
+  // appear on the schedule/SOW PDFs too. Auto-assigned on create;
+  // overridable here. 409 clashes surface through the shared error
+  // banner below (jobNumberError gives an inline hint too).
+  const [jobNumber, setJobNumber] = useState(project.job_number ?? "");
+  const [jobNumberError, setJobNumberError] = useState<string | null>(null);
   const [clientName, setClientName] = useState(project.client_name);
   const [address, setAddress] = useState(project.address ?? "");
   const [budget, setBudget] = useState(project.budget?.toString() ?? "");
@@ -127,6 +134,15 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImag
     e.preventDefault();
     setSaving(true);
     setError(null);
+    setJobNumberError(null);
+
+    const trimmedJobNumber = jobNumber.trim();
+    if (trimmedJobNumber && !/^\d{3,4}$/.test(trimmedJobNumber)) {
+      setJobNumberError("Job number must be 3 or 4 digits (e.g. 026 or 1024).");
+      setSaving(false);
+      return;
+    }
+
     try {
       const res = await fetch(`/api/projects/${project.id}`, {
         method: "PUT",
@@ -134,6 +150,7 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImag
         body: JSON.stringify({
           name: name.trim(),
           alias: alias.trim() || null,
+          job_number: trimmedJobNumber || null,
           client_name: clientName.trim(),
           address: address.trim() || null,
           budget: budget.trim() === "" ? null : Number(budget),
@@ -147,7 +164,12 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImag
           client_secondary_phone: secondaryPhone.trim() || null,
         }),
       });
-      if (!res.ok) throw new Error((await res.json()).error ?? "Could not save");
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const message = body.error ?? "Could not save";
+        if (res.status === 409) setJobNumberError(message);
+        throw new Error(message);
+      }
       setSavedAt(Date.now());
       router.refresh();
     } catch (err) {
@@ -288,19 +310,43 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImag
           </label>
         </div>
 
-        <label className="flex flex-col gap-1">
-          <span className="label-caps">Alias (internal only)</span>
-          <input
-            value={alias}
-            onChange={(e) => setAlias(e.target.value)}
-            disabled={!isAdmin}
-            placeholder="e.g. Nth Adelaide townhouse"
-            className="border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
-          />
-          <span className="text-caption text-charcoal/40">
-            Shown on the dashboard card, this project&apos;s header, and My Work — never on the client portal or PDFs.
-          </span>
-        </label>
+        <div className="grid grid-cols-2 gap-4">
+          <label className="flex flex-col gap-1">
+            <span className="label-caps">Alias (internal only)</span>
+            <input
+              value={alias}
+              onChange={(e) => setAlias(e.target.value)}
+              disabled={!isAdmin}
+              placeholder="e.g. Nth Adelaide townhouse"
+              className="border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+            />
+            <span className="text-caption text-charcoal/40">
+              Shown on the dashboard card, this project&apos;s header, and My Work — never on the client portal or PDFs.
+            </span>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="label-caps">Job number</span>
+            <input
+              value={jobNumber}
+              onChange={(e) => {
+                setJobNumber(e.target.value);
+                setJobNumberError(null);
+              }}
+              disabled={!isAdmin}
+              placeholder="026"
+              inputMode="numeric"
+              className="border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+            />
+            {jobNumberError ? (
+              <span className="text-caption text-red-700">{jobNumberError}</span>
+            ) : (
+              <span className="text-caption text-charcoal/40">
+                Auto-assigned on creation. Shown on the project header, dashboard card, and the FF&amp;E schedule + SOW PDFs — unlike alias, this one IS client/builder-facing.
+              </span>
+            )}
+          </label>
+        </div>
 
         <label className="flex flex-col gap-1">
           <span className="label-caps">Address</span>

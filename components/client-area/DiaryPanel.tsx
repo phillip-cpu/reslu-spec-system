@@ -301,7 +301,7 @@ export function DiaryApprovalCard({
   const [publishing, setPublishing] = useState(false);
 
   return (
-    <div className="border border-sand bg-offwhite p-4">
+    <div id={`focus-diary_draft-${update.id}`} className="border border-sand bg-offwhite p-4">
       <div className="flex items-center justify-between gap-3">
         <span className="label-caps !text-sand">Aria&apos;s draft — ready for your review</span>
         {update.photos.length > 0 && (

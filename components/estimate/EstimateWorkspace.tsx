@@ -8,8 +8,9 @@ import { EstimateView } from "./EstimateView";
 import { VariationsView } from "./VariationsView";
 import { MeasurementsView } from "./MeasurementsView";
 import { VersionsPanel } from "./VersionsPanel";
+import { CalculatorsPanel } from "@/components/calculators/CalculatorsPanel";
 
-type View = "estimate" | "variations" | "measurements" | "versions";
+type View = "estimate" | "variations" | "measurements" | "versions" | "calculators";
 
 interface Props {
   projectId: string;
@@ -318,6 +319,7 @@ export function EstimateWorkspace({ projectId }: Props) {
             { key: "variations", label: "Variations" },
             { key: "measurements", label: "Areas & Measurements" },
             { key: "versions", label: "Versions" },
+            { key: "calculators", label: "Calculators" },
           ] as { key: View; label: string }[]
         ).map((t) => (
           <button
@@ -374,6 +376,14 @@ export function EstimateWorkspace({ projectId }: Props) {
       )}
 
       {view === "versions" && <VersionsPanel projectId={projectId} />}
+
+      {view === "calculators" && (
+        <CalculatorsPanel
+          projectId={projectId}
+          sections={(estimate?.sections ?? []).map((s) => ({ id: s.id, name: s.name }))}
+          onLineInserted={(line) => addLineLocal(line as CostLine)}
+        />
+      )}
     </div>
   );
 }

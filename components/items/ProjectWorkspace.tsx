@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import clsx from "clsx";
 import type { Category, Item, ProjectAllocation, RoomWithCount } from "@/types";
+import type { MeasurementWithGroup } from "@/types";
 import { SpecRegister } from "./SpecRegister";
 import { ProcurementView } from "./ProcurementView";
 import { ProcurementBoardView } from "./ProcurementBoardView";
@@ -14,6 +15,21 @@ interface Props {
   initialItems: Item[];
   categories: Category[];
   budget: number | null;
+  /**
+   * Round B — needed so ProcurementView knows whether to fetch/offer
+   * the measurement-link picker (takeoff → FF&E quantity link). The
+   * measurements list itself comes from the same admin-gated route the
+   * Estimate module already uses (GET
+   * /api/projects/[id]/estimate/measurements/groups — BUILD-SPEC.md
+   * §Financial visibility treats Areas & Measurements as
+   * estimate-adjacent data), so a non-admin session simply never
+   * fetches it and the picker/derived-qty UI doesn't render — same
+   * "hidden, not merely disabled" gating this page already applies to
+   * the Estimate/Invoices tabs one level up.
+   */
+  isAdmin: boolean;
+  /** My Work focus deep-link support — see doc comment on `view`'s useState below. */
+  initialView?: View;
 }
 
 /**
@@ -36,12 +52,33 @@ export function ProjectWorkspace({
   initialItems,
   categories,
   budget,
+  isAdmin,
+  initialView,
 }: Props) {
   const [items, setItems] = useState<Item[]>(initialItems);
-  const [view, setView] = useState<View>("spec");
+  // "Three from Phillip — 6 July 2026 evening" item 1 (My Work focus
+  // deep-links): the decision_overdue My Work source links here as
+  // `?tab=ffe&focus=decision_overdue-<id>`, targeting a row id that
+  // only exists in ProcurementView (interim decision — SpecRegister.tsx
+  // is protected this round; see docs/HANDOFF-focus-register.md). If
+  // the view still defaulted to "spec" that row would never mount, so
+  // FocusOnLoad would find nothing — the page (server component, which
+  // already awaits searchParams) computes this and passes it down as a
+  // plain prop, rather than this client component calling
+  // useSearchParams itself (which would require its own Suspense
+  // boundary this component tree doesn't have).
+  const [view, setView] = useState<View>(initialView ?? "spec");
   const [error, setError] = useState<string | null>(null);
   const [rooms, setRooms] = useState<RoomWithCount[]>([]);
   const [allocations, setAllocations] = useState<ProjectAllocation[]>([]);
+  // Round B — flat, group-annotated measurements list for
+  // ProcurementView's measurement-link picker (same shape/source the
+  // Estimate tab's MeasurementLinkPicker already consumes). Admin-only
+  // fetch, only triggered once the Procurement view is actually opened
+  // (not on initial page load) — no point paying for this request on
+  // every visit to the Spec view, which never needs it.
+  const [measurements, setMeasurements] = useState<MeasurementWithGroup[]>([]);
+  const [measurementsLoaded, setMeasurementsLoaded] = useState(false);
 
   // Rooms + per-room allocations for the spec register's Room grouping and
   // per-item editor. Loaded client-side (they change often via bulk assign).
@@ -63,6 +100,28 @@ export function ProjectWorkspace({
     refetchRooms();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  // Round B — lazy-load measurements the first time an admin opens the
+  // Procurement view (not on initial mount, and never at all for a
+  // non-admin session — see the isAdmin doc comment on Props above).
+  useEffect(() => {
+    if (view !== "procurement" || !isAdmin || measurementsLoaded) return;
+    setMeasurementsLoaded(true);
+    fetch(`/api/projects/${projectId}/estimate/measurements/groups`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        if (!body?.groups) return;
+        const flat: MeasurementWithGroup[] = (
+          body.groups as { name: string; measurements: MeasurementWithGroup[] }[]
+        ).flatMap((g) => g.measurements.map((m) => ({ ...m, group_name: g.name })));
+        setMeasurements(flat);
+      })
+      .catch(() => {
+        // Best-effort — the picker/derived-qty UI just won't have data
+        // to offer if this fails; ProcurementView already degrades to
+        // "no measurements yet" copy for an empty list.
+      });
+  }, [view, isAdmin, measurementsLoaded, projectId]);
 
   async function patchItem(id: string, patch: Partial<Item>) {
     const prev = items;
@@ -193,6 +252,8 @@ export function ProjectWorkspace({
           categories={categories}
           budget={budget}
           onPatch={patchItem}
+          measurements={isAdmin ? measurements : []}
+          isAdmin={isAdmin}
         />
       ) : (
         <ProcurementBoardView items={items} onPatch={patchItem} />

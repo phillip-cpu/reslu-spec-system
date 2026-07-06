@@ -275,7 +275,12 @@ interface PdfItem extends Item {
 }
 
 interface Props {
-  project: Pick<Project, "name" | "client_name" | "address">;
+  // job_number (migration 028_job_numbers.sql, "Three from Phillip — 6
+  // July 2026 evening" item 2) is not on the shared Project type
+  // (types/index.ts is out of this task's edit boundary) — added here
+  // via an inline intersection, same as this Pick<> is already narrowed
+  // per-field rather than widened to the whole interface.
+  project: Pick<Project, "name" | "client_name" | "address"> & { job_number?: string | null };
   items: PdfItem[];
   categories: Category[];
   generatedAt: string; // formatted date, passed in (server)
@@ -332,6 +337,7 @@ export function SchedulePdf({
         <View style={styles.coverMeta}>
           <Text>{project.client_name}</Text>
           {project.address ? <Text>{project.address}</Text> : null}
+          {project.job_number ? <Text>Project No. {project.job_number}</Text> : null}
           <Text>
             RESLU  ·  {generatedAt}
             {revisionLabel ? `  ·  ${revisionLabel}` : ""}
@@ -423,6 +429,7 @@ export function SchedulePdf({
         <View style={styles.footer} fixed>
           <Text style={styles.footerLeft}>
             {project.name}  /  FF&amp;E  /  {generatedAt}
+            {project.job_number ? `  /  Project No. ${project.job_number}` : ""}
           </Text>
           <Text
             style={styles.footerRight}

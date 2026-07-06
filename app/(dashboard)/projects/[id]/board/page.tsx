@@ -81,6 +81,22 @@ export default async function ProjectBoardPage({
     .eq("project_id", id)
     .order("sort", { ascending: true });
 
+  // Round A "Board owns dates, Timeline is the visual" — mirrors GET
+  // /api/projects/[id]/board's own lightweight second query (see that
+  // route's doc comment): every group with a linked phase (phase_id
+  // set) needs that phase's own start_date/end_date so the Grouped-
+  // list header can render its compact date inputs on first paint,
+  // not just after a client refetch.
+  const linkedPhaseIds = [...new Set((groups ?? []).map((g) => g.phase_id).filter(Boolean))] as string[];
+  const { data: linkedPhases } = linkedPhaseIds.length
+    ? await supabase
+        .from("schedule_phases")
+        .select("id,start_date,end_date")
+        .in("id", linkedPhaseIds)
+        .is("deleted_at", null)
+    : { data: [] as { id: string; start_date: string; end_date: string }[] };
+  const phaseDatesById = new Map((linkedPhases ?? []).map((p) => [p.id, p]));
+
   const columnIds = columns.map((c) => c.id);
   const { data: tasks } = columnIds.length
     ? await supabase
@@ -140,10 +156,15 @@ export default async function ProjectBoardPage({
     tasks: tasksByColumn.get(c.id) ?? [],
   }));
 
-  const initialGroups: BoardGroupWithTasks[] = (groups ?? []).map((g) => ({
-    ...g,
-    tasks: tasksByGroup.get(g.id) ?? [],
-  }));
+  const initialGroups: BoardGroupWithTasks[] = (groups ?? []).map((g) => {
+    const linkedPhase = g.phase_id ? phaseDatesById.get(g.phase_id) : undefined;
+    return {
+      ...g,
+      tasks: tasksByGroup.get(g.id) ?? [],
+      phase_start_date: linkedPhase?.start_date ?? null,
+      phase_end_date: linkedPhase?.end_date ?? null,
+    };
+  });
 
   return (
     <>

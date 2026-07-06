@@ -1,8 +1,10 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import clsx from "clsx";
-import type { Category, Item, ItemStatus } from "@/types";
+import type { Category, Item, ItemStatus, MeasurementWithGroup } from "@/types";
+import { MeasurementLinkPicker } from "@/components/estimate/MeasurementLinkPicker";
+import { derivedQuantity, derivedQuantityNote } from "@/lib/item-quantity";
 
 const ITEM_STATUSES: ItemStatus[] = [
   "Specced",
@@ -19,11 +21,38 @@ const aud = new Intl.NumberFormat("en-AU", {
   currency: "AUD",
 });
 
+/**
+ * Round B — items don't carry measurement_id/wastage_pct/
+ * coverage_per_unit on the shared `Item` type (types/index.ts is
+ * protected this round — see types/round-b.ts's header comment), but
+ * the columns exist on every real row returned by the API (migration
+ * 027). This local type widens Item with those three fields so the
+ * call sites below (an `as ItemWithQtyLink` cast, since the shared
+ * `Item` type doesn't declare them) can pass a properly-typed object
+ * into lib/item-quantity.ts's DerivedQuantityItemInput, which expects
+ * them present-but-nullable, never undefined — every item this
+ * component actually receives at runtime has them in that exact shape.
+ */
+type ItemWithQtyLink = Item & {
+  measurement_id: string | null;
+  wastage_pct: number | null;
+  coverage_per_unit: number | null;
+};
+
 interface Props {
   items: Item[];
   categories: Category[];
   budget: number | null;
   onPatch: (id: string, patch: Partial<Item>) => void;
+  /**
+   * Round B — flat, group-annotated measurements for the
+   * measurement-link picker (empty for a non-admin session — see
+   * ProjectWorkspace.tsx's isAdmin gating one level up). Same shape
+   * components/estimate/MeasurementLinkPicker.tsx already consumes.
+   */
+  measurements?: MeasurementWithGroup[];
+  /** Round B — gates the link/unlink affordance itself, not just the data. */
+  isAdmin?: boolean;
 }
 
 // ── computations ────────────────────────────────────────────
@@ -34,14 +63,38 @@ function clientPrice(item: Item): number | null {
   return item.price_trade * (1 + (item.markup_pct ?? 0) / 100);
 }
 
-function lineTotal(item: Item): number | null {
+/**
+ * Round B: optional `qtyOverride` lets a caller pass the derived
+ * (measurement-linked) quantity instead of the raw item.quantity
+ * column — see resolvedQuantity() below, which every call site in this
+ * file now goes through. Omitting it (or an unlinked item) behaves
+ * exactly as before — backwards compatible with any other caller of
+ * this module-level helper.
+ */
+function lineTotal(item: Item, qtyOverride?: number): number | null {
   const cp = clientPrice(item);
-  return cp === null ? null : cp * item.quantity;
+  return cp === null ? null : cp * (qtyOverride ?? item.quantity);
 }
 
-function tradeTotal(item: Item): number | null {
+function tradeTotal(item: Item, qtyOverride?: number): number | null {
   if (item.price_trade === null || item.price_trade === undefined) return null;
-  return item.price_trade * item.quantity;
+  return item.price_trade * (qtyOverride ?? item.quantity);
+}
+
+/**
+ * Round B: resolves the quantity to actually cost an item against —
+ * derivedQuantity() (measurement value × wastage, coverage-converted)
+ * when the item is linked and its measurement is resolvable, else the
+ * plain item.quantity column. Every rollup helper above/below takes
+ * this as the qtyOverride so a takeoff-linked item's dollar figures
+ * stay correct without duplicating the derivation logic per call site.
+ */
+function resolvedQuantity(
+  item: ItemWithQtyLink,
+  measurementsById: Map<string, MeasurementWithGroup>
+): number {
+  const measurement = item.measurement_id ? measurementsById.get(item.measurement_id) ?? null : null;
+  return derivedQuantity(item, measurement).quantity;
 }
 
 type Risk = { label: string; tone: "late" | "risk" } | null;
@@ -121,9 +174,126 @@ function DateCell({
   );
 }
 
+/**
+ * Round B — the Qty cell for a spec-register item, gaining a
+ * measurement-link affordance mirroring the Estimate module's per-line
+ * "📏" link icon (see components/estimate/EstimateView.tsx's usage of
+ * MeasurementLinkPicker). Three states:
+ *   1. Not admin: plain read-only quantity, no link UI at all (the
+ *      picker's data source is admin-gated — see ProcurementView's
+ *      isAdmin prop doc comment).
+ *   2. Admin, unlinked: plain NumCell (editable quantity, as before)
+ *      plus a small "🔗" link button that opens the picker.
+ *   3. Admin, linked: computed quantity (derivedQuantity()) shown
+ *      read-only with a "linked · +10%" caption (derivedQuantityNote())
+ *      and an "Unlink" affordance — BUILD-SPEC.md "unlink-to-edit":
+ *      unlinking clears measurement_id (and wastage_pct/
+ *      coverage_per_unit, meaningless without a link) and reverts to a
+ *      plain editable NumCell showing the last hand-typed
+ *      items.quantity value, exactly mirroring the Estimate module's
+ *      MeasurementLinkPicker onSelect(null) handler.
+ */
+function QtyCell({
+  item,
+  isAdmin,
+  measurements,
+  measurementsById,
+  pickerOpen,
+  onOpenPicker,
+  onClosePicker,
+  onPatch,
+}: {
+  item: Item;
+  isAdmin: boolean;
+  measurements: MeasurementWithGroup[];
+  measurementsById: Map<string, MeasurementWithGroup>;
+  pickerOpen: boolean;
+  onOpenPicker: () => void;
+  onClosePicker: () => void;
+  onPatch: (id: string, patch: Partial<Item>) => void;
+}) {
+  const linked = item as ItemWithQtyLink;
+  const measurement = linked.measurement_id ? measurementsById.get(linked.measurement_id) ?? null : null;
+  const result = derivedQuantity(linked, measurement);
+  const note = derivedQuantityNote(linked, result);
+
+  if (!isAdmin) {
+    return <span>{item.quantity}</span>;
+  }
+
+  if (result.linked && measurement) {
+    return (
+      <div className="relative flex flex-col items-end gap-0.5">
+        <span className="text-nearblack">{result.quantity}</span>
+        {note && <span className="text-caption !text-sand">{note}</span>}
+        <button
+          type="button"
+          onClick={() =>
+            onPatch(item.id, {
+              measurement_id: null,
+              wastage_pct: null,
+            } as Partial<Item>)
+          }
+          className="text-caption text-charcoal/50 underline hover:text-nearblack"
+        >
+          Unlink
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative flex items-center justify-end gap-1">
+      <NumCell
+        value={item.quantity}
+        width="w-16"
+        onCommit={(v) => onPatch(item.id, { quantity: v ?? 0 })}
+      />
+      <button
+        type="button"
+        title="Link to a measurement"
+        onClick={onOpenPicker}
+        className="text-caption text-charcoal/40 hover:text-nearblack"
+      >
+        🔗
+      </button>
+      {pickerOpen && (
+        <div className="absolute right-0 top-full z-10 mt-1">
+          <MeasurementLinkPicker
+            measurements={measurements}
+            currentMeasurementId={linked.measurement_id ?? null}
+            onSelect={(measurementId) => {
+              onPatch(item.id, { measurement_id: measurementId } as Partial<Item>);
+              onClosePicker();
+            }}
+            onClose={onClosePicker}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── main component ──────────────────────────────────────────
 
-export function ProcurementView({ items, categories, budget, onPatch }: Props) {
+export function ProcurementView({
+  items,
+  categories,
+  budget,
+  onPatch,
+  measurements = [],
+  isAdmin = false,
+}: Props) {
+  // Round B — which item's measurement-link picker is currently open
+  // (null = none). Only one open at a time, same "single open popover"
+  // shape the Estimate module's per-row link picker uses.
+  const [linkPickerFor, setLinkPickerFor] = useState<string | null>(null);
+
+  const measurementsById = useMemo(
+    () => new Map(measurements.map((m) => [m.id, m])),
+    [measurements]
+  );
+
   const sortedCategories = useMemo(
     () => [...categories].sort((a, b) => a.sort_order - b.sort_order),
     [categories]
@@ -147,13 +317,22 @@ export function ProcurementView({ items, categories, budget, onPatch }: Props) {
         prefix,
         label: `${prefix} · ${categoryName.get(prefix) ?? prefix}`,
         items: list.sort((a, b) => a.item_code.localeCompare(b.item_code)),
-        subtotal: list.reduce((s, it) => s + (lineTotal(it) ?? 0), 0),
+        subtotal: list.reduce(
+          (s, it) => s + (lineTotal(it, resolvedQuantity(it as ItemWithQtyLink, measurementsById)) ?? 0),
+          0
+        ),
       }));
-  }, [items, sortedCategories, categoryName]);
+  }, [items, sortedCategories, categoryName, measurementsById]);
 
   const totals = useMemo(() => {
-    const sell = items.reduce((s, it) => s + (lineTotal(it) ?? 0), 0);
-    const cost = items.reduce((s, it) => s + (tradeTotal(it) ?? 0), 0);
+    const sell = items.reduce(
+      (s, it) => s + (lineTotal(it, resolvedQuantity(it as ItemWithQtyLink, measurementsById)) ?? 0),
+      0
+    );
+    const cost = items.reduce(
+      (s, it) => s + (tradeTotal(it, resolvedQuantity(it as ItemWithQtyLink, measurementsById)) ?? 0),
+      0
+    );
     return {
       sell,
       cost,
@@ -162,7 +341,7 @@ export function ProcurementView({ items, categories, budget, onPatch }: Props) {
       incGst: sell * (1 + GST_RATE),
       priced: items.filter((it) => it.price_trade !== null).length,
     };
-  }, [items]);
+  }, [items, measurementsById]);
 
   const variance = budget === null ? null : budget - totals.sell;
 
@@ -238,6 +417,7 @@ export function ProcurementView({ items, categories, budget, onPatch }: Props) {
                   return (
                     <tr
                       key={item.id}
+                      id={`focus-decision_overdue-${item.id}`}
                       className="border-b border-[#e5e0d6] align-middle"
                     >
                       <td className="px-2 py-1.5 text-body text-nearblack">
@@ -247,7 +427,16 @@ export function ProcurementView({ items, categories, budget, onPatch }: Props) {
                         {item.name}
                       </td>
                       <td className="px-2 py-1.5 text-right text-body">
-                        {item.quantity}
+                        <QtyCell
+                          item={item}
+                          isAdmin={isAdmin}
+                          measurementsById={measurementsById}
+                          pickerOpen={linkPickerFor === item.id}
+                          onOpenPicker={() => setLinkPickerFor(item.id)}
+                          onClosePicker={() => setLinkPickerFor(null)}
+                          measurements={measurements}
+                          onPatch={onPatch}
+                        />
                       </td>
                       <td className="px-2 py-1">
                         <NumCell
@@ -266,7 +455,7 @@ export function ProcurementView({ items, categories, budget, onPatch }: Props) {
                         {money(clientPrice(item))}
                       </td>
                       <td className="px-2 py-1.5 text-right text-body text-nearblack">
-                        {money(lineTotal(item))}
+                        {money(lineTotal(item, resolvedQuantity(item as ItemWithQtyLink, measurementsById)))}
                       </td>
                       <td className="px-2 py-1">
                         <NumCell

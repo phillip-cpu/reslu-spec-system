@@ -7,6 +7,7 @@ import { reportError } from "@/lib/report-error";
 import { normalizeProductUrl } from "@/lib/scraper";
 import { ITEM_CODE_PATTERN } from "@/types/phase-small-round";
 import type { Item } from "@/types";
+import type { ItemWithLinkedMeasurement } from "@/types/round-b";
 
 /**
  * Columns the internal team may edit via the register / P&P view.
@@ -59,6 +60,22 @@ import type { Item } from "@/types";
  * closed). Plain team-editable date, not financial — no admin-gating.
  * Falls through to the date-passthrough branch below (not NUMERIC/
  * TEXT/JSON_FIELDS), same as ordered_at/eta/delivered_at.
+ *
+ * Round B (migration 027_quantity_links_materials.sql): measurement_id/
+ * wastage_pct/coverage_per_unit — the takeoff → FF&E quantity link
+ * (mirrors cost_lines.measurement_id/wastage_pct, see
+ * lib/item-quantity.ts derivedQuantity()). Not financial — team-visible
+ * like `quantity` itself, no admin-gating needed. `measurement_id` is a
+ * plain nullable uuid (falls through to the date-passthrough/generic
+ * branch below, same bucket ordered_at/eta/decision_needed_by already
+ * use — "" → null, otherwise passed through as-is; there's no FK-exists
+ * pre-check the way item_code has a uniqueness pre-check, since an
+ * invalid/foreign measurement id simply 23503s on the update below,
+ * caught by the existing generic error-code branch). `wastage_pct` is
+ * numeric, added to NUMERIC_FIELDS below (with the same 0-50 bound the
+ * DB check constraint enforces — server-side validation here gives a
+ * clean 400 rather than surfacing a raw constraint-violation message).
+ * `coverage_per_unit` is numeric, added to NUMERIC_FIELDS below too.
  */
 const EDITABLE_FIELDS = new Set([
   // Spec view
@@ -103,6 +120,11 @@ const EDITABLE_FIELDS = new Set([
   // Phase 11 extension — design-phase decision deadline (see doc
   // comment above EDITABLE_FIELDS).
   "decision_needed_by",
+  // Round B — takeoff → FF&E quantity link (see doc comment above
+  // EDITABLE_FIELDS).
+  "measurement_id",
+  "wastage_pct",
+  "coverage_per_unit",
 ]);
 
 /**
@@ -136,7 +158,20 @@ const NUMERIC_FIELDS = new Set([
   "price_trade",
   "markup_pct",
   "lead_time_weeks",
+  // Round B additive.
+  "wastage_pct",
+  "coverage_per_unit",
 ]);
+
+/**
+ * Round B — wastage_pct's DB check constraint bounds it 0-50 (same
+ * bound as cost_lines.wastage_pct, migration 009). Validated here too
+ * so a bad value gets a clean 400 with a clear message, same pattern
+ * as item_code's format check above, rather than surfacing a raw
+ * Postgres constraint-violation string.
+ */
+const WASTAGE_MIN = 0;
+const WASTAGE_MAX = 50;
 
 const TEXT_FIELDS = new Set([
   "name",
@@ -169,6 +204,13 @@ const JSON_FIELDS = new Set(["image_options", "scraped_documents"]);
  * visibility — role-gated" — this GET previously returned `select("*")`
  * with no stripping at all, which was the read-side half of the same
  * gap the PATCH whitelist fix addresses on the write side.
+ *
+ * Round B additive: also embeds the linked measurement (if
+ * measurement_id is set) as `linked_measurement`, same PostgREST
+ * embedded-resource join app/api/projects/[id]/estimate/route.ts uses
+ * for measurement_groups(name) — see that route's comment for the
+ * pattern this mirrors. Lets the item detail panel show "linked · 12.4
+ * m² · +10%" without a second fetch.
  */
 export async function GET(
   _request: NextRequest,
@@ -185,16 +227,24 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { data: item, error } = await supabase
+  const { data: row, error } = await supabase
     .from("items")
-    .select("*")
+    .select("*, measurements(id, label, value, unit)")
     .eq("id", id)
     .is("deleted_at", null)
     .single();
 
-  if (error || !item) {
+  if (error || !row) {
     return NextResponse.json({ error: "Item not found" }, { status: 404 });
   }
+
+  const { measurements: linked, ...itemRest } = row as unknown as Record<string, unknown> & {
+    measurements: { id: string; label: string; value: number; unit: string } | null;
+  };
+  const item: ItemWithLinkedMeasurement = {
+    ...(itemRest as unknown as ItemWithLinkedMeasurement),
+    linked_measurement: linked ?? null,
+  };
 
   const { data: notes } = await supabase
     .from("item_notes")
@@ -203,7 +253,7 @@ export async function GET(
     .order("created_at", { ascending: true });
 
   const admin = await isAdmin(supabase);
-  const payload = admin ? item : stripFinancials(item);
+  const payload = admin ? item : stripFinancials(item as unknown as Record<string, unknown>);
 
   return NextResponse.json({ item: payload, notes: notes ?? [] });
 }
@@ -279,6 +329,15 @@ export async function PATCH(
         if (Number.isNaN(n)) {
           return NextResponse.json(
             { error: `${key} must be a number` },
+            { status: 400 }
+          );
+        }
+        // Round B: wastage_pct is bounded 0-50 by the DB check
+        // constraint (migration 027) — validated here too for a clean
+        // 400 rather than a raw constraint-violation error string.
+        if (key === "wastage_pct" && (n < WASTAGE_MIN || n > WASTAGE_MAX)) {
+          return NextResponse.json(
+            { error: `wastage_pct must be between ${WASTAGE_MIN} and ${WASTAGE_MAX}` },
             { status: 400 }
           );
         }

@@ -482,3 +482,37 @@ a phase's status, or actioning the WD-Package hinge are all left to the
 human loop. If a future automation genuinely needs Aria to update
 phase/task state programmatically, that's an explicit, separate
 addition — not assumed here.
+
+## Round B — materials price list (not yet an Aria tool)
+
+BUILD-SPEC.md "Phillip's ideas list — 6 July 2026" item 4 added a
+global `materials` price list (`GET/POST /api/materials`,
+`GET/PATCH/DELETE /api/materials/[id]`,
+`POST /api/materials/[id]/refresh-price` — see `docs/API.md`'s "Round
+B" section for the full route contract) and two client-side-only
+calculators (timber frame, plasterboard) that link a material and can
+insert a computed cost as a real estimate line.
+
+**No `list_materials` / `create_material` MCP tool exists yet.**
+Documented here as a known, deliberate gap rather than silently
+omitted: the materials list is small, low-churn reference data (timber
+profiles, plasterboard sheet sizes, screws/adhesive) that the team
+manages by hand from inside a calculator's inline "+ Add material"
+control — there was no immediate driver for Aria to read or write this
+list programmatically the way she already does for `items`/`invoices`/
+`leads`. If a future automation needs it (e.g. Aria bulk-importing a
+supplier's price list), add `list_materials` (`GET /api/materials`,
+straightforward passthrough) and `create_material`/`update_material`
+(same shape as `create_office_task`/`create_design_task` above) as an
+explicit, separate addition — the underlying REST routes already
+support it fully; only the MCP tool wrapper is missing.
+
+The calculators themselves (timber frame / plasterboard) are NOT, and
+are never expected to become, an Aria tool — they are pure client-side
+math run interactively in the Estimate tab's UI (`lib/calculators.ts`
+has no server route to call), the same "human-in-the-loop" framing as
+the WD-Package hinge above: Aria has no reason to run a takeoff
+calculation unsupervised, only the resulting `POST
+/api/estimate/sections/[sectionId]/lines` call (already Aria-visible,
+unchanged by this round) if she were ever asked to add an estimate
+line directly.

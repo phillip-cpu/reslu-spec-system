@@ -49,7 +49,14 @@ export function ProjectCard({ project }: { project: ProjectWithCountsAndAlias })
         </div>
 
         <div className="mt-6 flex items-center justify-between text-caption text-charcoal/60">
-          <span>{project.item_count ?? 0} items</span>
+          <span>
+            {project.item_count ?? 0} items
+            {/* Job number (migration 028_job_numbers.sql) — small, same
+                metadata row as item count/updated date rather than the
+                title cluster (Header.tsx's own slot), since the card
+                has no separate header/title area to match against. */}
+            {project.job_number && <span className="ml-2 text-charcoal/40">#{project.job_number}</span>}
+          </span>
           <span>Updated {new Date(project.updated_at).toLocaleDateString("en-AU")}</span>
         </div>
       </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import clsx from "clsx";
 import { umbrellaGridPosition } from "@/lib/gantt";
 import type { GanttGrid } from "@/lib/gantt";
 
@@ -29,6 +30,10 @@ export function UmbrellaBand({
   grid,
   costSectionLines,
   onPatch,
+  dragDeltaDays = 0,
+  dragMode = null,
+  onStartDrag,
+  onContextMenu,
 }: {
   name: string;
   startDate: string;
@@ -36,12 +41,25 @@ export function UmbrellaBand({
   grid: GanttGrid;
   costSectionLines: string[];
   onPatch: (patch: { name?: string; start_date?: string; end_date?: string }) => void;
+  /**
+   * Round A "Timeline slider bars ... umbrella bars draggable too" —
+   * same drag-preview/commit contract PhaseRow's bar uses (see that
+   * component's own props for the full rationale); all optional so
+   * this component still renders correctly if a future caller doesn't
+   * wire dragging up (defensive default, mirrors PhaseEditPanel's own
+   * "kept here in case that invariant is ever broken" comment style).
+   */
+  dragDeltaDays?: number;
+  dragMode?: "move" | "resize-start" | "resize-end" | null;
+  onStartDrag?: (mode: "move" | "resize-start" | "resize-end", clientX: number) => void;
+  onContextMenu?: (position: { x: number; y: number }) => void;
 }) {
   const [contentOpen, setContentOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draftStart, setDraftStart] = useState(startDate);
   const [draftEnd, setDraftEnd] = useState(endDate);
   const pos = umbrellaGridPosition({ start_date: startDate, end_date: endDate }, grid);
+  const dragging = dragMode !== null;
 
   function saveDates() {
     const patch: { start_date?: string; end_date?: string } = {};
@@ -79,10 +97,27 @@ export function UmbrellaBand({
         style={{ gridColumn: `2 / span ${grid.weekCount}` }}
       >
         <div
-          className="h-4 border border-dashed border-charcoal/40 bg-charcoal/10"
+          onPointerDown={(e) => {
+            if (!onStartDrag) return;
+            const target = e.currentTarget;
+            const rect = target.getBoundingClientRect();
+            const offsetX = e.clientX - rect.left;
+            const mode =
+              offsetX <= 6 ? "resize-start" : offsetX >= rect.width - 6 ? "resize-end" : "move";
+            onStartDrag(mode, e.clientX);
+          }}
+          onContextMenu={(e) => {
+            if (!onContextMenu) return;
+            e.preventDefault();
+            onContextMenu({ x: e.clientX, y: e.clientY });
+          }}
+          className={clsx(
+            "h-4 cursor-grab border border-dashed border-charcoal/40 bg-charcoal/10 transition-opacity",
+            dragging && "cursor-grabbing opacity-60 outline outline-2 outline-nearblack"
+          )}
           style={{
-            marginLeft: `calc((100% / ${grid.weekCount}) * ${pos.startCol - 1})`,
-            width: `calc((100% / ${grid.weekCount}) * ${pos.span})`,
+            marginLeft: `calc((100% / ${grid.weekCount}) * ${pos.startCol - 1 + (dragMode === "move" || dragMode === "resize-start" ? dragDeltaDays / 7 : 0)})`,
+            width: `calc((100% / ${grid.weekCount}) * ${pos.span + (dragMode === "resize-start" ? -dragDeltaDays / 7 : dragMode === "resize-end" ? dragDeltaDays / 7 : 0)})`,
           }}
           title={`${name}: ${startDate} to ${endDate}`}
         />

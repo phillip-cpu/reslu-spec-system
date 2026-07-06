@@ -28,11 +28,17 @@ export default async function ProjectPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; focus?: string }>;
 }) {
   const { id } = await params;
-  const { tab } = await searchParams;
+  const { tab, focus } = await searchParams;
   const showFfe = tab === "ffe";
+  // My Work focus deep-link ("Three from Phillip — 6 July 2026
+  // evening" item 1): decision_overdue items only have a row id inside
+  // ProcurementView (interim — see docs/HANDOFF-focus-register.md), so
+  // a focus param for that kind needs the FF&E tab to open straight
+  // into the Procurement sub-view rather than its "Spec" default.
+  const initialFfeView = focus?.startsWith("decision_overdue-") ? "procurement" : undefined;
   const supabase = await createClient();
 
   const [{ data: project }, info] = await Promise.all([
@@ -88,6 +94,7 @@ export default async function ProjectPage({
     <>
       <Header
         title={project.name}
+        jobNumber={project.job_number ?? null}
         titleSuffix={project.alias ?? null}
         subtitle={project.client_name}
         subtitleHref="/"
@@ -130,6 +137,8 @@ export default async function ProjectPage({
             initialItems={items}
             categories={categories}
             budget={project.budget ?? null}
+            isAdmin={isAdmin}
+            initialView={initialFfeView}
           />
         ) : (
           <ProjectOverview projectId={id} isAdmin={isAdmin} />

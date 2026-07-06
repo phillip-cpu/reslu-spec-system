@@ -2,6 +2,7 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { scrapeProductUrl, normalizeProductUrl } from "@/lib/scraper";
 import type { CreateItemInput } from "@/types";
+import type { ItemWithLinkedMeasurement } from "@/types/round-b";
 
 /**
  * Columns returned by the Spec register (BUILD-SPEC.md §1–2 / Week 2 scope):
@@ -11,6 +12,15 @@ import type { CreateItemInput } from "@/types";
  * view and must never appear in this response, even for admins. An explicit
  * column list (not `select("*")`) is used so a future schema addition can
  * never leak into this endpoint by accident.
+ *
+ * Round B additive: measurement_id/wastage_pct/coverage_per_unit
+ * (migration 027) appended — not financial, just quantity-derivation
+ * metadata, so team-visible like `quantity` itself. Needed so
+ * ProcurementView.tsx (Pricing & Procurement view, which calls the
+ * SEPARATE GET /api/items/[id] route for its own admin-gated fields —
+ * see that route below) can also show the plain register a "linked"
+ * badge if ever surfaced there; primarily consumed via the nested
+ * `measurements(...)` join below for the derived-quantity note.
  */
 const SPEC_VIEW_COLUMNS = [
   "id",
@@ -50,7 +60,23 @@ const SPEC_VIEW_COLUMNS = [
   "created_at",
   "updated_at",
   "deleted_at",
+  "measurement_id",
+  "wastage_pct",
+  "coverage_per_unit",
 ].join(",");
+
+/**
+ * Round B additive — nested embed for the linked measurement's
+ * label/value/unit, mirroring the exact PostgREST embedded-resource
+ * pattern app/api/projects/[id]/estimate/route.ts already uses for
+ * `measurements(*, measurement_groups(name))` (see that route). Kept
+ * as its own constant (rather than concatenated inline into
+ * SPEC_VIEW_COLUMNS above) since it's a joined-table select, not a
+ * plain column list, and Supabase's `.select()` accepts both mixed
+ * together in one string — see the GET query below where they're
+ * combined.
+ */
+const MEASUREMENT_EMBED = "measurements(id, label, value, unit)";
 
 /**
  * GET /api/projects/[id]/items
@@ -115,7 +141,7 @@ export async function GET(
 
   let query = supabase
     .from("items")
-    .select(SPEC_VIEW_COLUMNS, { count: "exact" })
+    .select(`${SPEC_VIEW_COLUMNS},${MEASUREMENT_EMBED}`, { count: "exact" })
     .eq("project_id", id)
     .is("deleted_at", null);
 
@@ -132,7 +158,7 @@ export async function GET(
     );
   }
 
-  const { data: items, error, count } = await query
+  const { data: rows, error, count } = await query
     .order("category", { ascending: true })
     .order("item_code", { ascending: true })
     .range(offset, offset + limit - 1);
@@ -140,6 +166,23 @@ export async function GET(
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  // Round B additive: flatten the nested `measurements` embed (a
+  // to-one join via items.measurement_id) into `linked_measurement`,
+  // same "strip the join, attach a flat named field" shape
+  // app/api/projects/[id]/estimate/route.ts already uses for
+  // `measurement_groups(name)` → `group_name`. Supabase returns the
+  // embed as an object (not array) here since items.measurement_id is
+  // a to-one FK, not the reverse one-to-many direction.
+  const items: ItemWithLinkedMeasurement[] = (rows ?? []).map((row) => {
+    const { measurements: linked, ...rest } = row as unknown as Record<string, unknown> & {
+      measurements: { id: string; label: string; value: number; unit: string } | null;
+    };
+    return {
+      ...(rest as unknown as ItemWithLinkedMeasurement),
+      linked_measurement: linked ?? null,
+    };
+  });
 
   return NextResponse.json({
     items,

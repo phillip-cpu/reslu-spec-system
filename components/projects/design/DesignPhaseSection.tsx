@@ -165,7 +165,7 @@ function DesignTaskRow({
   }
 
   return (
-    <div className={clsx("px-1 py-2", isDone && "opacity-60")}>
+    <div id={`focus-design_task-${task.id}`} className={clsx("px-1 py-2", isDone && "opacity-60")}>
       <div className="flex items-center gap-3">
         <input
           type="checkbox"

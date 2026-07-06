@@ -38,6 +38,18 @@ import type {
  *      additionally: every group now carries `phase_id` (BoardGroup's
  *      own field, types/phase-12a-b.ts) since it's included by this
  *      route's existing `select("*")` — no query change needed here.
+ *   4. Round A "Board owns dates, Timeline is the visual": every group
+ *      with a non-null `phase_id` now ALSO carries `phase_start_date`/
+ *      `phase_end_date` — a lightweight second query against
+ *      schedule_phases (id, start_date, end_date only — no reason to
+ *      pull the whole row) keyed by the groups' phase_id set, merged in
+ *      below. This lets the Grouped-list view render compact date
+ *      inputs directly on a phase-linked group header (PATCHing
+ *      /api/phases/[id], the exact same route Timeline's edit panel
+ *      already uses) without a second page-load round-trip. Groups
+ *      with phase_id = null (unreconciled/legacy groups) simply get
+ *      both fields as null — the client only renders the inputs when
+ *      phase_id is present, per this round's brief.
  *
  * Response shape: BoardV2Response — { columns, groups, team }. `team`
  * is every non-deleted task's superset of possible assignees is NOT
@@ -97,6 +109,19 @@ export async function GET(
     .select("*")
     .eq("project_id", projectId)
     .order("sort", { ascending: true });
+
+  // Round A — fetch the linked phases' dates for every group that has
+  // one (phase_id set), a single extra query keyed by that id set
+  // rather than a per-group round-trip.
+  const linkedPhaseIds = [...new Set((groups ?? []).map((g) => g.phase_id).filter(Boolean))] as string[];
+  const { data: linkedPhases } = linkedPhaseIds.length
+    ? await supabase
+        .from("schedule_phases")
+        .select("id,start_date,end_date")
+        .in("id", linkedPhaseIds)
+        .is("deleted_at", null)
+    : { data: [] as { id: string; start_date: string; end_date: string }[] };
+  const phaseDatesById = new Map((linkedPhases ?? []).map((p) => [p.id, p]));
 
   const { data: team } = await supabase.from("profiles").select("id,full_name").order("full_name");
 
@@ -160,10 +185,15 @@ export async function GET(
     tasks: tasksByColumn.get(c.id) ?? [],
   }));
 
-  const groupsResult: BoardGroupWithTasks[] = (groups ?? []).map((g) => ({
-    ...g,
-    tasks: tasksByGroup.get(g.id) ?? [],
-  }));
+  const groupsResult: BoardGroupWithTasks[] = (groups ?? []).map((g) => {
+    const linkedPhase = g.phase_id ? phaseDatesById.get(g.phase_id) : undefined;
+    return {
+      ...g,
+      tasks: tasksByGroup.get(g.id) ?? [],
+      phase_start_date: linkedPhase?.start_date ?? null,
+      phase_end_date: linkedPhase?.end_date ?? null,
+    };
+  });
 
   const body: BoardV2Response = {
     columns: columnsResult,

@@ -1,6 +1,9 @@
 import { Sidebar } from "@/components/layout/Sidebar";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
+import { ScrollMemory } from "@/components/shared/ScrollMemory";
+import { FocusOnLoad } from "@/components/shared/FocusOnLoad";
+import { Suspense } from "react";
 
 /**
  * Dashboard shell (server component). Week 10 adds `isAdmin` here so
@@ -26,7 +29,7 @@ export default async function DashboardLayout({
   return (
     <div className="flex min-h-screen bg-cream">
       <Sidebar isAdmin={isAdmin} />
-      <div className="flex-1 flex flex-col">{children}</div>
+      <div className="flex-1 flex flex-col"><Suspense fallback={null}><ScrollMemory /><FocusOnLoad /></Suspense>{children}</div>
     </div>
   );
 }

@@ -354,6 +354,32 @@ export interface FfeItemInput {
   quantity: number;
   price_trade: number | null;
   price_rrp: number | null;
+  /**
+   * Round B additive — takeoff → FF&E quantity link (migration 027:
+   * items.measurement_id/wastage_pct/coverage_per_unit). All three are
+   * optional so every existing caller/fixture that only ever built a
+   * plain { id, category, quantity, price_trade, price_rrp } literal
+   * keeps compiling and behaving identically — see ffeRollup()'s doc
+   * comment below for exactly when these are consulted.
+   */
+  measurement_id?: string | null;
+  wastage_pct?: number | null;
+  coverage_per_unit?: number | null;
+}
+
+/**
+ * Minimal shape needed from a measurement for the FF&E derived-quantity
+ * path — identical shape to lib/item-quantity.ts's
+ * DerivedQuantityMeasurementInput (kept as a separate local type here
+ * rather than imported, so this module keeps its documented "no
+ * Supabase/Next imports, nothing beyond @/types" dependency footprint;
+ * lib/item-quantity.ts itself has zero framework dependencies either,
+ * so importing it would be safe, but duplicating one 3-line interface
+ * is cheaper than adding a new cross-module dependency to this
+ * long-lived, heavily-relied-upon file for a single shape).
+ */
+export interface FfeMeasurementInput {
+  value: number;
 }
 
 export type FfeConfidence = "quoted" | "placeholder" | "unpriced";
@@ -374,6 +400,31 @@ export function ffeBestPrice(item: FfeItemInput): {
     return { bestPrice: item.price_rrp, confidence: "placeholder" };
   }
   return { bestPrice: null, confidence: "unpriced" };
+}
+
+/**
+ * Round B additive helper for ffeRollup(): the quantity to actually
+ * cost an FF&E item against. Same formula as
+ * lib/item-quantity.ts's derivedQuantity() (duplicated rather than
+ * imported — see FfeMeasurementInput's doc comment above for why this
+ * file avoids a cross-module import for one small shape):
+ *   1. adjusted = measurement.value * (1 + (wastage_pct ?? 0) / 100)
+ *   2. if coverage_per_unit is set: ceil(adjusted / coverage_per_unit)
+ *   3. else: adjusted as-is
+ * Falls back to item.quantity when unlinked or the measurement wasn't
+ * resolvable, so an item with no link behaves exactly as before this
+ * round.
+ */
+function ffeDerivedQuantity(item: FfeItemInput, measurement: FfeMeasurementInput | null): number {
+  if (item.measurement_id && measurement) {
+    const wastage = item.wastage_pct ?? 0;
+    const adjusted = measurement.value * (1 + wastage / 100);
+    if (item.coverage_per_unit !== null && item.coverage_per_unit !== undefined && item.coverage_per_unit > 0) {
+      return Math.ceil(adjusted / item.coverage_per_unit);
+    }
+    return adjusted;
+  }
+  return item.quantity;
 }
 
 export interface FfeCategoryRollup {
@@ -411,8 +462,27 @@ export interface FfeRollup {
  * A zero/negative-quantity item still counts toward item_count (it's a
  * real schedule line) but contributes $0 to the category total, same
  * as an unpriced item would.
+ *
+ * Round B additive: `measurementsById` is an OPTIONAL second argument
+ * (measurement id → { value }), mirroring sectionRollup()/
+ * projectRollup()'s existing `measurementsById` parameter above. When
+ * an item has `measurement_id` set AND its measurement is present in
+ * this map, the item's line total uses
+ * lib/item-quantity.ts-equivalent derived quantity (measurement value
+ * × (1 + wastage%), then ceil'd by coverage_per_unit if set) instead of
+ * the item's raw `quantity` column — so a takeoff-linked FF&E item's
+ * dollar figure stays correct even if `quantity` itself is stale.
+ *
+ * Backwards compatible: every existing call site that doesn't pass
+ * `measurementsById` (or passes items with no measurement_id) computes
+ * byte-for-byte the same `item.quantity * bestPrice` as before — the
+ * derivation only activates per-item when both a link AND a resolvable
+ * measurement are present.
  */
-export function ffeRollup(items: FfeItemInput[]): FfeRollup {
+export function ffeRollup(
+  items: FfeItemInput[],
+  measurementsById?: Map<string, FfeMeasurementInput>
+): FfeRollup {
   const byCategory = new Map<string, FfeItemInput[]>();
   for (const item of items) {
     const list = byCategory.get(item.category);
@@ -438,7 +508,10 @@ export function ffeRollup(items: FfeItemInput[]): FfeRollup {
 
     for (const item of catItems) {
       const { bestPrice, confidence } = ffeBestPrice(item);
-      const lineTotal = bestPrice !== null ? item.quantity * bestPrice : 0;
+      const measurement =
+        item.measurement_id ? measurementsById?.get(item.measurement_id) ?? null : null;
+      const effectiveQuantity = ffeDerivedQuantity(item, measurement);
+      const lineTotal = bestPrice !== null ? effectiveQuantity * bestPrice : 0;
       catTotal += lineTotal;
       if (confidence === "quoted") {
         catQuotedTotal += lineTotal;

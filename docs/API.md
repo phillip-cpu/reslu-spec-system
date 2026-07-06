@@ -52,9 +52,21 @@ Auth: session. Body: none. Response: `{ projects: ProjectWithCounts[] }`
 projects are included). **Aria-relevant.**
 
 ### POST /api/projects
-Auth: session. Body: `{ name, client_name, address?, monday_board_id?, budget? }`.
-Response: `{ project }` (201). `client_token` is DB-generated, never
-accepted from the request. **Aria-relevant.**
+Auth: session. Body: `{ name, client_name, address?, monday_board_id?, budget?, job_number? }`.
+Response: `{ project }` (201) or `{ error }` (409 on a job_number
+clash). `client_token` is DB-generated, never accepted from the
+request. **Aria-relevant.**
+
+**Job numbers (migration `028_job_numbers.sql`, "Three from Phillip —
+6 July 2026 evening" item 2):** when `job_number` is omitted, one is
+auto-generated (`lib/job-number.ts` `nextJobNumber()` — max of every
+existing numeric `job_number` + 1, zero-padded to 3 digits, rolling to
+4 naturally past 999) and a single retry covers the narrow race of two
+concurrent creates computing the same "next" number. When supplied
+explicitly, it's used as-is and a clash surfaces as a real 409 (no
+silent reassignment). `POST /api/leads/[id]/create-project` (the
+lead-to-project path) generates a number the exact same way — see that
+route's own doc comment.
 
 ### GET /api/projects/[id]
 Auth: session. Body: none. Response: `{ project }`. Not-found and any
@@ -77,6 +89,22 @@ but were never surfaced on any form until now) plus `client_phone`,
 `client_secondary_name`, `client_secondary_email`,
 `client_secondary_phone` (new, migration `017_project_contacts.sql` —
 second owner on a couple's job).
+
+**Job numbers (migration `028_job_numbers.sql`, "Three from Phillip —
+6 July 2026 evening" item 2):** unlike the general body-passthrough
+above, `job_number` gets an explicit pre-check ahead of the update —
+validated against `^\d{3,4}$` (400 if not), and checked for a clash
+against another project's `job_number` (409, clear message) — mirroring
+`PATCH /api/items/[id]`'s `item_code` clash-check pattern rather than
+relying solely on the DB's partial unique index
+(`idx_projects_job_number_active`). A raw Postgres `23505` from the
+update itself (a narrow concurrent-write race the pre-check can't fully
+close) also maps to 409 as a fallback. Empty string clears the field
+back to `null` (project re-enters the auto-numbered pool — though
+nothing re-assigns it automatically; a null `job_number` just means
+"unnumbered" until someone sets one). Surfaced in
+`components/settings/ProjectSettingsForm.tsx` as a "Job number" field
+next to Alias.
 
 ### DELETE /api/projects/[id]
 Auth: session. Body: none. Response: `{ ok: true }`. Soft-delete: sets
@@ -2938,3 +2966,414 @@ moved to `/portal/[token]/selections`. This round finishes the cut:
   guards, as the fix-round page already did), zero pricing fields ever
   selected, bulk-approve + stepper both still write individual
   `approval_events` rows per item (never a combined "bulk" event).
+
+## Round A — "Board owns dates, Timeline is the visual", tab bar polish
+
+No new migration; no route CONTRACT changes beyond one additive field
+on an existing response (see below). Ran alongside a second, isolated
+agent's own round in this same working copy (quantity-links/calculators
+— their files: `supabase/migrations/027*`, `lib/takeoff*`,
+`lib/materials*`, `components/calculators/**`,
+`components/items/ProcurementView.tsx`, `app/api/materials/**`,
+`app/api/calculators/**`, estimate route/view additions, `mcp/**`) —
+none of those files were touched by this round.
+
+**`GET /api/projects/[id]/board`** — response's `groups` entries
+(`BoardGroupWithTasks`, `types/phase-12a-b.ts`) gain two additive,
+read-only fields: `phase_start_date: string | null` and
+`phase_end_date: string | null` — the linked `schedule_phases` row's
+own dates (via a second lightweight query keyed by every group's
+`phase_id`, merged in server-side), both `null` when a group has no
+linked phase (`phase_id` is `null`). Nothing existing changes shape;
+this is purely additive. `POST /api/projects/[id]/board/groups` and
+`POST /api/projects/[id]/board/groups/seed` are UNCHANGED (still return
+bare `board_groups` rows with no phase-date projection) — the client
+(`components/board/ProjectBoard.tsx`) fills both new fields with `null`
+for a group it just created locally, until the next full board GET
+(e.g. a reload) picks up the real dates. This is a display-only gap
+(the group's real dates already exist in `schedule_phases` from the
+moment it's created — see that route's "unification invariant" doc
+comment) and was judged acceptable rather than adding a third query to
+two routes whose response shape nothing else needed to change.
+
+**Board group date inputs** (`components/board/ProjectBoard.tsx`,
+Grouped-list view) — a phase-linked group's header
+(`GroupTable`/`GroupPhaseDateInputs`) now shows compact start/end date
+inputs next to its name, rendered ONLY when `group.phase_id` is set;
+unlinked/legacy groups (`phase_id === null`) show nothing extra.
+Changing either date PATCHes the linked phase directly — **`PATCH
+/api/phases/[id]`**, the EXACT SAME route the Timeline tab's own phase
+edit panel already uses — never `board_groups` (which has no date
+columns). Optimistic, reverts on failure. This means a date set from
+the Board is immediately visible on the Timeline tab and vice versa,
+with zero new sync code, since both surfaces write through one route
+to one row.
+
+**Timeline slider bars** (`components/gantt/GanttChart.tsx` +
+`components/gantt/UmbrellaBand.tsx` + new `lib/phase-drag.ts`) — every
+phase bar (ordinary phases AND the umbrella band) is now pointer-drag
+interactive:
+- Grab the bar body (`pointerdown` outside the 6px edge zones) → drags
+  the WHOLE phase, `start_date`/`end_date` shift by the same
+  day-snapped delta.
+- Grab within 6px of the bar's left/right edge → resizes just that
+  edge (`resize-start`/`resize-end`), clamped so the phase can never
+  shrink below a 1-day duration.
+- Day-snapping: `lib/phase-drag.ts`'s `snapDeltaDays(deltaPx,
+  weekColumnPx)` divides the caller-measured week-column pixel width by
+  7 (`pxPerDay`) — `weekColumnPx` is measured ONCE per drag gesture
+  from the actual rendered grid body (`gridBodyRef`,
+  `getBoundingClientRect().width` minus the 200px name column, divided
+  by `grid.weekCount`), i.e. the exact same `(100% / weekCount)`
+  division `lib/gantt.ts`'s own CSS `calc()` bar-position formula uses
+  — `lib/gantt.ts` itself is UNTOUCHED by this round (verified via
+  mtime), so there is no risk of the drag math drifting from either the
+  internal Timeline's own bar rendering or the read-only portal mirror
+  (`components/portal/TimelineSection.tsx`, which only ever reads
+  `lib/gantt.ts`'s existing exports and has no drag interaction at
+  all).
+- Visual feedback while dragging: the bar being dragged gets
+  `opacity-60` + a `outline-2 outline-nearblack` outline; cursor is
+  `cursor-grab` at rest, `cursor-grabbing` while dragging (edge zones
+  don't get a separate `col-resize` cursor style pre-drag — the 6px
+  zones are invisible hit-targets, not visually delineated, consistent
+  with the "compact" bar sizing already in place).
+- Commit: PATCHes `/api/phases/[id]` on `pointerup` with the final
+  day-delta (optimistic update, revert-on-failure — reuses the exact
+  same `patchPhase()` helper the edit panel and context-menu actions
+  below all share).
+- Touch: deliberately does NOT attempt edge-drag or move-drag at all
+  (`pointerType === "touch"` short-circuits `handlePointerDown`) — a
+  tap still opens the existing edit panel unchanged (the pre-existing
+  `onToggleEdit` click handler on the phase name), per this round's
+  explicit "Touch: do NOT attempt edge-drag ... tap opens the existing
+  edit panel (unchanged fallback)" instruction.
+
+**Right-click context menu** — new **`components/shared/ContextMenu.tsx`**
+(generic: `items: ContextMenuItem[]`, `position`, closes on Esc /
+click-away / scroll of any ancestor, brand-styled fixed panel,
+supports one level of submenu for "Change colour"). Wired into
+`GanttChart.tsx`:
+- Right-click a phase bar (ordinary or umbrella) → **Edit dates**
+  (expands the existing edit panel — no new UI), **Shift −1 week** /
+  **Shift +1 week** (immediate `PATCH /api/phases/[id]`, no
+  intermediate step), **Book trade** (expands the edit panel AND
+  auto-opens its existing `AddVisitForm` inside `VisitsPanel` via a
+  `forceOpenAddVisit` prop plumbed down from `GanttChart` →
+  `PhaseRow` → `PhaseEditPanel` → `VisitsPanel`, so "booking a trade"
+  from the menu lands directly on the same add-visit mini-form staff
+  already use, pre-scoped to that phase), **Change colour** (submenu of
+  the 4 `color_key`s, reuses the same `COLOR_SWATCH`/`COLOR_KEYS`
+  constants the edit panel's colour picker already uses).
+- **"Mark complete" — SKIPPED, not implemented.** `schedule_phases` has
+  no complete/status column; a phase's only date-shaped state is
+  `start_date`/`end_date`, and "done" is inferred client-side
+  (`end_date < today`, see `GanttChart.tsx`'s `completedPhases`) rather
+  than stored. Adding a real status column would need a new migration,
+  which is outside this round's explicit "NO new migration for your
+  half" boundary — documented here and inline in `GanttChart.tsx`
+  rather than silently omitted.
+- Right-click empty timeline space (a week-header cell) → **Add phase
+  starting this week**, which prefills the existing `AddPhaseForm`'s
+  start-date field with the right-clicked week's Monday date (via a new
+  optional `initialStart` prop) rather than inventing a second add-phase
+  entry point.
+- Touch: long-press (~500ms, `LONG_PRESS_MS`) on a phase bar opens the
+  same menu (`onTouchStart` arms a timer, cleared on
+  `touchend`/`touchmove`/`touchcancel` so a normal tap/scroll never
+  triggers it).
+
+**Tab bar polish** (`components/projects/ProjectTabs.tsx`) — converted
+to a client component (`"use client"`) so it can render a single
+sliding underline indicator (absolutely-positioned `<span>`,
+`transform: translateX` + `width` transitioning over 200ms ease-out,
+GPU-composited) instead of every tab drawing its own static
+`border-b-2`. Measured via refs on mount, on `active` change, and via a
+`ResizeObserver` on the tab row (catches viewport/admin-tab-visibility
+changes). Hover colour transitions over 150ms; the active tab's label
+renders at `font-medium` (the base `text-subhead` utility is
+font-weight 300 — "light" — so the active tab now visibly reads
+heavier, not just underlined). Verified all 11 call sites (every
+project sub-page) pass only serialisable props
+(`projectId`/`active`/`isAdmin`/`portalUrl` — strings and a boolean),
+so nothing breaks crossing the client-component boundary; the
+`PortalLinkAction` slot (already its own `"use client"` component)
+keeps working unchanged as a plain child. No `position: sticky` or
+backdrop-blur was added — verified this bar renders in normal document
+flow (directly after `<Header>`) on every call site with no sticky
+ancestor, so per this round's brief that entire treatment was skipped
+rather than manufactured.
+
+## Round B — takeoff → FF&E quantity links, materials, calculators
+
+Migration `027_quantity_links_materials.sql`. BUILD-SPEC.md "Pricing
+division — Estimates = labour, FF&E = products" (takeoff→FF&E links
+half) + "Phillip's ideas list — 6 July 2026" item 4 (calculators incl.
+materials price list).
+
+### Items gain a measurement link
+
+`items` gains `measurement_id` (nullable uuid, references
+`measurements`, `on delete set null`), `wastage_pct` (nullable
+numeric(5,2), 0–50 check), `coverage_per_unit` (nullable
+numeric(10,4)) — mirrors `cost_lines.measurement_id`/`wastage_pct`
+(migration 009) so a spec-register item's quantity can be DERIVED from
+a linked measurement instead of hand-typed, same UX already proven for
+estimate cost lines. See `lib/item-quantity.ts` `derivedQuantity()`:
+`measurement.value * (1 + wastage_pct/100)`, then `ceil(that /
+coverage_per_unit)` if `coverage_per_unit` is set, else used as-is.
+
+- **`PATCH /api/items/[id]`** — Auth: session. Whitelist gains
+  `measurement_id`, `wastage_pct`, `coverage_per_unit` (not financial,
+  team-editable, no admin-gating). `wastage_pct` is bounds-checked
+  0–50 server-side (`400` on out-of-range) ahead of the DB check
+  constraint, same pattern `item_code`'s format validation already
+  uses. **Aria-relevant** (same route she already calls for other item
+  fields).
+- **`GET /api/items/[id]`** and **`GET /api/projects/[id]/items`** —
+  both now embed the linked measurement as `linked_measurement: { id,
+  label, value, unit } | null` on every item row (PostgREST nested
+  select, same `measurements(...)` embed pattern
+  `GET /api/projects/[id]/estimate` already uses for
+  `measurement_groups(name)`). Team-visible on both routes — not
+  admin-gated, since the embed is just the plain
+  `label`/`value`/`unit` columns, not a financial figure.
+
+### FF&E rollup — derived quantity, additive
+
+`lib/estimate.ts` `ffeRollup(items, measurementsById?)` gains an
+OPTIONAL second parameter (Round A didn't touch this file; Round B
+edited it additively). When an item's `measurement_id` resolves against
+the supplied map, its FF&E line total uses the same derived-quantity
+formula as `lib/item-quantity.ts`, instead of the raw `quantity`
+column. Every existing caller that omits the second argument (or whose
+items have no `measurement_id`) computes byte-for-byte the same result
+as before this round — fully backwards compatible.
+`GET /api/projects/[id]/estimate` now selects
+`measurement_id, wastage_pct, coverage_per_unit` alongside the existing
+item columns and passes the same `measurementsById` map already built
+for cost-line `effectiveQty()` into `ffeRollup()` too.
+
+### Materials — `/api/materials`
+
+Global (not per-project) price list for the Calculators feature —
+`materials` table: `name` (required), `product_url`, `unit` (default
+`'ea'`), `price`, `price_refreshed_at`, `coverage_per_unit`, `notes`,
+`created_by`, timestamps, `deleted_at`.
+
+- **`GET /api/materials`** — Auth: session. `?q=` filters by name
+  (case-insensitive partial match). Returns `{ materials: Material[] }`,
+  non-deleted only, ordered by name.
+- **`POST /api/materials`** — Auth: session. Body: `{ name, product_url?,
+  unit?, price?, coverage_per_unit?, notes? }`. `name` required (`400`
+  otherwise). Returns `201 { material }`.
+- **`GET /api/materials/[id]`** — Auth: session. `404` if not found/deleted.
+- **`PATCH /api/materials/[id]`** — Auth: session. Whitelist: `name`,
+  `product_url`, `unit`, `price`, `coverage_per_unit`, `notes`. A hand
+  edit to `price` clears `price_refreshed_at` (the price is no longer
+  "as of the last refresh" once someone types over it).
+- **`DELETE /api/materials/[id]`** — Auth: session. Soft-delete
+  (`deleted_at`), same convention as items/cost_lines/variations.
+- **`POST /api/materials/[id]/refresh-price`** — Auth: session. Reuses
+  the SAME SSRF-guarded fetch (`lib/scraper/guard.ts` `fetchSafely`) and
+  HTML extraction (`lib/scraper/extract.ts` `extractFromHtml`) the item
+  scrape pipeline already uses, against `materials.product_url`.
+  **`400`** if the material has no `product_url`. Otherwise ALWAYS
+  `200`, never a scrape-failure error — per BUILD-SPEC.md "failures
+  flag, never block": `{ material, ok: boolean, note?: string }` —
+  `ok: false` with a `note` (e.g. "No price found on the product
+  page.", "Product URL points to a disallowed address.") on any
+  scrape failure, `ok: true` + the updated `material` (new `price` +
+  `price_refreshed_at`) on success.
+
+Materials are team-visible reference data (same visibility class as
+`library_items`/`items.price_rrp`, not gated like `items.price_trade`)
+— the Calculators tab that uses them is itself already admin-gated one
+level up (mounted inside the Estimate workspace, which is admin-only —
+see `app/(dashboard)/projects/[id]/estimate/page.tsx`), so this route
+does not re-check admin itself.
+
+### Calculators — client-side math, no calculator API
+
+BUILD-SPEC.md item 4(a)/(b): timber frame + plasterboard calculators.
+**All math is pure and client-side** (`lib/calculators.ts`) — there is
+no `/api/calculators/**` route; the only network calls a calculator
+component makes are the existing `/api/materials/**` routes above (for
+the linked material + refresh-price) and, on "Insert as estimate line",
+the EXISTING `POST /api/estimate/sections/[sectionId]/lines` route
+(unchanged — the calculator just composes a `description`/`notes`
+body and posts to it, same as the Estimate tab's own "add line" UI).
+
+`lib/calculators.ts` exports (all pure, unit-testable, no
+Supabase/Next imports): `studCount`, `nogginRowCount`,
+`timberFrameMembers`, `binPackLengths` (greedy first-fit-decreasing
+bin packing onto `[2.4, 2.7, 3.0, 3.6, 4.2, 4.8, 5.4, 6.0]` metre stock
+lengths), `timberFrameCutLengths`, `calculateTimberFrame`,
+`netWallAreaM2`, `sheetAreaM2`, `calculatePlasterboard`,
+`timberFrameLineDescription`, `plasterboardLineDescription`. Per
+Phillip's 6 July DECISIONS paragraph (item 4, "NO framing defaults"):
+every calculator input starts empty/null in the UI — no stud spacing,
+sheet size, or any other value is pre-filled.
+
+New UI: `components/calculators/CalculatorsPanel.tsx` (mounted as a new
+"Calculators" tab in `components/estimate/EstimateWorkspace.tsx` —
+Round A didn't touch that file's tab strip; this round added a tab
+additively), `TimberFrameCalculator.tsx`, `PlasterboardCalculator.tsx`,
+`MaterialLinkControl.tsx` (shared "link material" select + inline add +
+refresh-price button, used by both calculators).
+
+### Known gap — no `list_materials` Aria tool yet
+
+Documented, not built this round — see `docs/ARIA.md`'s matching note.
+
+## Three from Phillip — 6 July 2026 evening
+
+Migration `028_job_numbers.sql`. No other concurrent-agent boundary
+issues — this round only touched files this task's brief explicitly
+scoped (job numbers, My Work focus deep-links, grouped-list add-task).
+
+### 1. My Work focus deep-links
+
+Every My Work item that links into a page with a real row/card to
+target now appends `focus=<kind>-<id>` to its `href` (built in `GET
+/api/my-work` — see `app/api/my-work/route.ts`; `lib/my-work.ts` itself
+only does bucketing, not href construction, so this round's edits live
+entirely in the route). Two lead-in styles depending on whether the
+existing href already had a `?`: `?focus=...` (board_task, office_task,
+design_task) or `&focus=...` (diary_draft, decision_overdue,
+trade_proposal — both `?tab=` already present).
+
+Not wired (no natural row exists on the target page to focus): `lead_follow_up` (`/leads`), `insurance_expiring` (`/contacts`).
+
+**Mechanism** — `components/shared/FocusOnLoad.tsx` (new, mounted once
+in `app/(dashboard)/layout.tsx` alongside `ScrollMemory`, inside the
+same `<Suspense>` boundary): reads `?focus=` via `useSearchParams`,
+looks up `document.getElementById(`focus-${focus}`)`, and after a
+double `requestAnimationFrame` (let the page paint first) calls
+`scrollIntoView({ block: "center", behavior: "smooth" })` plus a 2s sand
+(`#A08C72`) outline pulse (inline styles, no new CSS), then
+`router.replace()`s the URL with `focus` stripped but every other query
+param preserved. **Focus must win over ScrollMemory**: `components/
+shared/ScrollMemory.tsx` was edited to skip BOTH its restore-on-mount
+and its scroll-listener attach whenever `?focus=` is present in the
+current search params — simplest coordination point, no shared
+state/context needed between the two components.
+
+**Ids added** (each row/card gained a matching
+`id={`focus-<kind>-<id>`}` attribute; none of these components had any
+`id` attribute on their rows before this round):
+- `board_task` — `components/board/ProjectBoard.tsx`: kanban `BoardCard`
+  root `<div>` (used by both the stacked and side-by-side kanban
+  layouts) AND the grouped-list `GroupRows` `<tr>` — only one of the
+  two is ever mounted at a time (view toggle), so no id collision.
+- `office_task` — `components/office/OfficeBoard.tsx` `TaskRow` root `<div>`.
+- `diary_draft` — `components/client-area/DiaryPanel.tsx`
+  `DiaryApprovalCard` root `<div>` (the "Ready to publish" card, which
+  is also reused on the project overview hub per that component's own
+  doc comment).
+- `trade_proposal` — `components/gantt/GanttChart.tsx` `VisitRow`
+  (`<li>`, inside a phase's Trade visits edit panel). **Known
+  limitation**: the phase edit panel that contains this row is
+  collapsed by default — if the relevant phase isn't already expanded,
+  `FocusOnLoad` will find no matching element and silently no-op
+  (scrollIntoView/outline pulse simply don't happen; no error). Not
+  fixed this round — `GanttChart.tsx` has no existing
+  "auto-expand phase N" hook to wire into without a riskier change to
+  an already-dense file with live drag/resize slider logic.
+- `design_task` — `components/projects/design/DesignPhaseSection.tsx`
+  `DesignTaskRow` root `<div>`.
+- `decision_overdue` (item register) — **interim**, see
+  `docs/HANDOFF-focus-register.md`: `SpecRegister.tsx` is protected this
+  round, so the id was added to `components/items/ProcurementView.tsx`
+  (Pricing & Procurement view) instead, and
+  `components/items/ProjectWorkspace.tsx` gained an `initialView` prop
+  (computed server-side in `app/(dashboard)/projects/[id]/page.tsx`
+  from `searchParams.focus`) so the FF&E tab opens straight into the
+  Procurement sub-view for this one focus kind — otherwise the view
+  still defaults to "Spec" and the row would never mount.
+
+### 2. Auto job numbers
+
+See the updated `POST /api/projects` and `PUT /api/projects/[id]`
+sections above for the route contract. Summary of what else changed:
+
+- **Migration `028_job_numbers.sql`** — `projects.job_number` (text,
+  nullable), partial unique index on non-null/non-deleted rows
+  (`idx_projects_job_number_active`). Backfill: every project gets a
+  sequential 3-digit zero-padded number in `created_at` order, EXCEPT
+  the project named "Goldsworthy" (case-insensitive) is set to `026`
+  first and excluded from the sequence — per Phillip, that's their real
+  pre-existing job number, not a placeholder.
+- **`lib/job-number.ts`** — `nextJobNumber(supabase)`: reads every
+  project's `job_number` (including archived — a number once issued is
+  never reissued), ignores non-numeric legacy values defensively, takes
+  the max + 1, zero-pads to 3 digits (naturally becomes 4 digits once
+  the sequence passes 999, since `padStart` only pads up to the target
+  width). Also exports `JOB_NUMBER_PATTERN` (`/^\d{3,4}$/`) reused by
+  both the settings-form client-side check and the PUT route's
+  server-side validation.
+- **Both project-creation paths** generate a number: `POST
+  /api/projects` and `POST /api/leads/[id]/create-project`. Both retry
+  once on a `23505` unique-violation race.
+- **Settings**: `components/settings/ProjectSettingsForm.tsx` gained a
+  "Job number" field next to Alias — validates `^\d{3,4}$` client-side,
+  surfaces a 409 clash inline under the field (not just the shared
+  error banner).
+- **Display**:
+  - Project header (`components/layout/Header.tsx`) — new `jobNumber`
+    prop, rendered muted (`text-charcoal/40`) immediately before
+    `titleSuffix` (alias), same styling, so the two read as one
+    metadata cluster next to the title. Wired at
+    `app/(dashboard)/projects/[id]/page.tsx`.
+  - Dashboard `components/projects/ProjectCard.tsx` — small `#026` next
+    to the item count in the card's bottom metadata row.
+  - `components/pdf/SchedulePdf.tsx` — cover (`Project No. 026` line in
+    the meta block) and footer (`/  Project No. 026` appended to the
+    existing left-side line). `Props.project` widened via an inline
+    intersection (`& { job_number?: string | null }`) since
+    `types/index.ts` is out of this round's edit boundary. The PDF
+    route's cache key (`app/api/projects/[id]/pdf/route.ts`) now also
+    folds in `job_number` so a renumbered project never serves a stale
+    cached PDF showing the old number.
+  - `components/pdf/SowPdf.tsx` cover's existing "Project No." field —
+    previously always the first 8 characters of the project's UUID
+    (`app/api/projects/[id]/sow/[sowId]/pdf/route.ts`'s `projectNo`
+    constant, with a doc comment flagging it as a stand-in pending a
+    real numbering scheme). Now prefers `project.job_number`, falling
+    back to the old UUID-prefix behaviour only if `job_number` is still
+    null (shouldn't happen post-backfill, but costs nothing as a
+    defensive fallback).
+- **Types**: `job_number` added to `ProjectWithAlias` /
+  `ProjectWithCountsAndAlias` in `types/phase-12a-b.ts` (not
+  `types/index.ts` — same file-boundary convention `alias` itself
+  already established there).
+
+### 3. Grouped-list add-task
+
+**Finding**: audited before building — the grouped-list view
+(`GroupTable` in `components/board/ProjectBoard.tsx`) had NO inline
+add-task composer of any kind; the only "add" affordance in that view
+was the page-level "+ Add phase" button, which creates a new group, not
+a task. Both kanban layouts (stacked and side-by-side) already had
+their own separately hand-rolled composers — there was no shared
+`AddCard` component to reuse verbatim, so this round added a new
+composer directly inside `GroupTable`, matching the simpler of the two
+existing ones (`StackedColumnSection`'s title-only input, no assignee
+picker — the grouped-list rows are already dense with
+title/assignees/contact/due/status/phase columns, so a minimal composer
+keeps the footer from competing with the table for attention).
+
+**Wiring**: `addTask()` (this file's single task-creation mutator)
+gained a 4th optional `phaseGroupId` param — every existing call site
+(both kanban composers) omits it, so their behaviour is byte-for-byte
+unchanged. When provided, the POST body includes `phase_group_id` (the
+board API, `POST /api/projects/[id]/board`, already accepted this field
+via `CreateBoardTaskInputV2` — no route change needed) and the new task
+is appended into BOTH `columns` state and `groups` state client-side, so
+it appears immediately in the grouped list without a reload. The new
+composer's caller resolves "default column" as `columns[0]?.id` (the
+first status column, by server-query order) — this is a new concept in
+this file; previously nothing needed a "default column" shortcut.
+Auto-assigns to the creator (`currentUserId`, threaded into `GroupTable`
+as a new prop), same "assign the creator unless overridden" convention
+`StackedColumnSection` already used.

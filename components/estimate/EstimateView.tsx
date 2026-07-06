@@ -1132,7 +1132,15 @@ function FfeBlock({ ffe }: { ffe: EstimateResponse["ffe"] }) {
               <tbody>
                 {ffe.categories.map((cat) => (
                   <tr key={cat.category} className="border-b border-[#e5e0d6]">
-                    <td className="px-2 py-1.5 text-body text-nearblack">{cat.category}</td>
+                    <td className="px-2 py-1.5 text-body text-nearblack">
+                      {cat.category}
+                      {(cat as { category_name?: string }).category_name ? (
+                        <span className="text-charcoal/60">
+                          {" — "}
+                          {(cat as { category_name?: string }).category_name}
+                        </span>
+                      ) : null}
+                    </td>
                     <td className="px-2 py-1.5 text-right text-body">{cat.item_count}</td>
                     <td className="px-2 py-1.5 text-right text-body">{formatMoney(cat.total)}</td>
                     <td className="px-2 py-1.5">
