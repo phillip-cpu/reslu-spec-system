@@ -332,9 +332,26 @@ function isLikelyIconOrSprite(url: string): boolean {
   return false;
 }
 
+// Some sites' own templating concatenates their site origin directly
+// onto an already-absolute image URL with no separator (e.g. an
+// `og:image` meta tag built as `siteUrl + imageUrl` where `imageUrl` was
+// already absolute: "https://site.com" + "https://cdn.example.com/x.png"
+// -> "https://site.comhttps://cdn.example.com/x.png"). Left alone,
+// `new URL(url, baseUrl)` doesn't throw on that - it silently mangles
+// the embedded scheme (drops its ":") instead, producing a well-formed-
+// looking but unfetchable URL that saves as a "successful" scrape and
+// then just never loads. Detects a scheme immediately preceded by an
+// alphanumeric character (true zero-separator concatenation) and
+// unwraps to the embedded URL instead. A scheme preceded by a URL
+// delimiter instead (a legitimate query-string redirect param like
+// "?next=https://...") is left untouched.
+const DOUBLED_ORIGIN_RE = /[a-z0-9](https?:\/\/.+)$/i;
+
 function absolutise(url: string, baseUrl: string): string | null {
   try {
-    return new URL(url, baseUrl).toString();
+    const doubled = DOUBLED_ORIGIN_RE.exec(url);
+    const real = doubled ? doubled[1] : url;
+    return new URL(real, baseUrl).toString();
   } catch {
     return null;
   }
