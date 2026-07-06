@@ -801,6 +801,7 @@ function ItemRow({
                     onPatch({ selected_image_url: url || null })
                   }
                   onError={onError}
+                  imageOptions={item.image_options}
                   scrapedDocuments={item.scraped_documents}
                   onDocumentAttached={(url) =>
                     onPatch({

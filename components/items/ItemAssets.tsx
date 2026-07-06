@@ -18,6 +18,17 @@ interface Props {
   onImage: (url: string) => void;
   onError: (msg: string | null) => void;
   /**
+   * Candidate image URLs found by the last product scrape
+   * (items.image_options — up to 12, see lib/scraper/extract.ts
+   * MAX_IMAGES). The scraper auto-picks the first one as
+   * selected_image_url so an item never sits with no photo after a
+   * successful scrape, but the other candidates are otherwise never
+   * surfaced anywhere — this renders them as a picker so a team member
+   * can swap in a better shot (e.g. a straight-on product photo instead
+   * of a lifestyle image) without re-uploading manually.
+   */
+  imageOptions?: string[];
+  /**
    * PDFs detected on the product page during scrape but not yet attached
    * (items.scraped_documents — BUILD-SPEC.md "Scraper extension —
    * document detection"). One-click "Attach" downloads server-side via
@@ -32,6 +43,7 @@ export function ItemAssets({
   selectedImageUrl,
   onImage,
   onError,
+  imageOptions = [],
   scrapedDocuments = [],
   onDocumentAttached,
 }: Props) {
@@ -40,6 +52,7 @@ export function ItemAssets({
   const [uploadingImage, setUploadingImage] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [attachingUrl, setAttachingUrl] = useState<string | null>(null);
+  const [choosingUrl, setChoosingUrl] = useState<string | null>(null);
   const [kind, setKind] = useState<ItemFileKind>("spec_sheet");
   const imageInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -75,6 +88,34 @@ export function ItemAssets({
       onError(err instanceof Error ? err.message : "Image upload failed");
     } finally {
       setUploadingImage(false);
+    }
+  }
+
+  /**
+   * Picking a scraped candidate goes through the SAME re-host endpoint
+   * as a manual upload (POST /api/items/[id]/image), just with a
+   * `{ url }` JSON body instead of a file — that route already fetches
+   * SSRF-safely and copies the result into the public item-images
+   * bucket, so a chosen candidate never ends up hotlinking the
+   * supplier's own site (BUILD-SPEC.md §6: "on selection, copy chosen
+   * image into Supabase Storage").
+   */
+  async function chooseScrapedImage(sourceUrl: string) {
+    setChoosingUrl(sourceUrl);
+    onError(null);
+    try {
+      const res = await fetch(`/api/items/${itemId}/image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: sourceUrl }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? "Could not use that image");
+      const { url } = await res.json();
+      onImage(url);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Could not use that image");
+    } finally {
+      setChoosingUrl(null);
     }
   }
 
@@ -183,6 +224,57 @@ export function ItemAssets({
             )}
           </div>
         </div>
+
+        {/* Scraped image candidates (items.image_options) — the scraper
+            auto-picks the first one, but the rest are otherwise
+            invisible. Click any thumbnail to use it instead; the copy
+            goes through the same re-host-into-Storage path as a manual
+            upload (see chooseScrapedImage above), never a direct
+            hotlink to the supplier's site. */}
+        {imageOptions.length > 0 && (
+          <div className="mt-3">
+            <p className="mb-1.5 text-caption text-charcoal/50">
+              {imageOptions.length} found — click to use
+            </p>
+            <div className="grid grid-cols-4 gap-2">
+              {imageOptions.map((url) => {
+                const isSelected = url === selectedImageUrl;
+                const isChoosing = choosingUrl === url;
+                return (
+                  <button
+                    key={url}
+                    type="button"
+                    disabled={isChoosing || isSelected}
+                    onClick={() => chooseScrapedImage(url)}
+                    className={`relative aspect-square overflow-hidden border bg-cream disabled:cursor-default ${
+                      isSelected
+                        ? "border-nearblack ring-1 ring-nearblack"
+                        : "border-[#dcd6cc] hover:border-nearblack"
+                    }`}
+                  >
+                    <Image
+                      src={url}
+                      alt=""
+                      fill
+                      sizes="80px"
+                      className="object-cover"
+                    />
+                    {isSelected && (
+                      <span className="absolute inset-x-0 bottom-0 bg-nearblack/80 py-0.5 text-center text-[10px] uppercase tracking-wide text-white">
+                        In use
+                      </span>
+                    )}
+                    {isChoosing && (
+                      <span className="absolute inset-0 flex items-center justify-center bg-nearwhite/70 text-caption text-charcoal/60">
+                        …
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Documents */}
