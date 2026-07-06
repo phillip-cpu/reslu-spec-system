@@ -7,6 +7,9 @@ import { TeamSettings } from "@/components/settings/TeamSettings";
 import { IntegrationStatus } from "@/components/settings/IntegrationStatus";
 import { QuickLinks } from "@/components/settings/QuickLinks";
 import { SystemHealth } from "@/components/settings/SystemHealth";
+import { PhaseTemplateSettings } from "@/components/settings/PhaseTemplateSettings";
+import { FALLBACK_PHASE_TEMPLATE } from "@/lib/phase-template";
+import type { AppSettingsPhaseTemplateRow } from "@/types/phase-fix-a";
 
 /**
  * Settings — category management, team roster + role editing (both
@@ -34,6 +37,20 @@ export default async function SettingsPage() {
   // API routes — see app/api/categories/route.ts, app/api/categories/[id]/route.ts,
   // app/api/profiles/[id]/route.ts.
   const [categories, team] = await Promise.all([getCategories(), getProfiles()]);
+
+  // Fix Round A — Pre-populated phases (BUILD-SPEC.md "Pre-populated
+  // phases"): the editable seed template both the Timeline and Board
+  // Grouped-list view seed schedule_phases from on first visit — see
+  // lib/phase-seed.ts. Read directly here (server component), same
+  // pattern as recentErrors below, rather than round-tripping through
+  // GET /api/settings/phase-template.
+  const { data: phaseTemplateRow } = await supabase
+    .from("app_settings")
+    .select("value")
+    .eq("key", "phase_template")
+    .maybeSingle();
+  const phaseTemplate =
+    (phaseTemplateRow?.value as AppSettingsPhaseTemplateRow[] | undefined) ?? FALLBACK_PHASE_TEMPLATE;
 
   const mondayConfigured = Boolean(process.env.MONDAY_API_TOKEN);
   const gmailConfigured = Boolean(
@@ -81,6 +98,17 @@ export default async function SettingsPage() {
             initialCategories={categories}
             canEdit={isAdmin}
           />
+        </section>
+
+        <section>
+          <h2 className="mb-1 text-subhead text-nearblack">Default phase template</h2>
+          <p className="mb-4 text-body text-charcoal/60">
+            New projects (and any project whose Timeline or Board hasn&apos;t been
+            opened yet) seed their phases from this list on first visit. Exactly
+            one phase must be the umbrella (Site Setup) phase.
+            {!isAdmin && " Only admins can make changes."}
+          </p>
+          <PhaseTemplateSettings initialTemplate={phaseTemplate} canEdit={isAdmin} />
         </section>
 
         <section>

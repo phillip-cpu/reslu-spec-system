@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS, slugFilename } from "@/lib/storage";
+import { validateUploadBytes } from "@/lib/file-sniff";
 import type { ItemFile, ItemFileKind } from "@/types";
 
 export const runtime = "nodejs";
@@ -91,6 +92,16 @@ export async function POST(
   const filename = file.name || "document";
   const path = `items/${id}/files/${Date.now()}-${slugFilename(filename)}`;
   const bytes = Buffer.from(await file.arrayBuffer());
+
+  // Fix round B — BUILD-SPEC.md §"Phase 14 follow-ups" point 5:
+  // magic-byte validation. Only rejects a JPEG/PNG/WebP/PDF whose real
+  // bytes don't match its claimed content-type — other document kinds
+  // (e.g. .docx spec sheets) this sniffer doesn't recognise pass
+  // through unblocked (see lib/file-sniff.ts's doc comment).
+  const sniffResult = validateUploadBytes(bytes, file.type || "");
+  if (!sniffResult.ok) {
+    return NextResponse.json({ error: sniffResult.error }, { status: 400 });
+  }
 
   const { error: uploadError } = await supabase.storage
     .from(ASSET_BUCKET)

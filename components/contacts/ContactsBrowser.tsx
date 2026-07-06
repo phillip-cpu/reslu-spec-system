@@ -2,13 +2,34 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { Contact } from "@/types";
+import type { InsuranceStatus } from "@/lib/insurance";
+import { isTradeCategory } from "@/lib/insurance";
+import { ContactDocumentsPanel } from "./ContactDocumentsPanel";
 
 interface Props {
   /** Distinct existing category values, for the filter dropdown and the add-form's autocomplete suggestions. */
   categories: string[];
 }
 
+/** Contact rows as returned by GET /api/contacts (Fix Round A adds these two fields — see that route's doc comment). */
+type ContactWithInsurance = Contact & { insurance_status: InsuranceStatus; document_count: number };
+
 const UNCATEGORISED = "Uncategorised";
+
+const STATUS_LABEL: Record<InsuranceStatus, string> = {
+  current: "Insurance current",
+  expiring: "Insurance expiring soon",
+  expired: "Insurance expired",
+  missing: "Insurance missing",
+};
+
+/** Badge colour classes — brand-safe: sand for the neutral/good state, amber-ish charcoal border for expiring, red only for the two states that actually need action (matches this codebase's existing red-for-overdue convention, e.g. isPastDue in ProjectBoard.tsx/lib/leads.ts). */
+const STATUS_BADGE_CLASS: Record<InsuranceStatus, string> = {
+  current: "border-[#c9c2b4] text-charcoal/50",
+  expiring: "border-sand text-sand",
+  expired: "border-red-700/50 text-red-700",
+  missing: "border-red-700/50 text-red-700",
+};
 
 /**
  * Address Book browser — BUILD-SPEC.md "Address Book": "searchable
@@ -18,15 +39,24 @@ const UNCATEGORISED = "Uncategorised";
  * by category since a directory of ~30 trade categories reads better
  * grouped than as one flat list (unlike the Library, which has a
  * bounded ~20-category taxonomy already surfaced via a dropdown only).
+ *
+ * FIX ROUND A — Trade insurance tracker: every card now shows an
+ * insurance status badge (only for trade-category contacts —
+ * suppliers never show a badge at all, per BUILD-SPEC.md "'missing'
+ * only for contacts with category in a trades-list constant, not
+ * suppliers") and an expand toggle revealing a documents panel
+ * (upload/list/delete, expiry date input) — see ContactDocumentsPanel
+ * below.
  */
 export function ContactsBrowser({ categories: initialCategories }: Props) {
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [contacts, setContacts] = useState<ContactWithInsurance[]>([]);
   const [q, setQ] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [knownCategories, setKnownCategories] = useState<string[]>(initialCategories);
 
   useEffect(() => {
@@ -53,20 +83,30 @@ export function ContactsBrowser({ categories: initialCategories }: Props) {
     setKnownCategories((cur) => (cur.includes(cat) ? cur : [...cur, cat].sort((a, b) => a.localeCompare(b))));
   }
 
+  // POST /api/contacts and PATCH /api/contacts/[id] both return a
+  // plain Contact (no insurance_status/document_count — those are
+  // GET /api/contacts-only computed fields, see that route's doc
+  // comment) — a just-created/just-edited contact has whatever
+  // documents it already had (0 for a new contact; unchanged for an
+  // edited one, since editing company/category/etc. never touches
+  // contact_documents), so defaulting a fresh add to the "no documents
+  // yet" state and preserving an edited contact's prior computed
+  // fields (spread before the incoming patch) both give the same
+  // correct badge without a second round-trip.
   function prepend(contact: Contact) {
-    setContacts((cur) => [contact, ...cur]);
+    setContacts((cur) => [{ ...contact, insurance_status: isTradeCategory(contact.category) ? "missing" : "current", document_count: 0 }, ...cur]);
     noteCategory(contact.category);
   }
   function remove(id: string) {
     setContacts((cur) => cur.filter((c) => c.id !== id));
   }
   function patch(id: string, next: Contact) {
-    setContacts((cur) => cur.map((c) => (c.id === id ? next : c)));
+    setContacts((cur) => cur.map((c) => (c.id === id ? { ...c, ...next } : c)));
     noteCategory(next.category);
   }
 
   const groups = useMemo(() => {
-    const map = new Map<string, Contact[]>();
+    const map = new Map<string, ContactWithInsurance[]>();
     for (const c of contacts) {
       const key = c.category?.trim() || UNCATEGORISED;
       if (!map.has(key)) map.set(key, []);
@@ -168,23 +208,47 @@ export function ContactsBrowser({ categories: initialCategories }: Props) {
                       onCancel={() => setEditingId(null)}
                     />
                   ) : (
-                    <ContactCard
-                      key={contact.id}
-                      contact={contact}
-                      onEdit={() => {
-                        setEditingId(contact.id);
-                        setAdding(false);
-                      }}
-                      onDelete={async () => {
-                        if (!confirm(`Remove "${contact.company}" from the address book?`)) return;
-                        remove(contact.id);
-                        const res = await fetch(`/api/contacts/${contact.id}`, { method: "DELETE" });
-                        if (!res.ok) {
-                          setError("Could not delete contact");
-                          prepend(contact);
-                        }
-                      }}
-                    />
+                    <div key={contact.id} className="contents">
+                      <ContactCard
+                        contact={contact}
+                        expanded={expandedId === contact.id}
+                        onToggleExpand={() => setExpandedId((cur) => (cur === contact.id ? null : contact.id))}
+                        onEdit={() => {
+                          setEditingId(contact.id);
+                          setAdding(false);
+                        }}
+                        onDelete={async () => {
+                          if (!confirm(`Remove "${contact.company}" from the address book?`)) return;
+                          remove(contact.id);
+                          const res = await fetch(`/api/contacts/${contact.id}`, { method: "DELETE" });
+                          if (!res.ok) {
+                            setError("Could not delete contact");
+                            prepend(contact);
+                          }
+                        }}
+                      />
+                      {expandedId === contact.id && (
+                        <div className="md:col-span-2 lg:col-span-3">
+                          <ContactDocumentsPanel
+                            contactId={contact.id}
+                            onCountChange={(count) =>
+                              setContacts((cur) =>
+                                cur.map((c) =>
+                                  c.id === contact.id
+                                    ? { ...c, document_count: count }
+                                    : c
+                                )
+                              )
+                            }
+                            onStatusChange={(status) =>
+                              setContacts((cur) =>
+                                cur.map((c) => (c.id === contact.id ? { ...c, insurance_status: status } : c))
+                              )
+                            }
+                          />
+                        </div>
+                      )}
+                    </div>
                   )
                 )}
               </div>
@@ -198,17 +262,32 @@ export function ContactsBrowser({ categories: initialCategories }: Props) {
 
 function ContactCard({
   contact,
+  expanded,
+  onToggleExpand,
   onEdit,
   onDelete,
 }: {
-  contact: Contact;
+  contact: ContactWithInsurance;
+  expanded: boolean;
+  onToggleExpand: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const showBadge = isTradeCategory(contact.category) || contact.document_count > 0;
   return (
     <article className="flex flex-col justify-between border border-[#dcd6cc] bg-offwhite p-4">
       <div>
-        <h3 className="text-subhead text-nearblack">{contact.company}</h3>
+        <div className="flex items-start justify-between gap-2">
+          <h3 className="text-subhead text-nearblack">{contact.company}</h3>
+          {showBadge && (
+            <span
+              className={`shrink-0 border px-2 py-0.5 text-caption uppercase tracking-wide ${STATUS_BADGE_CLASS[contact.insurance_status]}`}
+              title={STATUS_LABEL[contact.insurance_status]}
+            >
+              {STATUS_LABEL[contact.insurance_status]}
+            </span>
+          )}
+        </div>
         {contact.contact_name && (
           <p className="mt-1 text-body text-charcoal/70">{contact.contact_name}</p>
         )}
@@ -242,13 +321,22 @@ function ContactCard({
         )}
       </div>
       <div className="mt-3 flex items-center justify-between border-t border-[#dcd6cc] pt-2">
-        <button
-          type="button"
-          onClick={onEdit}
-          className="text-caption text-charcoal/60 hover:text-nearblack"
-        >
-          Edit
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onEdit}
+            className="text-caption text-charcoal/60 hover:text-nearblack"
+          >
+            Edit
+          </button>
+          <button
+            type="button"
+            onClick={onToggleExpand}
+            className="text-caption text-charcoal/60 hover:text-nearblack"
+          >
+            {expanded ? "Hide documents" : `Documents${contact.document_count ? ` (${contact.document_count})` : ""}`}
+          </button>
+        </div>
         <button
           type="button"
           onClick={onDelete}

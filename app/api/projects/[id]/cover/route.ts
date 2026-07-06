@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS, extForMime } from "@/lib/storage";
+import { isSniffedImage } from "@/lib/file-sniff";
 
 export const runtime = "nodejs";
 
@@ -67,6 +68,18 @@ export async function POST(
   const bytes = Buffer.from(await file.arrayBuffer());
   if (bytes.byteLength === 0) {
     return NextResponse.json({ error: "Empty file" }, { status: 400 });
+  }
+
+  // Fix round B — BUILD-SPEC.md §"Phase 14 follow-ups" point 5:
+  // magic-byte validation. `file.type` already gated this to
+  // "image/*" above, but that's a client-controlled label — confirm
+  // the actual bytes are really one of the JPEG/PNG/WebP formats this
+  // app can safely serve as a cover image.
+  if (!isSniffedImage(bytes)) {
+    return NextResponse.json(
+      { error: "That doesn't look like a valid JPEG, PNG, or WebP image — the file may be corrupted or mislabelled." },
+      { status: 400 }
+    );
   }
 
   const ext = extForMime(file.type);

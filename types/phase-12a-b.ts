@@ -71,6 +71,18 @@ export interface BoardGroup {
   sort: number;
   created_at: string;
   updated_at: string;
+  /**
+   * Fix Round A phase unification (migration 023) — nullable FK to
+   * schedule_phases. See app/api/projects/[id]/phases/route.ts's GET
+   * doc comment for THE INVARIANT in full: schedule_phases.name is the
+   * single source of truth for a unified phase's label; this column's
+   * sibling `name` above is kept as a synced mirror. Added directly to
+   * the base BoardGroup (rather than a separate BoardGroupWithPhase
+   * type) since every caller of this shape needs to know whether a
+   * group is unified with a phase — it is not an optional annotation
+   * layered on top the way `tasks` is in BoardGroupWithTasks below.
+   */
+  phase_id: string | null;
 }
 
 /** A board_groups row with its (non-deleted) tasks nested — Grouped list view. */
@@ -125,15 +137,20 @@ export interface PatchBoardGroupInput {
   sort?: number;
 }
 
-/** The default phase-group seed template — BUILD-SPEC.md "Board v2" point 3: "Site Prep, Demolition, Rough-in, Waterproofing & Tiling, Fit-off, Handover — editable in Settings; sensible default until Design Framework brief arrives." */
-export const DEFAULT_PHASE_GROUPS = [
-  "Site Prep",
-  "Demolition",
-  "Rough-in",
-  "Waterproofing & Tiling",
-  "Fit-off",
-  "Handover",
-] as const;
+// REMOVED (Fix Round A / migration 023): this file used to export a
+// DEFAULT_PHASE_GROUPS = ["Site Prep", "Demolition", "Rough-in",
+// "Waterproofing & Tiling", "Fit-off", "Handover"] constant here
+// (BUILD-SPEC.md "Board v2" point 3). It is superseded by the
+// editable app_settings('phase_template') row (migration 023), seeded
+// via lib/phase-seed.ts's seedPhaseTemplateIfEmpty() and consumed by
+// BOTH the Timeline tab and the Board's Grouped-list view (the "shared
+// seed path" — BUILD-SPEC.md "Pre-populated phases"), not just
+// board_groups — see lib/phase-template.ts's FALLBACK_PHASE_TEMPLATE
+// for the current single source of truth (which additionally carries
+// each row's `kind`, umbrella vs phase, this flat string array never
+// had). Deleted outright rather than left as an unused export, since
+// an unused exported constant is a worse trap for a future reader than
+// a comment pointing at its replacement.
 
 /** The Board v2 column reorder — BUILD-SPEC.md "Board v2" point 2: "'Waiting' becomes the FIRST default column (Waiting -> To Do -> In Progress -> Done) for new boards." Existing boards are NOT touched by this reorder (see this feature's board route doc comment for the "untouched" heuristic). */
 export const DEFAULT_COLUMNS_V2 = ["Waiting", "To Do", "In Progress", "Done"] as const;
@@ -156,7 +173,13 @@ export type MyWorkItemKind =
   // (rather than in phase-13.ts) since MyWorkItem/MyWorkItemKind are
   // this file's own shared aggregator shapes every source kind slots
   // into — additive, surgical edit per this task's boundary.
-  | "office_task";
+  | "office_task"
+  // Fix Round A — a trade-category contact (lib/insurance.ts's
+  // isTradeCategory()) whose computed insurance_status is 'expiring' or
+  // 'expired'. See app/api/my-work/route.ts source #7. Same additive
+  // pattern as office_task above — this file's own established
+  // convention for slotting a new source into the shared aggregator.
+  | "insurance_expiring";
 
 /**
  * One row in the My Work feed, normalised across five very different

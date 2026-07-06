@@ -462,6 +462,13 @@ export default async function PortalPage({
           photos: photos.length > 0,
           handover: handoverPack !== null,
         }}
+        // Fix round B — BUILD-SPEC.md §"Portal selections separation":
+        // nav entry to the separate /portal/[token]/selections gallery.
+        // approvedCount is derived from the SAME itemsWithFiles query
+        // this page already runs for the Selections section (no extra
+        // query) — PortalNav itself hides the link when the count is 0.
+        token={token}
+        approvedCount={itemsWithFiles.filter((i) => i.client_approved).length}
       />
 
       <main className="mx-auto max-w-4xl space-y-10 px-6 py-8">

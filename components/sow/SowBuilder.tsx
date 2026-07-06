@@ -8,6 +8,12 @@ interface Props {
   projectId: string;
 }
 
+/** DOM anchor id for a given SOW section — shared by the outline's
+ * click-to-scroll links and each SectionBlock's own scroll target. */
+function sectionAnchorId(sectionId: string): string {
+  return `sow-section-${sectionId}`;
+}
+
 const KIND_LABEL: Record<SowLineKind, string> = {
   inclusion: "Inclusion",
   exclusion: "Exclusion",
@@ -32,6 +38,10 @@ export function SowBuilder({ projectId }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [applyingTemplate, setApplyingTemplate] = useState(false);
+  // Fix round B — BUILD-SPEC.md §"SOW sticky outline" (improvements
+  // backlog): sticky section outline sidebar, current section
+  // highlighted via IntersectionObserver.
+  const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
 
   const loadRevisions = useCallback(async () => {
     const res = await fetch(`/api/projects/${projectId}/sow`);
@@ -73,6 +83,55 @@ export function SowBuilder({ projectId }: Props) {
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  // Default the active outline entry to the first section whenever the
+  // section list changes shape (new SOW loaded, revision switched, or
+  // sections added/removed) — the observer effect below then takes
+  // over as the user scrolls.
+  useEffect(() => {
+    setActiveSectionId((cur) => {
+      if (cur && sections.some((s) => s.id === cur)) return cur;
+      return sections[0]?.id ?? null;
+    });
+  }, [sections]);
+
+  // Sticky outline highlight — BUILD-SPEC.md §"SOW sticky outline":
+  // "current section highlighted via IntersectionObserver". Observes
+  // every section's DOM anchor and picks whichever intersecting
+  // section is currently closest to the top of the viewport (multiple
+  // sections can be "intersecting" at once on a tall page — rootMargin
+  // narrows the effective viewport to a band near the top so the
+  // highlight tracks the section actually under the reader's eye,
+  // similar to the portal's own scroll-mt-16 anchor convention).
+  useEffect(() => {
+    if (sections.length === 0) return;
+    const elements = sections
+      .map((s) => document.getElementById(sectionAnchorId(s.id)))
+      .filter((el): el is HTMLElement => el !== null);
+    if (elements.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.filter((e) => e.isIntersecting);
+        if (visible.length === 0) return;
+        // Closest to the top of the observed band wins.
+        const top = visible.reduce((best, e) =>
+          e.boundingClientRect.top < best.boundingClientRect.top ? e : best
+        );
+        const id = top.target.id.replace("sow-section-", "");
+        setActiveSectionId(id);
+      },
+      { rootMargin: "-96px 0px -70% 0px", threshold: 0 }
+    );
+
+    for (const el of elements) observer.observe(el);
+    return () => observer.disconnect();
+  }, [sections]);
+
+  function scrollToSection(sectionId: string) {
+    setActiveSectionId(sectionId);
+    document.getElementById(sectionAnchorId(sectionId))?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   async function switchRevision(sowId: string) {
     setActiveSowId(sowId);
@@ -362,23 +421,119 @@ export function SowBuilder({ projectId }: Props) {
         </p>
       )}
 
-      <div className="space-y-4">
-        {sections.map((section) => (
-          <SectionBlock
-            key={section.id}
-            section={section}
-            readOnly={!isDraft}
-            onRename={(heading) => renameSection(section.id, heading)}
-            onDelete={() => deleteSection(section.id, section.heading)}
-            onAddLine={(text, kind) => addLine(section.id, text, kind)}
-            onPatchLine={patchLine}
-            onDeleteLine={deleteLine}
+      {sections.length > 0 && (
+        <div className="sm:grid sm:grid-cols-[12rem_1fr] sm:gap-8">
+          <SowOutline
+            sections={sections}
+            activeSectionId={activeSectionId}
+            onSelect={scrollToSection}
           />
-        ))}
+
+          <div className="min-w-0 space-y-4">
+            <div className="space-y-4">
+              {sections.map((section) => (
+                <div key={section.id} id={sectionAnchorId(section.id)} className="scroll-mt-24">
+                  <SectionBlock
+                    section={section}
+                    readOnly={!isDraft}
+                    onRename={(heading) => renameSection(section.id, heading)}
+                    onDelete={() => deleteSection(section.id, section.heading)}
+                    onAddLine={(text, kind) => addLine(section.id, text, kind)}
+                    onPatchLine={patchLine}
+                    onDeleteLine={deleteLine}
+                  />
+                </div>
+              ))}
+            </div>
+
+            {isDraft && <AddSectionForm onAdd={addSection} />}
+          </div>
+        </div>
+      )}
+
+      {sections.length === 0 && isDraft && <AddSectionForm onAdd={addSection} />}
+    </div>
+  );
+}
+
+/**
+ * Sticky section outline — BUILD-SPEC.md improvements-backlog "SOW
+ * sticky outline" note: section names, click scrolls to section,
+ * current section highlighted via IntersectionObserver (state owned by
+ * the parent, this component is purely presentational), collapses to
+ * a dropdown on narrow screens.
+ *
+ * Two renderings of the SAME data, toggled by a Tailwind breakpoint
+ * (no JS media-query listener needed): a `<select>` dropdown
+ * (`sm:hidden`) for narrow screens, and a `<nav>` list (`sm:block`,
+ * `sticky`) for wide ones — exactly one is ever visible at a given
+ * viewport width. This component IS the first column of SowBuilder's
+ * "sm:grid sm:grid-cols-[12rem_1fr]" wrapper on wide screens (the
+ * dropdown, on narrow screens, instead spans full-width above the
+ * grid via its own `sm:hidden`/negative-margin-free block layout — the
+ * outer grid only takes effect at `sm:` anyway, so both renderings
+ * coexist safely in the DOM and Tailwind's responsive classes pick the
+ * right one per viewport).
+ */
+function SowOutline({
+  sections,
+  activeSectionId,
+  onSelect,
+}: {
+  sections: SowSectionWithLines[];
+  activeSectionId: string | null;
+  onSelect: (sectionId: string) => void;
+}) {
+  return (
+    <>
+      {/* Narrow screens — dropdown. `sm:hidden` means it never actually
+          renders once the sm:grid layout kicks in, so it's exempt from
+          worrying about grid column placement. */}
+      <div className="mb-4 sm:hidden">
+        <label className="label-caps mb-1 block !text-sand">Jump to section</label>
+        <select
+          value={activeSectionId ?? ""}
+          onChange={(e) => onSelect(e.target.value)}
+          className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
+        >
+          {sections.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.heading}
+            </option>
+          ))}
+        </select>
       </div>
 
-      {isDraft && <AddSectionForm onAdd={addSection} />}
-    </div>
+      {/* Wide screens — sticky outline sidebar, the grid's first
+          column (see SowBuilder's "sm:grid sm:grid-cols-[12rem_1fr]"
+          wrapper). `sticky` + `self-start` pins it within that column
+          as the page scrolls. */}
+      <nav className="hidden sm:sticky sm:top-4 sm:block sm:self-start">
+        <p className="label-caps mb-2 !text-sand">Outline</p>
+        <ul className="space-y-0.5 border-l border-[#dcd6cc]">
+          {sections.map((s) => {
+            const active = s.id === activeSectionId;
+            return (
+              <li key={s.id}>
+                <button
+                  type="button"
+                  onClick={() => onSelect(s.id)}
+                  className={clsx(
+                    "-ml-px block w-full truncate border-l-2 px-3 py-1.5 text-left text-caption transition-colors",
+                    active
+                      ? "border-nearblack text-nearblack"
+                      : "border-transparent text-charcoal/50 hover:border-[#c9c2b4] hover:text-nearblack"
+                  )}
+                  title={s.heading}
+                >
+                  {s.heading}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+    </>
   );
 }
 

@@ -2368,6 +2368,189 @@ place to find the non-route additions:
 
 ---
 
+## Fix round B — badges, portal selections separation, upload validation
+
+### GET /api/badges
+Auth: **session** (401 if signed out). Returns
+`{ leads_followups: number, my_work_due: number }` in one call —
+BUILD-SPEC.md §"Sidebar notification badges". `leads_followups` is
+admin-only (0 for non-admins, mirroring `GET /api/leads/attention`'s
+own gate); `my_work_due` is "today + overdue" across the same six
+source tables `GET /api/my-work` aggregates, bucketed via the shared
+`bucketFor()` helper (`lib/my-work.ts`) so the two routes' counts can
+never drift, even though this route deliberately re-queries each
+source with a narrower column selection (no joins/titles/hrefs — just
+enough to bucket) to stay cheap for a poll-every-~3-min sidebar call.
+`components/layout/Sidebar.tsx` polls this route on an interval and on
+every route change, rendering a small red pill next to **Leads** and
+**My Work** (hidden entirely at 0).
+
+### GET /portal/[token]/selections (page, not an API route)
+BUILD-SPEC.md §"Portal selections separation". A second, separate
+portal page — "Your selections" — showing only `client_approved =
+true` items, grouped by room, thumbnail + code + name only (no
+description/supplier/qty/pricing — narrower than the main page's
+`PORTAL_FIELDS`). Same guards as the parent portal page: `noindex`
+metadata, a per-token+IP rate-limit bucket (its own key,
+`portal-selections-page:...`, so it can't exhaust the parent page's
+budget or vice versa), and a service-role token→project lookup (404 on
+no match). The MAIN portal page's Selections section
+(`components/portal/SelectionsSection.tsx`) now shows ONLY items
+needing a decision (not yet approved, or flagged) — approving an item
+shows a brief "moved to Your selections" note in place of the row
+before it drops off the list on next load, rather than vanishing
+instantly. A compact link card ("Your selections · N approved →") and
+a `PortalNav` entry (a real `next/link`, not an in-page anchor like
+every other `PortalNav` entry) both point at the new page — both
+hidden when there are zero approved items.
+
+### Upload validation — magic-byte sniffing
+BUILD-SPEC.md §"Phase 14 follow-ups" point 5 (audit backlog). New
+`lib/file-sniff.ts` — no new dependency, hand-checked magic numbers for
+JPEG/PNG/WebP/PDF — with `validateUploadBytes(bytes, claimedType)`
+(rejects an obvious content/label mismatch, e.g. a renamed executable
+labelled `image/jpeg`) applied to every upload route that receives
+bytes directly:
+`POST /api/items/[id]/files`, `POST /api/projects/[id]/invoices`,
+`POST /api/projects/[id]/cover`, `POST /api/projects/[id]/site-photos`.
+`POST /api/projects/[id]/files` is different — its bytes go straight
+from the browser to Storage via a signed upload URL
+(`POST .../files/upload-url`), bypassing this app's server entirely, so
+this route instead calls the new `sniffStorageObjectHead()` helper to
+read back just the first 16 bytes of the just-uploaded object (a
+`Range: bytes=0-15` request against a short-lived signed URL) and
+checks those against the claimed `kind` — fails OPEN (skips the check
+without blocking the upload) if that read-back itself errors, since
+it's a defence-in-depth layer on top of the existing path-ownership
+check, not the sole guard. Every sniff check is deliberately lenient
+about formats it doesn't recognise (e.g. a `.docx` spec sheet) — it
+only rejects a clear JPEG/PNG/WebP/PDF mismatch, never blocks a
+legitimate upload of some other document kind this app already
+accepts.
+
+### lib/rate-limit.ts — loginRateLimit() (exported, not wired up)
+BUILD-SPEC.md §"Phase 14 follow-ups" point 5 also names "login rate
+limit". Added `loginRateLimit(key)` (5 attempts / 5 min, its own bucket
+namespace) alongside the existing `rateLimit()`. **Not wired into**
+`app/(auth)/login/page.tsx` — that page's only sign-in path is the
+BROWSER Supabase client's `supabase.auth.signInWithPassword()` called
+directly from a `"use client"` component; there is no Next.js server
+route/Server Action in between for this in-memory, server-side limiter
+to attach to (calling it from client code would just rate-limit each
+browser tab against itself, not a real boundary). Supabase Auth already
+rate-limits `signInWithPassword` server-side. The export exists ready
+for a future server-side login flow (e.g. if MFA or server-side audit
+logging is ever added) rather than leaving that future work to
+reinvent one.
+
+### mcp/src/index.mjs — 24h forced re-auth
+BUILD-SPEC.md §"Phase 14 follow-ups" point 5 also names "MCP 24h
+re-auth". `getAccessToken()` now tracks `cachedAccessTokenAt` alongside
+the cached token and forces a fresh `signIn()` once the cached token is
+≥24h old, in addition to the existing reactive 401-triggered re-auth —
+this MCP server runs as a long-lived process on Aria's Mac mini, so
+the proactive cap prevents it from holding one access token
+indefinitely just because it happens to keep working.
+
+---
+
+## Fix Round A — phase unification, pre-populated phases, umbrella span, vertical board, trade insurance
+
+BUILD-SPEC.md "Phase 14 follow-ups from Phillip's testing" items 1–4 +
+"Board vertical layout". Migration `023_phases_insurance.sql`. Phase↔
+board-group unification (item 2), the umbrella span fix (item 4), and
+the vertical board default (item 5, `components/board/ProjectBoard.tsx`)
+were built in an earlier pass of this same task; this section documents
+what this pass added on top: the phase-template Settings editor (item
+3) and the trade insurance tracker's remaining surface (item 6).
+
+### GET /api/settings/phase-template
+Auth: session (team-visible — studio-wide configuration, not
+financial, same trust tier as `GET /api/categories`). Response:
+`{ template: [{ name, kind }] }` — read from
+`app_settings('phase_template')` (migration 023), falling back to
+`lib/phase-template.ts`'s `FALLBACK_PHASE_TEMPLATE` if that row is
+somehow missing.
+
+### PUT /api/settings/phase-template
+Auth: **admin**. Body: `{ template: [{ name, kind }] }` — full
+replace. Validates: non-empty array, every row has a non-empty
+trimmed `name` and `kind ∈ phase | umbrella`, and **exactly one** row
+is `kind='umbrella'` (400 otherwise — `lib/phase-seed.ts`'s seed path
+assumes a single umbrella row per project). Does **not** retroactively
+touch any already-seeded project — only changes what newly-seeded
+projects get. Backs `components/settings/PhaseTemplateSettings.tsx`,
+an additive section on the Settings page (list editor: add/rename/
+reorder/delete, mirroring `CategorySettings.tsx`'s shape).
+
+### GET /api/contacts/[id]/documents
+Auth: session. Response: `{ documents: ContactDocumentWithUrl[] }` —
+a contact's non-deleted `contact_documents`, most recent first, each
+with a freshly-minted signed URL (`assets` is a **private** bucket —
+same `withUrl()` pattern as `GET /api/items/[id]/files`).
+
+### POST /api/contacts/[id]/documents
+Auth: session. Body: `{ kind, storage_path, filename, expiry_date? }`
+— metadata-only; the file itself is uploaded directly to Storage via
+`POST /api/contacts/[id]/documents/upload-url` first (two-step signed-
+upload-URL flow, bypassing the ~4.5 MB Vercel body limit, same
+approach as `POST /api/projects/[id]/files`). `kind` must be one of
+`public_liability | workers_comp | licence | other`; `storage_path`
+must start with `contacts/{id}/documents/`. Response: `{ document }`
+(201).
+
+### POST /api/contacts/[id]/documents/upload-url
+Auth: session. Body: `{ filename }`. Mints a signed upload URL/token
+for a direct-to-Storage `PUT`. Response: `{ path, token }`.
+
+### PATCH /api/contact-documents/[id]
+Auth: session. Body: `{ expiry_date?, verified_at? }` — the two
+fields edited in place after upload (correcting a date, marking
+verified) rather than delete-and-reupload. Response: `{ document }`.
+
+### DELETE /api/contact-documents/[id]
+Auth: session. Soft-deletes the row (`deleted_at`, kept for
+compliance-audit history) **and** removes the underlying Storage
+object immediately (unlike `project_files`' pure soft-delete-only
+semantics) — mirrors `DELETE /api/item-files/[fileId]`. Response:
+`{ ok: true }`.
+
+### GET /api/contacts and GET /api/contacts/[id] (extended)
+Both now additionally return `insurance_status` (`current | expiring |
+expired | missing`, computed by `lib/insurance.ts`'s
+`computeInsuranceStatus()` from the contact's non-deleted
+`contact_documents` — only `public_liability`/`workers_comp` kinds
+count; `missing` is only ever returned for a trade-category contact,
+per `lib/insurance.ts`'s `TRADE_CATEGORIES` allow-list) and, on the
+list route only, `document_count`. `components/contacts/ContactsBrowser.tsx`
+shows a status badge per contact (suppressed for a non-trade contact
+with zero documents — nothing to flag) and an expandable
+`ContactDocumentsPanel` (upload/list/delete, editable expiry date,
+re-fetches the single-contact route after any change to refresh the
+badge without re-fetching the whole list).
+
+### GET /api/contacts/attention
+Auth: session. Response: `InsuranceAttentionGroups` — `{ expired,
+expiring, missing }`, each an array of trade-category contacts in that
+insurance state (`lib/insurance.ts`'s `computeInsuranceAttention()`).
+Mirrors `GET /api/leads/attention` / `GET /api/visits/attention`'s
+existing pattern; also folded additively into `GET /api/my-work`'s
+combined feed as `insurance_expiring` items.
+
+### POST /api/projects/[id]/visits and POST /api/visits/[id]/confirm (extended)
+Both responses gain `insurance_warning: string | null` —
+`lib/insurance.ts`'s `insuranceWarningForBooking()` result for the
+visit's linked contact's **current** insurance status at the moment of
+the request (`null` when there's no linked contact, or insurance is
+`current`/`expiring`; a message when `expired` or `missing`). Purely
+advisory — **never blocks** the create or confirm. Surfaced
+non-blockingly in the booking UI: `AddVisitForm` (inside
+`components/gantt/GanttChart.tsx`'s `VisitsPanel`) shows it under the
+form after a successful add; `components/gantt/VisitBottomSheet.tsx`
+shows it after "Confirm on behalf of trade" succeeds.
+
+---
+
 ## Known inconsistencies (carried over, not fixed this release)
 
 Documented here rather than silently relied upon, since Aria and human

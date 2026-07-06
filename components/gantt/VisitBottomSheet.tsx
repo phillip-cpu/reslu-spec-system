@@ -23,15 +23,21 @@ export function VisitBottomSheet({
 }) {
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Fix Round A — Trade insurance tracker: non-blocking warning from
+  // POST /api/visits/[id]/confirm's insurance_warning flag — shown
+  // after a successful confirm, never blocks it.
+  const [insuranceWarning, setInsuranceWarning] = useState<string | null>(null);
 
   async function confirmOnBehalf() {
     setConfirming(true);
     setError(null);
+    setInsuranceWarning(null);
     try {
       const res = await fetch(`/api/visits/${visit.id}/confirm`, { method: "POST" });
       if (!res.ok) throw new Error((await res.json()).error ?? "Could not confirm visit.");
-      const { visit: updated } = await res.json();
+      const { visit: updated, insurance_warning } = await res.json();
       onConfirmed({ ...visit, ...updated });
+      if (insurance_warning) setInsuranceWarning(insurance_warning);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not confirm visit.");
     } finally {
@@ -58,6 +64,11 @@ export function VisitBottomSheet({
         {visit.notes && <p className="mt-2 text-caption text-charcoal/50">{visit.notes}</p>}
 
         {error && <p className="mt-3 border border-red-700/40 bg-red-50 px-3 py-2 text-body text-red-700">{error}</p>}
+        {insuranceWarning && (
+          <p className="mt-3 border border-sand bg-cream px-3 py-2 text-body text-charcoal">
+            {insuranceWarning}
+          </p>
+        )}
 
         <div className="mt-4 flex gap-2">
           {visit.status !== "confirmed" && (

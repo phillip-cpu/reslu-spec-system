@@ -235,40 +235,25 @@ export function computeVisitAttention(visits: TradeVisit[], now: Date = new Date
 }
 
 // ------------------------------------------------------------
-// Umbrella band — Timeline v2's auto-maintained "Site Setup" phase.
+// Umbrella band — REMOVED in Fix Round A.
+//
+// BUILD-SPEC.md "Site Setup umbrella span" (item 3, from Phillip's
+// testing): the auto-span-to-min/max-of-every-ordinary-phase behaviour
+// this section used to implement (computeUmbrellaBand/UmbrellaBand)
+// was WRONG as built — it visually spanned the entire project instead
+// of representing "the first few days of setup". That recompute-on-
+// read logic has been deleted from both its callers
+// (app/api/projects/[id]/phases/route.ts's GET and
+// app/(dashboard)/projects/[id]/timeline/page.tsx) — the umbrella
+// phase is now seeded ONCE with a short default span (project's
+// earliest phase start, or today, + 4 days — see
+// lib/phase-template.ts's computeUmbrellaSeedSpan()) and is
+// thereafter an ordinary, user-editable schedule_phases row like any
+// other phase (PATCH /api/phases/[id] no longer blocks
+// name/start_date/end_date edits on umbrella-kind rows either). See
+// migration 023_phases_insurance.sql and docs/API.md's "Phase
+// unification — Fix Round A" section for the full replacement design.
 // ------------------------------------------------------------
-
-export interface UmbrellaBand {
-  start_date: string;
-  end_date: string;
-}
-
-/**
- * Given all non-deleted phases for a project (INCLUDING the umbrella
- * row itself, if one exists — the caller doesn't need to pre-filter),
- * computes the date range the umbrella phase SHOULD have: min(start)
- * / max(end) across every 'phase'-kind row only (never the umbrella's
- * own current dates, so the band can never "lock in" a stale range by
- * including itself in its own min/max).
- *
- * Returns null if there are zero 'phase'-kind rows to span — the
- * caller (GET /api/projects/[id]/phases) treats null as "no umbrella
- * should exist" and soft-deletes any existing umbrella row.
- */
-export function computeUmbrellaBand(
-  phases: { kind: "phase" | "umbrella"; start_date: string; end_date: string }[]
-): UmbrellaBand | null {
-  const ordinary = phases.filter((p) => p.kind === "phase");
-  if (ordinary.length === 0) return null;
-
-  let minStart = ordinary[0].start_date;
-  let maxEnd = ordinary[0].end_date;
-  for (const p of ordinary) {
-    if (p.start_date < minStart) minStart = p.start_date;
-    if (p.end_date > maxEnd) maxEnd = p.end_date;
-  }
-  return { start_date: minStart, end_date: maxEnd };
-}
 
 // ------------------------------------------------------------
 // Arrival label formatting.

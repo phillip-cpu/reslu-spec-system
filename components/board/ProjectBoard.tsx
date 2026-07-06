@@ -9,6 +9,7 @@ import type {
   BoardTaskWithAssignees,
 } from "@/types/phase-12a-b";
 import type { Contact } from "@/types";
+import { BOARD_LAYOUT_STORAGE_KEY, type BoardLayoutMode } from "@/types/phase-fix-a";
 
 interface Props {
   projectId: string;
@@ -34,20 +35,45 @@ function isPastDue(dueDate: string | null): boolean {
 }
 
 /**
- * Project board — Board v2 (BUILD-SPEC.md §"Board v2"). Two view
- * modes toggled at the top:
- *   - Kanban (unchanged mechanics from Week 9: columns side-by-side,
- *     native HTML5 drag-drop between columns, per-column add-card
- *     composer, rename/delete columns) — now with multi-assignee
- *     stacked-initials chips instead of a single assignee circle.
- *   - Grouped list (Monday-style): vertical phase groups
- *     (board_groups, lazily seeded from the default template on first
- *     visit to THIS view), each a compact table (title, assignees,
- *     contact, due, status chip). A card's phase_group_id and
- *     column_id are independent — this view edits phase_group_id via a
- *     per-row picker and shows (but does not drag-drop move) the
- *     status column as a read-only chip; Kanban remains the surface for
- *     moving cards between statuses.
+ * Project board — Board v2 (BUILD-SPEC.md §"Board v2") + Fix Round A
+ * "Board vertical layout". Two independent axes:
+ *
+ *   1. VIEW — what a card is grouped by:
+ *      - Kanban ("status view"): grouped by status column (Waiting/To
+ *        Do/In Progress/Done).
+ *      - Grouped list ("phase view"): grouped by unified phase
+ *        (board_groups, lazily seeded via the shared seed path on
+ *        first visit to THIS view — see lib/phase-seed.ts — Fix Round
+ *        A's phase unification means these groups are now the SAME
+ *        rows as Timeline phases). A card's phase_group_id and
+ *        column_id are independent — this view edits phase_group_id
+ *        via a per-row picker and shows the status column as a
+ *        read-only chip.
+ *
+ *   2. LAYOUT — how either view arranges its groups on screen
+ *      (BUILD-SPEC.md "Board vertical layout"):
+ *      - "stacked" (DEFAULT): every group (status column OR phase
+ *        group, whichever the current VIEW is) renders as a
+ *        full-width section, top to bottom, each a compact card
+ *        table — same pattern the Grouped list view already used
+ *        pre-Fix-Round-A, now applied to Kanban too. Drag-and-drop
+ *        works between stacked sections (a row is draggable, each
+ *        section is a drop target); a "Move to..." dropdown on every
+ *        row is the tap→move-menu fallback for touch (BUILD-SPEC.md
+ *        mobile pass: "long-press drag or tap→move-to menu on
+ *        touch").
+ *      - "side-by-side": the ORIGINAL Week-9/Board-v2 horizontal
+ *        kanban (columns side by side, native HTML5 DnD, card-style
+ *        BoardCard with its own expand-on-tap panel) — kept available
+ *        behind the toggle, unchanged mechanics.
+ *      Persisted per-BROWSER in localStorage (BOARD_LAYOUT_STORAGE_KEY,
+ *      types/phase-fix-a.ts) — BUILD-SPEC.md: "persist per user in
+ *      localStorage". The Grouped list view was ALREADY vertical
+ *      before this round (Monday-style stacked phase tables); the
+ *      layout toggle only changes anything visible when VIEW is
+ *      Kanban, but the SAME toggle state applies to both views for a
+ *      single, predictable mental model ("vertical" vs "side-by-side"
+ *      is one decision, not two).
  *
  * Auto-assign on create: a new card is assigned to `currentUserId`
  * automatically unless the composer's assignee picker is used to
@@ -55,6 +81,7 @@ function isPastDue(dueDate: string | null): boolean {
  */
 export function ProjectBoard({ projectId, initialColumns, initialGroups, team, currentUserId }: Props) {
   const [view, setView] = useState<"kanban" | "grouped">("kanban");
+  const [layout, setLayout] = useState<BoardLayoutMode>("stacked");
   const [columns, setColumns] = useState<BoardColumnWithAssigneeTasks[]>(initialColumns);
   const [groups, setGroups] = useState<BoardGroupWithTasks[]>(initialGroups);
   const [error, setError] = useState<string | null>(null);
@@ -64,6 +91,21 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   const [groupsSeeded, setGroupsSeeded] = useState(initialGroups.length > 0);
   const [addingGroup, setAddingGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
+
+  // Layout preference — read once on mount (SSR-safe: localStorage
+  // doesn't exist server-side, so the initial render always uses the
+  // "stacked" default and swaps in the saved preference client-side
+  // immediately after, same one-render flash every localStorage-backed
+  // preference in a Next.js app accepts).
+  useEffect(() => {
+    const saved = window.localStorage.getItem(BOARD_LAYOUT_STORAGE_KEY);
+    if (saved === "stacked" || saved === "side-by-side") setLayout(saved);
+  }, []);
+
+  function changeLayout(next: BoardLayoutMode) {
+    setLayout(next);
+    window.localStorage.setItem(BOARD_LAYOUT_STORAGE_KEY, next);
+  }
 
   const teamById = useMemo(() => new Map(team.map((t) => [t.id, t])), [team]);
   const columnById = useMemo(() => new Map(columns.map((c) => [c.id, c])), [columns]);
@@ -187,6 +229,22 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     const prevColumns = columns;
     const prevGroups = groups;
     applyTaskPatch(task.id, { ...patch, ...refUpdate } as Partial<BoardTaskWithAssignees>);
+    // A column_id change (the Stacked layout's "Move to" dropdown and
+    // drag-onto-a-section drop, per-row Fix Round A additions) moves
+    // the task between column buckets — same targeted re-slot approach
+    // phase_group_id already used below, appended at the end of the
+    // destination column (stacked sections don't track a meaningful
+    // "position within column" the way side-by-side kanban cards do —
+    // see StackedColumnSection's own doc comment).
+    if ("column_id" in patch) {
+      const targetColumnId = patch.column_id as string;
+      setColumns((cur) => {
+        const withoutTask = cur.map((c) => ({ ...c, tasks: c.tasks.filter((t) => t.id !== task.id) }));
+        return withoutTask.map((c) =>
+          c.id === targetColumnId ? { ...c, tasks: [...c.tasks, { ...task, ...patch, ...refUpdate }] } : c
+        );
+      });
+    }
     setError(null);
     try {
       await patchTask(task, patch);
@@ -351,30 +409,119 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
         </p>
       )}
 
-      <div className="flex items-center gap-1 border-b border-[#dcd6cc]">
-        <button
-          type="button"
-          onClick={() => setView("kanban")}
-          className={clsx(
-            "border-b-2 px-3 py-2 text-subhead transition-colors",
-            view === "kanban" ? "border-nearblack text-nearblack" : "border-transparent text-charcoal/50 hover:text-nearblack"
-          )}
-        >
-          Kanban
-        </button>
-        <button
-          type="button"
-          onClick={switchToGrouped}
-          className={clsx(
-            "border-b-2 px-3 py-2 text-subhead transition-colors",
-            view === "grouped" ? "border-nearblack text-nearblack" : "border-transparent text-charcoal/50 hover:text-nearblack"
-          )}
-        >
-          Grouped list
-        </button>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#dcd6cc] pb-0">
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setView("kanban")}
+            className={clsx(
+              "border-b-2 px-3 py-2 text-subhead transition-colors",
+              view === "kanban" ? "border-nearblack text-nearblack" : "border-transparent text-charcoal/50 hover:text-nearblack"
+            )}
+          >
+            Kanban
+          </button>
+          <button
+            type="button"
+            onClick={switchToGrouped}
+            className={clsx(
+              "border-b-2 px-3 py-2 text-subhead transition-colors",
+              view === "grouped" ? "border-nearblack text-nearblack" : "border-transparent text-charcoal/50 hover:text-nearblack"
+            )}
+          >
+            Grouped list
+          </button>
+        </div>
+
+        {/* Layout toggle — BUILD-SPEC.md "Board vertical layout":
+            "Vertical becomes the DEFAULT layout ... side-by-side kanban
+            stays available via a small layout toggle (persist per user
+            in localStorage)." Only visibly changes anything when
+            view === "kanban" (Grouped list has always been vertical),
+            but the preference is shared across both views. */}
+        <div className="mb-1 flex items-center gap-1 self-start">
+          <span className="label-caps !text-charcoal/40">Layout</span>
+          <button
+            type="button"
+            onClick={() => changeLayout("stacked")}
+            title="Stacked (vertical) — default"
+            className={clsx(
+              "border px-2 py-1 text-caption",
+              layout === "stacked" ? "border-nearblack bg-nearblack text-white" : "border-[#c9c2b4] text-charcoal hover:border-nearblack"
+            )}
+          >
+            Stacked
+          </button>
+          <button
+            type="button"
+            onClick={() => changeLayout("side-by-side")}
+            title="Side-by-side kanban"
+            className={clsx(
+              "border px-2 py-1 text-caption",
+              layout === "side-by-side" ? "border-nearblack bg-nearblack text-white" : "border-[#c9c2b4] text-charcoal hover:border-nearblack"
+            )}
+          >
+            Side-by-side
+          </button>
+        </div>
       </div>
 
-      {view === "kanban" ? (
+      {view === "kanban" && layout === "stacked" && (
+        <div className="space-y-6">
+          {columns.map((column) => (
+            <StackedColumnSection
+              key={column.id}
+              column={column}
+              columns={columns}
+              teamById={teamById}
+              currentUserId={currentUserId}
+              onDragStart={onDragStart}
+              onDropOnColumn={() => onDrop(column.id, null)}
+              onRename={(name) => renameColumn(column.id, name)}
+              onDelete={() => deleteColumn(column.id, column.name)}
+              onMoveTo={(task, targetColumnId) =>
+                updateTaskField(task, { column_id: targetColumnId }, { column_id: targetColumnId })
+              }
+              onAddTask={(title, assigneeIds) => addTask(column.id, title, assigneeIds)}
+            />
+          ))}
+
+          {addingColumn ? (
+            <form onSubmit={addColumn} className="flex max-w-sm gap-2">
+              <input
+                autoFocus
+                value={newColumnName}
+                onChange={(e) => setNewColumnName(e.target.value)}
+                placeholder="Column name"
+                className="flex-1 border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
+              />
+              <button type="submit" className="bg-nearblack px-3 py-1.5 text-caption text-white hover:bg-charcoal">
+                Add
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAddingColumn(false);
+                  setNewColumnName("");
+                }}
+                className="border border-[#c9c2b4] px-3 py-1.5 text-caption text-charcoal hover:border-nearblack"
+              >
+                Cancel
+              </button>
+            </form>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setAddingColumn(true)}
+              className="border border-dashed border-[#c9c2b4] px-4 py-2 text-subhead text-charcoal/60 transition-colors hover:border-nearblack hover:text-nearblack"
+            >
+              + Add column
+            </button>
+          )}
+        </div>
+      )}
+
+      {view === "kanban" && layout === "side-by-side" && (
         <div className="flex items-start gap-4 overflow-x-auto pb-4">
           {columns.map((column) => (
             <BoardColumnView
@@ -430,7 +577,9 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
             )}
           </div>
         </div>
-      ) : (
+      )}
+
+      {view === "grouped" && (
         <div className="space-y-6">
           {groups.map((group) => (
             <GroupTable
@@ -489,6 +638,201 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
+// Stacked (vertical) Kanban section — Fix Round A "Board vertical
+// layout" DEFAULT. One full-width section per status column, compact
+// card table (same visual language as the Grouped list's GroupRows),
+// top to bottom. Drag-and-drop: a row is draggable; the whole section
+// is a drop target (drop anywhere in a section moves the card to that
+// column, appended at the end — stacked sections don't need
+// within-column reorder-by-position the way side-by-side kanban cards
+// do, since a compact table row order isn't a meaningful "position in
+// the column" signal the way a card's vertical stacking order is).
+// Every row ALSO has a "Move to" dropdown — BUILD-SPEC.md mobile pass:
+// "tap→move-to menu on touch" — so moving a card never strictly
+// requires drag capability.
+// ------------------------------------------------------------
+
+function StackedColumnSection({
+  column,
+  columns,
+  teamById,
+  currentUserId,
+  onDragStart,
+  onDropOnColumn,
+  onRename,
+  onDelete,
+  onMoveTo,
+  onAddTask,
+}: {
+  column: BoardColumnWithAssigneeTasks;
+  columns: BoardColumnWithAssigneeTasks[];
+  teamById: Map<string, AssigneeSummary>;
+  currentUserId: string;
+  onDragStart: (taskId: string) => void;
+  onDropOnColumn: () => void;
+  onRename: (name: string) => void;
+  onDelete: () => void;
+  onMoveTo: (task: BoardTaskWithAssignees, targetColumnId: string) => void;
+  onAddTask: (title: string, assigneeIds: string[]) => void;
+}) {
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState(column.name);
+  const [dragOver, setDragOver] = useState(false);
+  const [composing, setComposing] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+
+  function submitNewTask(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newTitle.trim()) return;
+    onAddTask(newTitle.trim(), [currentUserId]);
+    setNewTitle("");
+    setComposing(false);
+  }
+
+  return (
+    <div
+      className={clsx("border", dragOver ? "border-nearblack" : "border-[#dcd6cc]")}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        onDropOnColumn();
+      }}
+    >
+      <div className="flex items-center justify-between gap-2 border-b border-[#dcd6cc] bg-offwhite px-3 py-2">
+        {renaming ? (
+          <input
+            autoFocus
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onBlur={() => {
+              setRenaming(false);
+              if (nameDraft.trim() && nameDraft.trim() !== column.name) onRename(nameDraft.trim());
+            }}
+            onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+            className="flex-1 border border-nearblack bg-nearwhite px-2 py-1 text-subhead text-nearblack focus:outline-none"
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              setNameDraft(column.name);
+              setRenaming(true);
+            }}
+            className="label-caps !text-nearblack hover:!text-sand"
+          >
+            {column.name} · {column.tasks.length}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onDelete}
+          title={column.tasks.length > 0 ? "Delete only when empty" : "Delete column"}
+          className="text-caption text-charcoal/40 hover:text-red-700"
+        >
+          ✕
+        </button>
+      </div>
+
+      {column.tasks.length === 0 ? (
+        <p className="px-3 py-3 text-caption text-charcoal/40">No cards yet.</p>
+      ) : (
+        <table className="w-full text-left">
+          <thead>
+            <tr className="border-b border-[#e5e0d6] text-caption text-charcoal/40">
+              <th className="px-3 py-1.5 font-normal">Title</th>
+              <th className="px-3 py-1.5 font-normal">Assignees</th>
+              <th className="px-3 py-1.5 font-normal">Contact</th>
+              <th className="px-3 py-1.5 font-normal">Due</th>
+              <th className="px-3 py-1.5 font-normal">Move to</th>
+            </tr>
+          </thead>
+          <tbody>
+            {column.tasks.map((task) => {
+              const pastDue = isPastDue(task.due_date);
+              return (
+                <tr
+                  key={task.id}
+                  draggable
+                  onDragStart={() => onDragStart(task.id)}
+                  className="cursor-move border-b border-[#e5e0d6] last:border-b-0 hover:bg-nearwhite"
+                >
+                  <td className="px-3 py-2 text-body text-nearblack">{task.title}</td>
+                  <td className="px-3 py-2">
+                    <AssigneeStack assignees={task.assignees} />
+                  </td>
+                  <td className="px-3 py-2 text-caption text-charcoal/60">{task.contact?.company ?? "—"}</td>
+                  <td className={clsx("px-3 py-2 text-caption", pastDue ? "text-red-700" : "text-charcoal/60")}>
+                    {task.due_date
+                      ? new Date(task.due_date + "T00:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" })
+                      : "—"}
+                  </td>
+                  <td className="px-3 py-2">
+                    <select
+                      value={column.id}
+                      onChange={(e) => {
+                        if (e.target.value !== column.id) onMoveTo(task, e.target.value);
+                      }}
+                      className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none"
+                    >
+                      {columns.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      <div className="border-t border-[#e5e0d6] px-2 py-1.5">
+        {composing ? (
+          <form onSubmit={submitNewTask} className="flex gap-2">
+            <input
+              autoFocus
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              onKeyDown={(e) => e.key === "Escape" && setComposing(false)}
+              placeholder="Card title"
+              className="flex-1 border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-body focus:border-nearblack focus:outline-none"
+            />
+            <button type="submit" className="border border-nearblack px-2 py-1 text-caption text-nearblack hover:bg-nearblack hover:text-white">
+              Add
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setComposing(false);
+                setNewTitle("");
+              }}
+              className="text-caption text-charcoal/50 hover:text-nearblack"
+            >
+              Cancel
+            </button>
+          </form>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setComposing(true)}
+            className="w-full px-1 py-1 text-left text-caption text-charcoal/50 hover:text-nearblack"
+          >
+            + Add card
+          </button>
+        )}
+      </div>
     </div>
   );
 }

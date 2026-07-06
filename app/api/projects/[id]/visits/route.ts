@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import type { CreateVisitInput, ArrivalSlot } from "@/lib/trade-visits";
+import { computeInsuranceStatus, insuranceWarningForBooking } from "@/lib/insurance";
 
 const VALID_SLOTS = new Set<ArrivalSlot>(["first_thing", "midday", "afternoon"]);
 
@@ -16,7 +17,18 @@ const VALID_SLOTS = new Set<ArrivalSlot>(["first_thing", "midday", "afternoon"])
  * a system-derived summary band), contact (if given) exists,
  * end_date >= start_date, arrival_slot enum if present. Inserts with
  * status='unconfirmed' — confirm_token is a DB default (migration
- * 015), never client-supplied. Response: { visit } (201).
+ * 015), never client-supplied. Response: { visit, insurance_warning }
+ * (201).
+ *
+ * Fix Round A — Trade insurance tracker: insurance_warning is
+ * lib/insurance.ts's insuranceWarningForBooking() result for the
+ * booked contact's CURRENT insurance_status (null when there's no
+ * contact, or the contact's insurance is current/expiring-but-not-yet-
+ * expired). Purely advisory — never blocks the booking, per
+ * BUILD-SPEC.md "creating/confirming a visit for a contact with
+ * expired/missing insurance shows a warning (non-blocking)". The
+ * booking UI (components/gantt/VisitBottomSheet.tsx's AddVisitForm)
+ * surfaces this string non-blockingly after a successful create.
  */
 export async function POST(
   request: NextRequest,
@@ -72,16 +84,30 @@ export async function POST(
     );
   }
 
+  // Fix Round A — Trade insurance tracker booking warning
+  // (BUILD-SPEC.md: "creating/confirming a visit for a contact with
+  // expired/missing insurance shows a warning (non-blocking) in the
+  // booking UI + API response flag"). Computed BEFORE the insert so a
+  // contact lookup failure never blocks the actual booking — this is
+  // advisory only, never a validation error.
+  let insurance_warning: string | null = null;
   if (body.contact_id) {
     const { data: contact } = await supabase
       .from("contacts")
-      .select("id")
+      .select("id,category")
       .eq("id", body.contact_id)
       .is("deleted_at", null)
       .maybeSingle();
     if (!contact) {
       return NextResponse.json({ error: "Contact not found" }, { status: 404 });
     }
+    const { data: documents } = await supabase
+      .from("contact_documents")
+      .select("kind,expiry_date,deleted_at")
+      .eq("contact_id", body.contact_id)
+      .is("deleted_at", null);
+    const status = computeInsuranceStatus(contact.category, documents ?? []);
+    insurance_warning = insuranceWarningForBooking(status);
   }
 
   const { data: visit, error } = await supabase
@@ -106,5 +132,5 @@ export async function POST(
     return NextResponse.json({ error: error.message }, { status });
   }
 
-  return NextResponse.json({ visit }, { status: 201 });
+  return NextResponse.json({ visit, insurance_warning }, { status: 201 });
 }

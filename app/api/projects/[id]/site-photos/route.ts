@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS, slugFilename } from "@/lib/storage";
 import { signedRenditionUrl, RENDITION_SIZES } from "@/lib/image-url";
+import { isSniffedImage } from "@/lib/file-sniff";
 
 export const runtime = "nodejs";
 
@@ -127,6 +128,17 @@ export async function POST(
     const filename = file.name || "photo";
     const path = `projects/${projectId}/site-photos/${Date.now()}-${slugFilename(filename)}`;
     const bytes = Buffer.from(await file.arrayBuffer());
+
+    // Fix round B — BUILD-SPEC.md §"Phase 14 follow-ups" point 5:
+    // magic-byte validation. Site photos are always meant to be real
+    // JPEG/PNG/WebP images — reject anything whose actual bytes don't
+    // match one of those formats per-file (one bad file in a multi-file
+    // upload doesn't fail the whole batch, same as every other
+    // per-file error in this loop).
+    if (!isSniffedImage(bytes)) {
+      errors.push(`${filename}: doesn't look like a valid JPEG, PNG, or WebP image.`);
+      continue;
+    }
 
     const { error: uploadError } = await supabase.storage
       .from(ASSET_BUCKET)

@@ -286,7 +286,11 @@ export function GanttChart({ projectId, initialPhases }: Props) {
               </div>
             ))}
 
-            {/* Umbrella band ("Site Setup") — always renders first if present */}
+            {/* Umbrella band ("Site Setup") — always renders first if present.
+                Fix Round A: dates are now editable like any normal phase
+                (onPatch below reuses the exact same patchPhase() helper
+                every ordinary PhaseRow uses) — see UmbrellaBand.tsx's own
+                doc comment for the span-fix rationale. */}
             {umbrella && (
               <UmbrellaBand
                 name={umbrella.name}
@@ -294,6 +298,7 @@ export function GanttChart({ projectId, initialPhases }: Props) {
                 endDate={umbrella.end_date}
                 grid={grid}
                 costSectionLines={umbrella.cost_section_lines ?? []}
+                onPatch={(patch) => patchPhase(umbrella, patch)}
               />
             )}
 
@@ -449,17 +454,18 @@ function PhaseEditPanel({
     }
   }
 
-  // Umbrella phases render as a read-only informational panel instead
-  // of the ordinary edit form — see components/gantt/UmbrellaBand.tsx,
-  // which already renders its own info panel on tap. This branch
-  // exists defensively (an umbrella row should never reach
-  // PhaseEditPanel since GanttChart.tsx renders umbrellas via
-  // <UmbrellaBand> instead of <PhaseRow>), but is kept here in case
-  // that invariant is ever broken by a future change.
+  // Umbrella phases render via components/gantt/UmbrellaBand.tsx
+  // instead of this ordinary edit form (UmbrellaBand has its own
+  // inline date editor as of Fix Round A, plus the read-only
+  // Preliminaries & Site content panel). This branch exists
+  // defensively (an umbrella row should never reach PhaseEditPanel
+  // since GanttChart.tsx renders umbrellas via <UmbrellaBand> instead
+  // of <PhaseRow>), but is kept here in case that invariant is ever
+  // broken by a future change.
   if (phase.kind === "umbrella") {
     return (
       <div>
-        <p className="label-caps mb-2">Preliminaries & Site (system-managed)</p>
+        <p className="label-caps mb-2">Preliminaries & Site content</p>
         <ul className="list-disc space-y-1 pl-4">
           {(phase.cost_section_lines ?? []).map((line, i) => (
             <li key={i} className="text-body text-charcoal">
@@ -723,6 +729,12 @@ function AddVisitForm({
   const [time, setTime] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Fix Round A — Trade insurance tracker: non-blocking warning
+  // surfaced from the API response's insurance_warning flag (see
+  // POST /api/projects/[id]/visits' doc comment). Shown alongside the
+  // just-added visit rather than blocking the add — the visit is
+  // already booked by the time this renders.
+  const [insuranceWarning, setInsuranceWarning] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/contacts")
@@ -736,6 +748,7 @@ function AddVisitForm({
     if (!start || !end) return;
     setSubmitting(true);
     setError(null);
+    setInsuranceWarning(null);
     try {
       const res = await fetch(`/api/projects/${projectId}/visits`, {
         method: "POST",
@@ -750,9 +763,10 @@ function AddVisitForm({
         }),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? "Could not add visit.");
-      const { visit } = await res.json();
+      const { visit, insurance_warning } = await res.json();
       const contact = contacts.find((c) => c.id === contactId) ?? null;
       onAdded({ ...visit, contact: contact ? { id: contact.id, company: contact.company, contact_name: contact.contact_name } : null });
+      if (insurance_warning) setInsuranceWarning(insurance_warning);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not add visit.");
     } finally {
@@ -763,6 +777,11 @@ function AddVisitForm({
   return (
     <form onSubmit={submit} className="flex flex-wrap items-end gap-2 border border-[#c9c2b4] bg-nearwhite p-3">
       {error && <p className="w-full text-caption text-red-700">{error}</p>}
+      {insuranceWarning && (
+        <p className="w-full border border-sand bg-cream px-2 py-1.5 text-caption text-charcoal">
+          {insuranceWarning}
+        </p>
+      )}
       <div className="min-w-[140px]">
         <label className="text-caption text-charcoal/60">Trade</label>
         <select

@@ -9,6 +9,14 @@ import type { PatchBoardGroupInput } from "@/types/phase-12a-b";
  * label follows automatically since cards only ever store
  * phase_group_id, never a denormalised name (same pattern as
  * board_columns).
+ *
+ * FIX ROUND A — phase unification: when `name` changes and this group
+ * has a linked schedule_phases row (migration 023's phase_id), that
+ * phase's `name` is mirrored to match — the reverse direction of
+ * PATCH /api/phases/[id]'s own sync. See app/api/projects/[id]/phases/
+ * route.ts's GET doc comment for THE INVARIANT in full
+ * ("schedule_phases.name is the single source of truth ... renaming
+ * either renames both").
  */
 export async function PATCH(
   request: NextRequest,
@@ -58,6 +66,11 @@ export async function PATCH(
     return NextResponse.json({ error: "Group not found" }, { status: 404 });
   }
 
+  // ---- Unification: mirror a name change into the linked schedule_phases row ----
+  if (typeof update.name === "string" && group.phase_id) {
+    await supabase.from("schedule_phases").update({ name: update.name }).eq("id", group.phase_id);
+  }
+
   return NextResponse.json({ group });
 }
 
@@ -72,6 +85,13 @@ export async function PATCH(
  * group). No "must be empty" guard here, unlike board_columns — losing
  * a phase label is a much lower-stakes action than losing a card
  * entirely, and the cards survive regardless.
+ *
+ * FIX ROUND A — phase unification: the linked schedule_phases row
+ * (migration 023's phase_id, if set) is NOT deleted here — deleting a
+ * board group is a Board-view-only action; the Timeline's phase (and
+ * any trade_visits booked against it) survives, simply un-linked from
+ * a group going forward. Deleting the phase ITSELF (which DOES clear
+ * this side of the link) is DELETE /api/phases/[id]'s job.
  */
 export async function DELETE(
   _request: NextRequest,

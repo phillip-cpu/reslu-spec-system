@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 /**
  * Sticky anchor nav for the sectioned portal (BUILD-SPEC.md "Week 8 —
  * Client portal expansion": "the portal becomes sectioned (anchor nav
@@ -12,6 +14,15 @@
  * approvals)"), "Updates" -> "Diary" (magazine-style journal entries),
  * and adds "Handover" (only shown once the project is completed — see
  * app/portal/[token]/page.tsx's `visible.handover` flag).
+ *
+ * Fix round B — BUILD-SPEC.md §"Portal selections separation": "reached
+ * via a compact link card on the main page ... and the portal nav."
+ * "Your selections" is a REAL page link (/portal/[token]/selections),
+ * not an in-page anchor like every other entry here — it's rendered
+ * with next/link instead of a bare <a href="#...">, and only shown when
+ * `approvedCount` is passed in and > 0 (no point linking to an empty
+ * gallery). Optional so every existing call site (which doesn't pass
+ * it) keeps compiling unchanged.
  */
 
 const SECTIONS = [
@@ -25,9 +36,18 @@ const SECTIONS = [
   { id: "handover", label: "Handover" },
 ] as const;
 
-export function PortalNav({ visible }: { visible: Record<string, boolean> }) {
+export function PortalNav({
+  visible,
+  token,
+  approvedCount,
+}: {
+  visible: Record<string, boolean>;
+  token?: string;
+  approvedCount?: number;
+}) {
   const sections = SECTIONS.filter((s) => visible[s.id] !== false);
-  if (sections.length === 0) return null;
+  const showYourSelections = !!token && (approvedCount ?? 0) > 0;
+  if (sections.length === 0 && !showYourSelections) return null;
 
   return (
     <nav className="sticky top-0 z-10 -mx-6 border-b border-[#dcd6cc] bg-cream/95 px-6 backdrop-blur sm:mx-0">
@@ -41,6 +61,14 @@ export function PortalNav({ visible }: { visible: Record<string, boolean> }) {
             {s.label}
           </a>
         ))}
+        {showYourSelections && (
+          <Link
+            href={`/portal/${token}/selections`}
+            className="label-caps whitespace-nowrap !text-sand transition-colors hover:!text-nearblack"
+          >
+            Your selections
+          </Link>
+        )}
       </div>
     </nav>
   );

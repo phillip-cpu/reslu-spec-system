@@ -14,6 +14,9 @@ const KIND_LABEL: Record<MyWorkItem["kind"], string> = {
   // Phase 13 — Office board task assigned to me (GET /api/my-work
   // source #6). Additive entry, same shape as every other kind here.
   office_task: "Office",
+  // Fix Round A — trade insurance expiring/expired (GET /api/my-work
+  // source #7). Additive entry, same shape as every other kind here.
+  insurance_expiring: "Insurance",
 };
 
 const SECTIONS: { key: keyof MyWorkGroups; label: string; emptyLabel: string }[] = [

@@ -23,13 +23,6 @@ const EDITABLE_FIELDS = new Set([
 // than left implicit).
 const SYSTEM_MANAGED_FIELDS = new Set(["kind", "cost_section_id"]);
 
-// Fields that are blocked outright on an umbrella-kind phase — its
-// dates/name are system-recomputed on every GET (see
-// app/api/projects/[id]/phases/route.ts), so a client edit to them
-// would just be silently overwritten on the next read anyway; this
-// returns an explicit 400 instead of a confusing no-op.
-const UMBRELLA_RESTRICTED_FIELDS = new Set(["name", "start_date", "end_date"]);
-
 /**
  * PATCH /api/phases/[id]
  * body: PatchPhaseInput (partial). Validates color_key enum and
@@ -43,14 +36,24 @@ const UMBRELLA_RESTRICTED_FIELDS = new Set(["name", "start_date", "end_date"]);
  * they're silently stripped from the update, same handling as any
  * other unrecognised key in the body).
  *
- * If the phase being patched is kind === 'umbrella', any attempt to
- * touch name/start_date/end_date is rejected with 400 — those fields
- * are system-recomputed on every GET /api/projects/[id]/phases call
- * (umbrella recompute-on-read), so a direct edit here would either be
- * silently clobbered on the next read (confusing) or fight the
- * recompute logic. Other fields (color_key, contact_id, notes, sort)
- * remain editable on an umbrella phase — there's no reason to block
- * cosmetic/organisational edits, only the system-managed span.
+ * FIX ROUND A — "Site Setup umbrella span" fix: umbrella-kind phases
+ * are NO LONGER blocked from editing name/start_date/end_date here.
+ * The old restriction existed because those fields used to be
+ * recomputed on every GET (auto-span-to-whole-project, judged wrong by
+ * Phillip's testing) — that recompute is gone (see
+ * app/api/projects/[id]/phases/route.ts's GET doc comment), so an
+ * umbrella phase is now edited through this exact same route/path as
+ * any ordinary phase, with zero special-casing below.
+ *
+ * FIX ROUND A — phase unification: when `name` changes, the linked
+ * board_groups row (migration 023's board_groups.phase_id) has its
+ * `name` mirrored to match, keeping THE INVARIANT documented in full
+ * in app/api/projects/[id]/phases/route.ts's GET doc comment
+ * ("schedule_phases.name is the single source of truth ... renaming
+ * either renames both"). A phase with no linked board_groups row
+ * (phase_id relationship absent — legacy/unreconciled data) simply has
+ * nothing to sync; this is a best-effort mirror, not enforced by a DB
+ * constraint.
  */
 export async function PATCH(
   request: NextRequest,
@@ -80,16 +83,6 @@ export async function PATCH(
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-
-  if (existing.kind === "umbrella") {
-    const touchesRestricted = Object.keys(body).some((k) => UMBRELLA_RESTRICTED_FIELDS.has(k));
-    if (touchesRestricted) {
-      return NextResponse.json(
-        { error: "Umbrella phase dates and name are system-managed and cannot be edited directly." },
-        { status: 400 }
-      );
-    }
   }
 
   if (body.color_key !== undefined && !VALID_COLORS.has(body.color_key)) {
@@ -143,6 +136,14 @@ export async function PATCH(
     return NextResponse.json({ error: error.message }, { status });
   }
 
+  // ---- Unification: mirror a name change into the linked board_groups row ----
+  if (typeof update.name === "string") {
+    await supabase
+      .from("board_groups")
+      .update({ name: update.name })
+      .eq("phase_id", id);
+  }
+
   return NextResponse.json({ phase });
 }
 
@@ -152,13 +153,22 @@ export async function PATCH(
  * board_tasks.
  *
  * Deleting an umbrella phase directly IS allowed (no special-case
- * block) — the simplest correct behaviour, since the next
- * GET /api/projects/[id]/phases will simply recreate it if the
- * "Preliminaries & Site" cost section still has live lines. There is
- * no data-loss risk in allowing it: the umbrella phase carries no
- * team-authored content of its own (its dates/name are system-derived,
- * and cost_section_lines are read live from cost_lines, not stored
- * on the phase), so deleting it is at worst a no-op until the next read.
+ * block) — since the umbrella no longer auto-recreates itself with
+ * system-derived dates on every read (Fix Round A removed that
+ * recompute-on-read behaviour entirely — see
+ * app/api/projects/[id]/phases/route.ts's GET doc comment), deleting
+ * it now behaves exactly like deleting any ordinary phase: gone until
+ * a human adds a new one (the shared seed path only ever runs once,
+ * when a project has ZERO phases — see seedPhaseTemplateIfEmpty in
+ * that same route — so deleting the umbrella alone, with ordinary
+ * phases still present, does NOT reseed it).
+ *
+ * FIX ROUND A — phase unification: the linked board_groups row
+ * (migration 023's phase_id) is NOT deleted here — only its phase_id
+ * link is cleared (board_tasks in that group survive, same as
+ * DELETE /api/board-groups/[id]'s existing "cards are not deleted"
+ * behaviour), consistent with how deleting a phase should not silently
+ * destroy Board task-grouping history.
  */
 export async function DELETE(
   _request: NextRequest,
@@ -182,6 +192,8 @@ export async function DELETE(
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  await supabase.from("board_groups").update({ phase_id: null }).eq("phase_id", id);
 
   return NextResponse.json({ ok: true });
 }

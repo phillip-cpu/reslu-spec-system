@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { groupMyWorkItems } from "@/lib/my-work";
+import { computeInsuranceStatus } from "@/lib/insurance";
 import type { MyWorkItem, MyWorkResponse } from "@/types/phase-12a-b";
 
 export const runtime = "nodejs";
@@ -45,8 +46,24 @@ export const runtime = "nodejs";
  *      tasks (completed_at not null — a done task shouldn't keep
  *      nagging in My Work once archived). due_date drives bucketing,
  *      same as board_task.
+ *   7. Fix Round A — Trade insurance expiring/expired: trade-category
+ *      contacts (lib/insurance.ts's isTradeCategory()) whose computed
+ *      insurance_status is 'expiring' or 'expired' (never 'missing' —
+ *      a contact with NO documents on file has no expiry date to
+ *      bucket by day, so it has no natural `due` and would only ever
+ *      land in My Work's "No date" bucket; it still surfaces via GET
+ *      /api/contacts/attention's dedicated `missing` list and the
+ *      Address Book badge instead). `due` = the earliest expiring/
+ *      already-past qualifying document's expiry_date, so the bucket
+ *      (overdue/today/this week) reflects how urgent THIS contact's
+ *      compliance gap is. Team-visible, not admin-gated (BUILD-SPEC.md
+ *      "Trade insurance compliance" carries no financial data).
+ *      Additive per this task's brief ("find and extend additively")
+ *      — mirrors the exact pattern Phase 13's office_task source
+ *      established (see MyWorkItemKind's own doc comment,
+ *      types/phase-12a-b.ts).
  *
- * None of these six sources require a project-membership check (this
+ * None of these seven sources require a project-membership check (this
  * codebase has no per-project team assignment — every team member sees
  * every project, per BUILD-SPEC.md §Security's Phase 1 "all team equal"
  * baseline), so no extra ownership filtering is needed beyond the
@@ -258,6 +275,48 @@ export async function GET() {
         due: t.due_date,
         href: "/office",
         meta: groupById.get(t.group_id)?.name ?? "Office",
+      });
+    }
+  }
+
+  // ---- 7. Fix Round A — Trade insurance expiring/expired ----
+  const { data: allContacts } = await supabase
+    .from("contacts")
+    .select("id,company,category")
+    .is("deleted_at", null);
+  const contactRows = allContacts ?? [];
+  const contactIds = contactRows.map((c) => c.id);
+
+  if (contactIds.length > 0) {
+    const { data: allDocs } = await supabase
+      .from("contact_documents")
+      .select("contact_id,kind,expiry_date,deleted_at")
+      .in("contact_id", contactIds)
+      .is("deleted_at", null)
+      .in("kind", ["public_liability", "workers_comp"]);
+
+    const docsByContact = new Map<string, { kind: "public_liability" | "workers_comp"; expiry_date: string | null; deleted_at: string | null }[]>();
+    for (const d of allDocs ?? []) {
+      const list = docsByContact.get(d.contact_id) ?? [];
+      list.push(d as { kind: "public_liability" | "workers_comp"; expiry_date: string | null; deleted_at: string | null });
+      docsByContact.set(d.contact_id, list);
+    }
+
+    for (const c of contactRows) {
+      const docs = docsByContact.get(c.id) ?? [];
+      const status = computeInsuranceStatus(c.category, docs);
+      if (status !== "expiring" && status !== "expired") continue;
+
+      // Earliest qualifying expiry_date drives `due` (most urgent gap first).
+      const expiryDates = docs.map((d) => d.expiry_date).filter((d): d is string => !!d).sort();
+      items.push({
+        kind: "insurance_expiring",
+        id: c.id,
+        title: `${c.company} — insurance ${status}`,
+        project: null,
+        due: expiryDates[0] ?? null,
+        href: "/contacts",
+        meta: status === "expired" ? "Insurance expired" : "Insurance expiring soon",
       });
     }
   }

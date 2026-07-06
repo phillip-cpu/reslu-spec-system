@@ -4,24 +4,44 @@ import { getUserRole } from "@/lib/auth";
 import { Header } from "@/components/layout/Header";
 import { ProjectTabs } from "@/components/projects/ProjectTabs";
 import { GanttChart } from "@/components/gantt/GanttChart";
-import { computeUmbrellaBand } from "@/lib/trade-visits";
+import { seedPhaseTemplateIfEmpty } from "@/lib/phase-seed";
 import { portalUrlFor } from "@/lib/portal-link";
 import type { SchedulePhaseWithVisits, TradeVisitWithContact, VisitContactSummary } from "@/lib/trade-visits";
 
-const UMBRELLA_NAME = "Site Setup";
 const UMBRELLA_SECTION_NAME_MATCH = "preliminaries & site";
-const SORT_STEP = 1000;
 
 /**
  * /projects/[id]/timeline — Timeline tab (BUILD-SPEC.md "Gantt" / Phase
- * 11A "Timeline v2"). Team-visible, not admin-gated (scheduling data,
- * no pricing). Follows the same direct-Supabase-query convention as
- * the Board page (see that page's doc comment) rather than internally
- * fetching its own API route — so the umbrella recompute-on-read logic
- * is replicated here in full (same as GET /api/projects/[id]/phases;
- * see that route's doc comment for the full design rationale) rather
- * than the page calling its own API route, which would be an unusual
- * self-fetch for a Server Component in this codebase.
+ * 11A "Timeline v2" / Fix Round A "phase unification" + "pre-populated
+ * phases" + "Site Setup umbrella span fix"). Team-visible, not
+ * admin-gated (scheduling data, no pricing). Follows the same
+ * direct-Supabase-query convention as the Board page (see that page's
+ * doc comment) rather than internally fetching its own API route — so
+ * the shared-seed-path + cost-section-binding-refresh logic is
+ * replicated here in full (same as GET /api/projects/[id]/phases; see
+ * that route's doc comment for the full design rationale, including
+ * THE INVARIANT for phase<->board-group unification) rather than the
+ * page calling its own API route, which would be an unusual self-fetch
+ * for a Server Component in this codebase.
+ *
+ * FIX ROUND A changes from the original Phase 11A version of this
+ * page:
+ *   1. Seeds the phase template (shared seed path — this is one of the
+ *      two "first visit" surfaces alongside the Board's Grouped-list
+ *      view) if the project has zero phases yet, via
+ *      lib/phase-seed.ts's seedPhaseTemplateIfEmpty() — the SAME
+ *      function GET /api/projects/[id]/phases and POST
+ *      /api/projects/[id]/board/groups/seed both call, so all three
+ *      "first visit" entry points can never seed a different
+ *      template.
+ *   2. REMOVED the umbrella recompute-to-min/max-of-ordinary-phases
+ *      logic entirely (Site Setup umbrella span fix, BUILD-SPEC.md
+ *      item 3) — the umbrella phase's dates are now ordinary,
+ *      user-editable data set once at seed time, never silently
+ *      overwritten on page load.
+ *   3. Still refreshes the umbrella's cost_section_id binding (link
+ *      only, not dates) to "Preliminaries & Site" on every load, same
+ *      as the API route.
  */
 export default async function ProjectTimelinePage({
   params,
@@ -41,8 +61,10 @@ export default async function ProjectTimelinePage({
   }
   const isAdmin = info?.role === "admin";
 
-  // ---- Umbrella recompute-on-read (identical logic to
-  // GET /api/projects/[id]/phases — see that route's doc comment) ----
+  await seedPhaseTemplateIfEmpty(supabase, id);
+
+  // ---- Cost-section binding refresh (link only — see doc comment
+  // above and GET /api/projects/[id]/phases's identical logic) ----
   const { data: sections } = await supabase.from("cost_sections").select("id,name").eq("project_id", id);
   const prelimSection = (sections ?? []).find((s) => s.name.trim().toLowerCase() === UMBRELLA_SECTION_NAME_MATCH);
 
@@ -58,50 +80,17 @@ export default async function ProjectTimelinePage({
 
   const { data: existingUmbrella } = await supabase
     .from("schedule_phases")
-    .select("id,start_date,end_date")
+    .select("id,cost_section_id")
     .eq("project_id", id)
     .eq("kind", "umbrella")
     .is("deleted_at", null)
     .maybeSingle();
 
-  if (prelimSection && sectionHasLines) {
-    const { data: ordinaryPhases } = await supabase
-      .from("schedule_phases")
-      .select("kind,start_date,end_date")
-      .eq("project_id", id)
-      .eq("kind", "phase")
-      .is("deleted_at", null);
-
-    const band = computeUmbrellaBand(
-      (ordinaryPhases ?? []).map((p) => ({ kind: "phase" as const, start_date: p.start_date, end_date: p.end_date }))
-    );
-
-    if (band) {
-      if (existingUmbrella) {
-        if (existingUmbrella.start_date !== band.start_date || existingUmbrella.end_date !== band.end_date) {
-          await supabase
-            .from("schedule_phases")
-            .update({ start_date: band.start_date, end_date: band.end_date, cost_section_id: prelimSection.id })
-            .eq("id", existingUmbrella.id);
-        }
-      } else {
-        await supabase.from("schedule_phases").insert({
-          project_id: id,
-          name: UMBRELLA_NAME,
-          start_date: band.start_date,
-          end_date: band.end_date,
-          color_key: "charcoal",
-          kind: "umbrella",
-          cost_section_id: prelimSection.id,
-          sort: -SORT_STEP,
-        });
-      }
+  if (existingUmbrella) {
+    const nextSectionId = prelimSection && sectionHasLines ? prelimSection.id : null;
+    if (existingUmbrella.cost_section_id !== nextSectionId) {
+      await supabase.from("schedule_phases").update({ cost_section_id: nextSectionId }).eq("id", existingUmbrella.id);
     }
-  } else if (existingUmbrella) {
-    await supabase
-      .from("schedule_phases")
-      .update({ deleted_at: new Date().toISOString() })
-      .eq("id", existingUmbrella.id);
   }
 
   // ---- Main query ----

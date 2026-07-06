@@ -1,58 +1,97 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { computeUmbrellaBand } from "@/lib/trade-visits";
-import type { CreatePhaseInput, PhasesListResponse, SchedulePhaseWithContact } from "@/types";
+import { namesMatch } from "@/lib/phase-template";
+import { seedPhaseTemplateIfEmpty } from "@/lib/phase-seed";
+import type { CreatePhaseInput } from "@/types";
 import type { SchedulePhaseWithVisits, TradeVisitWithContact, VisitContactSummary } from "@/lib/trade-visits";
+import type { SchedulePhaseWithBoardGroup } from "@/types/phase-fix-a";
 
 const VALID_COLORS = new Set(["sand", "charcoal", "teal", "amber"]);
 const SORT_STEP = 1000;
-const UMBRELLA_NAME = "Site Setup";
 const UMBRELLA_SECTION_NAME_MATCH = "preliminaries & site";
+const NEEDS_DATES_PREFIX = "[unification: needs dates]";
 
-type PhaseRow = SchedulePhaseWithContact & { kind: "phase" | "umbrella"; cost_section_id: string | null };
+type PhaseRow = SchedulePhaseWithVisits & { kind: "phase" | "umbrella"; cost_section_id: string | null };
 
 /**
  * GET /api/projects/[id]/phases
  * Team-visible (scheduling data, not financial). Response:
- * { phases: SchedulePhaseWithVisits[] }, non-deleted, sorted, each
- * annotated with a lightweight contact summary (batched lookup, not
- * N+1) AND its non-deleted trade_visits (also batched, each visit
- * carrying its own lightweight contact summary).
+ * { phases: SchedulePhaseWithVisits[] } (each row also carries
+ * board_group_id/needs_dates — see SchedulePhaseWithBoardGroup,
+ * types/phase-fix-a.ts), non-deleted, sorted, each annotated with a
+ * lightweight contact summary (batched lookup, not N+1) AND its
+ * non-deleted trade_visits (also batched, each visit carrying its own
+ * lightweight contact summary).
  *
- * Umbrella recompute-on-read (Phase 11A / Timeline v2):
- * BUILD-SPEC's "Site Setup" umbrella band represents whole-of-job
- * preliminaries that don't belong to any single phase — it is never
- * created at migration time (see migration 015's doc comment) and
- * never editable by the client directly (see PATCH /api/phases/[id]
- * below). Instead, every GET here:
- *   1. Looks up a cost_sections row for this project whose name
- *      case-insensitively matches "Preliminaries & Site" and has at
- *      least one non-deleted cost_lines row under it.
- *   2. If found: upserts (creates if missing, else updates dates on)
- *      a kind='umbrella' phase whose start_date/end_date are
- *      recomputed to span min(start)/max(end) of every ordinary
- *      'phase'-kind row (lib/trade-visits.ts's computeUmbrellaBand) —
- *      so the band always reflects the CURRENT schedule even as
- *      ordinary phases are added/moved/removed, without a trigger or
- *      cross-table FK coupling into the estimate schema.
- *   3. If not found (no such section, or the section exists but has
- *      zero live lines) and an umbrella phase currently exists for
- *      this project: soft-deletes it.
+ * ============================================================
+ * FIX ROUND A — Phase unification + shared seed path + umbrella fix.
+ * This replaces Phase 11A's original recompute-on-read umbrella logic
+ * wholesale. Read this doc comment in full before touching this file
+ * again; the invariant below is now the single source of truth for
+ * how schedule_phases and board_groups relate.
+ * ============================================================
  *
- * Tradeoff (deliberate): the umbrella band is only ever as fresh as
- * the last GET — if someone deletes every cost line in "Preliminaries
- * & Site" and never reopens the Timeline tab, the umbrella band stays
- * visible (stale) until the next read. This is preferred over the
- * alternative of a DB trigger or foreign-key-driven sync living in
- * this app's estimate module (app/api/estimate/**), which this agent
- * does not own and must not modify — recompute-on-read keeps 100% of
- * the umbrella logic inside this file's boundary.
+ * THE INVARIANT (BUILD-SPEC.md "Timeline vs Board roles feel clunky" /
+ * "UNIFY phases"): schedule_phases and board_groups are now ONE
+ * concept, rendered two ways (Timeline = phases with dates; Board
+ * Grouped-list = the same phases as task-group headers).
+ * schedule_phases.name is the single source of truth for a unified
+ * phase's label; board_groups.name is a synced MIRROR (kept for
+ * backward-compatible reads — see migration 023's column comment).
+ * board_groups.phase_id (migration 023) is the link. Henceforth:
+ *   - POST here (creating a phase) ALSO creates a linked board_groups
+ *     row (see POST below).
+ *   - POST /api/projects/[id]/board/groups (creating a group) ALSO
+ *     creates a linked schedule_phases row (see that route, updated
+ *     in this task).
+ *   - PATCH /api/phases/[id] renaming a phase ALSO updates the linked
+ *     board_groups.name (see that route).
+ *   - PATCH /api/board-groups/[id] renaming a group ALSO updates the
+ *     linked schedule_phases.name, when linked (see that route).
+ * A row on either side with no link (phase_id / linked board_groups
+ * row absent) is legacy/unreconciled data — migration 023's one-time
+ * backfill matched everything it could by case-insensitive name and
+ * created a schedule_phases row for anything left over, so this
+ * should be rare going forward, but the API layer never assumes every
+ * board_groups row has a phase_id.
  *
- * For the umbrella phase specifically, `cost_section_lines` is
- * attached: an array of line DESCRIPTIONS ONLY (no qty/rate/cost
- * fields) from the linked cost section, so the read-only info panel
- * can render without a second fetch and without ever touching
- * pricing data.
+ * SHARED SEED PATH (BUILD-SPEC.md "Pre-populated phases"): "phase
+ * template seeded on first Timeline OR Board-grouped visit (shared
+ * seed path)". Both this GET (first Timeline API load) and
+ * POST /api/projects/[id]/board/groups/seed (first Board Grouped-list
+ * visit) — plus app/(dashboard)/projects/[id]/timeline/page.tsx (first
+ * Timeline PAGE load) — now seed via the SAME function,
+ * lib/phase-seed.ts's seedPhaseTemplateIfEmpty(), which reads the
+ * editable app_settings('phase_template') row (falls back to
+ * FALLBACK_PHASE_TEMPLATE if that row is somehow missing). Seeding is
+ * idempotent per project: it only runs if the project currently has
+ * ZERO non-deleted schedule_phases rows, mirroring board_columns'
+ * existing "seed only if empty" pattern.
+ *
+ * UMBRELLA FIX (BUILD-SPEC.md "Site Setup umbrella span" item 3): the
+ * OLD behaviour recomputed the umbrella's start_date/end_date to
+ * min/max of every ordinary phase on EVERY GET — "auto-spans the
+ * project's first to last scheduled phase date" — which Phillip's
+ * testing flagged as wrong (it visually spanned the WHOLE project,
+ * not "the first few days of setup"). That recompute is REMOVED
+ * entirely. The umbrella phase is now an ordinary, user-editable
+ * schedule_phases row in every respect except:
+ *   (a) it is only ever CREATED by the shared seed path (never
+ *       directly POSTable — kind is still never client-settable, see
+ *       POST below), with its default span computed ONCE at seed time
+ *       by lib/phase-template.ts's computeUmbrellaSeedSpan()
+ *       (project's earliest phase start, or today if there are no
+ *       other phases yet, plus 4 days);
+ *   (b) its cost_section_id binding to "Preliminaries & Site" (for the
+ *       read-only content tooltip) is still refreshed on every GET —
+ *       that binding is a link, not a date, and the spec explicitly
+ *       keeps it ("still bound to Preliminaries & Site content");
+ *   (c) it still never gets trade_visits/trade emails (enforced by
+ *       POST /api/projects/[id]/visits' existing kind==='umbrella'
+ *       400, untouched by this task).
+ * PATCH /api/phases/[id] (updated in this task) no longer blocks
+ * name/start_date/end_date edits on umbrella-kind rows — they're
+ * editable like any normal phase now.
  */
 export async function GET(
   _request: NextRequest,
@@ -67,8 +106,10 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // ---- Umbrella recompute-on-read (runs before the main select so
-  // the select below picks up any just-created/updated/deleted row) ----
+  await seedPhaseTemplateIfEmpty(supabase, projectId);
+
+  // ---- Preliminaries & Site cost-section binding refresh (link
+  // only — NOT dates, see doc comment above) ----
   const { data: sections } = await supabase
     .from("cost_sections")
     .select("id,name")
@@ -90,57 +131,27 @@ export async function GET(
 
   const { data: existingUmbrella } = await supabase
     .from("schedule_phases")
-    .select("id,start_date,end_date")
+    .select("id,cost_section_id")
     .eq("project_id", projectId)
     .eq("kind", "umbrella")
     .is("deleted_at", null)
     .maybeSingle();
 
-  if (prelimSection && sectionHasLines) {
-    const { data: ordinaryPhases } = await supabase
-      .from("schedule_phases")
-      .select("kind,start_date,end_date")
-      .eq("project_id", projectId)
-      .eq("kind", "phase")
-      .is("deleted_at", null);
-
-    const band = computeUmbrellaBand(
-      (ordinaryPhases ?? []).map((p) => ({ kind: "phase" as const, start_date: p.start_date, end_date: p.end_date }))
-    );
-
-    if (band) {
-      if (existingUmbrella) {
-        if (existingUmbrella.start_date !== band.start_date || existingUmbrella.end_date !== band.end_date) {
-          await supabase
-            .from("schedule_phases")
-            .update({ start_date: band.start_date, end_date: band.end_date, cost_section_id: prelimSection.id })
-            .eq("id", existingUmbrella.id);
-        }
-      } else {
-        await supabase.from("schedule_phases").insert({
-          project_id: projectId,
-          name: UMBRELLA_NAME,
-          start_date: band.start_date,
-          end_date: band.end_date,
-          color_key: "charcoal",
-          kind: "umbrella",
-          cost_section_id: prelimSection.id,
-          sort: -SORT_STEP, // umbrella renders first/top — see components/gantt/UmbrellaBand.tsx
-        });
-      }
+  if (existingUmbrella) {
+    const nextSectionId = prelimSection && sectionHasLines ? prelimSection.id : null;
+    if (existingUmbrella.cost_section_id !== nextSectionId) {
+      await supabase
+        .from("schedule_phases")
+        .update({ cost_section_id: nextSectionId })
+        .eq("id", existingUmbrella.id);
     }
-    // band === null means there are zero ordinary phases to span yet —
-    // leave any existing umbrella row as-is rather than deleting it
-    // (it will pick up a correct band the moment a phase exists), and
-    // skip creating a new one (nothing to span).
-  } else if (existingUmbrella) {
-    // No qualifying cost section (missing, renamed, or zero live
-    // lines) — the umbrella no longer applies. Soft-delete.
-    await supabase
-      .from("schedule_phases")
-      .update({ deleted_at: new Date().toISOString() })
-      .eq("id", existingUmbrella.id);
   }
+  // Note: unlike the old behaviour, a missing/emptied "Preliminaries &
+  // Site" section no longer soft-deletes the umbrella phase — the
+  // umbrella is now real, user-owned scheduling data (it may have
+  // visits, notes, a moved date range the team set deliberately), not
+  // a purely-derived band. Losing its content binding just means the
+  // read-only tooltip has nothing to show; the phase itself stays.
 
   // ---- Main select ----
   const { data: phases, error } = await supabase
@@ -203,15 +214,22 @@ export async function GET(
     costSectionLines = (lines ?? []).map((l) => l.description);
   }
 
-  const result: SchedulePhaseWithVisits[] = phaseRows.map((p) => ({
+  // ---- board_group linkage (unification) ----
+  const { data: linkedGroups } = phaseIds.length
+    ? await supabase.from("board_groups").select("id,phase_id").in("phase_id", phaseIds)
+    : { data: [] as { id: string; phase_id: string | null }[] };
+  const groupIdByPhaseId = new Map((linkedGroups ?? []).map((g) => [g.phase_id as string, g.id]));
+
+  const result: (SchedulePhaseWithVisits & Partial<SchedulePhaseWithBoardGroup>)[] = phaseRows.map((p) => ({
     ...p,
     contact: p.contact_id ? contactById.get(p.contact_id) ?? null : null,
     visits: visitsByPhase.get(p.id) ?? [],
+    board_group_id: groupIdByPhaseId.get(p.id) ?? null,
+    needs_dates: !!p.notes && p.notes.startsWith(NEEDS_DATES_PREFIX),
     ...(p.kind === "umbrella" ? { cost_section_lines: costSectionLines } : {}),
   }));
 
-  const body: PhasesListResponse & { phases: SchedulePhaseWithVisits[] } = { phases: result };
-  return NextResponse.json(body);
+  return NextResponse.json({ phases: result });
 }
 
 /**
@@ -225,9 +243,19 @@ export async function GET(
  *
  * `kind` is NEVER accepted from the client — every phase created
  * through this route is kind='phase' (the DB column default).
- * Umbrella phases are exclusively system-maintained via the
- * recompute-on-read logic in GET above; there is deliberately no
- * client-facing way to create one directly.
+ * Umbrella phases are exclusively created by the shared seed path
+ * (lib/phase-seed.ts's seedPhaseTemplateIfEmpty); there is deliberately
+ * no client-facing way to create one directly.
+ *
+ * UNIFICATION INVARIANT (Fix Round A): every phase created here ALSO
+ * gets a linked board_groups row (same name, phase_id set) — unless a
+ * board_groups row with a case-insensitively matching name already
+ * exists and is unlinked, in which case THAT row is linked instead of
+ * creating a duplicate group (mirrors migration 023's one-time
+ * backfill matching rule via lib/phase-template.ts's namesMatch(), so
+ * a team member who already renamed/created a board group by hand
+ * before creating "the same" phase from the Timeline doesn't end up
+ * with two groups for one phase).
  */
 export async function POST(
   request: NextRequest,
@@ -288,12 +316,13 @@ export async function POST(
     .maybeSingle();
 
   const nextSort = (maxRow?.sort ?? -SORT_STEP) + SORT_STEP;
+  const trimmedName = body.name.trim();
 
   const { data: phase, error } = await supabase
     .from("schedule_phases")
     .insert({
       project_id: projectId,
-      name: body.name.trim(),
+      name: trimmedName,
       start_date: body.start_date,
       end_date: body.end_date,
       color_key: colorKey,
@@ -308,6 +337,33 @@ export async function POST(
   if (error) {
     const status = error.code === "23503" || error.code === "23514" ? 400 : 500;
     return NextResponse.json({ error: error.message }, { status });
+  }
+
+  // ---- Unification invariant: create/link the board_groups row ----
+  const { data: existingGroups } = await supabase
+    .from("board_groups")
+    .select("id,name,phase_id")
+    .eq("project_id", projectId)
+    .is("phase_id", null);
+
+  const matchingUnlinked = (existingGroups ?? []).find((g) => namesMatch(g.name, trimmedName));
+
+  if (matchingUnlinked) {
+    await supabase.from("board_groups").update({ phase_id: phase.id }).eq("id", matchingUnlinked.id);
+  } else {
+    const { data: maxGroupSort } = await supabase
+      .from("board_groups")
+      .select("sort")
+      .eq("project_id", projectId)
+      .order("sort", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    await supabase.from("board_groups").insert({
+      project_id: projectId,
+      name: trimmedName,
+      sort: (maxGroupSort?.sort ?? -SORT_STEP) + SORT_STEP,
+      phase_id: phase.id,
+    });
   }
 
   return NextResponse.json({ phase }, { status: 201 });

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { computeInsuranceStatus } from "@/lib/insurance";
 import type { PatchContactInput } from "@/types";
 
 const EDITABLE_FIELDS = new Set([
@@ -16,6 +17,13 @@ const EDITABLE_FIELDS = new Set([
 /**
  * GET /api/contacts/[id]
  * Team-visible. Response: { contact }.
+ *
+ * FIX ROUND A: the single-contact read also carries `insurance_status`
+ * (computed the same way GET /api/contacts's list route does — see
+ * that route's doc comment) so ContactDocumentsPanel.tsx can re-fetch
+ * just this one contact after an upload/delete/expiry-date edit and
+ * refresh its parent ContactsBrowser badge without re-fetching the
+ * whole list.
  */
 export async function GET(
   _request: NextRequest,
@@ -41,7 +49,18 @@ export async function GET(
     return NextResponse.json({ error: "Contact not found" }, { status: 404 });
   }
 
-  return NextResponse.json({ contact });
+  const { data: documents } = await supabase
+    .from("contact_documents")
+    .select("kind,expiry_date,deleted_at")
+    .eq("contact_id", id)
+    .is("deleted_at", null);
+
+  return NextResponse.json({
+    contact: {
+      ...contact,
+      insurance_status: computeInsuranceStatus(contact.category, documents ?? []),
+    },
+  });
 }
 
 /**

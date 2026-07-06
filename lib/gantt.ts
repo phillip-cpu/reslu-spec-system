@@ -154,12 +154,17 @@ export function visitGridPosition(visit: PhaseDateRange, grid: GanttGrid): GridP
 
 /**
  * Grid position for the umbrella band — spans the umbrella phase's
- * own (auto-maintained) start_date/end_date across the shared week
- * grid. The umbrella's start/end are kept in sync with min/max of
- * ordinary phases by the API layer (see lib/trade-visits.ts's
- * computeUmbrellaBand and app/api/projects/[id]/phases/route.ts's
- * recompute-on-read logic) — this function only does the grid-
- * coordinate mapping, identical to any other phase-shaped date range.
+ * own start_date/end_date across the shared week grid, identical to
+ * any other phase-shaped date range.
+ *
+ * Fix Round A ("Site Setup umbrella span" fix): the umbrella's dates
+ * are NO LONGER auto-recomputed to min/max of ordinary phases on every
+ * read (that behaviour was removed from lib/trade-visits.ts and
+ * app/api/projects/[id]/phases/route.ts — see lib/phase-template.ts's
+ * computeUmbrellaSeedSpan() for the new one-time seed default: earliest
+ * phase start, or today, + 4 days). The umbrella is now an ordinary,
+ * user-editable schedule_phases row; this function only does the
+ * grid-coordinate mapping, same as before.
  */
 export function umbrellaGridPosition(umbrella: PhaseDateRange, grid: GanttGrid): GridPosition {
   return phaseGridPosition(umbrella, grid);

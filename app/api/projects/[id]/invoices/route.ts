@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { ASSET_BUCKET, slugFilename } from "@/lib/storage";
+import { validateUploadBytes } from "@/lib/file-sniff";
 import type { CreateInvoiceResponse, Invoice, InvoiceMatchType, InvoiceStatus } from "@/types";
 
 export const runtime = "nodejs";
@@ -190,6 +191,16 @@ export async function POST(
     const filename = file.name || "invoice";
     const path = `projects/${projectId}/invoices/${Date.now()}-${slugFilename(filename)}`;
     const bytes = Buffer.from(await file.arrayBuffer());
+
+    // Fix round B — BUILD-SPEC.md §"Phase 14 follow-ups" point 5:
+    // magic-byte validation. Invoices are typically PDFs (occasionally
+    // an image of a receipt) — reject an obvious content/label
+    // mismatch before it ever reaches Storage.
+    const sniffResult = validateUploadBytes(bytes, file.type || "");
+    if (!sniffResult.ok) {
+      return NextResponse.json({ error: sniffResult.error }, { status: 400 });
+    }
+
     const { error: uploadError } = await supabase.storage
       .from(ASSET_BUCKET)
       .upload(path, bytes, {

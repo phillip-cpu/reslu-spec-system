@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import clsx from "clsx";
 import Image from "next/image";
+import Link from "next/link";
 import type { PortalItemWithFiles } from "@/app/portal/types";
 import { PortalSection } from "@/components/portal/PortalSection";
 import { SelectionsStepper } from "@/components/portal/SelectionsStepper";
@@ -17,12 +18,11 @@ const FILE_KIND_LABELS: Record<string, string> = {
   other: "Document",
 };
 
-type FilterKey = "awaiting" | "flagged" | "approved";
+type FilterKey = "awaiting" | "flagged";
 
 const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "awaiting", label: "Awaiting" },
   { key: "flagged", label: "Flagged" },
-  { key: "approved", label: "Approved" },
 ];
 
 function isOverdue(decisionNeededBy: string | null): boolean {
@@ -37,15 +37,31 @@ function formatDeadline(d: string): string {
 
 /**
  * Selections at scale (BUILD-SPEC.md §"Phase 11 — Client portal v2 +
- * trade confirmations" point 4, "must scale to 200+ items"):
+ * trade confirmations" point 4, "must scale to 200+ items"), refined by
+ * §"Portal selections separation" (fix round B):
  *
- *   "progress header ('132 of 204 approved' + bar), filter chips
- *   (Awaiting/Flagged/Approved), items in compact rows (thumb, code,
- *   name, tap to expand details/images) grouped by room with 'Approve
- *   all N in this room' bulk action (confirm dialog; writes individual
- *   approval_events per item ...), and a 'Review one by one' mode —
- *   full-screen single-item stepper ... ideal on mobile. Approving via
- *   bulk never includes flagged items."
+ *   "Main portal page shows ONLY 'Needs your decision' (+ flagged) in
+ *   the Selections section. Approved items move to a SEPARATE portal
+ *   page: /portal/[token]/selections ... reached via a compact link
+ *   card on the main page ('Your selections · 132 approved →') and the
+ *   portal nav. Approving an item removes it from the main list
+ *   immediately (optimistic) with a subtle 'moved to Your selections'
+ *   note."
+ *
+ * This SUPERSEDES the original Phase 11B "Approved" filter chip and
+ * "132 of 204 approved" progress framing — approved items are no
+ * longer rendered in this section's groups at all (they live on the
+ * separate gallery page instead), so the filter chips are now just
+ * Awaiting/Flagged, and the progress header becomes a plain "N still
+ * to review" count with a link to the approved gallery rather than a
+ * fraction bar (a bar implying "approved out of total" made less sense
+ * once approved items are no longer shown alongside it).
+ *
+ * Still: compact rows (thumb, code, name, tap to expand details/
+ * images) grouped by room with "Approve all N in this room" bulk
+ * action (confirm dialog; writes individual approval_events per item),
+ * and a "Review one by one" mode — full-screen single-item stepper.
+ * Approving via bulk never includes flagged items.
  *
  * Replaces the Week 3B/8B PortalBoard as the Selections section's
  * renderer (PortalBoard itself is left in place, untouched, in case
@@ -71,17 +87,30 @@ export function SelectionsSection({
   const [bulkBusy, setBulkBusy] = useState(false);
   const [stepperOpen, setStepperOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Item ids that were just approved this session — kept around only
+  // long enough to render the "moved to Your selections" note in place
+  // of the row (rather than removed instantly, which would be jarring)
+  // before disappearing on the next render pass/reload. Fix round B
+  // §"Portal selections separation": "Approving an item removes it
+  // from the main list immediately (optimistic) with a subtle 'moved
+  // to Your selections' note."
+  const [justApprovedIds, setJustApprovedIds] = useState<Set<string>>(new Set());
 
   const approvedCount = items.filter((i) => i.client_approved).length;
   const flaggedCount = items.filter((i) => i.client_flagged).length;
-  const total = items.length;
+  // "Needs your decision" — the main page's whole population per the
+  // fix round: never-decided items, PLUS flagged ones (flags are a
+  // form of "still needs attention", not a finished state). Approved
+  // items (unless still lingering in justApprovedIds for their
+  // one-render "moved" note) are excluded entirely.
+  const needsDecision = items.filter((i) => !i.client_approved || justApprovedIds.has(i.id));
+  const total = needsDecision.length;
 
   const filtered = useMemo(() => {
-    if (!filter) return items;
-    if (filter === "awaiting") return items.filter((i) => !i.client_approved && !i.client_flagged);
-    if (filter === "flagged") return items.filter((i) => i.client_flagged);
-    return items.filter((i) => i.client_approved);
-  }, [items, filter]);
+    if (!filter) return needsDecision;
+    if (filter === "awaiting") return needsDecision.filter((i) => !i.client_approved && !i.client_flagged);
+    return needsDecision.filter((i) => i.client_flagged);
+  }, [needsDecision, filter]);
 
   const groups = useMemo(() => {
     const map = new Map<string, PortalItemWithFiles[]>();
@@ -105,6 +134,21 @@ export function SelectionsSection({
         return match ? { ...it, ...match, files: it.files } : it;
       })
     );
+    // Any item that just became approved gets a brief "moved to Your
+    // selections" note instead of instantly vanishing from the list.
+    const newlyApproved = list.filter((u) => u.client_approved).map((u) => u.id);
+    if (newlyApproved.length > 0) {
+      setJustApprovedIds((cur) => new Set([...cur, ...newlyApproved]));
+    }
+  }
+
+  function dismissApprovedNote(id: string) {
+    setJustApprovedIds((cur) => {
+      const next = new Set(cur);
+      next.delete(id);
+      return next;
+    });
+    setExpandedId((cur) => (cur === id ? null : cur));
   }
 
   async function act(id: string, action: "approve" | "flag", note?: string) {
@@ -165,60 +209,84 @@ export function SelectionsSection({
 
   return (
     <PortalSection id="selections" title="Selections">
-      {/* Progress header + bar */}
+      {/* Compact link card to the separate "Your selections" gallery —
+          BUILD-SPEC.md §"Portal selections separation": "a compact link
+          card on the main page ('Your selections · 132 approved →')". */}
+      {approvedCount > 0 && (
+        <Link
+          href={`/portal/${token}/selections`}
+          className="mb-4 flex items-center justify-between border border-sand bg-offwhite px-4 py-3 transition-colors hover:bg-cream"
+        >
+          <span className="text-body text-nearblack">
+            Your selections · {approvedCount} approved
+          </span>
+          <span className="label-caps !text-sand">View →</span>
+        </Link>
+      )}
+
+      {/* Progress header */}
       <div className="mb-4">
         <div className="flex items-baseline justify-between">
           <p className="text-subhead text-nearblack">
-            {approvedCount} of {total} approved
+            {total} item{total === 1 ? "" : "s"} need{total === 1 ? "s" : ""} your decision
           </p>
-          <button
-            type="button"
-            onClick={() => setStepperOpen(true)}
-            className="label-caps !text-sand hover:!text-nearblack"
-          >
-            Review one by one
-          </button>
-        </div>
-        <div className="mt-2 h-1.5 w-full bg-[#e5e0d6]">
-          <div
-            className="h-1.5 bg-sand transition-all"
-            style={{ width: `${total > 0 ? (approvedCount / total) * 100 : 0}%` }}
-          />
+          {total > 0 && (
+            <button
+              type="button"
+              onClick={() => setStepperOpen(true)}
+              className="label-caps !text-sand hover:!text-nearblack"
+            >
+              Review one by one
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Filter chips */}
-      <div className="mb-6 flex flex-wrap gap-2">
-        <button
-          type="button"
-          onClick={() => setFilter(null)}
-          className={clsx(
-            "label-caps border px-3 py-1.5",
-            !filter ? "border-nearblack !text-nearblack" : "border-[#dcd6cc] !text-charcoal/50 hover:!text-nearblack"
-          )}
-        >
-          All ({total})
-        </button>
-        {FILTERS.map((f) => {
-          const count = f.key === "awaiting" ? total - approvedCount - flaggedCount : f.key === "flagged" ? flaggedCount : approvedCount;
-          return (
-            <button
-              key={f.key}
-              type="button"
-              onClick={() => setFilter(f.key)}
-              className={clsx(
-                "label-caps border px-3 py-1.5",
-                filter === f.key ? "border-nearblack !text-nearblack" : "border-[#dcd6cc] !text-charcoal/50 hover:!text-nearblack"
-              )}
-            >
-              {f.label} ({count})
-            </button>
-          );
-        })}
-      </div>
+      {total > 0 && (
+        <div className="mb-6 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setFilter(null)}
+            className={clsx(
+              "label-caps border px-3 py-1.5",
+              !filter ? "border-nearblack !text-nearblack" : "border-[#dcd6cc] !text-charcoal/50 hover:!text-nearblack"
+            )}
+          >
+            All ({total})
+          </button>
+          {FILTERS.map((f) => {
+            const count = f.key === "awaiting" ? total - flaggedCount : flaggedCount;
+            return (
+              <button
+                key={f.key}
+                type="button"
+                onClick={() => setFilter(f.key)}
+                className={clsx(
+                  "label-caps border px-3 py-1.5",
+                  filter === f.key ? "border-nearblack !text-nearblack" : "border-[#dcd6cc] !text-charcoal/50 hover:!text-nearblack"
+                )}
+              >
+                {f.label} ({count})
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {error && (
         <p className="mb-4 border border-red-700/40 bg-red-50 px-3 py-2 text-body text-red-700">{error}</p>
+      )}
+
+      {total === 0 && (
+        <div className="border border-dashed border-[#c9c2b4] p-8 text-center">
+          <p className="text-body text-charcoal/60">
+            Nothing waiting on you right now — nice work.{" "}
+            <Link href={`/portal/${token}/selections`} className="underline decoration-sand underline-offset-2 hover:decoration-nearblack">
+              See everything you&apos;ve approved
+            </Link>
+            .
+          </p>
+        </div>
       )}
 
       <div className="space-y-8">
@@ -269,16 +337,65 @@ export function SelectionsSection({
                 {groupItems.map((item) => {
                   const expanded = expandedId === item.id;
                   const overdue = isOverdue(item.decision_needed_by);
+                  const justApproved = item.client_approved && justApprovedIds.has(item.id);
+
+                  // Fix round B: an item that was just approved this
+                  // session renders a subtle "moved to Your selections"
+                  // note in place of its normal compact row/expand
+                  // interaction — it's about to disappear from this
+                  // list on the next reload, this is its one beat of
+                  // visible confirmation first.
+                  if (justApproved) {
+                    return (
+                      <article key={item.id} className="border border-sand bg-offwhite p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            {item.selected_image_url ? (
+                              <div className="relative h-10 w-10 shrink-0 overflow-hidden bg-cream">
+                                <Image
+                                  src={renditionUrl(item.selected_image_url, { width: RENDITION_SIZES.thumb }) ?? item.selected_image_url}
+                                  alt=""
+                                  fill
+                                  sizes="40px"
+                                  className="object-cover"
+                                />
+                              </div>
+                            ) : (
+                              <div className="h-10 w-10 shrink-0 bg-cream" />
+                            )}
+                            <div>
+                              <span className="label-caps mr-2">{item.item_code}</span>
+                              <span className="text-body text-nearblack">{item.name}</span>
+                              <p className="mt-0.5 text-caption !text-sand">
+                                Approved — moved to{" "}
+                                <Link href={`/portal/${token}/selections`} className="underline decoration-sand underline-offset-2 hover:decoration-nearblack">
+                                  Your selections
+                                </Link>
+                              </p>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => dismissApprovedNote(item.id)}
+                            className="shrink-0 text-caption text-charcoal/40 hover:text-nearblack"
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  }
+
                   return (
                     <article
                       key={item.id}
                       className={clsx(
                         "border",
-                        item.client_approved
-                          ? "border-sand bg-offwhite"
-                          : item.client_flagged
-                            ? "border-red-700/40 bg-red-50/40"
-                            : "border-[#dcd6cc] bg-nearwhite"
+                        // Reaching this branch means client_approved is
+                        // false (the justApproved early-return above
+                        // handles the only case it could be true) — so
+                        // only the flagged/plain distinction applies.
+                        item.client_flagged ? "border-red-700/40 bg-red-50/40" : "border-[#dcd6cc] bg-nearwhite"
                       )}
                     >
                       {/* Compact row — thumb, code, name, tap to expand */}
@@ -359,16 +476,20 @@ export function SelectionsSection({
                               />
                             ) : (
                               <div className="flex items-center gap-2">
+                                {/* This branch of the article only ever
+                                    renders for NOT-yet-approved items —
+                                    a just-approved item takes the
+                                    dedicated "moved to Your selections"
+                                    branch above instead — so this
+                                    button is always in its plain
+                                    "Approve" state here. */}
                                 <button
                                   type="button"
                                   disabled={busyId === item.id}
                                   onClick={() => act(item.id, "approve")}
-                                  className={clsx(
-                                    "px-4 py-2 text-subhead transition-colors disabled:opacity-60",
-                                    item.client_approved ? "bg-sand text-white" : "bg-nearblack text-white hover:bg-charcoal"
-                                  )}
+                                  className="bg-nearblack px-4 py-2 text-subhead text-white transition-colors hover:bg-charcoal disabled:opacity-60"
                                 >
-                                  {item.client_approved ? "Approved ✓" : "Approve"}
+                                  Approve
                                 </button>
                                 <button
                                   type="button"

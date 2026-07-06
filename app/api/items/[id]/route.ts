@@ -73,6 +73,7 @@ const EDITABLE_FIELDS = new Set([
   // Pricing & Procurement view (accepted here; never surfaced on portal/PDF)
   "price_rrp",
   "price_trade",
+  "trade_price_received_at",
   "markup_pct",
   "lead_time_weeks",
   "ordered_at",
@@ -96,7 +97,7 @@ const EDITABLE_FIELDS = new Set([
  * price, not the negotiated trade cost (same distinction the library
  * API draws).
  */
-const FINANCIAL_FIELDS = new Set(["price_trade", "markup_pct"]);
+const FINANCIAL_FIELDS = new Set(["price_trade", "markup_pct", "trade_price_received_at"]);
 
 function stripFinancials<T extends Record<string, unknown>>(item: T): T {
   const clone = { ...item };

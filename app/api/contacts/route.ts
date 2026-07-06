@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { computeInsuranceStatus } from "@/lib/insurance";
 import type { CreateContactInput } from "@/types";
 
 /**
@@ -22,6 +23,17 @@ import type { CreateContactInput } from "@/types";
  * (or DEFAULT_LIMIT needs raising) before it silently truncates.
  * `total` (exact count) is returned precisely so a consumer CAN notice
  * "total > contacts.length" and know more exists.
+ *
+ * FIX ROUND A — Trade insurance tracker: every returned contact now
+ * also carries `insurance_status` (computed via lib/insurance.ts's
+ * computeInsuranceStatus() from that contact's non-deleted
+ * contact_documents — migration 023) and `document_count` (how many
+ * non-deleted documents are on file, for the badge/expand affordance —
+ * see components/contacts/ContactsBrowser.tsx). Batched (one extra
+ * query for every contact_document row across the whole page of
+ * contacts, not one query per contact) — same "not N+1" discipline as
+ * every other per-row annotation in this codebase (contact summaries
+ * on phases/visits/board tasks, etc.).
  */
 const DEFAULT_LIMIT = 500;
 const MAX_LIMIT = 2000;
@@ -70,7 +82,40 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ contacts: data ?? [], total: count ?? data?.length ?? 0, limit, offset });
+  const contacts = data ?? [];
+  const contactIds = contacts.map((c) => c.id);
+
+  type DocRow = {
+    contact_id: string;
+    kind: "public_liability" | "workers_comp" | "licence" | "other";
+    expiry_date: string | null;
+    deleted_at: string | null;
+  };
+  const { data: documents } = contactIds.length
+    ? await supabase
+        .from("contact_documents")
+        .select("contact_id,kind,expiry_date,deleted_at")
+        .in("contact_id", contactIds)
+        .is("deleted_at", null)
+    : { data: [] as DocRow[] };
+
+  const docsByContact = new Map<string, DocRow[]>();
+  for (const d of (documents ?? []) as DocRow[]) {
+    const list = docsByContact.get(d.contact_id) ?? [];
+    list.push(d);
+    docsByContact.set(d.contact_id, list);
+  }
+
+  const contactsWithInsurance = contacts.map((c) => {
+    const docs = docsByContact.get(c.id) ?? [];
+    return {
+      ...c,
+      insurance_status: computeInsuranceStatus(c.category, docs),
+      document_count: docs.length,
+    };
+  });
+
+  return NextResponse.json({ contacts: contactsWithInsurance, total: count ?? contacts.length, limit, offset });
 }
 
 /**

@@ -1,17 +1,20 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import clsx from "clsx";
 
 const NAV_ITEMS = [
+  { label: "My Work", href: "/my-work", badgeKey: "my_work_due" as const },
   { label: "Projects", href: "/" },
   // Phase 12a-B — BUILD-SPEC.md §"Phase 12a — My Work": "one page that
   // answers 'what do I do today'". Team-visible (every signed-in user
   // has their own feed; the admin-only lead-follow-ups source is gated
   // inside GET /api/my-work itself, not at this nav/page level).
-  { label: "My Work", href: "/my-work" },
+  // Fix round B: carries a badge key ("my_work_due") — see
+  // BUILD-SPEC.md §"Sidebar notification badges".
   // Phase 13 — BUILD-SPEC.md §"13 Office": global Office board (not
   // per-project) — business housekeeping, department groups. Placed
   // right after My Work (both are "what needs doing" surfaces, above
@@ -24,13 +27,73 @@ const NAV_ITEMS = [
   // Week 10: admin-only (leads are "admin-only, financial-adjacent"
   // per BUILD-SPEC.md) — filtered out below for non-admins. This is
   // the first NAV_ITEMS entry that needs role-awareness; every prior
-  // item here is team-visible.
-  { label: "Leads", href: "/leads", adminOnly: true },
+  // item here is team-visible. Fix round B: badge key "leads_followups"
+  // (also admin-gated server-side — GET /api/badges returns 0 for
+  // non-admins regardless, this is belt-and-braces with the nav filter).
+  { label: "Leads", href: "/leads", adminOnly: true, badgeKey: "leads_followups" as const },
   { label: "Settings", href: "/settings" },
 ];
 
+type BadgeCounts = { leads_followups: number; my_work_due: number };
+
+const POLL_MS = 3 * 60 * 1000; // ~3 min, per BUILD-SPEC.md §"Sidebar notification badges"
+
+/**
+ * Small red count pill — hidden entirely at 0 (BUILD-SPEC.md: "Zero
+ * when none (badge hidden)"). Sharp corners, no border-radius, per the
+ * brand guide.
+ */
+function BadgePill({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <span className="ml-auto flex h-4 min-w-[1rem] shrink-0 items-center justify-center bg-red-700 px-1 text-[10px] font-semibold leading-none text-white">
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
+/**
+ * Fix round B — BUILD-SPEC.md §"Sidebar notification badges": "Sidebar
+ * entries gain count badges (small red pill, right-aligned): Leads =
+ * follow-ups due count (admin only); My Work = my items due today +
+ * overdue. Lightweight GET /api/badges endpoint returning both counts
+ * in one call; sidebar polls every ~3 min + refreshes on navigation."
+ *
+ * Sidebar was already a client component (usePathname), so the badge
+ * state/polling lives directly in it rather than needing a separate
+ * client subcomponent wrapper.
+ */
 export function Sidebar({ isAdmin = false }: { isAdmin?: boolean }) {
   const pathname = usePathname();
+  const [badges, setBadges] = useState<BadgeCounts>({ leads_followups: 0, my_work_due: 0 });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadBadges() {
+      try {
+        const res = await fetch("/api/badges");
+        if (!res.ok || cancelled) return;
+        const body = await res.json();
+        if (cancelled) return;
+        setBadges({
+          leads_followups: Number(body.leads_followups) || 0,
+          my_work_due: Number(body.my_work_due) || 0,
+        });
+      } catch {
+        // Non-fatal — badges just stay at their last known value.
+      }
+    }
+
+    loadBadges();
+    const interval = setInterval(loadBadges, POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+    // Refreshes on every route change (pathname dependency) in addition
+    // to the ~3 min poll, per the build spec.
+  }, [pathname]);
 
   return (
     <aside className="w-56 shrink-0 bg-nearblack text-white min-h-screen flex flex-col">
@@ -52,16 +115,18 @@ export function Sidebar({ isAdmin = false }: { isAdmin?: boolean }) {
         {NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin).map((item) => {
           const active =
             item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
+          const badgeCount = item.badgeKey ? badges[item.badgeKey] : 0;
           return (
             <Link
               key={item.href}
               href={item.href}
               className={clsx(
-                "block px-3 py-2.5 text-subhead transition-colors",
+                "flex items-center gap-2 px-3 py-2.5 text-subhead transition-colors",
                 active ? "bg-charcoal text-white" : "text-white/70 hover:text-white hover:bg-charcoal/60"
               )}
             >
-              {item.label}
+              <span>{item.label}</span>
+              <BadgePill count={badgeCount} />
             </Link>
           );
         })}

@@ -89,6 +89,17 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 });
 
 let cachedAccessToken = null;
+// Fix round B — BUILD-SPEC.md §"Phase 14 follow-ups" point 5 (audit
+// backlog, deferred from 14B): "MCP 24h re-auth". Tracks when the
+// cached token was minted so getAccessToken() below can force a fresh
+// sign-in once it's stale, independent of the existing 401-triggered
+// re-auth (that one only fires reactively, AFTER the API has already
+// rejected a request with a now-invalid token; this is a proactive
+// cap so a long-lived MCP server process — Aria's Mac mini runs this
+// continuously, not per-request — never holds onto the same access
+// token indefinitely just because it happens to keep working).
+let cachedAccessTokenAt = null;
+const TOKEN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 async function signIn() {
   const { data, error } = await supabase.auth.signInWithPassword({
@@ -101,11 +112,17 @@ async function signIn() {
     );
   }
   cachedAccessToken = data.session.access_token;
+  cachedAccessTokenAt = Date.now();
   return cachedAccessToken;
 }
 
 async function getAccessToken() {
-  if (cachedAccessToken) return cachedAccessToken;
+  const isStale = cachedAccessTokenAt !== null && Date.now() - cachedAccessTokenAt >= TOKEN_MAX_AGE_MS;
+  if (cachedAccessToken && !isStale) return cachedAccessToken;
+  if (isStale) {
+    cachedAccessToken = null;
+    cachedAccessTokenAt = null;
+  }
   return signIn();
 }
 
@@ -137,8 +154,12 @@ async function apiFetch(path, options = {}) {
   if (res.status === 401) {
     // Token likely expired/revoked — clear cache, re-auth once, retry
     // the exact same request once. If it 401s again, give up rather
-    // than looping.
+    // than looping. Clears cachedAccessTokenAt alongside the token
+    // itself so the two stay consistent (getAccessToken()'s 24h
+    // staleness check reads cachedAccessTokenAt, not just presence of
+    // cachedAccessToken).
     cachedAccessToken = null;
+    cachedAccessTokenAt = null;
     res = await attempt();
   }
 
@@ -245,6 +266,57 @@ const TOOLS = [
         method: "PATCH",
         body: JSON.stringify({ status }),
       }),
+  },
+  {
+    name: "update_item_pricing",
+    description:
+      "Record a QUOTED trade price on a spec register item (admin-gated — Aria's account qualifies). Writes price_trade + stamps trade_price_received_at today, and appends the quote reference to the item's notes for the audit trail. GUARDRAILS by design: never writes price_rrp (scraper/manual territory), never writes markup or client pricing (Phillip's), and never records ACTUAL paid amounts — actuals flow exclusively through the invoice queue (create_invoice → human approval). Quantity/supplier updates ride along only when the quote changes them.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        item_id: { type: "string", description: "Item UUID" },
+        unit_price_ex_gst: {
+          type: "number",
+          description: "Quoted trade price per unit, ex GST",
+        },
+        quantity: {
+          type: "number",
+          description: "Optional — only if the quote changes the quantity",
+        },
+        supplier: {
+          type: "string",
+          description: "Optional — only if quoting supplier differs from the spec",
+        },
+        notes: {
+          type: "string",
+          description:
+            "Quote reference, expiry, conditions — e.g. 'Demor Q-10718, valid 30 days'. Strongly encouraged.",
+        },
+      },
+      required: ["item_id", "unit_price_ex_gst"],
+      additionalProperties: false,
+    },
+    handler: async ({ item_id, unit_price_ex_gst, quantity, supplier, notes } = {}) => {
+      const patch = {
+        price_trade: unit_price_ex_gst,
+        trade_price_received_at: new Date().toISOString().slice(0, 10),
+      };
+      if (typeof quantity === "number") patch.quantity = quantity;
+      if (supplier) patch.supplier = supplier;
+      const result = await apiFetch(`/api/items/${item_id}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      });
+      if (notes) {
+        // Audit trail: quote reference lands as an attributed item note,
+        // not a silent field overwrite.
+        await apiFetch(`/api/items/${item_id}/notes`, {
+          method: "POST",
+          body: JSON.stringify({ text: `Trade price recorded: $${unit_price_ex_gst} ex GST — ${notes}` }),
+        });
+      }
+      return result;
+    },
   },
   {
     name: "list_leads",

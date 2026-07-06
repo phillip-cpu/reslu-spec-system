@@ -28,10 +28,16 @@ import type {
  *      report for the one-time migration note; only the FIRST-EVER
  *      seed (zero existing columns) uses the new order, which is the
  *      unambiguous, safe half of that spec sentence to automate.
- *   3. Phase groups (board_groups, seeded from DEFAULT_PHASE_GROUPS on
- *      first visit to the Grouped list view specifically — see POST
- *      .../board/groups/seed below) are returned alongside columns so
- *      the client can render either view from one fetch.
+ *   3. Phase groups (board_groups, seeded from the shared, editable
+ *      phase_template — see lib/phase-seed.ts's
+ *      seedPhaseTemplateIfEmpty() — on first visit to EITHER the
+ *      Timeline tab or the Grouped list view specifically, per Fix
+ *      Round A's "shared seed path" unification; triggered here via
+ *      POST .../board/groups/seed) are returned alongside columns so
+ *      the client can render either view from one fetch. Fix Round A
+ *      additionally: every group now carries `phase_id` (BoardGroup's
+ *      own field, types/phase-12a-b.ts) since it's included by this
+ *      route's existing `select("*")` — no query change needed here.
  *
  * Response shape: BoardV2Response — { columns, groups, team }. `team`
  * is every non-deleted task's superset of possible assignees is NOT
