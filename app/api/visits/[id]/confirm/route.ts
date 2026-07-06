@@ -65,7 +65,7 @@ export async function POST(
   if (existing.contact_id) {
     const { data: contact } = await supabase
       .from("contacts")
-      .select("category")
+      .select("insurance_required")
       .eq("id", existing.contact_id)
       .maybeSingle();
     const { data: documents } = await supabase
@@ -73,7 +73,7 @@ export async function POST(
       .select("kind,expiry_date,deleted_at")
       .eq("contact_id", existing.contact_id)
       .is("deleted_at", null);
-    const status = computeInsuranceStatus(contact?.category ?? null, documents ?? []);
+    const status = computeInsuranceStatus(contact?.insurance_required ?? false, documents ?? []);
     insurance_warning = insuranceWarningForBooking(status);
   }
 

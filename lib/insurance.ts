@@ -1,17 +1,22 @@
 // ============================================================
-// RESLU Spec System — Trade insurance compliance (Fix Round A)
+// RESLU Spec System — Trade insurance compliance
 // Pure, dependency-free domain logic — no Supabase/Next imports, plain
 // data in/out — mirroring lib/leads.ts and lib/trade-visits.ts's exact
 // shape so the "expiring/missing/expired" thresholds can never drift
 // between the API layer, the needs-attention feed, and the UI badge.
 //
-// BUILD-SPEC.md "Trade insurance compliance (Aria-managed)": "migration
-// 023: contact_documents (contact_id, kind: public_liability|
-// workers_comp|licence|other, storage_path, expiry_date, verified_at) +
-// contacts.insurance_status computed (current/expiring <=30d/expired/
-// missing) ... 'missing' only for contacts with category in a
-// trades-list constant, not suppliers ... block-warning when booking a
-// trade with expired insurance on trade_visits."
+// Quick items round (Phillip, 6 July 2026), item 1 — "Insurance
+// required flag": REPLACES the former category-heuristic guess (the
+// TRADE_CATEGORIES allow-list + isTradeCategory() this file used to
+// export — Fix Round A) with a single explicit column,
+// contacts.insurance_required (migration 026), ticked per contact from
+// components/contacts/ContactsBrowser.tsx's expand panel. Single
+// source of truth going forward: a contact is only ever "missing" when
+// insurance_required = true AND it has no current qualifying document
+// on file. Migration 026's one-time backfill seeded this column from
+// exactly the category list this file used to hardcode (see that
+// migration's own comment for the literal copy) — that list is not
+// reproduced here any more; the column is the only thing read now.
 // ============================================================
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -48,77 +53,6 @@ export interface PatchContactDocumentInput {
 
 export type InsuranceStatus = "current" | "expiring" | "expired" | "missing";
 
-/**
- * Categories treated as "trades" for the purpose of computing
- * insurance status — BUILD-SPEC.md: "'missing' only for contacts with
- * category in a trades-list constant, not suppliers". contacts.category
- * is free text (migration 013 — "free text w/ suggestions", no enum),
- * so this is necessarily a best-effort, case-insensitive match against
- * the categories this studio actually uses today (seeded from the
- * Monday address-book export categories named in BUILD-SPEC.md's
- * Address Book section: "Appliances, Carpenters, Architect, Tapware &
- * Sanitaryware, etc."). A contact whose category is a supplier/
- * product category (Appliances, Tapware & Sanitaryware, etc.) or has
- * no category at all is NEVER shown "missing" — only "current",
- * "expiring", or "expired" can apply if such a contact happens to have
- * uploaded documents anyway (nothing stops a supplier having a
- * licence on file), but the absence of any document is not flagged as
- * a compliance gap for them, since insurance/licence tracking is a
- * trades concern, not a supplier one.
- *
- * This list is intentionally an allow-list of on-site trade
- * categories, not a deny-list of supplier categories, so a brand-new
- * category typed into the free-text field defaults to "not a trade"
- * (no missing-insurance nag) until a human adds it here — a false
- * negative (a real trade not flagged) is a much smaller annoyance than
- * a false positive (every new supplier category nagging for
- * insurance).
- */
-export const TRADE_CATEGORIES = [
-  "carpenters",
-  "carpentry",
-  "electrical",
-  "electrician",
-  "electricians",
-  "plumbing",
-  "plumber",
-  "plumbers",
-  "tiling",
-  "tiler",
-  "tilers",
-  "painting",
-  "painter",
-  "painters",
-  "plastering",
-  "plasterer",
-  "waterproofing",
-  "demolition",
-  "carpet & flooring",
-  "flooring",
-  "cabinetry",
-  "cabinet makers",
-  "joinery",
-  "concreting",
-  "bricklaying",
-  "roofing",
-  "landscaping",
-  "glazing",
-  "rendering",
-  "insulation",
-  "hvac",
-  "air conditioning",
-  "scaffolding",
-  "site management",
-  "builder",
-  "building",
-] as const;
-
-/** Case-insensitive, trimmed check against TRADE_CATEGORIES. */
-export function isTradeCategory(category: string | null): boolean {
-  if (!category) return false;
-  return (TRADE_CATEGORIES as readonly string[]).includes(category.trim().toLowerCase());
-}
-
 function parseDateOnly(s: string): Date {
   return new Date(s + "T00:00:00Z");
 }
@@ -128,13 +62,14 @@ function todayUtcMidnight(now: Date): Date {
 }
 
 /**
- * Computes a single contact's insurance_status from their non-deleted
- * contact_documents. Only `public_liability` and `workers_comp`
- * document kinds count towards compliance (a `licence` or `other`
- * document expiring doesn't make a trade "uninsured" — those two
- * kinds are the ones this feature is named for and the ones
- * trade_visits booking warns against). Rule, most-severe-wins across
- * every qualifying document:
+ * Computes a single contact's insurance_status from their
+ * `insurance_required` flag (contacts.insurance_required, migration
+ * 026) and their non-deleted contact_documents. Only `public_liability`
+ * and `workers_comp` document kinds count towards compliance (a
+ * `licence` or `other` document expiring doesn't make a trade
+ * "uninsured" — those two kinds are the ones this feature is named for
+ * and the ones trade_visits booking warns against). Rule,
+ * most-severe-wins across every qualifying document:
  *
  * - expired: at least one qualifying document's expiry_date has
  *   already passed.
@@ -145,13 +80,14 @@ function todayUtcMidnight(now: Date): Date {
  *   — treated as current, not expiring/expired, since an
  *   indefinite/no-expiry document — e.g. a perpetual licence — isn't
  *   a compliance gap).
- * - missing: zero qualifying documents AND isTradeCategory(category)
- *   — per BUILD-SPEC "'missing' only for contacts with category in a
- *   trades-list constant, not suppliers". A non-trade contact with
- *   zero qualifying documents returns "current" (nothing to flag).
+ * - missing: zero qualifying documents AND insuranceRequired is true —
+ *   per this round's brief: "insurance_required = true + no current
+ *   docs = 'missing'; false = null/no badge". A contact with
+ *   insurance_required = false and zero qualifying documents returns
+ *   "current" (nothing to flag, no badge rendered).
  */
 export function computeInsuranceStatus(
-  category: string | null,
+  insuranceRequired: boolean,
   documents: Pick<ContactDocument, "kind" | "expiry_date" | "deleted_at">[],
   now: Date = new Date()
 ): InsuranceStatus {
@@ -160,7 +96,7 @@ export function computeInsuranceStatus(
   );
 
   if (qualifying.length === 0) {
-    return isTradeCategory(category) ? "missing" : "current";
+    return insuranceRequired ? "missing" : "current";
   }
 
   const today = todayUtcMidnight(now);
@@ -177,20 +113,20 @@ export function computeInsuranceStatus(
   return anyExpiring ? "expiring" : "current";
 }
 
-/** A contacts row's insurance status plus the underlying documents used to derive it — GET /api/contacts response shape (this task's addition) and the needs-attention feed's input. */
+/** A contacts row's insurance status plus the underlying documents used to derive it — GET /api/contacts response shape and the needs-attention feed's input. */
 export interface ContactWithInsurance {
   id: string;
   company: string;
-  category: string | null;
+  insurance_required: boolean;
   insurance_status: InsuranceStatus;
 }
 
 export interface InsuranceAttentionGroups {
-  /** insurance_status === 'expired' among trade-category contacts. */
+  /** insurance_status === 'expired' among insurance_required contacts. */
   expired: ContactWithInsurance[];
-  /** insurance_status === 'expiring' among trade-category contacts. */
+  /** insurance_status === 'expiring' among insurance_required contacts. */
   expiring: ContactWithInsurance[];
-  /** insurance_status === 'missing' — always trade-category by computeInsuranceStatus's own definition. */
+  /** insurance_status === 'missing' — always insurance_required by computeInsuranceStatus's own definition. */
   missing: ContactWithInsurance[];
 }
 
@@ -201,10 +137,10 @@ export interface InsuranceAttentionGroups {
  * /api/visits/attention's existing pattern) and GET /api/my-work
  * (folded in additively as MyWorkItemKind 'insurance_expiring' — see
  * app/api/my-work/route.ts's doc comment for exactly how). Only
- * trade-category contacts are ever included (non-trade contacts are
- * always "current" per computeInsuranceStatus, so filtering by status
- * alone already excludes them; the explicit isTradeCategory guard here
- * is defence-in-depth, not load-bearing).
+ * insurance_required contacts are ever included (a contact with
+ * insurance_required = false is always "current" per
+ * computeInsuranceStatus, so filtering by status alone already excludes
+ * it; the explicit guard here is defence-in-depth, not load-bearing).
  */
 export function computeInsuranceAttention(
   contacts: ContactWithInsurance[]
@@ -214,10 +150,11 @@ export function computeInsuranceAttention(
   const missing: ContactWithInsurance[] = [];
 
   for (const c of contacts) {
-    if (!isTradeCategory(c.category) && c.insurance_status !== "current") {
+    if (!c.insurance_required && c.insurance_status !== "current") {
       // Defensive — should never happen given computeInsuranceStatus's
-      // own contract, but a non-trade contact is never surfaced here
-      // regardless of what status ends up on the row.
+      // own contract, but a contact with insurance_required = false is
+      // never surfaced here regardless of what status ends up on the
+      // row.
       continue;
     }
     if (c.insurance_status === "expired") expired.push(c);

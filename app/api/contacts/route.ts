@@ -26,14 +26,15 @@ import type { CreateContactInput } from "@/types";
  *
  * FIX ROUND A — Trade insurance tracker: every returned contact now
  * also carries `insurance_status` (computed via lib/insurance.ts's
- * computeInsuranceStatus() from that contact's non-deleted
- * contact_documents — migration 023) and `document_count` (how many
- * non-deleted documents are on file, for the badge/expand affordance —
- * see components/contacts/ContactsBrowser.tsx). Batched (one extra
- * query for every contact_document row across the whole page of
- * contacts, not one query per contact) — same "not N+1" discipline as
- * every other per-row annotation in this codebase (contact summaries
- * on phases/visits/board tasks, etc.).
+ * computeInsuranceStatus() from that contact's `insurance_required`
+ * flag — migration 026, Quick items round 6 July 2026 — and its
+ * non-deleted contact_documents — migration 023) and `document_count`
+ * (how many non-deleted documents are on file, for the badge/expand
+ * affordance — see components/contacts/ContactsBrowser.tsx). Batched
+ * (one extra query for every contact_document row across the whole
+ * page of contacts, not one query per contact) — same "not N+1"
+ * discipline as every other per-row annotation in this codebase
+ * (contact summaries on phases/visits/board tasks, etc.).
  */
 const DEFAULT_LIMIT = 500;
 const MAX_LIMIT = 2000;
@@ -110,7 +111,7 @@ export async function GET(request: NextRequest) {
     const docs = docsByContact.get(c.id) ?? [];
     return {
       ...c,
-      insurance_status: computeInsuranceStatus(c.category, docs),
+      insurance_status: computeInsuranceStatus(c.insurance_required, docs),
       document_count: docs.length,
     };
   });

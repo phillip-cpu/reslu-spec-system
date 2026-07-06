@@ -89,8 +89,16 @@ export interface PutPhaseTemplateInput {
 // Trade insurance tracker
 // ------------------------------------------------------------
 
-/** Contact extended with its computed insurance_status + document count — GET /api/contacts response shape (this round's addition). */
+/**
+ * Contact extended with its computed insurance_status + document count
+ * — GET /api/contacts response shape. `insurance_required` is
+ * migration 026's column (Quick items round, 6 July 2026) — layered on
+ * here rather than added to the base `Contact` interface in
+ * types/index.ts (protected/out of this task's edit boundary, per this
+ * file's own header note on why every type here is a local extension).
+ */
 export type ContactWithInsuranceStatus = Contact & {
+  insurance_required: boolean;
   insurance_status: InsuranceStatus;
   document_count: number;
 };
@@ -106,12 +114,12 @@ export interface ContactDocumentsResponse {
  * GET /api/contacts/attention response — mirrors LeadsAttentionResponse's
  * exact shape (types/index.ts) for the sibling trades/insurance panel.
  * Re-exports lib/insurance.ts's InsuranceAttentionGroups (the lean
- * {id, company, category, insurance_status} shape the attention feed
- * actually needs) rather than the heavier Contact-extending
- * ContactWithInsuranceStatus above (which GET /api/contacts's LIST
- * response needs, since it renders full contact cards) — the attention
- * panel only ever shows company name + status per row, not a full
- * card.
+ * {id, company, insurance_required, insurance_status} shape the
+ * attention feed actually needs) rather than the heavier
+ * Contact-extending ContactWithInsuranceStatus above (which GET
+ * /api/contacts's LIST response needs, since it renders full contact
+ * cards) — the attention panel only ever shows company name + status
+ * per row, not a full card.
  */
 export type { InsuranceAttentionGroups as ContactsAttentionResponse } from "@/lib/insurance";
 

@@ -8,8 +8,12 @@ import type { ContactDocumentWithUrl } from "@/types/phase-fix-a";
 
 interface Props {
   contactId: string;
+  /** Current contacts.insurance_required value (migration 026) — drives the "Certificate needed" checkbox's initial state. */
+  insuranceRequired: boolean;
   onCountChange: (count: number) => void;
   onStatusChange: (status: InsuranceStatus) => void;
+  /** Fired after a successful PATCH so the parent ContactsBrowser card's badge-visibility check (insurance_required || document_count > 0) stays in sync without a re-fetch. */
+  onInsuranceRequiredChange: (required: boolean) => void;
 }
 
 const KIND_OPTIONS: { key: ContactDocumentKind; label: string }[] = [
@@ -38,14 +42,31 @@ const KIND_OPTIONS: { key: ContactDocumentKind; label: string }[] = [
  * what lib/insurance.ts's computeInsuranceStatus would return
  * server-side — GET /api/contacts/[id] returns the same computed
  * fields GET /api/contacts's list does (see that route).
+ *
+ * Quick items round (6 July 2026), item 1 — "Insurance required flag":
+ * also renders a "Certificate needed" checkbox (near the top, above
+ * the documents list) that PATCHes contacts.insurance_required
+ * (migration 026) via the existing PATCH /api/contacts/[id] route
+ * (whitelisted there alongside company/category/etc.). This is now the
+ * ONLY way a contact is ever flagged as needing insurance — the old
+ * category-based guess (lib/insurance.ts's former
+ * isTradeCategory()/TRADE_CATEGORIES) is gone; this column is the
+ * single source of truth.
  */
-export function ContactDocumentsPanel({ contactId, onCountChange, onStatusChange }: Props) {
+export function ContactDocumentsPanel({
+  contactId,
+  insuranceRequired,
+  onCountChange,
+  onStatusChange,
+  onInsuranceRequiredChange,
+}: Props) {
   const [documents, setDocuments] = useState<ContactDocumentWithUrl[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [kind, setKind] = useState<ContactDocumentKind>("public_liability");
   const [expiryDate, setExpiryDate] = useState("");
+  const [savingRequired, setSavingRequired] = useState(false);
 
   async function refresh() {
     setLoading(true);
@@ -159,8 +180,39 @@ export function ContactDocumentsPanel({ contactId, onCountChange, onStatusChange
     await refreshStatus();
   }
 
+  async function toggleInsuranceRequired(next: boolean) {
+    setSavingRequired(true);
+    setError(null);
+    onInsuranceRequiredChange(next); // optimistic
+    try {
+      const res = await fetch(`/api/contacts/${contactId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ insurance_required: next }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? "Could not save");
+      await refreshStatus();
+    } catch (err) {
+      onInsuranceRequiredChange(!next); // revert
+      setError(err instanceof Error ? err.message : "Could not update certificate requirement");
+    } finally {
+      setSavingRequired(false);
+    }
+  }
+
   return (
     <div className="border border-[#dcd6cc] bg-nearwhite p-4">
+      <label className="mb-3 flex items-center gap-2 border-b border-[#e5e0d6] pb-3 text-body text-charcoal/80">
+        <input
+          type="checkbox"
+          checked={insuranceRequired}
+          disabled={savingRequired}
+          onChange={(e) => toggleInsuranceRequired(e.target.checked)}
+          className="h-4 w-4 border-[#c9c2b4] accent-nearblack disabled:opacity-60"
+        />
+        Certificate needed
+      </label>
+
       {error && (
         <p className="mb-3 border border-red-700/40 bg-red-50 px-3 py-2 text-caption text-red-700">{error}</p>
       )}

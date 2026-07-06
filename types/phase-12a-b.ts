@@ -174,11 +174,12 @@ export type MyWorkItemKind =
   // this file's own shared aggregator shapes every source kind slots
   // into — additive, surgical edit per this task's boundary.
   | "office_task"
-  // Fix Round A — a trade-category contact (lib/insurance.ts's
-  // isTradeCategory()) whose computed insurance_status is 'expiring' or
-  // 'expired'. See app/api/my-work/route.ts source #7. Same additive
-  // pattern as office_task above — this file's own established
-  // convention for slotting a new source into the shared aggregator.
+  // Fix Round A — a contact with insurance_required = true (migration
+  // 026, Quick items round 6 July 2026) whose computed insurance_status
+  // is 'expiring' or 'expired'. See app/api/my-work/route.ts source #7.
+  // Same additive pattern as office_task above — this file's own
+  // established convention for slotting a new source into the shared
+  // aggregator.
   | "insurance_expiring"
   // Phase 12b — design_tasks assigned to me with a due date, via
   // design_task_assignees. See app/api/my-work/route.ts source #8 and

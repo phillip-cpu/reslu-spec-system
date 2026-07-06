@@ -12,6 +12,12 @@ const EDITABLE_FIELDS = new Set([
   "specialty",
   "category",
   "notes",
+  // Quick items round (6 July 2026), item 1 — "Certificate needed"
+  // checkbox, components/contacts/ContactsBrowser.tsx. Boolean, so the
+  // generic trim-empty-string-to-null loop below is harmless for it
+  // (typeof raw === "string" is false for a boolean, so it passes
+  // through untouched).
+  "insurance_required",
 ]);
 
 /**
@@ -24,6 +30,10 @@ const EDITABLE_FIELDS = new Set([
  * just this one contact after an upload/delete/expiry-date edit and
  * refresh its parent ContactsBrowser badge without re-fetching the
  * whole list.
+ *
+ * Quick items round (6 July 2026): insurance_status is now derived
+ * from contact.insurance_required (migration 026) rather than a
+ * category guess — see lib/insurance.ts's header comment.
  */
 export async function GET(
   _request: NextRequest,
@@ -58,7 +68,7 @@ export async function GET(
   return NextResponse.json({
     contact: {
       ...contact,
-      insurance_status: computeInsuranceStatus(contact.category, documents ?? []),
+      insurance_status: computeInsuranceStatus(contact.insurance_required, documents ?? []),
     },
   });
 }
@@ -67,7 +77,9 @@ export async function GET(
  * PATCH /api/contacts/[id]
  * body: PatchContactInput (partial). Whitelist-only. Empty strings
  * become null (same convention as PATCH /api/items/[id]) except
- * `company`, which must stay non-empty.
+ * `company`, which must stay non-empty. Quick items round (6 July
+ * 2026): also accepts `insurance_required` (boolean) — the
+ * "Certificate needed" checkbox in ContactsBrowser.tsx's expand panel.
  */
 export async function PATCH(
   request: NextRequest,

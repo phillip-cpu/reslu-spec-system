@@ -13,15 +13,17 @@ export const runtime = "nodejs";
  * /api/leads/attention / GET /api/visits/attention, its two siblings).
  * Response: ContactsAttentionResponse (= lib/insurance.ts's
  * InsuranceAttentionGroups) — { expired, expiring, missing }, each a
- * lean { id, company, category, insurance_status } row (not a full
- * Contact — this feed only ever renders company name + status).
- * Only trade-category contacts (isTradeCategory()) ever appear —
- * suppliers never surface here even if they happen to have an
- * expiring document on file, per BUILD-SPEC.md "'missing' only for
- * contacts with category in a trades-list constant, not suppliers"
- * (extended here to the whole attention feed, not just the 'missing'
- * bucket, since a supplier's insurance status was never something this
- * feature asks anyone to track).
+ * lean { id, company, insurance_required, insurance_status } row (not
+ * a full Contact — this feed only ever renders company name + status).
+ *
+ * Quick items round (6 July 2026): only contacts with
+ * insurance_required = true (migration 026 — a human-ticked checkbox,
+ * ContactsBrowser.tsx's expand panel) ever appear — this REPLACES the
+ * former category-heuristic guess (isTradeCategory()/TRADE_CATEGORIES,
+ * now deleted from lib/insurance.ts) with the explicit column as the
+ * single source of truth. A contact with insurance_required = false
+ * never surfaces here even if it happens to have an expiring document
+ * on file.
  *
  * This is the STANDALONE panel surface (e.g. for a future dedicated
  * Address Book attention card) — GET /api/my-work's source #7 also
@@ -44,7 +46,7 @@ export async function GET() {
 
   const { data: contacts } = await supabase
     .from("contacts")
-    .select("id,company,category")
+    .select("id,company,insurance_required")
     .is("deleted_at", null);
   const contactRows = contacts ?? [];
   const contactIds = contactRows.map((c) => c.id);
@@ -69,8 +71,8 @@ export async function GET() {
   const withInsurance: ContactWithInsurance[] = contactRows.map((c) => ({
     id: c.id,
     company: c.company,
-    category: c.category,
-    insurance_status: computeInsuranceStatus(c.category, docsByContact.get(c.id) ?? []),
+    insurance_required: c.insurance_required,
+    insurance_status: computeInsuranceStatus(c.insurance_required, docsByContact.get(c.id) ?? []),
   }));
 
   const body: ContactsAttentionResponse = computeInsuranceAttention(withInsurance);

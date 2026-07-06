@@ -46,8 +46,10 @@ export const runtime = "nodejs";
  *      tasks (completed_at not null — a done task shouldn't keep
  *      nagging in My Work once archived). due_date drives bucketing,
  *      same as board_task.
- *   7. Fix Round A — Trade insurance expiring/expired: trade-category
- *      contacts (lib/insurance.ts's isTradeCategory()) whose computed
+ *   7. Fix Round A — Trade insurance expiring/expired: contacts with
+ *      insurance_required = true (migration 026, Quick items round 6
+ *      July 2026 — a human-ticked "Certificate needed" checkbox,
+ *      replacing the former category heuristic) whose computed
  *      insurance_status is 'expiring' or 'expired' (never 'missing' —
  *      a contact with NO documents on file has no expiry date to
  *      bucket by day, so it has no natural `due` and would only ever
@@ -293,9 +295,12 @@ export async function GET() {
   }
 
   // ---- 7. Fix Round A — Trade insurance expiring/expired ----
+  // Quick items round (6 July 2026): `insurance_required` (migration
+  // 026, a human-ticked checkbox) drives this now, not a category
+  // guess — see lib/insurance.ts's header comment.
   const { data: allContacts } = await supabase
     .from("contacts")
-    .select("id,company,category")
+    .select("id,company,insurance_required")
     .is("deleted_at", null);
   const contactRows = allContacts ?? [];
   const contactIds = contactRows.map((c) => c.id);
@@ -317,7 +322,7 @@ export async function GET() {
 
     for (const c of contactRows) {
       const docs = docsByContact.get(c.id) ?? [];
-      const status = computeInsuranceStatus(c.category, docs);
+      const status = computeInsuranceStatus(c.insurance_required, docs);
       if (status !== "expiring" && status !== "expired") continue;
 
       // Earliest qualifying expiry_date drives `due` (most urgent gap first).

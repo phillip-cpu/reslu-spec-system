@@ -453,7 +453,6 @@ export default async function PortalPage({
 
       <PortalNav
         visible={{
-          selections: true,
           timeline: phases.length > 0,
           diary: true,
           documents: documents.length > 0,
@@ -462,13 +461,13 @@ export default async function PortalPage({
           photos: photos.length > 0,
           handover: handoverPack !== null,
         }}
-        // Fix round B — BUILD-SPEC.md §"Portal selections separation":
-        // nav entry to the separate /portal/[token]/selections gallery.
-        // approvedCount is derived from the SAME itemsWithFiles query
-        // this page already runs for the Selections section (no extra
-        // query) — PortalNav itself hides the link when the count is 0.
+        // Quick items round (6 July 2026) — BUILD-SPEC.md §"Portal
+        // selections separation" (stronger cut): "Selections" is now
+        // ALWAYS a real link to /portal/[token]/selections (see
+        // PortalNav.tsx's doc comment) — `selections` is no longer a
+        // key in `visible` at all (there's no in-page #selections
+        // anchor any more, only the compact summary card below).
         token={token}
-        approvedCount={itemsWithFiles.filter((i) => i.client_approved).length}
       />
 
       <main className="mx-auto max-w-4xl space-y-10 px-6 py-8">

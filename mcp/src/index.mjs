@@ -319,6 +319,30 @@ const TOOLS = [
     },
   },
   {
+    name: "create_project",
+    description:
+      "Create a new project. Prefer the leads flow ('Progress to job' on a lead) when the project comes from the pipeline — it prepopulates client contacts/budget and links the lead. Use this tool for projects with no lead history. Returns the created project incl. its id and client portal token.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Project name, e.g. 'Goldsworthy'" },
+        client_name: { type: "string" },
+        address: { type: "string" },
+        client_email: { type: "string" },
+        client_phone: { type: "string" },
+        budget: { type: "number", description: "Whole-project budget ex GST (optional)" },
+        alias: { type: "string", description: "Internal alias, e.g. 'Nth Adelaide townhouse'" },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+    handler: async (args = {}) =>
+      apiFetch("/api/projects", {
+        method: "POST",
+        body: JSON.stringify(args),
+      }),
+  },
+  {
     name: "list_leads",
     description:
       "List leads (admin-only — Aria's account has admin role for this, see BUILD-SPEC.md). Optional filters: stage (one of the 10 pipeline stages), q (search), since (ISO timestamp — only leads created at or after this time, for a lead-monitor automation polling loop).",

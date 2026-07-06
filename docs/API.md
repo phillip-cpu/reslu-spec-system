@@ -2518,24 +2518,27 @@ semantics) — mirrors `DELETE /api/item-files/[fileId]`. Response:
 ### GET /api/contacts and GET /api/contacts/[id] (extended)
 Both now additionally return `insurance_status` (`current | expiring |
 expired | missing`, computed by `lib/insurance.ts`'s
-`computeInsuranceStatus()` from the contact's non-deleted
-`contact_documents` — only `public_liability`/`workers_comp` kinds
-count; `missing` is only ever returned for a trade-category contact,
-per `lib/insurance.ts`'s `TRADE_CATEGORIES` allow-list) and, on the
-list route only, `document_count`. `components/contacts/ContactsBrowser.tsx`
-shows a status badge per contact (suppressed for a non-trade contact
-with zero documents — nothing to flag) and an expandable
-`ContactDocumentsPanel` (upload/list/delete, editable expiry date,
-re-fetches the single-contact route after any change to refresh the
-badge without re-fetching the whole list).
+`computeInsuranceStatus()` from the contact's `insurance_required`
+flag — **migration 026**, Quick items round 6 July 2026, superseding
+the former `TRADE_CATEGORIES` category-heuristic entirely — and its
+non-deleted `contact_documents`; only `public_liability`/`workers_comp`
+kinds count; `missing` is only ever returned when `insurance_required =
+true`) and, on the list route only, `document_count`.
+`components/contacts/ContactsBrowser.tsx` shows a status badge per
+contact (suppressed when `insurance_required = false` and zero
+documents — nothing to flag) and an expandable `ContactDocumentsPanel`
+(a "Certificate needed" checkbox that PATCHes `insurance_required`,
+upload/list/delete, editable expiry date, re-fetches the single-contact
+route after any change to refresh the badge without re-fetching the
+whole list).
 
 ### GET /api/contacts/attention
 Auth: session. Response: `InsuranceAttentionGroups` — `{ expired,
-expiring, missing }`, each an array of trade-category contacts in that
-insurance state (`lib/insurance.ts`'s `computeInsuranceAttention()`).
-Mirrors `GET /api/leads/attention` / `GET /api/visits/attention`'s
-existing pattern; also folded additively into `GET /api/my-work`'s
-combined feed as `insurance_expiring` items.
+expiring, missing }`, each an array of `insurance_required = true`
+contacts in that insurance state (`lib/insurance.ts`'s
+`computeInsuranceAttention()`). Mirrors `GET /api/leads/attention` /
+`GET /api/visits/attention`'s existing pattern; also folded additively
+into `GET /api/my-work`'s combined feed as `insurance_expiring` items.
 
 ### POST /api/projects/[id]/visits and POST /api/visits/[id]/confirm (extended)
 Both responses gain `insurance_warning: string | null` —
@@ -2848,3 +2851,90 @@ callers alike should know about them:
    an `error` field in the body); `POST /api/monday/sync/[itemId]`
    returns 502 for the equivalent failure — check response bodies, not
    just status codes, around Monday integration.
+
+---
+
+## Quick items round (Phillip, 6 July 2026)
+
+Two small, unrelated fixes from Phillip's testing notes. Migration
+`026_insurance_required.sql`.
+
+### Item 1 — Insurance required flag
+Replaces the trade-insurance tracker's category-based guess
+(`lib/insurance.ts`'s former `TRADE_CATEGORIES` allow-list /
+`isTradeCategory()`, Fix Round A) with an explicit column:
+`contacts.insurance_required boolean not null default false`
+(migration 026). The migration's one-time backfill sets this `true`
+for every existing contact whose category matched the old hardcoded
+trades list (copied into the migration as literals, with a comment —
+that list is no longer read by application code; the column is the
+single source of truth going forward).
+
+`lib/insurance.ts`'s `computeInsuranceStatus(insuranceRequired,
+documents, now?)` signature changed (first param is now the boolean
+flag, not a category string) — `missing` is returned only when
+`insuranceRequired` is `true` and there are zero qualifying
+(`public_liability`/`workers_comp`, non-deleted) documents; `false`
+always yields `current` when there are no qualifying documents (no
+badge). `isTradeCategory()`/`TRADE_CATEGORIES` are deleted from that
+file entirely. Every call site was updated to pass
+`contact.insurance_required` instead of `contact.category`: `GET
+/api/contacts`, `GET /api/contacts/[id]`, `GET /api/contacts/attention`,
+`GET /api/my-work` (source #7), `POST /api/projects/[id]/visits`, `POST
+/api/visits/[id]/confirm` — all five booking-warning/needs-attention
+call sites verified still correct against the new signature.
+
+`PATCH /api/contacts/[id]` — `insurance_required` added to
+`EDITABLE_FIELDS`. `components/contacts/ContactsBrowser.tsx`'s expand
+panel (`ContactDocumentsPanel.tsx`) now shows a "Certificate needed"
+checkbox above the documents list; toggling it PATCHes
+`insurance_required` (optimistic, reverts on failure) and re-fetches
+the contact's `insurance_status` so the parent card's badge stays in
+sync. The status badge itself renders only when `insurance_required =
+true` OR the contact already has at least one document on file (same
+"don't hide an existing status" reasoning Fix Round A used for the
+category heuristic).
+
+### Item 2 — Portal selections separation (stronger cut)
+The Fix Round B "portal selections separation" left the main portal
+page's `SelectionsSection` still rendering full awaiting/flagged item
+cards (room groups, expand-to-details, approve/flag actions, bulk
+approve, the "Review one by one" stepper) — only approved items had
+moved to `/portal/[token]/selections`. This round finishes the cut:
+
+- **`components/portal/SelectionsSection.tsx`** (main page) is now a
+  compact summary card only: a progress bar (approved / total,
+  excluding nothing), "N awaiting your decision →" linking to
+  `/portal/[token]/selections`, a flagged-count chip when > 0, and a
+  deadline warning when any un-approved item's `decision_needed_by` is
+  past or within 7 days (amber for "soon", red for "overdue" — same
+  amber/red convention `isOverdue`/deadline styling already used
+  elsewhere on the portal). Zero item-level rendering (no thumbnails,
+  no room groups, no approve/flag buttons, no stepper) remains on the
+  main page.
+- **`app/portal/[token]/selections/page.tsx`** — extended from its
+  previous approved-only gallery into the full selections workspace:
+  three tabs (Awaiting / Flagged / Approved), room grouping preserved
+  within each tab, the "Approve all N in this room" bulk action and the
+  full-screen "Review one by one" stepper both moved here from the old
+  `SelectionsSection`. `YourSelectionsGallery.tsx` (approved-only,
+  read-only grid) is retained and used for the Approved tab; a new
+  client component renders the Awaiting/Flagged tabs (thumbnail rows,
+  expand for description/supplier/qty/files, approve/flag, bulk-approve
+  per room) — functionally the same JSX `SelectionsSection` used to
+  own, moved wholesale rather than rewritten, so behaviour (including
+  the "moved to Your selections" transient note and per-item
+  `approval_events` on both single-item and bulk actions) is unchanged.
+- **`components/portal/PortalNav.tsx`** — the "Selections" entry is now
+  **always** a real link to `/portal/[token]/selections` (`next/link`,
+  not an in-page `#selections` anchor) — since the main page no longer
+  has a `#selections` section with item content to scroll to, an
+  anchor would land on an empty summary card. The nav's on-page anchor
+  list (`SECTIONS`) drops `selections`; the link renders unconditionally
+  (not gated behind `approvedCount > 0` any more, since there's always
+  something to review even before anything is approved).
+- Every existing guarantee is preserved on the sub-page: token gating +
+  per-token rate limiting + `noindex` (copied from the main page's
+  guards, as the fix-round page already did), zero pricing fields ever
+  selected, bulk-approve + stepper both still write individual
+  `approval_events` rows per item (never a combined "bulk" event).

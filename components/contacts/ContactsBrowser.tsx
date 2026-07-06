@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Contact } from "@/types";
 import type { InsuranceStatus } from "@/lib/insurance";
-import { isTradeCategory } from "@/lib/insurance";
 import { ContactDocumentsPanel } from "./ContactDocumentsPanel";
 
 interface Props {
@@ -11,8 +10,12 @@ interface Props {
   categories: string[];
 }
 
-/** Contact rows as returned by GET /api/contacts (Fix Round A adds these two fields — see that route's doc comment). */
-type ContactWithInsurance = Contact & { insurance_status: InsuranceStatus; document_count: number };
+/** Contact rows as returned by GET /api/contacts (Fix Round A adds insurance_status/document_count; Quick items round 6 July 2026 adds insurance_required — see that route's doc comment). */
+type ContactWithInsurance = Contact & {
+  insurance_required: boolean;
+  insurance_status: InsuranceStatus;
+  document_count: number;
+};
 
 const UNCATEGORISED = "Uncategorised";
 
@@ -41,12 +44,19 @@ const STATUS_BADGE_CLASS: Record<InsuranceStatus, string> = {
  * bounded ~20-category taxonomy already surfaced via a dropdown only).
  *
  * FIX ROUND A — Trade insurance tracker: every card now shows an
- * insurance status badge (only for trade-category contacts —
- * suppliers never show a badge at all, per BUILD-SPEC.md "'missing'
- * only for contacts with category in a trades-list constant, not
- * suppliers") and an expand toggle revealing a documents panel
- * (upload/list/delete, expiry date input) — see ContactDocumentsPanel
- * below.
+ * insurance status badge and an expand toggle revealing a documents
+ * panel (upload/list/delete, expiry date input) — see
+ * ContactDocumentsPanel below.
+ *
+ * Quick items round (6 July 2026), item 1 — "Insurance required flag":
+ * the badge's visibility now follows the explicit
+ * `insurance_required` column (migration 026) instead of a
+ * category-based guess — a contact only ever shows a badge when a
+ * human has ticked "Certificate needed" for it (in
+ * ContactDocumentsPanel's expand panel) OR it already has at least one
+ * document on file (so a contact that was never flagged but has, say,
+ * a licence uploaded anyway still shows its status rather than hiding
+ * it). This replaces the old isTradeCategory()-driven showBadge check.
  */
 export function ContactsBrowser({ categories: initialCategories }: Props) {
   const [contacts, setContacts] = useState<ContactWithInsurance[]>([]);
@@ -83,18 +93,17 @@ export function ContactsBrowser({ categories: initialCategories }: Props) {
     setKnownCategories((cur) => (cur.includes(cat) ? cur : [...cur, cat].sort((a, b) => a.localeCompare(b))));
   }
 
-  // POST /api/contacts and PATCH /api/contacts/[id] both return a
-  // plain Contact (no insurance_status/document_count — those are
-  // GET /api/contacts-only computed fields, see that route's doc
-  // comment) — a just-created/just-edited contact has whatever
-  // documents it already had (0 for a new contact; unchanged for an
-  // edited one, since editing company/category/etc. never touches
-  // contact_documents), so defaulting a fresh add to the "no documents
-  // yet" state and preserving an edited contact's prior computed
-  // fields (spread before the incoming patch) both give the same
-  // correct badge without a second round-trip.
+  // POST /api/contacts and PATCH /api/contacts/[id] both `.select()`
+  // and return a plain `contacts` row — this DOES include the real
+  // `insurance_required` column now (it's a stored column, migration
+  // 026) but NOT `insurance_status`/`document_count` (those are GET
+  // /api/contacts-only computed fields, see that route's doc comment).
+  // A just-created contact always has insurance_required defaulted
+  // false (the column's DB default) and zero documents, so it never
+  // shows a badge until someone ticks "Certificate needed" or uploads
+  // a document — safe to hardcode both here for a brand-new row.
   function prepend(contact: Contact) {
-    setContacts((cur) => [{ ...contact, insurance_status: isTradeCategory(contact.category) ? "missing" : "current", document_count: 0 }, ...cur]);
+    setContacts((cur) => [{ ...contact, insurance_required: false, insurance_status: "current", document_count: 0 }, ...cur]);
     noteCategory(contact.category);
   }
   function remove(id: string) {
@@ -231,6 +240,7 @@ export function ContactsBrowser({ categories: initialCategories }: Props) {
                         <div className="md:col-span-2 lg:col-span-3">
                           <ContactDocumentsPanel
                             contactId={contact.id}
+                            insuranceRequired={contact.insurance_required}
                             onCountChange={(count) =>
                               setContacts((cur) =>
                                 cur.map((c) =>
@@ -243,6 +253,11 @@ export function ContactsBrowser({ categories: initialCategories }: Props) {
                             onStatusChange={(status) =>
                               setContacts((cur) =>
                                 cur.map((c) => (c.id === contact.id ? { ...c, insurance_status: status } : c))
+                              )
+                            }
+                            onInsuranceRequiredChange={(required) =>
+                              setContacts((cur) =>
+                                cur.map((c) => (c.id === contact.id ? { ...c, insurance_required: required } : c))
                               )
                             }
                           />
@@ -273,7 +288,7 @@ function ContactCard({
   onEdit: () => void;
   onDelete: () => void;
 }) {
-  const showBadge = isTradeCategory(contact.category) || contact.document_count > 0;
+  const showBadge = contact.insurance_required || contact.document_count > 0;
   return (
     <article className="flex flex-col justify-between border border-[#dcd6cc] bg-offwhite p-4">
       <div>
