@@ -5,13 +5,29 @@ import { isAdmin } from "@/lib/auth";
 import { syncItemToMonday } from "@/lib/monday/sync";
 import { reportError } from "@/lib/report-error";
 import { normalizeProductUrl } from "@/lib/scraper";
+import { ITEM_CODE_PATTERN } from "@/types/phase-small-round";
 import type { Item } from "@/types";
 
 /**
  * Columns the internal team may edit via the register / P&P view.
  * Whitelist (not blacklist) so identity, audit, client-interaction,
  * and Monday-sync columns can never be written from the client.
- * item_code is intentionally immutable — it is DB-generated at insert.
+ *
+ * "Small round" (6 July 2026) — Improvements backlog item 1: item_code
+ * is NO LONGER immutable. It is still DB-*generated* at insert (the
+ * trg_items_assign_code trigger, migration 001, is untouched — a
+ * blank/omitted code on create still gets auto-numbered exactly as
+ * before), but a team member may now correct a generated code after
+ * the fact (e.g. the scraper picked the wrong category before a manual
+ * recategorisation, or a code was mistyped on CSV import). See the
+ * dedicated validation block in PATCH below for the format rule,
+ * uniqueness handling, and — importantly — why changing a code does
+ * NOT renumber any sibling codes.
+ *
+ * NOTE: there is no UI for this yet. SpecRegister.tsx (the component
+ * that owns the register's editable cells) is outside this round's
+ * edit boundary — see docs/HANDOFF-code-editing.md for exact wiring
+ * instructions for whoever adds the input there next.
  *
  * Week 4 whitelist fix: this previously omitted several fields the
  * scrape flow and duplicate-detection need to write from the item
@@ -49,6 +65,11 @@ const EDITABLE_FIELDS = new Set([
   "name",
   "description",
   "category",
+  // "Small round" (6 July 2026) — see doc comment above: sticky
+  // identifier, editable but never auto-renumbered. Validated and
+  // uniqueness-checked explicitly in PATCH below (NOT run through the
+  // generic TEXT_FIELDS/NUMERIC_FIELDS branches further down).
+  "item_code",
   "supplier",
   "supplier_email",
   "supplier_contact_id",
@@ -226,6 +247,30 @@ export async function PATCH(
     if (!EDITABLE_FIELDS.has(key)) continue;
     if (!admin && FINANCIAL_FIELDS.has(key)) continue;
 
+    // item_code: uppercase-trim then validate against ^[A-Z]{2,3}-\d{1,3}$
+    // (categories(prefix) is 2-3 letters — see migration 001's categories
+    // table — followed by a hyphen and a 1-3 digit sequence number, e.g.
+    // "TW-01", "SW-4", "LI-104"). Handled here, separately from
+    // TEXT_FIELDS below, since a code needs format validation a plain
+    // trim-to-null text field doesn't, and an empty code is rejected
+    // outright rather than nulled (see below) — item_code is `not null`
+    // in the schema (migration 001) with no empty-string convention
+    // anywhere else in this codebase.
+    if (key === "item_code") {
+      const normalized = typeof raw === "string" ? raw.trim().toUpperCase() : "";
+      if (!normalized) {
+        return NextResponse.json({ error: "item_code cannot be empty" }, { status: 400 });
+      }
+      if (!ITEM_CODE_PATTERN.test(normalized)) {
+        return NextResponse.json(
+          { error: "item_code must look like TW-01 (2-3 letters, hyphen, 1-3 digits)" },
+          { status: 400 }
+        );
+      }
+      update.item_code = normalized;
+      continue;
+    }
+
     if (NUMERIC_FIELDS.has(key)) {
       if (raw === "" || raw === null || raw === undefined) {
         update[key] = null;
@@ -274,6 +319,50 @@ export async function PATCH(
     );
   }
 
+  // item_code uniqueness — checked explicitly ahead of the write so the
+  // caller gets a clean 409 with a clear message, rather than surfacing
+  // the raw Postgres unique-violation text from
+  // idx_items_project_code_active (migration 001: unique on
+  // (project_id, item_code) where deleted_at is null). Scoped to THIS
+  // item's own project_id and excludes the item's own current row (a
+  // no-op "change" to the same code it already has must not 409 itself).
+  if ("item_code" in update) {
+    const { data: currentItem } = await supabase
+      .from("items")
+      .select("project_id")
+      .eq("id", id)
+      .single();
+    if (currentItem) {
+      const { data: clash } = await supabase
+        .from("items")
+        .select("id")
+        .eq("project_id", currentItem.project_id)
+        .eq("item_code", update.item_code as string)
+        .is("deleted_at", null)
+        .neq("id", id)
+        .maybeSingle();
+      if (clash) {
+        return NextResponse.json(
+          { error: `Item code "${update.item_code}" is already used by another item in this project` },
+          { status: 409 }
+        );
+      }
+    }
+  }
+
+  // Deliberately NOT renumbering: changing item_code here is a pure
+  // rename of this one row. Sibling items' codes are never touched,
+  // even when a change creates a "gap" or reorders the apparent
+  // sequence (e.g. renaming TW-02 to TW-05 does not shift TW-03/TW-04
+  // down). Item codes are referenced by number in exported artefacts
+  // that live OUTSIDE this database — the builder PDF schedule already
+  // sent to a client, a signed Scope of Works, a supplier purchase
+  // order — so a renumbering cascade would silently invalidate
+  // cross-references in documents this system can't reach back into
+  // and correct. A sticky code that never moves out from under a
+  // stale reference is the safer property to guarantee; a genuinely
+  // wrong/duplicate code is fixed by editing it directly (this route),
+  // not by an automatic resequence.
   const { data: item, error } = await supabase
     .from("items")
     .update(update)
@@ -283,7 +372,10 @@ export async function PATCH(
     .single();
 
   if (error) {
-    const status = error.code === "23503" ? 400 : 500;
+    // 23505 = unique_violation (belt-and-braces: the pre-check above
+    // should already have caught an item_code clash, but a concurrent
+    // write between the check and this update is still possible).
+    const status = error.code === "23505" ? 409 : error.code === "23503" ? 400 : 500;
     return NextResponse.json({ error: error.message }, { status });
   }
   if (!item) {

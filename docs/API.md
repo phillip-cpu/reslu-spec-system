@@ -2704,6 +2704,121 @@ gate).
 
 ---
 
+## Small round — image modal, add to calendar, item code editing (6 July 2026)
+
+Three independent, code-only additions off BUILD-SPEC.md's "Image
+options → modal picker", "Phillip's ideas list — 6 July 2026" item 2
+(calendar), and "Improvements backlog" item 1 (editable codes). No new
+migration — verified none of the three needed a schema change (see
+each sub-section below).
+
+### Image options modal picker
+
+No new route — reuses the existing image-selection flow
+(`POST /api/items/[id]/image`, unchanged) through a new client-side
+modal, `components/items/ImagePickerModal.tsx`. `ItemAssets.tsx`'s
+expanded-row image section now shows only the selected thumbnail plus
+a "Choose image · N found" button (only rendered when
+`image_options` has entries); the button opens the modal, which shows
+the full candidate grid at a larger size, an "Upload new" button, and
+highlights the current selection. Checked `components/library/**` for
+an equivalent library-side image grid to reuse this for — none exists
+(`LibraryBrowser.tsx` uses a single `default_image_url`, no
+`image_options`-style array or grid UI at all), so this round is
+items-only by design, not an oversight.
+
+### Add to calendar
+
+New `lib/ics.ts`: `generateIcs({ title, start, end, location,
+description, attendees[] })` — hand-rolled RFC 5545, no new dependency.
+Always emits UTC (`YYYYMMDDTHHMMSSZ`) DTSTART/DTEND/DTSTAMP — see that
+file's own extended doc comment for why this sidesteps ACST/ACDT
+daylight-saving handling entirely (RESLU is Adelaide-based; every
+mainstream calendar client converts a UTC-suffixed timestamp to the
+viewer's own zone automatically, so no VTIMEZONE block is needed).
+Escapes TEXT fields, folds long lines, and builds a stable `UID` per
+event so re-downloading the same event updates rather than duplicates
+it. `googleCalendarUrl(...)` builds the matching
+`calendar.google.com/calendar/render` link (Google's own "Add to
+Calendar" share-button URL shape — no OAuth/API needed; `add=` opens
+Google's own invite UI pre-filled, it does not silently email anyone).
+
+Two GET routes stream a `.ics` file, both requiring a signed-in team
+session (leads additionally require **admin**, matching the rest of
+that module):
+
+#### GET /api/leads/[id]/calendar.ics
+Auth: **admin**. Query: `?attendees=email1,email2` (optional,
+comma-separated). Response: `text/calendar` attachment,
+`Content-Disposition: attachment`. 400 if the lead has no
+`site_visit_date` set. Title: `"{first_name} {surname_project} — Site
+Visit"`; location falls back `site_visit_location` → `location`; no
+separate site-visit end-time column exists on `leads`, so the event
+defaults to lib/ics.ts's own 1-hour fallback.
+
+#### GET /api/client-events/[id]/calendar.ics
+Auth: session (team — same gate as the rest of the `client_events`
+module, no extra admin check). Query: `?attendees=email1,email2`
+(optional). Response: `text/calendar` attachment. Uses the event's own
+`starts_at`/`ends_at`; description includes the project name (joined
+from `projects`) plus the event's own `notes` (client-facing by design
+— see `client_events.notes`'s own doc comment in migration 020 — but
+this route is team-authed only, never reached from the portal).
+
+#### GET /api/profiles
+Auth: session. Response: `{ profiles: { id, full_name, email }[] }`
+(cached 5 min, same `PROFILES_CACHE_TAG` as every other profiles read —
+see `lib/reference-data.ts`). New — until this round there was no
+standalone listing route for the team roster (every prior caller either
+queried `profiles` inline per-route or used the cached
+server-component-only `getProfiles()`). Backs the new invitee picker
+(`components/shared/AddToCalendarMenu.tsx`) on both the lead detail
+panel and each client event row — selected emails feed both the `.ics`
+routes' `?attendees=` param and `googleCalendarUrl()`'s `add=` param.
+
+UI: `components/shared/AddToCalendarMenu.tsx` — a shared "Add to
+calendar ▾" button (Download .ics / Open in Google Calendar, plus the
+invitee checkbox list when `invitees` is passed) wired into
+`components/leads/LeadDetailPanel.tsx` (next to the site visit
+date/time field) and `components/client-area/ClientEventsPanel.tsx`
+(on every event row, upcoming and past). Uses `position: absolute`
+anchored to its own `relative` wrapper, not `fixed` — see that
+component's doc comment for why `fixed` would be a layout trap here
+(the client events list scrolls; a `fixed` menu would stay pinned to
+the viewport instead of tracking its row).
+
+### Item code editing
+
+#### PATCH /api/items/[id] (extended)
+`EDITABLE_FIELDS` gains `item_code`. Still DB-*generated* at insert
+(migration 001's `trg_items_assign_code` trigger is untouched — a
+blank code on create is still auto-numbered exactly as before); this
+only adds a write path for correcting an existing code afterward.
+Validation: trimmed + uppercased, then checked against
+`^[A-Z]{2,3}-\d{1,3}$` (exported as `ITEM_CODE_PATTERN` from
+`types/phase-small-round.ts`) — 400 on empty or malformed input. On a
+conflict with another active item in the same project: **409** with
+`{ error: "Item code \"TW-05\" is already used by another item in this project" }`
+(checked explicitly ahead of the write for a clean message; the DB's
+own `idx_items_project_code_active` unique index is still the
+belt-and-braces backstop — a concurrent write between the check and
+the update surfaces as the same 409 via the Postgres `23505` error
+code). **Changing a code never renumbers sibling codes** — see the
+route's own "Deliberately NOT renumbering" comment for the full
+reasoning: item codes are referenced by number in artefacts outside
+this database (a builder PDF schedule already sent to a client, a
+signed Scope of Works, a supplier purchase order), so a renumbering
+cascade would silently invalidate cross-references this system has no
+way to reach back into and fix.
+
+**No UI exists for this yet.** `components/items/SpecRegister.tsx` (the
+file that would host the input) was out of this round's edit boundary
+— see `docs/HANDOFF-code-editing.md` for exact wiring instructions
+(which cell, which existing `onPatch` call, how the 409 message should
+surface) for whoever picks this up next.
+
+---
+
 ## Known inconsistencies (carried over, not fixed this release)
 
 Documented here rather than silently relied upon, since Aria and human

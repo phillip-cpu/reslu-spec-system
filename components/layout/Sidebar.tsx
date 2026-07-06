@@ -96,7 +96,7 @@ export function Sidebar({ isAdmin = false }: { isAdmin?: boolean }) {
   }, [pathname]);
 
   return (
-    <aside className="w-56 shrink-0 bg-nearblack text-white min-h-screen flex flex-col">
+    <aside className="w-56 shrink-0 bg-nearblack text-white flex flex-col sticky top-0 h-screen overflow-y-auto">
       <div className="px-6 py-8">
         <Link href="/" aria-label="Back to dashboard">
           <Image

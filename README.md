@@ -450,6 +450,15 @@ admin enforcement for financial fields is now in place project-wide
   section and `docs/ARIA.md`'s matching section (new MCP tools
   `list_design_phases` / `create_design_task`).
 
+- **Small round (6 July 2026)** — item image picker moved into a
+  proper modal (was a cramped inline strip), "Add to calendar ▾"
+  (download .ics or open in Google Calendar, with an invitee picker)
+  on the lead detail panel's site visit and every client event row,
+  and item codes are now editable via the API (`PATCH /api/items/[id]`
+  — codes are sticky and never auto-renumber; see `docs/API.md`'s
+  "Small round" section). The item-code edit UI itself is a follow-up
+  — see `docs/HANDOFF-code-editing.md`.
+
 ## Cron jobs — one still needs wiring up (Phase 12a-B)
 
 `vercel.json` currently schedules `/api/digest/flush` and

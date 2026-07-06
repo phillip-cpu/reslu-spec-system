@@ -3,6 +3,9 @@
 import { useEffect, useState } from "react";
 import clsx from "clsx";
 import type { ClientEvent, CreateClientEventInput } from "@/types/phase-12a-b";
+import type { InviteeOption } from "@/types/phase-small-round";
+import { googleCalendarUrl } from "@/lib/ics";
+import { AddToCalendarMenu } from "@/components/shared/AddToCalendarMenu";
 
 /**
  * Team-side client meetings manager (BUILD-SPEC.md §"Portal —
@@ -21,6 +24,32 @@ export function ClientEventsPanel({ projectId }: { projectId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // Add-to-calendar invitee picker (BUILD-SPEC.md "Phillip's ideas
+  // list — 6 July 2026" item 2) — same team roster + selection scheme
+  // as LeadDetailPanel's. Shared across every row in this list rather
+  // than per-row state, since "who to invite" is a team-wide pick, not
+  // something that should reset per meeting.
+  const [invitees, setInvitees] = useState<InviteeOption[]>([]);
+  const [selectedInviteeEmails, setSelectedInviteeEmails] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/profiles")
+      .then((r) => (r.ok ? r.json() : { profiles: [] }))
+      .then((body) => {
+        if (!cancelled) setInvitees(body.profiles ?? []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function toggleInvitee(email: string) {
+    setSelectedInviteeEmails((cur) =>
+      cur.includes(email) ? cur.filter((e) => e !== email) : [...cur, email]
+    );
+  }
 
   async function load() {
     setError(null);
@@ -133,6 +162,9 @@ export function ClientEventsPanel({ projectId }: { projectId: string }) {
                 event={e}
                 onEdit={() => setEditingId(e.id)}
                 onDelete={() => deleteEvent(e.id, e.title)}
+                invitees={invitees}
+                selectedInviteeEmails={selectedInviteeEmails}
+                onToggleInvitee={toggleInvitee}
               />
             )
           )}
@@ -144,7 +176,15 @@ export function ClientEventsPanel({ projectId }: { projectId: string }) {
           <summary className="cursor-pointer label-caps !text-charcoal/40">Past meetings · {past.length}</summary>
           <ul className="mt-3 space-y-2">
             {past.map((e) => (
-              <EventRow key={e.id} event={e} muted onDelete={() => deleteEvent(e.id, e.title)} />
+              <EventRow
+                key={e.id}
+                event={e}
+                muted
+                onDelete={() => deleteEvent(e.id, e.title)}
+                invitees={invitees}
+                selectedInviteeEmails={selectedInviteeEmails}
+                onToggleInvitee={toggleInvitee}
+              />
             ))}
           </ul>
         </details>
@@ -158,15 +198,22 @@ function EventRow({
   muted,
   onEdit,
   onDelete,
+  invitees,
+  selectedInviteeEmails,
+  onToggleInvitee,
 }: {
   event: ClientEvent;
   muted?: boolean;
   onEdit?: () => void;
   onDelete: () => void;
+  invitees?: InviteeOption[];
+  selectedInviteeEmails?: string[];
+  onToggleInvitee?: (email: string) => void;
 }) {
   const start = new Date(event.starts_at);
   const dateLabel = start.toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" });
   const timeLabel = start.toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" });
+  const attendeeEmails = selectedInviteeEmails ?? [];
 
   return (
     <li
@@ -182,6 +229,28 @@ function EventRow({
           {event.location ? ` · ${event.location}` : ""}
         </p>
         {event.notes && <p className="mt-1 text-caption text-charcoal/50">{event.notes}</p>}
+        {/* Add to calendar (BUILD-SPEC.md "Phillip's ideas list — 6 July
+            2026" item 2) — offered on every row, past or upcoming
+            (a past meeting can still be worth adding for record-keeping). */}
+        <div className="mt-2">
+          <AddToCalendarMenu
+            icsUrl={`/api/client-events/${event.id}/calendar.ics${
+              attendeeEmails.length ? `?attendees=${encodeURIComponent(attendeeEmails.join(","))}` : ""
+            }`}
+            googleUrl={googleCalendarUrl({
+              uid: `client-event-${event.id}@reslu.com.au`,
+              title: event.title,
+              start: event.starts_at,
+              end: event.ends_at,
+              location: event.location ?? undefined,
+              description: event.notes ?? undefined,
+              attendees: attendeeEmails.map((email) => ({ email })),
+            })}
+            invitees={invitees}
+            selectedInviteeEmails={selectedInviteeEmails}
+            onToggleInvitee={onToggleInvitee}
+          />
+        </div>
       </div>
       <div className="flex shrink-0 items-center gap-3">
         {onEdit && (

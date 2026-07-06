@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import type { ItemFile, ItemFileKind, ScrapedDocument } from "@/types";
+import { ImagePickerModal } from "./ImagePickerModal";
 
 type FileWithUrl = ItemFile & { url: string };
 
@@ -26,6 +27,13 @@ interface Props {
    * surfaced anywhere — this renders them as a picker so a team member
    * can swap in a better shot (e.g. a straight-on product photo instead
    * of a lifestyle image) without re-uploading manually.
+   *
+   * "Small round" (6 July 2026) — BUILD-SPEC.md "Image options → modal
+   * picker": this used to render every candidate inline as a cramped
+   * 4-col strip next to the thumbnail. It's now a "Choose image · N
+   * found" button that opens ImagePickerModal.tsx with the full grid at
+   * proper size — the inline strip is gone; only the button remains
+   * when there's more than one option to choose from.
    */
   imageOptions?: string[];
   /**
@@ -54,6 +62,9 @@ export function ItemAssets({
   const [attachingUrl, setAttachingUrl] = useState<string | null>(null);
   const [choosingUrl, setChoosingUrl] = useState<string | null>(null);
   const [kind, setKind] = useState<ItemFileKind>("spec_sheet");
+  // "Small round" — image options modal picker (see ImagePickerModal.tsx
+  // and the imageOptions prop doc comment above).
+  const [pickerOpen, setPickerOpen] = useState(false);
   const imageInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -112,6 +123,10 @@ export function ItemAssets({
       if (!res.ok) throw new Error((await res.json()).error ?? "Could not use that image");
       const { url } = await res.json();
       onImage(url);
+      // "Small round" — close the modal once a choice lands successfully;
+      // stays open on error so the message is visible and the user can
+      // retry a different candidate without reopening.
+      setPickerOpen(false);
     } catch (err) {
       onError(err instanceof Error ? err.message : "Could not use that image");
     } finally {
@@ -174,6 +189,7 @@ export function ItemAssets({
   }
 
   return (
+    <>
     <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
       {/* Image */}
       <div>
@@ -222,59 +238,22 @@ export function ItemAssets({
                 Remove image
               </button>
             )}
+            {/* "Small round" — BUILD-SPEC.md "Image options → modal
+                picker": expanded row shows only the selected image +
+                this button; the full candidate grid lives in the modal
+                (ImagePickerModal.tsx), not inline here. Only shown when
+                there's actually a choice to make. */}
+            {imageOptions.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setPickerOpen(true)}
+                className="block text-caption text-charcoal/60 underline decoration-charcoal/30 underline-offset-2 hover:text-nearblack hover:decoration-nearblack"
+              >
+                Choose image · {imageOptions.length} found
+              </button>
+            )}
           </div>
         </div>
-
-        {/* Scraped image candidates (items.image_options) — the scraper
-            auto-picks the first one, but the rest are otherwise
-            invisible. Click any thumbnail to use it instead; the copy
-            goes through the same re-host-into-Storage path as a manual
-            upload (see chooseScrapedImage above), never a direct
-            hotlink to the supplier's site. */}
-        {imageOptions.length > 0 && (
-          <div className="mt-3">
-            <p className="mb-1.5 text-caption text-charcoal/50">
-              {imageOptions.length} found — click to use
-            </p>
-            <div className="grid grid-cols-4 gap-2">
-              {imageOptions.map((url) => {
-                const isSelected = url === selectedImageUrl;
-                const isChoosing = choosingUrl === url;
-                return (
-                  <button
-                    key={url}
-                    type="button"
-                    disabled={isChoosing || isSelected}
-                    onClick={() => chooseScrapedImage(url)}
-                    className={`relative aspect-square overflow-hidden border bg-cream disabled:cursor-default ${
-                      isSelected
-                        ? "border-nearblack ring-1 ring-nearblack"
-                        : "border-[#dcd6cc] hover:border-nearblack"
-                    }`}
-                  >
-                    <Image
-                      src={url}
-                      alt=""
-                      fill
-                      sizes="80px"
-                      className="object-cover"
-                    />
-                    {isSelected && (
-                      <span className="absolute inset-x-0 bottom-0 bg-nearblack/80 py-0.5 text-center text-[10px] uppercase tracking-wide text-white">
-                        In use
-                      </span>
-                    )}
-                    {isChoosing && (
-                      <span className="absolute inset-0 flex items-center justify-center bg-nearwhite/70 text-caption text-charcoal/60">
-                        …
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Documents */}
@@ -363,5 +342,31 @@ export function ItemAssets({
         )}
       </div>
     </div>
+
+    {/* "Small round" — image options modal picker. Rendered as a
+        sibling of the grid above (not nested inside either column) so
+        its `fixed inset-0` overlay isn't visually constrained by
+        either column's own layout — purely cosmetic here since `fixed`
+        already escapes normal flow regardless of DOM position, but
+        keeping it a top-level sibling matches how VisitBottomSheet /
+        LeadDetailPanel's own overlays are mounted (as the outermost
+        element of their component, not nested inside a content column). */}
+    {pickerOpen && (
+      <ImagePickerModal
+        imageOptions={imageOptions}
+        selectedImageUrl={selectedImageUrl}
+        choosingUrl={choosingUrl}
+        uploading={uploadingImage}
+        onChoose={(url) => {
+          chooseScrapedImage(url);
+        }}
+        onUploadClick={() => {
+          setPickerOpen(false);
+          imageInput.current?.click();
+        }}
+        onClose={() => setPickerOpen(false)}
+      />
+    )}
+    </>
   );
 }

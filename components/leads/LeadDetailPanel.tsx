@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import clsx from "clsx";
 import { LEAD_STAGES, type Lead, type LeadStageEvent, type PatchLeadInput } from "@/types";
+import { googleCalendarUrl } from "@/lib/ics";
+import { AddToCalendarMenu } from "@/components/shared/AddToCalendarMenu";
+import type { InviteeOption } from "@/types/phase-small-round";
 
 interface Props {
   lead: Lead;
@@ -68,6 +71,14 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
   const [error, setError] = useState<string | null>(null);
   const [events, setEvents] = useState<LeadStageEvent[]>([]);
   const [creatingProject, setCreatingProject] = useState(false);
+  // Add-to-calendar invitee picker (BUILD-SPEC.md "Phillip's ideas
+  // list — 6 July 2026" item 2) — team roster from the new
+  // GET /api/profiles route, selected emails baked into both the .ics
+  // ATTENDEE lines (server-side, via the ?attendees= query param on
+  // GET /api/leads/[id]/calendar.ics) and the Google Calendar add= URL
+  // (client-side, via lib/ics.ts googleCalendarUrl()).
+  const [invitees, setInvitees] = useState<InviteeOption[]>([]);
+  const [selectedInviteeEmails, setSelectedInviteeEmails] = useState<string[]>([]);
 
   useEffect(() => {
     setDraft(lead);
@@ -86,6 +97,25 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
       cancelled = true;
     };
   }, [lead.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/profiles")
+      .then((r) => (r.ok ? r.json() : { profiles: [] }))
+      .then((body) => {
+        if (!cancelled) setInvitees(body.profiles ?? []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function toggleInvitee(email: string) {
+    setSelectedInviteeEmails((cur) =>
+      cur.includes(email) ? cur.filter((e) => e !== email) : [...cur, email]
+    );
+  }
 
   function setField<K extends keyof Lead>(key: K, value: Lead[K]) {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -281,6 +311,32 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
                 }
                 className={inputClass}
               />
+              {/* Add to calendar (BUILD-SPEC.md "Phillip's ideas list —
+                  6 July 2026" item 2) — only offered once a site visit
+                  date actually exists; saved draft.site_visit_date (not
+                  the unsaved local input) so the .ics route reads the
+                  same persisted value. */}
+              {draft.site_visit_date && (
+                <div className="mt-1.5">
+                  <AddToCalendarMenu
+                    icsUrl={`/api/leads/${lead.id}/calendar.ics${
+                      selectedInviteeEmails.length
+                        ? `?attendees=${encodeURIComponent(selectedInviteeEmails.join(","))}`
+                        : ""
+                    }`}
+                    googleUrl={googleCalendarUrl({
+                      uid: `lead-site-visit-${lead.id}@reslu.com.au`,
+                      title: `${[draft.first_name, draft.surname_project].filter(Boolean).join(" ") || draft.surname_project} — Site Visit`,
+                      start: draft.site_visit_date,
+                      location: draft.site_visit_location ?? draft.location ?? undefined,
+                      attendees: selectedInviteeEmails.map((email) => ({ email })),
+                    })}
+                    invitees={invitees}
+                    selectedInviteeEmails={selectedInviteeEmails}
+                    onToggleInvitee={toggleInvitee}
+                  />
+                </div>
+              )}
             </label>
             <label className="block sm:col-span-2">
               <span className={labelClass}>Site visit location note</span>

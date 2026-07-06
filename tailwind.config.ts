@@ -30,7 +30,10 @@ const config: Config = {
       fontSize: {
         section: ["28px", { lineHeight: "1.2", fontWeight: "300" }],
         subhead: ["14px", { lineHeight: "1.4", fontWeight: "300" }],
-        body: ["10px", { lineHeight: "1.6", fontWeight: "300" }],
+        // 11px, up from the brand guide's 10pt print scale — Phillip
+        // (6 Jul): on-screen body was too small. Print/PDF surfaces keep
+        // their own explicit sizes; this only lifts the app UI.
+        body: ["11px", { lineHeight: "1.6", fontWeight: "300" }],
         caption: ["8px", { lineHeight: "1.5", fontWeight: "300" }],
         label: ["7px", { lineHeight: "1", fontWeight: "700", letterSpacing: "0.14em" }],
       },
