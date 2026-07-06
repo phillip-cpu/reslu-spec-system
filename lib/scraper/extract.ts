@@ -357,6 +357,86 @@ function absolutise(url: string, baseUrl: string): string | null {
   }
 }
 
+// Many CDNs encode intrinsic dimensions in the URL (Sanity:
+// "...-900x900.jpg", Shopify: "_1200x", generic: "?w=3840"). Cheap,
+// reliable ranking signal: bigger declared size = more likely the
+// actual product photo; tiny = swatch/thumbnail/icon.
+function parseUrlDimensions(url: string): { w: number; h: number } | null {
+  const m = /(\d{2,4})x(\d{2,4})(?:[^0-9]|$)/.exec(url);
+  if (m) {
+    const w = Number(m[1]);
+    const h = Number(m[2]);
+    if (w >= 16 && h >= 16 && w <= 10000 && h <= 10000) return { w, h };
+  }
+  const wq = /[?&]w(?:idth)?=(\d{2,5})/.exec(url);
+  if (wq) {
+    const w = Number(wq[1]);
+    if (w >= 16 && w <= 10000) return { w, h: w };
+  }
+  return null;
+}
+
+// Next.js <Image> proxies real sources through /_next/image?url=<encoded>.
+// Unwrap to the underlying URL so dedupe/ranking sees the real image.
+function unwrapNextImageProxy(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.pathname.endsWith("/_next/image") || u.pathname === "/_next/image") {
+      const inner = u.searchParams.get("url");
+      if (inner) {
+        const decoded = decodeURIComponent(inner);
+        if (decoded.startsWith("http")) return decoded;
+        return new URL(decoded, u.origin).toString();
+      }
+    }
+  } catch {
+    // fall through — return as-is
+  }
+  return url;
+}
+
+// Minimum plausible product-photo size (URL-declared). Filters colour
+// swatches (e.g. 104x96) and icons without touching images whose URLs
+// carry no size info (those pass through with neutral rank).
+const MIN_PRODUCT_IMAGE_PX = 200;
+
+function rankAndFilterBySize(urls: string[]): string[] {
+  const scored = urls.map((u) => {
+    const dims = parseUrlDimensions(u);
+    if (!dims) return { u, area: 500 * 500, tiny: false };
+    const tiny = dims.w < MIN_PRODUCT_IMAGE_PX || dims.h < MIN_PRODUCT_IMAGE_PX;
+    return { u, area: dims.w * dims.h, tiny };
+  });
+  return scored
+    .filter((s) => !s.tiny)
+    .sort((x, y) => y.area - x.area)
+    .map((s) => s.u);
+}
+
+// srcset attributes (img/source) — grab every candidate URL; the
+// per-URL size ranking above sorts out which rendition wins.
+function imagesFromSrcsets(html: string, baseUrl: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const re = /srcset=["']([^"']+)["']/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    for (const part of m[1].split(",")) {
+      const url = part.trim().split(/\s+/)[0];
+      if (!url || url.startsWith("data:")) continue;
+      if (isLikelyIconOrSprite(url)) continue;
+      const abs = absolutise(url, baseUrl);
+      if (!abs) continue;
+      const real = unwrapNextImageProxy(abs);
+      if (seen.has(real)) continue;
+      seen.add(real);
+      out.push(real);
+      if (out.length >= MAX_IMAGES * 3) return out;
+    }
+  }
+  return out;
+}
+
 function imagesFromImgTags(html: string, baseUrl: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -368,10 +448,12 @@ function imagesFromImgTags(html: string, baseUrl: string): string[] {
     if (!raw || raw.startsWith("data:")) continue;
     if (isLikelyIconOrSprite(raw)) continue;
     const abs = absolutise(raw, baseUrl);
-    if (!abs || seen.has(abs)) continue;
-    seen.add(abs);
-    out.push(abs);
-    if (out.length >= MAX_IMAGES) break;
+    if (!abs) continue;
+    const real = unwrapNextImageProxy(abs);
+    if (seen.has(real)) continue;
+    seen.add(real);
+    out.push(real);
+    if (out.length >= MAX_IMAGES * 3) break;
   }
   return out;
 }
@@ -502,11 +584,18 @@ export function extractFromHtml(html: string, pageUrl: string): ExtractResult {
         priceConfidence = "high";
       }
     }
-    if (images.length === 0) {
-      const metaImages = imagesFromMeta(html)
-        .map((i) => absolutise(i, pageUrl))
-        .filter((i): i is string => !!i && !isLikelyIconOrSprite(i));
-      images.push(...metaImages);
+    // og:image is only trustworthy when the page declares itself a
+    // product (og:type "product"). Sites like yabby.com.au ship ONE
+    // sitewide banner as og:image on every product page (og:type
+    // "website") — trusting it gave every item the same generic image
+    // (user-reported, 6 Jul). Non-product og:image is demoted to a
+    // last-resort candidate below instead.
+    const ogType = (metaContent(html, "og:type")[0] ?? "").toLowerCase();
+    const ogImages = imagesFromMeta(html)
+      .map((i) => absolutise(i, pageUrl))
+      .filter((i): i is string => !!i && !isLikelyIconOrSprite(i));
+    if (images.length === 0 && ogType.includes("product")) {
+      images.push(...ogImages);
     }
 
     // 3. Fallback
@@ -515,8 +604,20 @@ export function extractFromHtml(html: string, pageUrl: string): ExtractResult {
       price = fallback.price;
       priceConfidence = fallback.confidence;
     }
+    // In-page images (img tags + srcsets, proxies unwrapped, size-ranked)
+    // whenever structured sources came up thin — thin, not just empty:
+    // one structured image on a page with a rich gallery usually means
+    // the structured source was junk or partial.
+    if (images.length < 3) {
+      const inPage = rankAndFilterBySize([
+        ...imagesFromSrcsets(html, pageUrl),
+        ...imagesFromImgTags(html, pageUrl),
+      ]);
+      images.push(...inPage);
+    }
+    // Absolute last resort: a non-product og:image is better than nothing.
     if (images.length === 0) {
-      images.push(...imagesFromImgTags(html, pageUrl));
+      images.push(...ogImages);
     }
 
     // Dedupe + cap regardless of which source(s) contributed.
