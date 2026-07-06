@@ -433,6 +433,23 @@ admin enforcement for financial fields is now in place project-wide
   Phase 13" section and `docs/ARIA.md`'s "Office board (Phase 13)"
   section (new MCP tools `create_office_task` / `list_office_tasks`).
 
+- **Phase 12b — Design Framework (final planned phase).** Migration
+  `025_design_framework.sql`. New project tab **Design** (between
+  Overview and FF&E) — a fixed 7-phase design checklist per project
+  (Project Milestones, Presentation, Concepts, 3D Working Model, WD
+  Package, Renders, Sampling & Furniture, seeded on first visit),
+  each phase a vertical section with a status control (not
+  started/in progress/complete/N/A), a task list (multi-assignee,
+  auto-assign creator, red-overdue due dates), an add-task composer,
+  and a progress chip. Completing **WD Package** shows a one-time,
+  dismissible "Design package complete — start quoting?" prompt
+  linking to **Create SOW from template** and **Save estimate
+  version** (the design-to-quoting hinge). Adds a Design progress
+  card to the project Overview and a new `design_task` source to
+  `/my-work`. See `docs/API.md`'s "Design Framework — Phase 12b"
+  section and `docs/ARIA.md`'s matching section (new MCP tools
+  `list_design_phases` / `create_design_task`).
+
 ## Cron jobs — one still needs wiring up (Phase 12a-B)
 
 `vercel.json` currently schedules `/api/digest/flush` and

@@ -2551,6 +2551,159 @@ shows it after "Confirm on behalf of trade" succeeds.
 
 ---
 
+## Design Framework — Phase 12b (final planned phase)
+
+BUILD-SPEC.md §"Phase 12b + 13 — specced from Aria's briefs" / "12b
+Design Framework" (from `docs/DESIGN-FRAMEWORK-BRIEF.md`, Aria's Monday
+board export, Board ID 5027297754). A **per-project** design pipeline —
+NOT the Monday board itself (that stays in Monday), a lighter-weight
+spec-system checklist covering the same 7-phase shape: Project
+Milestones, Presentation, Concepts, 3D Working Model, WD Package,
+Renders, Sampling & Furniture (the brief's own separate "Sampling" and
+"Furniture" Monday groups are combined into one phase here, per this
+task's own brief wording). Team-visible, not admin-gated — design work
+carries no pricing/financial data at all. New project tab **Design**,
+placed between Overview and FF&E in the tab bar.
+
+Deliberately its own table family (`design_phases` / `design_tasks` /
+`design_task_assignees`), separate from `schedule_phases`/`board_groups`
+(construction phases, unified as of migration 023 with gantt dates and
+trade contacts) — design phases have no gantt span and no trades; see
+migration `025_design_framework.sql`'s own header comment for the full
+reasoning.
+
+### GET /api/projects/[id]/design
+
+Full Design-tab read: `{ phases: DesignPhaseWithTasks[], team:
+DesignTeamMember[], progress: DesignPhaseProgress[] }`. **Seeds the 7
+brief phases on a project's first call** (same lazy "seed if currently
+zero rows" pattern as `board_columns`/the Board's Grouped-list view —
+NOT the migration-time global seed `schedule_phases`' phase template
+uses, since `design_phases` is genuinely per-project data). Each phase
+carries its non-deleted `design_tasks` nested, each task carrying
+`assignees: DesignAssigneeSummary[]` via `design_task_assignees`.
+`team` carries `email` alongside `id, full_name` (mirrors
+`OfficeTeamMember`) so the `create_design_task` MCP tool can resolve an
+`assignee_email` argument without a second route. `progress` is a
+derived convenience (`lib/design-framework.ts`'s `allPhaseProgress()`)
+— the per-phase `{ phase_id, name, status, done_count, total_count }`
+chip data; safe to ignore, since `phases` already carries everything
+needed to compute it client-side.
+
+### PATCH /api/design-phases/[id]
+
+body: `{ status? ('not_started' | 'in_progress' | 'complete' | 'na'),
+hinge_dismissed? }` → `{ phase }`. `status` is a free write, no
+state-machine guard (same as `DocumentStatusLight`'s own cycle) — with
+two side effects: transitioning into `'in_progress'` stamps
+`started_at` if not already set; transitioning into `'complete'` stamps
+`completed_at`, transitioning OUT of it clears `completed_at`.
+`hinge_dismissed: true` stamps `hinge_dismissed_at` (see the hinge
+section below) — meaningful only on the "WD Package" phase row, but
+accepted on any phase without a name check (harmless no-op elsewhere).
+
+### POST /api/design-tasks
+
+body: `{ design_phase_id, title, description?, due_date?,
+assignee_ids? }` → `{ task }` (201). Auto-assign on create mirrors
+Board v2/Office board exactly: omitting `assignee_ids` assigns the
+creator; an explicit array (including `[]`) overrides outright.
+
+### PATCH /api/design-tasks/[id] / DELETE /api/design-tasks/[id]
+
+body (partial): `{ title?, description?, due_date?, sort?,
+assignee_ids?, complete? }` → `{ task }`. `complete: true`/`false`
+stamps/clears `completed_at` — no archive-move side effect (unlike
+Office board's complete-and-archive); a design task's phase never
+changes on completion, it just ticks. `assignee_ids` (full replace)
+works exactly like every other multi-assignee PATCH route in this
+codebase. `DELETE` soft-deletes (`deleted_at`).
+
+### The WD-Package hinge
+
+BUILD-SPEC.md: "completing WD Package prompts SOW + estimate version
+creation ('design package → quoting')." Purely a **client-side** prompt
+— no server-side notification fires on the status write itself. The
+Design tab (`components/projects/design/DesignTab.tsx`) shows a
+dismissible banner (`WdPackageHingePanel.tsx`, "Design package complete
+— start quoting?") whenever `lib/design-framework.ts`'s
+`shouldShowWdPackageHinge()` is true: the "WD Package" phase is at
+`status: 'complete'` AND `hinge_dismissed_at` is still `null`.
+
+Two actions, both optional and independent of dismissal:
+- **"Create SOW from template"** chains two existing, unchanged
+  routes — `POST /api/projects/[id]/sow` (creates a new draft
+  revision) then `POST /api/projects/[id]/sow/[sowId]/from-template`
+  (applies the standard clause library to it) — then redirects to
+  `/projects/[id]/sow`. If the template step fails, the SOW revision
+  itself still exists and the team lands in the builder to apply it
+  manually.
+- **"Save estimate version"** — `POST /api/projects/[id]/versions` with
+  `{ label: "V1 — Design Package", kind: "issue" }` (admin-only
+  server-side, like every estimate route — a non-admin sees the 403
+  inline rather than the button being hidden, since the Design tab
+  itself isn't admin-gated).
+
+Dismissal (`✕` or "Dismiss") calls `PATCH /api/design-phases/[id]` with
+`{ hinge_dismissed: true }`, recorded on `design_phases.hinge_dismissed_at`
+so the panel never nags again for that project.
+
+### Schema reference (migration `025_design_framework.sql`)
+
+- `design_phases` — `id, project_id (cascade), name, sort, status
+  (check: not_started | in_progress | complete | na, default
+  not_started), started_at, completed_at, hinge_dismissed_at,
+  created_at, updated_at`.
+- `design_tasks` — `id, design_phase_id (cascade), title, description,
+  due_date, sort, completed_at, created_by, created_at, updated_at,
+  deleted_at`. No pricing/cost column anywhere — this is a design
+  checklist, never a quoting surface.
+- `design_task_assignees` — `task_id, profile_id` join, mirrors
+  `board_task_assignees`/`office_task_assignees` exactly.
+- RLS: single permissive `team_all` policy per table, same Phase 1
+  shape as every other non-financial table.
+
+### Overview integration
+
+`components/projects/DesignProgressCard.tsx` — additive card in the
+Overview grid (same "self-contained fetch, safe mount" pattern as
+`PlanCheckCard`), fetching `GET /api/projects/[id]/design` and
+rendering the 7 phases as compact status dots + label, with a link to
+the Design tab.
+
+### My Work integration
+
+`design_tasks` assigned to me (via `design_task_assignees`) with a
+`due_date` set, not yet completed, feed `GET /api/my-work` as an eighth
+source (`kind: "design_task"`, `href: "/projects/{id}/design"`, `meta`:
+always the literal string `"Design"`) — see "My Work" section above.
+The My Work UI renders a "Design" chip for these rows via
+`KIND_LABEL.design_task`.
+
+### MCP additions — Phase 12b
+
+Two new tools in `mcp/src/index.mjs`, same "fetch the live resource
+first, fuzzy-match a free-text argument against it" shape as
+`create_office_task`:
+
+- **`list_design_phases`** — `{ project_id }` → the full
+  `GET /api/projects/[id]/design` payload (seeds the 7 phases on first
+  call for a project that has none yet).
+- **`create_design_task`** — `{ project_id, phase, title, description?,
+  due_date?, assignee_email? }`. `phase` is matched case-insensitively
+  as a substring against that project's current phase names ("wd" →
+  "WD Package"); no match fails with the valid phase-name list.
+  `assignee_email` resolves against `team[].email`; omitted, the task
+  auto-assigns the calling account (Aria).
+
+No MCP tool exposes phase status changes or the WD-Package hinge
+actions — those stay human/UI-only, same structural boundary as every
+other "completion is a human action" gate in this codebase (Office
+board's complete-and-archive, the Diary's publish gate, the SOW's issue
+gate).
+
+---
+
 ## Known inconsistencies (carried over, not fixed this release)
 
 Documented here rather than silently relied upon, since Aria and human

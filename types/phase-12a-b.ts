@@ -179,7 +179,15 @@ export type MyWorkItemKind =
   // 'expired'. See app/api/my-work/route.ts source #7. Same additive
   // pattern as office_task above — this file's own established
   // convention for slotting a new source into the shared aggregator.
-  | "insurance_expiring";
+  | "insurance_expiring"
+  // Phase 12b — design_tasks assigned to me with a due date, via
+  // design_task_assignees. See app/api/my-work/route.ts source #8 and
+  // types/phase-12b.ts's DesignTask. Same additive pattern as
+  // office_task/insurance_expiring above — this task's brief calls for
+  // "design_tasks assigned to me with due dates join the aggregator
+  // with a 'Design' context chip" (rendered via this kind's `meta`
+  // field, set to "Design" in the source query below).
+  | "design_task";
 
 /**
  * One row in the My Work feed, normalised across five very different

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { DocumentStatusLight } from "./DocumentStatusLight";
 import { PlanCheckCard } from "./PlanCheckCard";
+import { DesignProgressCard } from "./DesignProgressCard";
 import type { DocumentStatus, ProjectFileKind, ProjectOverviewResponse } from "@/types";
 
 interface Props {
@@ -192,6 +193,11 @@ export function ProjectOverview({ projectId, isAdmin }: Props) {
           renders nothing until a plan analysis has been run at least
           once for this project. See components/projects/PlanCheckCard.tsx. */}
       <PlanCheckCard projectId={projectId} />
+
+      {/* Design progress card (Phase 12b, additive) — self-contained,
+          same safe-mount pattern as PlanCheckCard above. See
+          components/projects/DesignProgressCard.tsx. */}
+      <DesignProgressCard projectId={projectId} />
     </div>
   );
 }

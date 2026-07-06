@@ -3,6 +3,7 @@ import { PortalLinkAction } from "./PortalLinkAction";
 
 export type ProjectTabKey =
   | "overview"
+  | "design" // Phase 12b — Design Framework, see app/(dashboard)/projects/[id]/design/
   | "ffe"
   | "board"
   | "timeline"
@@ -45,10 +46,17 @@ interface Props {
  * lens, BUILD-SPEC.md "Week 9 — detailed scope" §2/§3) and Timeline
  * (Gantt, §4) — both team-visible (no financial data), so neither is
  * adminOnly, same trust tier as Documents.
+ *
+ * Phase 12b addition: Design — the Design Framework tab (BUILD-SPEC.md
+ * §"12b Design Framework"), placed between Overview and FF&E per this
+ * task's brief. Team-visible, not adminOnly (design work carries no
+ * pricing/financial data at all — see app/api/design-tasks/route.ts's
+ * own "no pricing" verification note).
  */
 export function ProjectTabs({ projectId, active, isAdmin, portalUrl }: Props) {
   const tabs: { key: ProjectTabKey; label: string; href: string; adminOnly?: boolean }[] = [
     { key: "overview", label: "Overview", href: `/projects/${projectId}` },
+    { key: "design", label: "Design", href: `/projects/${projectId}/design` },
     { key: "ffe", label: "FF&E", href: `/projects/${projectId}?tab=ffe` },
     { key: "board", label: "Board", href: `/projects/${projectId}/board` },
     { key: "timeline", label: "Timeline", href: `/projects/${projectId}/timeline` },

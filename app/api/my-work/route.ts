@@ -62,8 +62,21 @@ export const runtime = "nodejs";
  *      — mirrors the exact pattern Phase 13's office_task source
  *      established (see MyWorkItemKind's own doc comment,
  *      types/phase-12a-b.ts).
+ *   8. Phase 12b — Design Framework tasks assigned to me
+ *      (design_tasks via design_task_assignees), same shape as source
+ *      #1's board_task join, EXCLUDING already-completed tasks
+ *      (completed_at not null). due_date drives bucketing; `meta` is
+ *      always the literal string "Design" (this task's brief: "join
+ *      the aggregator with a 'Design' context chip") rather than the
+ *      phase name, since the phase name is already visible one click
+ *      away on the Design tab and a fixed short chip label is more
+ *      scannable in a dense cross-source feed than seven different
+ *      per-phase labels would be. Team-visible, not admin-gated (no
+ *      pricing data). Purely additive — mirrors office_task/
+ *      insurance_expiring's exact "new source block, nothing else
+ *      touched" pattern.
  *
- * None of these seven sources require a project-membership check (this
+ * None of these eight sources require a project-membership check (this
  * codebase has no per-project team assignment — every team member sees
  * every project, per BUILD-SPEC.md §Security's Phase 1 "all team equal"
  * baseline), so no extra ownership filtering is needed beyond the
@@ -317,6 +330,50 @@ export async function GET() {
         due: expiryDates[0] ?? null,
         href: "/contacts",
         meta: status === "expired" ? "Insurance expired" : "Insurance expiring soon",
+      });
+    }
+  }
+
+  // ---- 8. Design Framework tasks assigned to me (Phase 12b) ----
+  const { data: myDesignAssignments } = await supabase
+    .from("design_task_assignees")
+    .select("task_id")
+    .eq("profile_id", userId);
+
+  const myDesignTaskIds = (myDesignAssignments ?? []).map((a) => a.task_id);
+  if (myDesignTaskIds.length > 0) {
+    const { data: designTasks } = await supabase
+      .from("design_tasks")
+      .select("id,design_phase_id,title,due_date,completed_at")
+      .in("id", myDesignTaskIds)
+      .is("deleted_at", null)
+      .is("completed_at", null)
+      .not("due_date", "is", null);
+
+    const designTaskRows = designTasks ?? [];
+    const phaseIds = [...new Set(designTaskRows.map((t) => t.design_phase_id))];
+    const { data: designPhases } = phaseIds.length
+      ? await supabase.from("design_phases").select("id,project_id").in("id", phaseIds)
+      : { data: [] as { id: string; project_id: string }[] };
+    const phaseById = new Map((designPhases ?? []).map((p) => [p.id, p]));
+
+    const designProjectIds = [...new Set((designPhases ?? []).map((p) => p.project_id))];
+    const { data: designProjects } = designProjectIds.length
+      ? await supabase.from("projects").select("id,name,alias").in("id", designProjectIds)
+      : { data: [] as { id: string; name: string; alias: string | null }[] };
+    const designProjectById = new Map((designProjects ?? []).map((p) => [p.id, p]));
+
+    for (const t of designTaskRows) {
+      const phase = phaseById.get(t.design_phase_id);
+      const project = phase ? designProjectById.get(phase.project_id) : undefined;
+      items.push({
+        kind: "design_task",
+        id: t.id,
+        title: t.title,
+        project: project ? { id: project.id, name: project.name, alias: project.alias } : null,
+        due: t.due_date,
+        href: project ? `/projects/${project.id}/design` : "/",
+        meta: "Design",
       });
     }
   }

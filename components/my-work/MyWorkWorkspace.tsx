@@ -17,6 +17,13 @@ const KIND_LABEL: Record<MyWorkItem["kind"], string> = {
   // Fix Round A — trade insurance expiring/expired (GET /api/my-work
   // source #7). Additive entry, same shape as every other kind here.
   insurance_expiring: "Insurance",
+  // Phase 12b — Design Framework task assigned to me (GET /api/my-work
+  // source #8). Additive entry, same shape as every other kind here —
+  // this task's brief calls for a "'Design' context chip", already
+  // carried on item.meta (always "Design" for this kind, see that
+  // route's own doc comment) and rendered by the existing `item.meta`
+  // line below; this KIND_LABEL entry is the pill next to the title.
+  design_task: "Design",
 };
 
 const SECTIONS: { key: keyof MyWorkGroups; label: string; emptyLabel: string }[] = [

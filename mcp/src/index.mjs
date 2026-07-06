@@ -801,6 +801,86 @@ const TOOLS = [
       return { tasks: tasks.filter((t) => !t.completed_at) };
     },
   },
+  // ------------------------------------------------------------
+  // Phase 12b — Design Framework (BUILD-SPEC.md §"12b Design
+  // Framework", docs/DESIGN-FRAMEWORK-BRIEF.md). Per-project design
+  // pipeline — the 7 brief phases (Project Milestones, Presentation,
+  // Concepts, 3D Working Model, WD Package, Renders, Sampling &
+  // Furniture), each with its own task list. Distinct from
+  // create_board_task/create_office_task: this is Tenille and Phillip's
+  // internal design checklist, never a quoting surface — no
+  // pricing/cost field exists anywhere on a design task.
+  //
+  // list_design_phases fetches a project's Design tab in one call
+  // (seeding the 7 phases on first call for that project, same as the
+  // Design tab's own first-visit behaviour — see
+  // GET /api/projects/[id]/design's doc comment). create_design_task
+  // then fuzzy-matches a phase name against that same live list, same
+  // "fuzzy-match against a live GET first" pattern create_office_task
+  // uses for department groups — Aria (or whoever prompts her) will say
+  // "add a task to WD Package", not quote a design_phase_id UUID.
+  // ------------------------------------------------------------
+  {
+    name: "list_design_phases",
+    description:
+      "List a project's Design Framework phases (Project Milestones, Presentation, Concepts, 3D Working Model, WD Package, Renders, Sampling & Furniture) with their tasks, statuses, and assignees. Seeds the 7 standard phases on the first call for a project that has none yet (same as opening its Design tab for the first time). Read-only — no pricing/cost data is ever included, this is a design-workflow checklist, not a quoting surface.",
+    inputSchema: {
+      type: "object",
+      properties: { project_id: { type: "string", description: "Project UUID" } },
+      required: ["project_id"],
+      additionalProperties: false,
+    },
+    handler: async ({ project_id }) => apiFetch(`/api/projects/${project_id}/design`),
+  },
+  {
+    name: "create_design_task",
+    description:
+      "Create a task under one of a project's Design Framework phases. phase matches a phase name loosely (case-insensitive substring, e.g. 'wd' matches 'WD Package', 'renders' matches 'Renders') against that project's live phase list — if nothing matches, the call fails with the current list of valid phase names so you can retry. assignee_email is optional and resolved against the team roster; omitting it falls through to the API's own auto-assign-on-create (the calling account, i.e. Aria, is assigned automatically), matching create_board_task's and create_office_task's identical behaviour.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project UUID" },
+        phase: {
+          type: "string",
+          description:
+            "Design phase name, fuzzy-matched case-insensitively against that project's current Design phases (e.g. 'concepts', 'wd package', '3d').",
+        },
+        title: { type: "string" },
+        description: { type: "string" },
+        due_date: { type: "string", description: "ISO date, YYYY-MM-DD, optional" },
+        assignee_email: {
+          type: "string",
+          description:
+            "Team member email to assign, optional — resolved against the team roster (case-insensitive exact match). Omit to auto-assign the calling account (Aria).",
+        },
+      },
+      required: ["project_id", "phase", "title"],
+      additionalProperties: false,
+    },
+    handler: async ({ project_id, phase, title, description, due_date, assignee_email }) => {
+      const design = await apiFetch(`/api/projects/${project_id}/design`);
+      const target = design.phases.find((p) =>
+        p.name.toLowerCase().includes(phase.trim().toLowerCase())
+      );
+      if (!target) {
+        const names = design.phases.map((p) => p.name).join(", ");
+        throw new Error(`No Design phase matches "${phase}" for this project. Valid phases: ${names}`);
+      }
+
+      const body = { design_phase_id: target.id, title, description, due_date };
+      if (assignee_email) {
+        const member = design.team.find(
+          (t) => t.email && t.email.toLowerCase() === assignee_email.trim().toLowerCase()
+        );
+        if (!member) {
+          throw new Error(`No team member found with email "${assignee_email}".`);
+        }
+        body.assignee_ids = [member.id];
+      }
+
+      return apiFetch("/api/design-tasks", { method: "POST", body: JSON.stringify(body) });
+    },
+  },
 ];
 
 const toolsByName = new Map(TOOLS.map((t) => [t.name, t]));

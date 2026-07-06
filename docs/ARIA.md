@@ -407,3 +407,78 @@ boundary are both human-only actions elsewhere in this file. If a
 future automation genuinely needs Aria to close out her own inbound
 items programmatically, that's an explicit, separate addition — not
 assumed here.
+
+## Design Framework (Phase 12b, final planned phase)
+
+BUILD-SPEC.md §"12b Design Framework" / `docs/DESIGN-FRAMEWORK-BRIEF.md`
+(Aria's own Monday board export, Board ID 5027297754, 5 Jul 2026). This
+is a **per-project** design-workflow checklist inside the spec system
+itself — not the Monday board (that stays in Monday) — covering the
+same 7-phase shape the brief describes: Project Milestones,
+Presentation, Concepts, 3D Working Model, WD Package, Renders, Sampling
+& Furniture. Two new MCP tools: `list_design_phases`,
+`create_design_task`.
+
+### What this replaces from the Monday board
+
+Per DESIGN-FRAMEWORK-BRIEF.md's own "What Aria automates today":
+**nothing on the Monday board is automated by Aria today** — it's
+entirely manual, Tenille and Phillip update it by hand. This spec-system
+build does not attempt to sync or migrate that board; it is a clean,
+separate, lighter-weight checklist living where the rest of a project's
+work already lives (alongside FF&E, Documents, Estimate), with its own
+task list per phase rather than the Monday board's per-deliverable
+items/subtasks/hours-estimate columns. There is no Monday API call
+anywhere in this feature.
+
+### `list_design_phases`
+
+`{ project_id }` → `GET /api/projects/[id]/design`. Seeds the 7 standard
+phases on the first call for a project that has none yet (same
+seed-on-first-visit behaviour as opening that project's Design tab for
+the first time). Read-only — no pricing/cost data is ever returned,
+since none exists anywhere in this feature's schema; this is a
+design-workflow checklist, never a quoting surface.
+
+### `create_design_task`
+
+`{ project_id, phase, title, description?, due_date?, assignee_email?
+}` → `POST /api/design-tasks`. `phase` is **fuzzy-matched**
+(case-insensitive substring) against that project's live phase list
+fetched from `GET /api/projects/[id]/design` first — "wd" matches "WD
+Package", "concepts" matches "Concepts" — so Aria never needs to know
+an internal `design_phase_id` UUID; passing something that matches
+nothing fails with the current valid phase-name list so the call can be
+retried correctly. `assignee_email` is resolved the same way against
+the team roster (`GET /api/projects/[id]/design`'s `team` array, which
+carries `email` for exactly this purpose, mirroring `OfficeTeamMember`);
+omitting it falls through to `POST /api/design-tasks`' own
+auto-assign-on-create (the calling account — Aria — is assigned
+automatically, mirroring `create_board_task`'s and
+`create_office_task`'s identical behaviour).
+
+### The WD-Package hinge is NOT an Aria automation
+
+BUILD-SPEC.md: "completing WD Package prompts SOW + estimate version
+creation ('design package → quoting')." This hinge
+(`components/projects/design/WdPackageHingePanel.tsx`) is a purely
+client-side, human-facing prompt panel shown in the Design tab UI once
+the "WD Package" phase is marked complete — there is no MCP tool that
+triggers it, checks for it, or actions its two buttons ("Create SOW
+from template" / "Save estimate version") on Aria's behalf. Marking a
+design phase complete is not exposed as an MCP action at all (see
+below) — this hinge is deliberately a human moment in the workflow, the
+point where the team decides quoting should start, not an automatic
+trigger Aria could fire unsupervised.
+
+### What's deliberately NOT an Aria tool here
+
+There is no `update_design_phase_status` / `complete_design_task`
+MCP tool. Aria's role in this feature, per the same structural pattern
+as the Office board above (and the Diary's publish gate, the SOW's
+issue gate elsewhere in this file), is to **create** tasks and
+**track** them via `list_design_phases` — ticking a task done, cycling
+a phase's status, or actioning the WD-Package hinge are all left to the
+human loop. If a future automation genuinely needs Aria to update
+phase/task state programmatically, that's an explicit, separate
+addition — not assumed here.
