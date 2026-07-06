@@ -85,13 +85,6 @@ export function timberFrameMembers(inputs: TimberFrameInputs): TimberFrameMember
     return { studs: 0, plate_lm: 0, jack_studs: 0, lintels: 0, noggin_rows: 0, noggins: 0 };
   }
 
-  const studs = studCount(wall_length_mm, stud_spacing_mm);
-
-  // Bottom plate + top plate, both full wall length; double top plate
-  // adds a second full-length top plate run.
-  const plateRuns = double_top_plate ? 3 : 2;
-  const plate_lm = (plateRuns * wall_length_mm) / MM_PER_M;
-
   // Jack studs: 2 per opening (one either side), or 4 if that opening
   // has "double stud" checked (2 either side — wider spans/load-
   // bearing headers) — 7 July 2026, Phillip.
@@ -99,6 +92,25 @@ export function timberFrameMembers(inputs: TimberFrameInputs): TimberFrameMember
   const openingCount = validOpenings.length;
   const jack_studs = validOpenings.reduce((sum, o) => sum + (o.double_stud ? 4 : 2), 0);
   const lintels = openingCount;
+
+  // Regular studs: wall length NET of opening widths (7 July 2026,
+  // Phillip — openings weren't reducing the stud count at all before
+  // this; the wall run "under" a door/window doesn't need common studs
+  // at spacing through it, since the jack studs + lintel take over
+  // there instead). Clamped at 0 so an opening total that (implausibly)
+  // exceeds the wall length can't go negative.
+  const openingWidthTotalMm = validOpenings.reduce((sum, o) => sum + (o.width_mm as number), 0);
+  const studWallLengthMm = Math.max(0, wall_length_mm - openingWidthTotalMm);
+  const studs = studCount(studWallLengthMm, stud_spacing_mm);
+
+  // Bottom plate + top plate, both full wall length regardless of
+  // openings (they tie the whole frame together — a door's section of
+  // bottom plate gets cut out on site, not left off the purchase list
+  // entirely) — 7 July 2026, Phillip: studs reduce for openings,
+  // plates don't. Double top plate adds a second full-length top
+  // plate run.
+  const plateRuns = double_top_plate ? 3 : 2;
+  const plate_lm = (plateRuns * wall_length_mm) / MM_PER_M;
 
   const noggin_rows = nogginRowCount(wall_height_mm);
   // One noggin piece per stud bay per row — (studs − 1) bays between
