@@ -160,10 +160,41 @@ export function DesignTab({ projectId, currentUserId }: Props) {
 
   const wdPackage = phases.find((p) => p.name === "WD Package");
 
+  // Backfill affordance (Phillip, 7 Jul): projects whose design phases
+  // seeded before task templates existed show headings only. Offer a
+  // one-click template apply whenever every phase is empty; the POST is
+  // idempotent (server only fills phases with zero tasks).
+  const totalTasks = phases.reduce((n, p) => n + p.tasks.length, 0);
+  const applyTemplate = async () => {
+    const res = await fetch(`/api/projects/${projectId}/design`, { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setError(body.error ?? "Could not apply templates.");
+      return;
+    }
+    const fresh = await fetch(`/api/projects/${projectId}/design`).then((r) => r.json());
+    if (!fresh.error) setPhases((fresh as DesignFrameworkResponse).phases);
+  };
+
   return (
     <div className="space-y-6">
       {error && (
         <p className="border border-red-700/40 bg-red-50 px-3 py-2 text-body text-red-700">{error}</p>
+      )}
+
+      {totalTasks === 0 && phases.length > 0 && (
+        <div className="flex items-center justify-between border border-[#dcd6cc] bg-offwhite px-4 py-3">
+          <p className="text-body text-charcoal/70">
+            Phases have no tasks yet — pre-fill each phase from your design task templates?
+          </p>
+          <button
+            type="button"
+            onClick={applyTemplate}
+            className="border border-nearblack px-4 py-1.5 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
+          >
+            Apply templates
+          </button>
+        </div>
       )}
 
       {wdPackage && shouldShowWdPackageHinge(phases) && (

@@ -4,6 +4,7 @@ import { useState } from "react";
 import clsx from "clsx";
 import { umbrellaGridPosition } from "@/lib/gantt";
 import type { GanttGrid } from "@/lib/gantt";
+import { dragTransform, type WindowedBarPosition } from "@/lib/gantt-window";
 
 /**
  * Renders the "Site Setup" umbrella phase as a full-width band row —
@@ -28,6 +29,8 @@ export function UmbrellaBand({
   startDate,
   endDate,
   grid,
+  winPos = null,
+  winDays = 0,
   costSectionLines,
   onPatch,
   dragDeltaDays = 0,
@@ -39,6 +42,20 @@ export function UmbrellaBand({
   startDate: string;
   endDate: string;
   grid: GanttGrid;
+  /**
+   * Timeline Day-zoom polish round — the umbrella band's windowed
+   * position (lib/gantt-window.ts), passed by GanttChart.tsx whenever
+   * zoom is 'day'/'week'; null at Month zoom, where this component
+   * falls back to its original lib/gantt.ts week-grid math exactly as
+   * before. The umbrella band is explicitly one of the "ALL move to the
+   * same windowed math" elements BUILD-SPEC item 3 calls out — before
+   * this round it shared lib/gantt.ts's week-granularity
+   * umbrellaGridPosition with ordinary phase bars, which had the exact
+   * same bar-scale bug those bars did.
+   */
+  winPos?: WindowedBarPosition | null;
+  /** Window day-count (win.days) — needed alongside winPos to convert a live drag's day-delta into a percentage-of-window transform below. Ignored when winPos is null. */
+  winDays?: number;
   costSectionLines: string[];
   onPatch: (patch: { name?: string; start_date?: string; end_date?: string }) => void;
   /**
@@ -96,31 +113,79 @@ export function UmbrellaBand({
         className="relative border-b border-[#e5e0d6] py-2"
         style={{ gridColumn: `2 / span ${grid.weekCount}` }}
       >
-        <div
-          onPointerDown={(e) => {
-            if (!onStartDrag) return;
-            const target = e.currentTarget;
-            const rect = target.getBoundingClientRect();
-            const offsetX = e.clientX - rect.left;
-            const mode =
-              offsetX <= 6 ? "resize-start" : offsetX >= rect.width - 6 ? "resize-end" : "move";
-            onStartDrag(mode, e.clientX);
-          }}
-          onContextMenu={(e) => {
-            if (!onContextMenu) return;
-            e.preventDefault();
-            onContextMenu({ x: e.clientX, y: e.clientY });
-          }}
-          className={clsx(
-            "h-4 cursor-grab border border-dashed border-charcoal/40 bg-charcoal/10 transition-opacity",
-            dragging && "cursor-grabbing opacity-60 outline outline-2 outline-nearblack"
-          )}
-          style={{
-            marginLeft: `calc((100% / ${grid.weekCount}) * ${pos.startCol - 1 + (dragMode === "move" || dragMode === "resize-start" ? dragDeltaDays / 7 : 0)})`,
-            width: `calc((100% / ${grid.weekCount}) * ${pos.span + (dragMode === "resize-start" ? -dragDeltaDays / 7 : dragMode === "resize-end" ? dragDeltaDays / 7 : 0)})`,
-          }}
-          title={`${name}: ${startDate} to ${endDate}`}
-        />
+        {winPos ? (
+          winPos.visible && (
+            <div
+              className="absolute inset-y-0 py-2"
+              style={{ left: `${winPos.leftPct}%`, width: `${winPos.widthPct}%` }}
+            >
+              <div
+                onPointerDown={(e) => {
+                  if (!onStartDrag) return;
+                  const target = e.currentTarget;
+                  const rect = target.getBoundingClientRect();
+                  const offsetX = e.clientX - rect.left;
+                  const mode =
+                    offsetX <= 10 ? "resize-start" : offsetX >= rect.width - 10 ? "resize-end" : "move";
+                  onStartDrag(mode, e.clientX);
+                }}
+                onContextMenu={(e) => {
+                  if (!onContextMenu) return;
+                  e.preventDefault();
+                  onContextMenu({ x: e.clientX, y: e.clientY });
+                }}
+                className={clsx(
+                  "relative h-4 cursor-grab border border-dashed border-charcoal/40 bg-charcoal/10",
+                  dragging
+                    ? "cursor-grabbing opacity-60 outline outline-2 outline-nearblack transition-none"
+                    : "transition-opacity"
+                )}
+                style={
+                  dragging && winDays > 0
+                    ? {
+                        transform: dragTransform(dragMode, dragDeltaDays, winDays, winPos.widthPct),
+                        transformOrigin: dragMode === "resize-end" ? "left" : "right",
+                      }
+                    : undefined
+                }
+                title={`${name}: ${startDate} to ${endDate}`}
+              >
+                {winPos.clippedStart && (
+                  <span className="absolute -left-3 top-1/2 -translate-y-1/2 text-caption text-charcoal/50">◂</span>
+                )}
+                {winPos.clippedEnd && (
+                  <span className="absolute -right-3 top-1/2 -translate-y-1/2 text-caption text-charcoal/50">▸</span>
+                )}
+              </div>
+            </div>
+          )
+        ) : (
+          <div
+            onPointerDown={(e) => {
+              if (!onStartDrag) return;
+              const target = e.currentTarget;
+              const rect = target.getBoundingClientRect();
+              const offsetX = e.clientX - rect.left;
+              const mode =
+                offsetX <= 6 ? "resize-start" : offsetX >= rect.width - 6 ? "resize-end" : "move";
+              onStartDrag(mode, e.clientX);
+            }}
+            onContextMenu={(e) => {
+              if (!onContextMenu) return;
+              e.preventDefault();
+              onContextMenu({ x: e.clientX, y: e.clientY });
+            }}
+            className={clsx(
+              "h-4 cursor-grab border border-dashed border-charcoal/40 bg-charcoal/10 transition-opacity",
+              dragging && "cursor-grabbing opacity-60 outline outline-2 outline-nearblack"
+            )}
+            style={{
+              marginLeft: `calc((100% / ${grid.weekCount}) * ${pos.startCol - 1 + (dragMode === "move" || dragMode === "resize-start" ? dragDeltaDays / 7 : 0)})`,
+              width: `calc((100% / ${grid.weekCount}) * ${pos.span + (dragMode === "resize-start" ? -dragDeltaDays / 7 : dragMode === "resize-end" ? dragDeltaDays / 7 : 0)})`,
+            }}
+            title={`${name}: ${startDate} to ${endDate}`}
+          />
+        )}
       </div>
 
       {editing && (

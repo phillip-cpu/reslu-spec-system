@@ -5,6 +5,7 @@ import clsx from "clsx";
 import type { Material } from "@/types/round-b";
 import { TimberFrameCalculator } from "./TimberFrameCalculator";
 import { PlasterboardCalculator } from "./PlasterboardCalculator";
+import { BrickCalculator } from "./BrickCalculator";
 
 interface Props {
   /**
@@ -26,7 +27,7 @@ interface Props {
   onLineInserted: (line: unknown) => void;
 }
 
-type CalcTab = "timber" | "plasterboard";
+type CalcTab = "timber" | "plasterboard" | "brick";
 
 /**
  * Calculators — BUILD-SPEC.md "Phillip's ideas list — 6 July 2026"
@@ -123,6 +124,7 @@ export function CalculatorsPanel({ projectId: _projectId, sections, onLineInsert
           [
             { key: "timber", label: "Timber frame" },
             { key: "plasterboard", label: "Plasterboard" },
+            { key: "brick", label: "Brick" },
           ] as { key: CalcTab; label: string }[]
         ).map((t) => (
           <button
@@ -149,8 +151,16 @@ export function CalculatorsPanel({ projectId: _projectId, sections, onLineInsert
           onInsertLine={insertLine}
           sections={sections}
         />
-      ) : (
+      ) : tab === "plasterboard" ? (
         <PlasterboardCalculator
+          materials={materials}
+          onMaterialAdded={handleMaterialAdded}
+          onMaterialUpdated={handleMaterialUpdated}
+          onInsertLine={insertLine}
+          sections={sections}
+        />
+      ) : (
+        <BrickCalculator
           materials={materials}
           onMaterialAdded={handleMaterialAdded}
           onMaterialUpdated={handleMaterialUpdated}

@@ -3825,3 +3825,198 @@ editing there never touches an already-seeded project.
   name (not itself editable/reorderable, unlike the schedule phase
   template), each with its own ordered title-only task list, add/
   reorder/delete.
+
+## Round — book-visit prefill fix + brick calculator ("Two more — 7 July 2026 evening")
+
+Code-only round, zero new migrations — verified against the existing
+`materials`/`board_tasks`/`board_groups` columns (migrations
+027/029) rather than adding any.
+
+### Book-trade-from-card prefill fix
+
+**Bug**: opening "Book trade" from ANY board card (desktop kanban card,
+Stacked kanban section's row editor, or the Grouped-list row editor —
+the daily-driver view, `ProjectBoard.tsx`'s `view` state defaults to
+`"grouped"`, matching the mobile screenshot evidence) always rendered
+`BookVisitPanel` with phase/trade/start/end completely blank, even
+though the card the action was invoked from already carried all four
+values.
+
+**Root cause** — two-part, both in the same feature's own files, not a
+mobile-only code path (every surface funnels into one shared panel and
+one shared piece of state):
+
+1. `components/board/ProjectBoard.tsx` tracked only
+   `bookingTaskId: string | null` (now `bookingTask: BoardTaskCockpit | null`)
+   — a bare id, with no phase/contact/date context captured at the
+   moment "Book trade" was clicked, at any of its four call sites
+   (`BoardColumnView`→`BoardCard`, `StackedColumnSection`'s row editor,
+   `GroupTable`/`UngroupedTable`→`GroupRows`).
+2. `components/board/BookVisitPanel.tsx`'s prop interface had no
+   fields to receive that context even if the call site had passed it
+   — `phaseId`/`contactId`/`startDate`/`endDate` were `useState("")`/
+   `useState(null)` with no initializer input at all.
+
+**Fix**:
+- `BookVisitPanel` gained four new optional props —
+  `initialPhaseId`, `initialContactId`, `initialStartDate`,
+  `initialEndDate` — used as its four `useState` initializers. No
+  `useEffect` re-sync was needed: `ProjectBoard.tsx` only ever mounts
+  one `BookVisitPanel` at a time (`{bookingTask && <BookVisitPanel key={bookingTask.id} .../>}`)
+  and fully unmounts it on close, so a different card's "Book trade"
+  click is always a fresh mount with fresh initial props — the `key={bookingTask.id}`
+  also guarantees React treats each card's panel as a distinct instance
+  even in the (currently impossible, but now future-proofed) case of
+  swapping directly from one card's panel to another's without an
+  intermediate close.
+- `ProjectBoard.tsx`'s `onBookVisit` callback type changed from
+  `(taskId: string) => void` to `(task: BoardTaskCockpit) => void` at
+  every layer (`BoardColumnView`, `GroupTable`, `UngroupedTable`,
+  `GroupRows`) so the full card is available where the panel opens.
+  The top-level render site now resolves:
+  - `initialPhaseId` — the card's `phase_group_id` (a `board_groups.id`)
+    is looked up in the already-loaded `groups` array to find that
+    group's own `phase_id` (a `schedule_phases.id` — confirmed the SAME
+    id space `BookVisitPanel`'s phase dropdown already populates from
+    `GET /api/projects/[id]/phases`, per that route's `board_group_id`
+    reverse-lookup/`board_groups.phase_id` FK). `null` when the card is
+    ungrouped, which renders as a blank/unselected phase dropdown —
+    same as today's behaviour for a card with no phase.
+  - `initialContactId` — the card's own `contact_id` directly.
+  - `initialStartDate`/`initialEndDate` — the card's own
+    `booking_date`/`booking_end_date` (populated when re-booking after
+    an unlink; `null` for a never-booked card, same blank-start as
+    before).
+- **All prefilled values remain plain, editable controlled inputs** —
+  nothing is locked/read-only; a user can change the phase, trade, or
+  either date before submitting, same as if they'd typed them in
+  fresh.
+- **Generic/blank-start entry points are unaffected** — this fix is
+  entirely additive to `BookVisitPanel`'s prop surface (all four new
+  props are optional, defaulting to the exact same blank behaviour as
+  before when omitted), so any other future caller that wants a
+  from-scratch booking form still gets one.
+- The `book-visit` POST body shape (`BookVisitInput`,
+  `types/board-cockpit.ts`) is **unchanged** — `bookVisit()`'s own
+  fetch call and its `{ phase_id, contact_id, start_date, end_date }`
+  body were not touched, only how the panel's OWN form state is
+  seeded before the user submits.
+
+**Files touched**: `components/board/BookVisitPanel.tsx`,
+`components/board/ProjectBoard.tsx`.
+
+### Brick calculator
+
+New third tab in the Estimate workspace's Calculators panel,
+`components/calculators/BrickCalculator.tsx` — third sibling of
+`TimberFrameCalculator`/`PlasterboardCalculator`, sharing
+`MaterialLinkControl` and the same "insert as estimate line" plumbing
+(`CalculatorsPanel.tsx`'s `insertLine()`, unchanged).
+
+**Inputs** (`BrickInputs`, `types/round-b.ts`) — brick length/height/
+width mm all start blank (no assumed brick spec — Australian common/
+face/metric-modular bricks are genuinely different sizes, so guessing
+one would silently produce a wrong bricks-per-m² figure); mortar joint
+mm is the one field that DOES start at a default (10mm, the
+near-universal standard joint) but stays fully editable; wall length/
+height mm; an openings list (width × height each, same
+`FrameOpening`/"+ Add opening" UI pattern as the sibling calculators);
+wastage % (blank start).
+
+**Formulas** (`lib/calculators.ts`):
+- `bricksPerM2(brickLengthMm, brickHeightMm, mortarJointMm)` =
+  `1 / ((length_m + joint_m) × (height_m + joint_m))` — a stretcher-
+  bond face count (bricks per m² of wall face "as laid"), not adjusted
+  for wall thickness/skin count.
+- `calculateBrick()`: `net_area_m2` (reuses the existing
+  `netWallAreaM2()` helper the plasterboard calc already uses — wall
+  area minus openings), `total_bricks = ceil(net_area_m2 × bricks_per_m2 × (1 + wastage_pct/100))`.
+- `mortarVolumeM3(netAreaM2, mortarJointMm)` — **honestly approximate,
+  documented as such in the code**: `net_area_m2 × 0.02 × (mortar_joint_mm / 10)`,
+  i.e. the standard rule-of-thumb ~0.02m³ of mortar per m² of
+  single-skin brickwork at a 10mm joint, linearly scaled for a
+  different joint width. Explicitly NOT a bed/perpend take-off (this
+  calculator doesn't collect wall-thickness/skin-count, which a precise
+  figure would need) and NOT adjusted for double-skin/cavity walls
+  (roughly double this figure in practice) — the UI surfaces
+  `BRICK_MORTAR_NOTE` alongside the number saying exactly this, same
+  spirit as `PLASTERBOARD_FIXINGS_NOTE`.
+- `brickUnitRate(price, unit)` — unit-aware costing: divides the linked
+  material's raw price by 1000 when its `unit` string contains
+  `"1000"` or `"thousand"` (case-insensitive substring match, e.g.
+  `"1000"`, `"per 1000"`, `"thousand"`) since bricks are commonly sold
+  "per 1000"; any other unit is assumed already per-brick. Deliberately
+  narrow (not a general unit parser) — an unrecognised unit is treated
+  as already-per-brick rather than guessed at, matching
+  `sheetRatePerM2()`'s own "don't show a confidently wrong number"
+  discipline.
+- `brickLineDescription()` — same auto-composed description +
+  provenance-note pattern as `timberFrameLineDescription`/
+  `plasterboardLineDescription`; "Insert as estimate line" posts
+  `qty: total_bricks, unit: "brick", cost_ex_gst: result.cost` to the
+  same section-scoped cost-line route every calculator already uses.
+
+**"Request pricing via Aria"** — shown on the linked material whenever
+its price is absent (`price === null`) or already flagged stale
+(`price_refresh_status === "needs_aria"`, same read
+`MaterialLinkControl`'s own "Waiting for Aria" caption uses). Distinct
+from that control's own "Refresh price" button (which requires
+`product_url` and does a live page scrape) — this is the no-product-
+page path for materials that need a genuine supplier quote (bricks
+priced per-1000 are the motivating case, but the action isn't
+brick-specific in the route itself).
+
+- **`POST /api/materials/[id]/refresh-price?mode=supplier_quote`** —
+  the SAME route as the existing scrape-based refresh, extended with
+  an optional `mode` query param (no new route file). When
+  `mode=supplier_quote`: skips the scrape attempt entirely (no
+  `product_url` required in this mode — a bulk/palletised material may
+  not have a scrapable product page at all), and writes
+  `price_refresh_status='needs_aria'` + `price_refresh_requested_at=now()`
+  — the EXACT same two columns (migration 029) the scrape-failure path
+  already writes, just reached by a different trigger. Sends a
+  distinct email variant via the same `sendTeamEmail` block: subject
+  `"Supplier quote needed — {material name}"`, body noting a supplier
+  quote is required and surfacing whatever `product_url`/`notes` the
+  material record already carries as the closest thing to a supplier
+  reference (see the route's own doc comment for why — **no
+  `contact_id`/supplier-contact column exists on `materials` at all**,
+  confirmed against migration 027; adding one was out of scope for
+  this "no new migration" round, so the email asks Aria to source a
+  supplier contact herself when neither field is populated, rather
+  than inventing a schema field to read one from). Same **once-only
+  guard** as the existing path — the pre-update
+  `material.price_refresh_status` is checked before sending, so a
+  repeat click while already `needs_aria` re-touches
+  `price_refresh_requested_at` but does not re-send the email.
+- **UI**: `BrickCalculator.tsx`'s own "Request pricing via Aria" button
+  (POSTs the above), and — for a row already `needs_aria` — the exact
+  same "Waiting for Aria" badge markup `MaterialLinkControl.tsx`
+  already renders (that component doesn't care which path set the
+  flag), so no visual inconsistency between a brick-triggered request
+  and a scrape-failure-triggered one.
+
+**Tab wiring**: `CalculatorsPanel.tsx`'s `CalcTab` union gained
+`"brick"`, its tab-button array gained `{ key: "brick", label: "Brick" }`,
+and its render ternary gained a third branch rendering
+`<BrickCalculator>` with the same five props every sibling calculator
+already takes — no other change to that file (materials fetch, insert-
+line POST, tab-button styling all reused unchanged).
+
+**Files touched**: `types/round-b.ts` (`BrickInputs`, `BrickResult`,
+`CalculatorKind` gained `"brick"`), `lib/calculators.ts`
+(`bricksPerM2`, `mortarVolumeM3`, `BRICK_MORTAR_NOTE`, `brickUnitRate`,
+`calculateBrick`, `brickLineDescription`),
+`components/calculators/BrickCalculator.tsx` (new file),
+`components/calculators/CalculatorsPanel.tsx`,
+`app/api/materials/[id]/refresh-price/route.ts` (`?mode=supplier_quote`
+branch + email variant — same route file, no new route added).
+
+**No schema needed** — verified: brick math needs no new columns
+(wastage/wall dims/openings are calculator-local state, not persisted
+anywhere), and the supplier-quote request reuses `materials.price_refresh_status`/
+`price_refresh_requested_at` (migration 029) exactly as-is. The one
+gap this round could NOT fill without a migration — a `materials.contact_id`
+linking a material to a supplier contact record — is documented above
+and in the route's own doc comment rather than worked around with a
+schema change.

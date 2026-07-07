@@ -198,3 +198,67 @@ export async function GET(
   // for free; this is a bonus field, safe to ignore.
   return NextResponse.json({ ...body, progress: allPhaseProgress(phasesWithTasks) });
 }
+
+/**
+ * POST /api/projects/[id]/design — apply the design task templates to
+ * EXISTING phases that have no tasks yet. Backfill for projects whose
+ * design phases seeded before templates existed (Phillip, 7 Jul:
+ * "existing projects don't have the design line items, only headings").
+ * Idempotent: only touches phases with zero non-deleted tasks; never
+ * duplicates. Team auth, same as GET.
+ */
+export async function POST(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { data: phases } = await supabase
+    .from("design_phases")
+    .select("id,name")
+    .eq("project_id", id);
+  if (!phases || phases.length === 0) {
+    return NextResponse.json({ error: "No design phases — open the Design tab first" }, { status: 400 });
+  }
+
+  const { data: templatesRow } = await supabase
+    .from("app_settings")
+    .select("value")
+    .eq("key", "design_task_templates")
+    .maybeSingle();
+  const taskTemplates =
+    (templatesRow?.value as DesignTaskTemplatesMap | undefined) ?? FALLBACK_DESIGN_TASK_TEMPLATES;
+
+  let created = 0;
+  const skipped: string[] = [];
+  for (const phase of phases) {
+    const checklist = taskTemplates[phase.name];
+    if (!checklist || checklist.length === 0) continue;
+    const { count } = await supabase
+      .from("design_tasks")
+      .select("id", { count: "exact", head: true })
+      .eq("design_phase_id", phase.id)
+      .is("deleted_at", null);
+    if ((count ?? 0) > 0) {
+      skipped.push(phase.name);
+      continue;
+    }
+    const taskRows = checklist.map((item, i) => ({
+      design_phase_id: phase.id,
+      title: item.title,
+      sort: i * TASK_SORT_STEP,
+      created_by: user.id,
+    }));
+    const { error } = await supabase.from("design_tasks").insert(taskRows);
+    if (!error) created += taskRows.length;
+  }
+
+  return NextResponse.json({ created, skipped_phases_with_tasks: skipped });
+}

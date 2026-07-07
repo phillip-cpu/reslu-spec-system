@@ -57,6 +57,26 @@ export function snapDeltaDays(deltaPx: number, weekColumnPx: number): number {
   return Math.round(deltaPx / perDay);
 }
 
+/**
+ * Timeline Day-zoom polish round — day-snapping variant for the
+ * WINDOWED grid (lib/gantt-window.ts), used whenever GanttChart.tsx's
+ * zoom is 'day' or 'week'. Takes an already-known px-per-day directly
+ * (rather than a week-column width divided by 7 like snapDeltaDays
+ * above) since the windowed grid has no "week column" to measure at
+ * all — GanttChart.tsx measures `bodyWidthPx / win.days` via
+ * lib/gantt-window.ts's windowPxPerDay() and passes the result straight
+ * through here. Kept as a separate, tiny function (not a re-parametrised
+ * snapDeltaDays) so neither this file's existing Month-zoom callers nor
+ * its existing signature need to change — this round's brief is
+ * explicit that drag snapping must measure its day width "from the same
+ * source" as the windowed bar geometry, and a shared source is exactly
+ * what this function's caller (GanttChart.tsx) now uses for both.
+ */
+export function snapDeltaDaysFromPxPerDay(deltaPx: number, dayWidthPx: number): number {
+  if (!dayWidthPx || !Number.isFinite(dayWidthPx)) return 0;
+  return Math.round(deltaPx / dayWidthPx);
+}
+
 export type DragMode = "move" | "resize-start" | "resize-end";
 
 export interface DragResult {

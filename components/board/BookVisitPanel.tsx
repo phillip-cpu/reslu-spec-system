@@ -24,23 +24,55 @@ interface PhaseOption {
  * which is already large) — mirrors how components/gantt/
  * VisitBottomSheet.tsx is its own file alongside GanttChart.tsx for the
  * same "large parent file, small focused popover" reason.
+ *
+ * Prefill fix (Two more — 7 July 2026 evening): opening this panel FROM
+ * a card arrived with phase/trade/dates all blank on every surface
+ * (desktop kanban card, Stacked kanban section, Grouped-list row —
+ * they all funnel into this one shared panel). Root cause was here:
+ * this component's prop interface never accepted the card's own
+ * context in the first place — its four form fields always
+ * initialized blank regardless of which card opened it. Fixed by
+ * accepting optional `initial*` props, used as this component's
+ * `useState` initializers below. No `useEffect` re-sync is needed:
+ * ProjectBoard.tsx only ever mounts one of these at a time
+ * (`{bookingPrefill && <BookVisitPanel .../>}`) and fully unmounts it
+ * on close, so a fresh mount (with fresh initial props) happens every
+ * time a different card's "Book trade" is clicked — initializer-only
+ * state is sufficient and matches every other one-shot popover in this
+ * file's own codebase (e.g. GroupPhaseDateInputs is the one exception
+ * that stays mounted across prop changes, hence its own useEffect
+ * resync — not the situation here). All prefilled values remain
+ * plain, editable controlled inputs — nothing here is read-only/locked
+ * — satisfying "prefilled values remain editable before submit."
  */
 export function BookVisitPanel({
   projectId,
+  initialPhaseId,
+  initialContactId,
+  initialStartDate,
+  initialEndDate,
   onBook,
   onClose,
 }: {
   projectId: string;
+  /** Preselects the phase dropdown — resolved by the caller from the card's phase_group_id (a board_groups.id) via the matching group's own phase_id (a schedule_phases.id, same id space this panel's phase options use). Omit/null for a blank start (e.g. a generic/unphased booking entry point). */
+  initialPhaseId?: string | null;
+  /** Preselects the trade (contact) picker — the card's own contact_id. */
+  initialContactId?: string | null;
+  /** Preselects the Start date input — the card's booking_date, if it already had one (e.g. re-booking after an unlink). */
+  initialStartDate?: string | null;
+  /** Preselects the End date input — the card's booking_end_date. */
+  initialEndDate?: string | null;
   onBook: (input: { phase_id: string; contact_id?: string | null; start_date: string; end_date: string }) => Promise<string | null>;
   onClose: () => void;
 }) {
   const [phases, setPhases] = useState<PhaseOption[]>([]);
   const [contacts, setContacts] = useState<ContactPickerOption[]>([]);
   const [loading, setLoading] = useState(true);
-  const [phaseId, setPhaseId] = useState("");
-  const [contactId, setContactId] = useState<string | null>(null);
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
+  const [phaseId, setPhaseId] = useState(initialPhaseId ?? "");
+  const [contactId, setContactId] = useState<string | null>(initialContactId ?? null);
+  const [startDate, setStartDate] = useState(initialStartDate ?? "");
+  const [endDate, setEndDate] = useState(initialEndDate ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Non-blocking trade-insurance warning — same check every other

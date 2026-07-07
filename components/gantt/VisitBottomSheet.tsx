@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { TradeVisitWithContact } from "@/lib/trade-visits";
 import { formatArrival } from "@/lib/trade-visits";
+import { formatShortDateAU } from "@/lib/gantt-window";
 import { VisitStatusLabel } from "./VisitBar";
 
 /**
@@ -54,8 +55,8 @@ export function VisitBottomSheet({
         <div className="mx-auto mb-3 h-1 w-10 bg-charcoal/20" />
         <p className="label-caps">{visit.contact ? visit.contact.company : "No trade assigned"}</p>
         <p className="mt-1 text-body text-nearblack">
-          {visit.start_date}
-          {visit.end_date !== visit.start_date ? ` → ${visit.end_date}` : ""}
+          {formatShortDateAU(visit.start_date)}
+          {visit.end_date !== visit.start_date ? ` → ${formatShortDateAU(visit.end_date)}` : ""}
         </p>
         <p className="mt-1 text-body text-charcoal/70">{formatArrival(visit.arrival_slot, visit.arrival_time)}</p>
         <div className="mt-2">

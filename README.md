@@ -563,6 +563,46 @@ admin enforcement for financial fields is now in place project-wide
   code-level fallback (no migration seed this round). See
   `docs/API.md`'s matching section for the full breakdown.
 
+- **Round — book-visit prefill fix + brick calculator (7 July 2026
+  evening, no new migration)**. Fixed a bug where opening **"Book
+  trade"** from a board card (any surface — kanban card, Stacked
+  section, or the Grouped-list view, the daily driver) always opened
+  the booking popover with phase/trade/dates blank instead of
+  prefilled from the card — root cause was the popover component
+  itself never accepting that context as props, not just a missed
+  wire-up; both are fixed and prefilled values stay fully editable
+  before submitting. New **Brick calculator** (third tab in
+  Calculators, alongside Timber frame/Plasterboard): brick length/
+  height/width mm start blank (no assumed brick spec), 10mm mortar
+  joint default, wall dims + openings + wastage %, bricks-per-m²/total
+  bricks/a clearly-labelled approximate mortar volume, unit-aware
+  costing (divides by 1000 for "per 1000"-priced materials), and a new
+  **"Request pricing via Aria"** action for materials with no price or
+  an already-stale one — reuses the existing `refresh-price` route
+  (`?mode=supplier_quote`) and needs_aria mechanism with a distinct
+  "Supplier quote needed" email, same once-only guard, same "Waiting
+  for Aria" badge. See `docs/API.md`'s matching section for the full
+  breakdown, including the one gap (no supplier-contact column on
+  `materials`) this round documented rather than filled with a
+  migration.
+
+- **Round — Timeline Day-zoom polish (7 July 2026, no new migration)**.
+  Fixed the Day-zoom bar-scale bug (bars were still positioned/sized in
+  whole-WEEK units under the hood, only the columns had been widened) by
+  introducing `lib/gantt-window.ts` — a single windowed, day-granularity
+  geometry source that phase bars, the umbrella band, visit sub-bars,
+  and tick/milestone markers all now read from at Day/Week zoom (Month
+  zoom is unchanged, still whole-project week math). Day/Week zoom gain
+  a real day-of-month header with a today highlight, ◀ ▶ / Today period
+  navigation with a visible-range label and ←/→ keyboard nav, a
+  transform-based drag preview with 10px edge zones and a floating
+  "22 Jul → 26 Jul" date chip, and continuation chevrons on bars clipped
+  at the window edge. Phase names link to their Board group
+  (`?focus=group-<id>`) and Board group headers gain a reciprocal "View
+  on timeline ↗" link; left-column date ranges now render "22 Jul → 25
+  Jul" instead of raw ISO. Portal `TimelineSection.tsx` is untouched —
+  it keeps `lib/gantt.ts`'s original whole-range week math.
+
 ## Cron jobs — one still needs wiring up (Phase 12a-B)
 
 `vercel.json` currently schedules `/api/digest/flush` and

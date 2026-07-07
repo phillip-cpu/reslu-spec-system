@@ -169,6 +169,26 @@ export default async function ProjectTimelinePage({
   const phaseIdByGroupId = new Map((groupsForMarkers ?? []).map((g) => [g.id, g.phase_id as string]));
   const groupIds = [...phaseIdByGroupId.keys()];
 
+  // Timeline Day-zoom polish round — item 5 "Better board linking":
+  // reverse the phase_id -> group_id map above (already fetched for
+  // the tick-marker join, so this is additive/zero extra queries) to
+  // annotate each phase with its linked board_groups id, mirroring what
+  // GET /api/projects/[id]/phases already returns via
+  // types/phase-fix-a.ts's SchedulePhaseWithBoardGroup (that route's
+  // own response shape is untouched — this page has always built its
+  // own equivalent query rather than calling that route, per this
+  // file's header doc comment, so it needs its own equivalent join).
+  // GanttChart.tsx reads this via its local PhaseWithGroupLink
+  // intersection type — SchedulePhaseWithVisits itself (lib/trade-visits.ts)
+  // is untouched.
+  const groupIdByPhaseId = new Map(
+    [...phaseIdByGroupId.entries()].map(([groupId, phaseId]) => [phaseId, groupId])
+  );
+  const initialPhasesWithGroupLink = initialPhases.map((p) => ({
+    ...p,
+    board_group_id: groupIdByPhaseId.get(p.id) ?? null,
+  }));
+
   const { data: markerTasks } = groupIds.length
     ? await supabase
         .from("board_tasks")
@@ -195,7 +215,7 @@ export default async function ProjectTimelinePage({
       <Header title={project.name} subtitle={`${project.client_name} · Timeline`} titleHref={`/projects/${id}`} />
       <ProjectTabs projectId={id} active="timeline" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
       <main className="flex-1 px-8 py-8">
-        <GanttChart projectId={id} initialPhases={initialPhases} timelineMarkers={timelineMarkers} />
+        <GanttChart projectId={id} initialPhases={initialPhasesWithGroupLink} timelineMarkers={timelineMarkers} />
       </main>
     </>
   );

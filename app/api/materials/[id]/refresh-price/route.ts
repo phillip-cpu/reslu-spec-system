@@ -4,9 +4,11 @@ import { fetchSafely, UnsafeUrlError } from "@/lib/scraper/guard";
 import { extractFromHtml } from "@/lib/scraper/extract";
 import { reportError } from "@/lib/report-error";
 import type { RefreshPriceResponse } from "@/types/round-b";
+import { sendTeamEmail } from "@/lib/gmail/send";
 
 /**
  * POST /api/materials/[id]/refresh-price
+ * POST /api/materials/[id]/refresh-price?mode=supplier_quote
  *
  * BUILD-SPEC.md "Phillip's ideas list — 6 July 2026" item 4:
  * "'Refresh price' button → ... reuse lib/scraper price extraction on
@@ -29,13 +31,33 @@ import type { RefreshPriceResponse } from "@/types/round-b";
  * happened, rather than a 4xx/5xx. The one exception is genuine
  * request-shape errors (missing product_url, material not found),
  * which ARE real client errors, not scrape failures.
+ *
+ * `?mode=supplier_quote` ("Two more — 7 July 2026 evening", the Brick
+ * calculator's "Request pricing via Aria" action): materials that need
+ * a supplier quote (e.g. bulk/palletised items like bricks, priced
+ * per-1000, that a plain product-page scrape can't sensibly cover)
+ * skip the scrape attempt entirely — no product_url is required in
+ * this mode — and go straight to the same needs_aria/requested_at
+ * write + once-only email as a failed scrape, just with different
+ * copy (subject "Supplier quote needed — {material}" instead of
+ * "Price request — {material}", and body text asking for a supplier
+ * quote/contact rather than "couldn't be fetched automatically").
+ * Reuses the EXACT same needs_aria mechanism/columns/once-only guard
+ * as the scrape-failure path below — this is a code-only addition
+ * (no new migration, no new column): same `price_refresh_status`/
+ * `price_refresh_requested_at` pair, just a different trigger and a
+ * different email variant. The "Waiting for Aria" badge in
+ * MaterialLinkControl.tsx already renders for ANY needs_aria row
+ * regardless of which path set it, so no UI change was needed there.
  */
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
   const supabase = await createClient();
+  const mode = request.nextUrl.searchParams.get("mode");
+  const isSupplierQuote = mode === "supplier_quote";
 
   const {
     data: { user },
@@ -55,7 +77,7 @@ export async function POST(
     return NextResponse.json({ error: "Material not found" }, { status: 404 });
   }
 
-  if (!material.product_url) {
+  if (!isSupplierQuote && !material.product_url) {
     return NextResponse.json(
       { error: "This material has no product_url to refresh a price from" },
       { status: 400 }
@@ -65,36 +87,45 @@ export async function POST(
   let note: string | undefined;
   let newPrice: number | null = null;
 
-  try {
-    const { bytes, contentType } = await fetchSafely(material.product_url, {
-      accept: "text/html,application/xhtml+xml",
-    });
+  if (isSupplierQuote) {
+    // Supplier-quote mode never attempts a scrape — a bulk/palletised
+    // material priced per-1000 (bricks, pavers, etc.) needs a human
+    // quote, not a product-page price extraction; product_url may not
+    // even be set. Falls straight through to the needs_aria write below
+    // with newPrice left null, same as any other failed-refresh outcome.
+    note = "Supplier quote requested.";
+  } else {
+    try {
+      const { bytes, contentType } = await fetchSafely(material.product_url, {
+        accept: "text/html,application/xhtml+xml",
+      });
 
-    const isHtml = !contentType || /text\/html|application\/xhtml/i.test(contentType);
-    if (!isHtml) {
-      note = "Product URL did not return an HTML page.";
-    } else {
-      const html = bytes.toString("utf-8");
-      const { price } = extractFromHtml(html, material.product_url);
-      if (price === null) {
-        note = "No price found on the product page.";
+      const isHtml = !contentType || /text\/html|application\/xhtml/i.test(contentType);
+      if (!isHtml) {
+        note = "Product URL did not return an HTML page.";
       } else {
-        newPrice = price;
+        const html = bytes.toString("utf-8");
+        const { price } = extractFromHtml(html, material.product_url);
+        if (price === null) {
+          note = "No price found on the product page.";
+        } else {
+          newPrice = price;
+        }
       }
-    }
-  } catch (err) {
-    note =
-      err instanceof UnsafeUrlError
-        ? "Product URL points to a disallowed address."
-        : err instanceof Error
-          ? err.message
-          : "Unknown error while refreshing price.";
-    // Same reasoning as lib/scraper/index.ts: an UnsafeUrlError is an
-    // expected, already-handled outcome of the SSRF guard (a bad
-    // supplier link is routine here too), not worth polluting the
-    // admin "System health" panel over. Anything else is unexpected.
-    if (!(err instanceof UnsafeUrlError)) {
-      await reportError("materials-refresh-price", err);
+    } catch (err) {
+      note =
+        err instanceof UnsafeUrlError
+          ? "Product URL points to a disallowed address."
+          : err instanceof Error
+            ? err.message
+            : "Unknown error while refreshing price.";
+      // Same reasoning as lib/scraper/index.ts: an UnsafeUrlError is an
+      // expected, already-handled outcome of the SSRF guard (a bad
+      // supplier link is routine here too), not worth polluting the
+      // admin "System health" panel over. Anything else is unexpected.
+      if (!(err instanceof UnsafeUrlError)) {
+        await reportError("materials-refresh-price", err);
+      }
     }
   }
 
@@ -129,6 +160,80 @@ export async function POST(
 
   if (updateError) {
     return NextResponse.json({ error: updateError.message }, { status: 500 });
+  }
+
+  // Aria price-request notification (Phillip, 7 Jul): when a material
+  // FLIPS to needs_aria (once per request — material.price_refresh_status
+  // is the pre-update value, so a re-click while already queued doesn't
+  // re-send), email her the lookup job. Best-effort like notifyClient:
+  // sendTeamEmail no-ops without Gmail config and never throws here.
+  //
+  // Two more — 7 July 2026 evening: supplier-quote mode sends a DIFFERENT
+  // email variant (subject "Supplier quote needed — {material}", body
+  // asking for a supplier quote/contact rather than "couldn't be
+  // fetched automatically") — same once-only guard, same columns, same
+  // fire-and-forget send, just different copy for a different reason
+  // the row is needs_aria. LIMITATION (documented per this round's own
+  // "no schema" boundary): the brief asks this email to note "supplier
+  // company/contact from linked contact if any" — but the `materials`
+  // table (migration 027) has no contact_id/supplier-contact column at
+  // all (confirmed: no such field exists anywhere on Material), so
+  // there is no "linked contact" this route could read even if it
+  // wanted to. Rather than invent one (which would need a migration —
+  // explicitly out of scope this round), the email instead surfaces
+  // whatever supplier info the material record DOES carry — product_url
+  // and notes — and asks Aria to source/confirm the supplier contact
+  // herself when neither is populated.
+  if (
+    newPrice === null &&
+    material.price_refresh_status !== "needs_aria"
+  ) {
+    const requested = new Date().toLocaleDateString("en-AU", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+    const subject = isSupplierQuote
+      ? `Supplier quote needed — ${material.name}`
+      : `Price request — ${material.name}`;
+    const body = isSupplierQuote
+      ? [
+          "Hi Aria,",
+          "",
+          "A supplier quote is required for current pricing on this material — it's",
+          "priced/sold in a way (e.g. per 1000) that needs a supplier conversation",
+          "rather than a product-page price check.",
+          "",
+          `Material: ${material.name}`,
+          `Supplier / product reference: ${material.product_url ?? material.notes ?? "(none on file — please source a supplier contact for this material)"}`,
+          `Requested: ${requested}`,
+          "",
+          "Once you have a quote, submit it with your submit_material_price tool",
+          `(material_id: ${id}) or PATCH /api/materials/${id}.`,
+          "",
+          "— RESLU Spec System",
+        ].join("\n")
+      : [
+          "Hi Aria,",
+          "",
+          "A material price couldn't be fetched automatically and needs manual lookup.",
+          "",
+          `Material: ${material.name}`,
+          `Product URL: ${material.product_url ?? "(none on file)"}`,
+          `Requested: ${requested}`,
+          "",
+          "Once you have the price, submit it with your submit_material_price tool",
+          `(material_id: ${id}) or PATCH /api/materials/${id}.`,
+          "",
+          "— RESLU Spec System",
+        ].join("\n");
+    sendTeamEmail({
+      to: ["aria@reslu.com.au"],
+      subject,
+      body,
+    }).catch(() => {
+      // best-effort by design
+    });
   }
 
   const payload: RefreshPriceResponse = {

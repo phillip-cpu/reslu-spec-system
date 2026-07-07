@@ -228,5 +228,48 @@ export interface PlasterboardResult {
   cost: number | null;
 }
 
+/**
+ * Brick calculator inputs — "Two more — 7 July 2026 evening". Same "no
+ * framing defaults" rule as timber frame / plasterboard: brick
+ * length/height/width start null (there is no single "standard brick"
+ * — common brick, face brick, and metric-modular brick are all
+ * different sizes in Australia, so guessing one would silently produce
+ * a wrong bricks-per-m² figure). mortar_joint_mm is the one field that
+ * DOES start at a default (10mm) per this round's own brief — 10mm is
+ * the near-universal standard mortar joint width, unlike a brick's own
+ * dimensions which vary by product; still fully editable.
+ */
+export interface BrickInputs {
+  /** mm. Blank start — no assumed brick spec. */
+  brick_length_mm: number | null;
+  /** mm. */
+  brick_height_mm: number | null;
+  /** mm — not used by the area/count math (bricks-per-m² only needs
+   * the face length × height), but captured for a complete brick
+   * "spec" in the provenance note and for a future wall-thickness/
+   * volume refinement; harmless to leave at null if not needed. */
+  brick_width_mm: number | null;
+  /** mm — defaults to 10 (standard mortar joint), editable. */
+  mortar_joint_mm: number;
+  wall_length_mm: number | null;
+  wall_height_mm: number | null;
+  openings: FrameOpening[];
+  /** 0–100 (percent, not a 0–1 fraction — matches how the UI field is labelled/typed). */
+  wastage_pct: number | null;
+}
+
+export interface BrickResult {
+  /** Wall area minus openings, m² (reuses lib/calculators.ts netWallAreaM2 — same helper the plasterboard calc uses). */
+  net_area_m2: number;
+  /** 1 / ((length_m + joint_m) × (height_m + joint_m)) — bricks needed per m² of wall face, before wastage. */
+  bricks_per_m2: number;
+  /** ceil(net_area_m2 × bricks_per_m2 × (1 + wastage_pct/100)). */
+  total_bricks: number;
+  /** Rough mortar volume estimate, m³ — see lib/calculators.ts calculateBrick() doc comment for the approximation and its honesty caveat. */
+  mortar_volume_m3: number;
+  /** Cost of total_bricks × the linked material's per-brick rate (unit-aware — see lib/calculators.ts brickUnitRate() doc comment), or null if no material linked/priced. */
+  cost: number | null;
+}
+
 /** Which calculator produced a given "insert as estimate line" call — feeds the auto-composed provenance note. */
-export type CalculatorKind = "timber_frame" | "plasterboard";
+export type CalculatorKind = "timber_frame" | "plasterboard" | "brick";

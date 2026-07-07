@@ -37,7 +37,24 @@ import {
   todayGridPosition,
   type GanttGrid,
 } from "@/lib/gantt";
-import { applyDrag, snapDeltaDays, type DragMode } from "@/lib/phase-drag";
+import { applyDrag, snapDeltaDaysFromPxPerDay, type DragMode } from "@/lib/phase-drag";
+import {
+  defaultWindow,
+  dragTransform,
+  formatDateRangeAU,
+  formatWindowRange,
+  rezoomWindow,
+  shiftWindow,
+  windowContainsDate,
+  windowedMarkerPosition,
+  windowedPosition,
+  windowPxPerDay,
+  windowStepDays,
+  windowToToday,
+  type GanttWindow,
+  type WindowedBarPosition,
+  type WindowZoom,
+} from "@/lib/gantt-window";
 import { VisitBar, VisitStatusLabel } from "./VisitBar";
 import { VisitSubBar } from "./VisitSubBar";
 import { ReconfirmAffordance } from "./ReconfirmAffordance";
@@ -49,10 +66,29 @@ import { ContactPicker } from "@/components/shared/ContactPicker";
 import type { GanttTimelineMarker } from "@/types/board-cockpit";
 import type { VisitExpansionState } from "@/types/round-c";
 
-/** Pixel width of the invisible edge zone at each end of a bar that resizes instead of moves — BUILD-SPEC "grab 6px edge zones = resize start or end". */
-const EDGE_ZONE_PX = 6;
+/** Pixel width of the invisible edge zone at each end of a bar that resizes instead of moves — BUILD-SPEC "grab 6px edge zones = resize start or end". Widened to 10px this round (BUILD-SPEC "Timeline Day-zoom polish" item 4: "larger edge grab zones (10px)") — was 6px (Round A). VisitSubBar.tsx keeps its OWN separate 6px constant for visit sub-bars deliberately (see that file's doc comment) since the spec's "10px" ask is scoped to phase/umbrella bars, not the thinner visit sub-bars where 10px would eat too much of an already-narrow bar. */
+const EDGE_ZONE_PX = 10;
 /** Long-press duration (ms) that opens the context menu on touch — BUILD-SPEC "Long-press (~500ms) on touch = same menu." */
 const LONG_PRESS_MS = 500;
+
+/**
+ * Timeline Day-zoom polish round — a phase row annotated with its
+ * linked board_groups id, for the phase-name -> Board deep link (item
+ * 5). Optional/nullable and additive: GanttChart's initialPhases prop
+ * stays typed as SchedulePhaseWithVisits[] (unchanged, so every other
+ * existing field/caller keeps compiling) — this is a local widening via
+ * intersection, populated by the timeline page's own additive query
+ * (see app/(dashboard)/projects/[id]/timeline/page.tsx, updated this
+ * round to also join board_groups.phase_id, mirroring what GET
+ * /api/projects/[id]/phases already returns via
+ * types/phase-fix-a.ts's SchedulePhaseWithBoardGroup — that route's
+ * response shape is untouched by this round, only this page's own
+ * hand-rolled equivalent query gains the same join). A phase with no
+ * linked group (legacy/unreconciled data) simply renders its name as
+ * plain text instead of a link, same defensive fallback the marker
+ * links already use for a null phase_id.
+ */
+type PhaseWithGroupLink = SchedulePhaseWithVisits & { board_group_id?: string | null };
 
 interface Props {
   projectId: string;
@@ -133,6 +169,25 @@ const COLOR_SWATCH: Record<PhaseColorKey, string> = {
 };
 
 /**
+ * Timeline Day-zoom polish round — the floating drag date chip's label
+ * text (BUILD-SPEC item 4: "22 Jul → 26 Jul", updates as it snaps").
+ * Reuses applyDrag (the exact same date-math function the eventual
+ * commit calls) so the chip's preview dates are always identical to
+ * what will actually be PATCHed on release — never a separately
+ * hand-rolled date calculation that could drift from the real commit
+ * logic.
+ */
+function dragChipLabel(range: { start_date: string; end_date: string }, mode: DragMode, deltaDays: number): string {
+  const preview = applyDrag(range, mode, deltaDays);
+  return formatDateRangeAU(preview.start_date, preview.end_date);
+}
+
+/** Plain `Date -> "YYYY-MM-DD"` — used only for the windowed header's per-day ISO keys/context-menu prefill. Not in lib/gantt-window.ts since that module never needs to hand a raw ISO string back to a caller (its own exports work entirely in Date/GanttWindow/percentage terms). */
+function toISO(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/**
  * Gantt (Timeline tab) — BUILD-SPEC.md "Gantt": CSS-grid table, left
  * column phase names, columns = weeks spanning min(start) to max(end)
  * (capped 52, month labels header), bars positioned by grid-column
@@ -168,6 +223,23 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
   // working unmodified at every zoom level: widening columns only
   // changes what that measurement returns, never the formula itself.
   const [zoom, setZoom] = useState<"day" | "week" | "month">("week");
+  // Timeline Day-zoom polish round — the visible-window state backing
+  // Day/Week zoom's period navigation (BUILD-SPEC item 2) AND the fixed
+  // bar-scale geometry (item 3). Lazily initialised to null and set by
+  // the effect below (rather than computed inline at first render) so
+  // its default can depend on `ordinaryPhases`/`todayISO`, which aren't
+  // available until after this component's other memoised values exist
+  // further down this function — see that effect's own doc comment.
+  // Month zoom never reads this state (it keeps lib/gantt.ts's
+  // whole-project `grid` below, per BUILD-SPEC "Month zoom keeps
+  // showing everything").
+  const [win, setWin] = useState<GanttWindow | null>(null);
+  // Floating "22 Jul → 26 Jul" date chip shown near the cursor while
+  // dragging a phase/umbrella bar (BUILD-SPEC item 4) — screen
+  // coordinates + the label text, recomputed on every drag pointermove
+  // alongside dragState/visitDragState below. null when nothing is
+  // being dragged.
+  const [dragChip, setDragChip] = useState<{ x: number; y: number; label: string } | null>(null);
   const [sheetVisit, setSheetVisit] = useState<TradeVisitWithContact | null>(null);
   // Round A right-click context menu state — see components/shared/ContextMenu.tsx.
   const [menu, setMenu] = useState<{
@@ -239,6 +311,42 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
   const umbrella = phases.find((p) => p.kind === "umbrella") ?? null;
   const ordinaryPhases = useMemo(() => phases.filter((p) => p.kind === "phase"), [phases]);
 
+  // Timeline Day-zoom polish round — Day/Week zoom use the windowed
+  // grid (lib/gantt-window.ts); Month zoom keeps the original
+  // whole-project week grid below (BUILD-SPEC item 2: "Month zoom keeps
+  // showing everything — no nav needed").
+  const isWindowedZoom = zoom === "day" || zoom === "week";
+
+  // Initialises the window once phases are available, and re-derives it
+  // (same start day, new day-count) whenever the zoom flips between
+  // 'day' and 'week' — a zoom toggle mid-navigation should not also
+  // silently reset the visible dates back to "today" (see
+  // lib/gantt-window.ts's rezoomWindow doc comment). Switching TO
+  // 'month' intentionally leaves `win` alone (untouched, just unused)
+  // so flipping back to day/week restores exactly where the user left
+  // off rather than re-defaulting to today.
+  const prevWindowZoomRef = useRef<WindowZoom | null>(null);
+  useEffect(() => {
+    if (!isWindowedZoom) return;
+    const wz = zoom as WindowZoom;
+    setWin((cur) => {
+      if (!cur) return defaultWindow(wz, ordinaryPhases);
+      if (prevWindowZoomRef.current !== wz) return rezoomWindow(cur, wz);
+      return cur;
+    });
+    prevWindowZoomRef.current = wz;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isWindowedZoom, zoom]);
+
+  const todayISO = useMemo(() => new Date().toISOString().slice(0, 10), []);
+
+  function navWindow(deltaDays: number) {
+    setWin((cur) => (cur ? shiftWindow(cur, deltaDays) : cur));
+  }
+  function navToday() {
+    if (isWindowedZoom) setWin(windowToToday(zoom as WindowZoom));
+  }
+
   // Board cockpit round — group timeline markers by phase_id so each
   // PhaseRow only renders the markers belonging to it. Purely a lookup
   // built from the read-only `timelineMarkers` prop; touches no drag
@@ -286,7 +394,7 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
   // grid math without a rewrite or a second coordinate system.
   const colMinWidth = zoom === "month" ? "10px" : zoom === "day" ? "140px" : "28px";
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayISO;
   const completedPhases = useMemo(
     () => ordinaryPhases.filter((p) => p.end_date < today),
     [ordinaryPhases, today]
@@ -473,22 +581,31 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
     if (!body) return;
     const nameColumnPx = 200;
     const bodyWidth = body.getBoundingClientRect().width - nameColumnPx;
-    const columnPx = bodyWidth / grid.weekCount;
+    // Timeline Day-zoom polish round — day width now measured from the
+    // SAME source the windowed bar geometry uses (lib/gantt-window.ts's
+    // windowPxPerDay, win.days) whenever Day/Week zoom is active,
+    // instead of always assuming a 7-day week column — this is the
+    // "drag snapping must measure from the same source" half of item 3's
+    // fix. Month zoom (win is unused there) falls back to the original
+    // week-column/7 measurement, unchanged.
+    const dayWidthPx = isWindowedZoom && win ? windowPxPerDay(bodyWidth, win) : bodyWidth / grid.weekCount / 7;
     const wasConfirmed = visit.status === "confirmed";
 
     setVisitDragState({ visitId: visit.id, mode, deltaDays: 0, wasConfirmed });
 
     function onMove(e: PointerEvent) {
       const deltaPx = e.clientX - startClientX;
-      const deltaDays = snapDeltaDays(deltaPx, columnPx);
+      const deltaDays = snapDeltaDaysFromPxPerDay(deltaPx, dayWidthPx);
       setVisitDragState({ visitId: visit.id, mode, deltaDays, wasConfirmed });
+      setDragChip({ x: e.clientX, y: e.clientY, label: dragChipLabel(visit, mode, deltaDays) });
     }
     function onUp(e: PointerEvent) {
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
       const deltaPx = e.clientX - startClientX;
-      const deltaDays = snapDeltaDays(deltaPx, columnPx);
+      const deltaDays = snapDeltaDaysFromPxPerDay(deltaPx, dayWidthPx);
       setVisitDragState(null);
+      setDragChip(null);
       commitVisitDrag(visit, mode, deltaDays, wasConfirmed);
     }
     document.addEventListener("pointermove", onMove);
@@ -530,21 +647,27 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
     if (!body) return;
     const nameColumnPx = 200;
     const bodyWidth = body.getBoundingClientRect().width - nameColumnPx;
-    const columnPx = bodyWidth / grid.weekCount;
+    // Timeline Day-zoom polish round — see startVisitDrag's identical
+    // comment above: day width measured from the windowed grid's own
+    // day count at Day/Week zoom, so drag snapping can never disagree
+    // with the rendered bar geometry below (both read `win`).
+    const dayWidthPx = isWindowedZoom && win ? windowPxPerDay(bodyWidth, win) : bodyWidth / grid.weekCount / 7;
 
     setDragState({ phaseId: phase.id, mode, deltaDays: 0 });
 
     function onMove(e: PointerEvent) {
       const deltaPx = e.clientX - startClientX;
-      const deltaDays = snapDeltaDays(deltaPx, columnPx);
+      const deltaDays = snapDeltaDaysFromPxPerDay(deltaPx, dayWidthPx);
       setDragState({ phaseId: phase.id, mode, deltaDays });
+      setDragChip({ x: e.clientX, y: e.clientY, label: dragChipLabel(phase, mode, deltaDays) });
     }
     function onUp(e: PointerEvent) {
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
       const deltaPx = e.clientX - startClientX;
-      const deltaDays = snapDeltaDays(deltaPx, columnPx);
+      const deltaDays = snapDeltaDaysFromPxPerDay(deltaPx, dayWidthPx);
       setDragState(null);
+      setDragChip(null);
       commitDrag(phase, mode, deltaDays);
     }
     document.addEventListener("pointermove", onMove);
@@ -561,6 +684,13 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
 
   function renderPhaseRow(phase: SchedulePhaseWithVisits) {
     const pos = phaseGridPosition(phase, grid);
+    // Timeline Day-zoom polish round — the fixed bar geometry (item 3):
+    // at Day/Week zoom every phase bar positions/sizes itself from the
+    // windowed day-offset percentages (lib/gantt-window.ts), not
+    // lib/gantt.ts's week-granularity `pos` above. `pos`/`grid.weekCount`
+    // are still computed and passed through unconditionally so Month
+    // zoom (which never sets `win`) keeps rendering exactly as before.
+    const winPos = isWindowedZoom && win ? windowedPosition(phase, win) : null;
     const drag = dragState && dragState.phaseId === phase.id ? dragState : null;
     // Internal timeline — trade visit sub-bars: auto-expanded at Day
     // zoom (BUILD-SPEC "auto-expanded at Day zoom"), otherwise the
@@ -568,13 +698,16 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
     // — `expanded[phase.id]` is undefined, falsy, for a phase never
     // toggled before).
     const isExpanded = zoom === "day" || !!expanded[phase.id];
+    const boardGroupId = (phase as PhaseWithGroupLink).board_group_id ?? null;
     return (
       <PhaseRow
         key={phase.id}
         projectId={projectId}
         phase={phase}
+        boardGroupId={boardGroupId}
         gridPos={pos}
         weekCount={grid.weekCount}
+        winPos={winPos}
         editing={editingId === phase.id}
         onToggleEdit={() => setEditingId((cur) => (cur === phase.id ? null : phase.id))}
         onPatch={(patch, refUpdate) => patchPhase(phase, patch, refUpdate)}
@@ -591,6 +724,8 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
         onAddVisitOpened={() => setBookTradePhaseId(null)}
         markers={markersByPhase.get(phase.id) ?? []}
         grid={grid}
+        win={win}
+        isWindowedZoom={isWindowedZoom}
         zoom={zoom}
         isExpanded={isExpanded}
         onToggleExpanded={zoom === "day" ? undefined : () => toggleExpanded(phase.id)}
@@ -644,7 +779,13 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
     : [
         {
           key: "add-phase",
-          label: "Add phase starting this week",
+          // Timeline Day-zoom polish round — the windowed header
+          // (Day/Week zoom) right-clicks a single DAY column now, not a
+          // Monday-aligned week column, so the label reflects whichever
+          // grid produced this menu (isWindowedZoom is true whenever the
+          // windowed header — this file's own day-column map — is what's
+          // actually rendered, per this component's zoom state above).
+          label: isWindowedZoom ? "Add phase starting this day" : "Add phase starting this week",
           onSelect: () => {
             setAddPrefillStart(menu?.weekStart ?? grid.weeks[0]?.toISOString().slice(0, 10) ?? null);
             setAdding(true);
@@ -660,130 +801,291 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
         </p>
       )}
 
-      {showZoomToggle && (
-        <div className="flex items-center gap-2">
-          <span className="label-caps">Zoom</span>
-          <button
-            type="button"
-            onClick={() => setZoom("day")}
-            title="Day view — wider columns, horizontal scroll, day-grain gridlines"
-            className={clsx(
-              "border px-3 py-1 text-caption",
-              zoom === "day" ? "border-nearblack bg-nearblack text-white" : "border-[#c9c2b4] text-charcoal"
-            )}
-          >
-            Day
-          </button>
-          <button
-            type="button"
-            onClick={() => setZoom("week")}
-            className={clsx(
-              "border px-3 py-1 text-caption",
-              zoom === "week" ? "border-nearblack bg-nearblack text-white" : "border-[#c9c2b4] text-charcoal"
-            )}
-          >
-            Week
-          </button>
-          <button
-            type="button"
-            onClick={() => setZoom("month")}
-            className={clsx(
-              "border px-3 py-1 text-caption",
-              zoom === "month" ? "border-nearblack bg-nearblack text-white" : "border-[#c9c2b4] text-charcoal"
-            )}
-          >
-            Month
-          </button>
-        </div>
-      )}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {showZoomToggle && (
+          <div className="flex items-center gap-2">
+            <span className="label-caps">Zoom</span>
+            <button
+              type="button"
+              onClick={() => setZoom("day")}
+              title="Day view — wider columns, horizontal scroll, day-grain gridlines"
+              className={clsx(
+                "border px-3 py-1 text-caption",
+                zoom === "day" ? "border-nearblack bg-nearblack text-white" : "border-[#c9c2b4] text-charcoal"
+              )}
+            >
+              Day
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom("week")}
+              className={clsx(
+                "border px-3 py-1 text-caption",
+                zoom === "week" ? "border-nearblack bg-nearblack text-white" : "border-[#c9c2b4] text-charcoal"
+              )}
+            >
+              Week
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom("month")}
+              className={clsx(
+                "border px-3 py-1 text-caption",
+                zoom === "month" ? "border-nearblack bg-nearblack text-white" : "border-[#c9c2b4] text-charcoal"
+              )}
+            >
+              Month
+            </button>
+          </div>
+        )}
+
+        {/* Timeline Day-zoom polish round — item 2 "Period navigation":
+            Day/Week zoom only (Month keeps showing the whole project, no
+            nav needed). ◀ ▶ page through the window one STEP_DAYS jump
+            at a time, "Today" re-centres on today, and the visible-range
+            label mirrors the window's own start/end dates so the two
+            can never disagree. Keyboard ←/→ is wired on the outer grid
+            wrapper below (tabIndex + onKeyDown) — "when the timeline
+            area is focused", per the spec. */}
+        {isWindowedZoom && win && (
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => navWindow(-windowStepDays(zoom as WindowZoom))}
+              aria-label="Earlier"
+              title="Earlier"
+              className="border border-[#c9c2b4] px-2 py-1 text-caption text-charcoal hover:border-nearblack hover:text-nearblack"
+            >
+              ◂
+            </button>
+            <button
+              type="button"
+              onClick={navToday}
+              className="border border-[#c9c2b4] px-2 py-1 text-caption text-charcoal hover:border-nearblack hover:text-nearblack"
+            >
+              Today
+            </button>
+            <button
+              type="button"
+              onClick={() => navWindow(windowStepDays(zoom as WindowZoom))}
+              aria-label="Later"
+              title="Later"
+              className="border border-[#c9c2b4] px-2 py-1 text-caption text-charcoal hover:border-nearblack hover:text-nearblack"
+            >
+              ▸
+            </button>
+            <span className="ml-1 text-caption text-charcoal/60">{formatWindowRange(win)}</span>
+          </div>
+        )}
+      </div>
 
       {phases.length === 0 ? (
         <div className="border border-dashed border-[#c9c2b4] p-12 text-center">
           <p className="text-body text-charcoal/60">No phases yet. Add the first one to start the timeline.</p>
         </div>
       ) : (
-        <div className="overflow-x-auto border border-[#dcd6cc]">
-          <div
-            ref={gridBodyRef}
-            className="relative grid"
-            style={{ gridTemplateColumns: `200px repeat(${grid.weekCount}, minmax(${colMinWidth}, 1fr))` }}
-          >
-            {/* Today line — an absolutely-positioned vertical marker
-                spanning every row, computed via the same week-grid math
-                used for phase bars. */}
-            {todayPos && (
-              <div
-                className="pointer-events-none absolute inset-y-0 z-10 w-px bg-sand"
-                style={{
-                  left: `calc(200px + ((100% - 200px) / ${grid.weekCount}) * ${todayPos.startCol - 1})`,
-                }}
-                title="Today"
-              />
-            )}
-
-            {/* Header row: sticky phase-name column header + month labels spanning weeks */}
-            <div className="sticky left-0 z-20 border-b border-r border-[#dcd6cc] bg-cream px-3 py-2">
-              <span className="label-caps">Phase</span>
-            </div>
-            {grid.weeks.map((week, i) => (
-              <div
-                key={i}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  openEmptyMenu({ x: e.clientX, y: e.clientY }, week.toISOString().slice(0, 10));
-                }}
-                className="border-b border-[#e5e0d6] bg-cream px-1 py-2 text-center"
-              >
-                {isNewMonth(grid.weeks, i) && (
-                  <span className="label-caps whitespace-nowrap">{monthLabel(week)}</span>
-                )}
-                {/* Board cockpit round — Day zoom's day-grain gridlines/
-                    labels: purely decorative, header-row-only (never
-                    touches the bar row below, so it cannot interfere
-                    with drag/resize) — seven day-of-week initials
-                    spanning this SAME week column, giving the "day"
-                    feel without a second grid/coordinate system. Only
-                    rendered when zoom === 'day' — week/month zoom keep
-                    the exact unchanged header they had before this
-                    round. */}
-                {zoom === "day" && (
-                  <div className="mt-1 grid grid-cols-7 gap-px">
-                    {DAY_INITIALS.map((d, dayIdx) => (
-                      <span key={dayIdx} className="text-caption text-charcoal/30">
-                        {d}
-                      </span>
-                    ))}
-                  </div>
-                )}
+        <div
+          className="overflow-x-auto border border-[#dcd6cc]"
+          // Timeline Day-zoom polish round — item 2's keyboard nav:
+          // "←/→ when the timeline area is focused." tabIndex makes this
+          // scroll wrapper a focusable target (click-to-focus, same as
+          // any native scrollable region) without adding a visible focus
+          // ring anywhere else in the UI; onKeyDown only acts at
+          // Day/Week zoom (isWindowedZoom) and only on the exact
+          // ArrowLeft/ArrowRight keys, so it never intercepts any other
+          // keyboard interaction (typing in a date input, etc. — those
+          // targets aren't this wrapper, so this handler never fires for
+          // them regardless).
+          tabIndex={isWindowedZoom ? 0 : undefined}
+          onKeyDown={(e) => {
+            if (!isWindowedZoom) return;
+            if (e.key === "ArrowLeft") {
+              e.preventDefault();
+              navWindow(-1);
+            } else if (e.key === "ArrowRight") {
+              e.preventDefault();
+              navWindow(1);
+            }
+          }}
+        >
+          {isWindowedZoom && win ? (
+            <div
+              ref={gridBodyRef}
+              className="relative grid"
+              style={{ gridTemplateColumns: `200px repeat(${win.days}, minmax(${colMinWidth}, 1fr))` }}
+            >
+              {/* Header row: sticky phase-name column header + one
+                  column per visible day (item 1: day-of-month under the
+                  weekday letter, month label at each month boundary,
+                  today column highlighted). Right-click still opens the
+                  "Add phase starting this week" menu, now anchored to
+                  the Monday of the clicked day's week rather than a
+                  lib/gantt.ts week-grid column, since there is no week
+                  grid at all in this branch. */}
+              <div className="sticky left-0 z-20 border-b border-r border-[#dcd6cc] bg-cream px-3 py-2">
+                <span className="label-caps">Phase</span>
               </div>
-            ))}
+              {win.dayList.map((day, i) => {
+                const iso = toISO(day);
+                const isToday = iso === todayISO;
+                const isMonthStart = i === 0 || day.getUTCDate() === 1;
+                return (
+                  <div
+                    key={iso}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      openEmptyMenu({ x: e.clientX, y: e.clientY }, iso);
+                    }}
+                    className={clsx(
+                      "border-b border-[#e5e0d6] px-1 py-2 text-center",
+                      isToday ? "bg-[#e2dccd]" : "bg-cream"
+                    )}
+                  >
+                    <span className="label-caps block whitespace-nowrap">
+                      {isMonthStart ? day.toLocaleDateString("en-AU", { month: "short" }) : " "}
+                    </span>
+                    <span className={clsx("text-caption block", isToday ? "font-semibold text-nearblack" : "text-charcoal/50")}>
+                      {DAY_INITIALS[(day.getUTCDay() + 6) % 7]} {day.getUTCDate()}
+                    </span>
+                  </div>
+                );
+              })}
 
-            {/* Umbrella band ("Site Setup") — always renders first if present.
-                Fix Round A: dates are now editable like any normal phase
-                (onPatch below reuses the exact same patchPhase() helper
-                every ordinary PhaseRow uses) — see UmbrellaBand.tsx's own
-                doc comment for the span-fix rationale. */}
-            {umbrella && (
-              <UmbrellaBand
-                name={umbrella.name}
-                startDate={umbrella.start_date}
-                endDate={umbrella.end_date}
-                grid={grid}
-                costSectionLines={umbrella.cost_section_lines ?? []}
-                onPatch={(patch) => patchPhase(umbrella, patch)}
-                dragMode={dragState && dragState.phaseId === umbrella.id ? dragState.mode : null}
-                dragDeltaDays={dragState && dragState.phaseId === umbrella.id ? dragState.deltaDays : 0}
-                onStartDrag={(mode, clientX) => startDrag(umbrella, mode, clientX)}
-                onContextMenu={(position) => openPhaseMenu(umbrella, position)}
-              />
-            )}
+              {/* Today highlight column — a subtle full-height tint
+                  behind the day's whole column (item 1: "today
+                  highlighted"), separate from the header cell's own
+                  tint above so the highlight reads as a continuous
+                  vertical band down the entire grid, not just the
+                  header row. */}
+              {(() => {
+                const todayWin = windowContainsDate(todayISO, win) ? windowedMarkerPosition(todayISO, win) : null;
+                if (!todayWin || !todayWin.visible) return null;
+                return (
+                  <div
+                    className="pointer-events-none absolute inset-y-0 z-0 bg-[#e2dccd]/60"
+                    style={{
+                      left: `calc(200px + (100% - 200px) * ${todayWin.leftPct / 100})`,
+                      width: `calc((100% - 200px) * ${todayWin.widthPct / 100})`,
+                    }}
+                  />
+                );
+              })()}
 
-            {/* Active (not-yet-completed) phases render directly */}
-            {activePhases.map(renderPhaseRow)}
+              {/* Umbrella band ("Site Setup") — always renders first if
+                  present. windowed position replaces lib/gantt.ts's
+                  week-grid umbrellaGridPosition at Day/Week zoom (item 3
+                  — the umbrella band is one of the "ALL move to the same
+                  windowed math" targets the brief calls out). */}
+              {umbrella && (
+                <UmbrellaBand
+                  name={umbrella.name}
+                  startDate={umbrella.start_date}
+                  endDate={umbrella.end_date}
+                  grid={grid}
+                  winPos={windowedPosition(umbrella, win)}
+                  winDays={win.days}
+                  costSectionLines={umbrella.cost_section_lines ?? []}
+                  onPatch={(patch) => patchPhase(umbrella, patch)}
+                  dragMode={dragState && dragState.phaseId === umbrella.id ? dragState.mode : null}
+                  dragDeltaDays={dragState && dragState.phaseId === umbrella.id ? dragState.deltaDays : 0}
+                  onStartDrag={(mode, clientX) => startDrag(umbrella, mode, clientX)}
+                  onContextMenu={(position) => openPhaseMenu(umbrella, position)}
+                />
+              )}
 
-            {/* Completed phases collapse into one group, expandable */}
-            <CompletedPhasesGroup phases={completedPhases} weekCount={grid.weekCount} renderRow={renderPhaseRow} />
-          </div>
+              {/* Active (not-yet-completed) phases render directly */}
+              {activePhases.map(renderPhaseRow)}
+
+              {/* Completed phases collapse into one group, expandable */}
+              <CompletedPhasesGroup phases={completedPhases} weekCount={win.days} renderRow={renderPhaseRow} />
+            </div>
+          ) : (
+            <div
+              ref={gridBodyRef}
+              className="relative grid"
+              style={{ gridTemplateColumns: `200px repeat(${grid.weekCount}, minmax(${colMinWidth}, 1fr))` }}
+            >
+              {/* Today line — an absolutely-positioned vertical marker
+                  spanning every row, computed via the same week-grid math
+                  used for phase bars. Month zoom only, in this branch —
+                  Day/Week zoom's today highlight lives in the windowed
+                  branch above instead. */}
+              {todayPos && (
+                <div
+                  className="pointer-events-none absolute inset-y-0 z-10 w-px bg-sand"
+                  style={{
+                    left: `calc(200px + ((100% - 200px) / ${grid.weekCount}) * ${todayPos.startCol - 1})`,
+                  }}
+                  title="Today"
+                />
+              )}
+
+              {/* Header row: sticky phase-name column header + month labels spanning weeks */}
+              <div className="sticky left-0 z-20 border-b border-r border-[#dcd6cc] bg-cream px-3 py-2">
+                <span className="label-caps">Phase</span>
+              </div>
+              {grid.weeks.map((week, i) => (
+                <div
+                  key={i}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    openEmptyMenu({ x: e.clientX, y: e.clientY }, week.toISOString().slice(0, 10));
+                  }}
+                  className="border-b border-[#e5e0d6] bg-cream px-1 py-2 text-center"
+                >
+                  {isNewMonth(grid.weeks, i) && (
+                    <span className="label-caps whitespace-nowrap">{monthLabel(week)}</span>
+                  )}
+                </div>
+              ))}
+
+              {/* Umbrella band ("Site Setup") — always renders first if present.
+                  Fix Round A: dates are now editable like any normal phase
+                  (onPatch below reuses the exact same patchPhase() helper
+                  every ordinary PhaseRow uses) — see UmbrellaBand.tsx's own
+                  doc comment for the span-fix rationale. */}
+              {umbrella && (
+                <UmbrellaBand
+                  name={umbrella.name}
+                  startDate={umbrella.start_date}
+                  endDate={umbrella.end_date}
+                  grid={grid}
+                  winPos={null}
+                  costSectionLines={umbrella.cost_section_lines ?? []}
+                  onPatch={(patch) => patchPhase(umbrella, patch)}
+                  dragMode={dragState && dragState.phaseId === umbrella.id ? dragState.mode : null}
+                  dragDeltaDays={dragState && dragState.phaseId === umbrella.id ? dragState.deltaDays : 0}
+                  onStartDrag={(mode, clientX) => startDrag(umbrella, mode, clientX)}
+                  onContextMenu={(position) => openPhaseMenu(umbrella, position)}
+                />
+              )}
+
+              {/* Active (not-yet-completed) phases render directly */}
+              {activePhases.map(renderPhaseRow)}
+
+              {/* Completed phases collapse into one group, expandable */}
+              <CompletedPhasesGroup phases={completedPhases} weekCount={grid.weekCount} renderRow={renderPhaseRow} />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Timeline Day-zoom polish round — item 4's floating date chip.
+          Populated by startDrag/startVisitDrag's onMove at every zoom
+          (Month zoom's drag still uses the original marginLeft/width
+          recompute rather than a transform, but showing the live
+          "22 Jul → 26 Jul" label alongside it is harmless/useful there
+          too, so this isn't gated to isWindowedZoom). Fixed-position
+          (viewport coordinates from the pointer event), same
+          positioning convention as ContextMenu.tsx's own
+          `position: fixed` panel — offset a little down-right of the
+          cursor so the chip never sits directly under the pointer. */}
+      {dragChip && (
+        <div
+          className="pointer-events-none fixed z-50 border border-nearblack bg-nearblack px-2 py-1 text-caption text-white shadow-lg"
+          style={{ left: dragChip.x + 14, top: dragChip.y + 14 }}
+        >
+          {dragChip.label}
         </div>
       )}
 
@@ -825,8 +1127,12 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
 function PhaseRow({
   projectId,
   phase,
+  boardGroupId,
   gridPos,
   weekCount,
+  winPos,
+  win,
+  isWindowedZoom,
   editing,
   onToggleEdit,
   onPatch,
@@ -855,8 +1161,14 @@ function PhaseRow({
   /** Board cockpit round — needed to build the timeline marker click-through link (?focus=board_task-<id> on the Board tab). */
   projectId: string;
   phase: SchedulePhaseWithVisits;
+  /** Timeline Day-zoom polish round — item 5's phase-name -> Board deep link. Null for a phase with no linked board_groups row (legacy/unreconciled data) — the name then renders as plain text, same as before this round. */
+  boardGroupId: string | null;
   gridPos: { startCol: number; span: number };
   weekCount: number;
+  /** Timeline Day-zoom polish round — this phase's windowed position (lib/gantt-window.ts), non-null exactly when isWindowedZoom is true. Bar geometry/markers below prefer this over gridPos/grid whenever present. */
+  winPos: WindowedBarPosition | null;
+  win: GanttWindow | null;
+  isWindowedZoom: boolean;
   editing: boolean;
   onToggleEdit: () => void;
   onPatch: (patch: Record<string, unknown>, refUpdate?: Partial<SchedulePhaseWithVisits>) => void;
@@ -929,7 +1241,10 @@ function PhaseRow({
 
   return (
     <>
-      <div className="sticky left-0 z-10 col-start-1 border-b border-r border-[#e5e0d6] bg-nearwhite px-3 py-2">
+      <div
+        id={`focus-phase-${phase.id}`}
+        className="sticky left-0 z-10 col-start-1 border-b border-r border-[#e5e0d6] bg-nearwhite px-3 py-2"
+      >
         <div className="flex items-center gap-1">
           {/* Internal timeline — trade visit sub-bars: expand/collapse
               chevron, only shown when there's something to expand
@@ -965,9 +1280,30 @@ function PhaseRow({
           >
             {phase.name}
           </button>
+          {/* Timeline Day-zoom polish round — item 5 "Better board
+              linking": the phase name button above still opens the
+              inline edit panel (unchanged interaction); this SEPARATE
+              small link is the new "go look at the Board" affordance —
+              deliberately not merged into the name button itself so
+              neither click target's existing behaviour changes. Only
+              rendered when this phase has a linked board_groups row
+              (boardGroupId) — a phase with no link (legacy/unreconciled
+              data) shows nothing extra here, same as before this round.
+              Board's GroupTable header (components/board/ProjectBoard.tsx)
+              gets the reciprocal id={`focus-group-<id>`} + "View on
+              timeline ↗" link. */}
+          {boardGroupId && (
+            <a
+              href={`/projects/${projectId}/board?focus=group-${boardGroupId}`}
+              title="View on Board"
+              className="shrink-0 text-caption text-charcoal/40 hover:text-sand"
+            >
+              ↗
+            </a>
+          )}
         </div>
         <p className="text-caption text-charcoal/40">
-          {phase.start_date} → {phase.end_date}
+          {formatDateRangeAU(phase.start_date, phase.end_date)}
         </p>
         {phase.visits.length > 0 && (
           <div className="mt-1 flex flex-wrap items-center gap-1">
@@ -989,36 +1325,96 @@ function PhaseRow({
         className="relative border-b border-[#e5e0d6] py-2"
         style={{ gridColumn: `2 / span ${weekCount}` }}
       >
-        <div
-          onPointerDown={handlePointerDown}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            onContextMenu({ x: e.clientX, y: e.clientY });
-          }}
-          onTouchStart={handleTouchStart}
-          onTouchEnd={clearLongPress}
-          onTouchMove={clearLongPress}
-          onTouchCancel={clearLongPress}
-          className={clsx(
-            "h-4 cursor-grab transition-opacity",
-            dragging && "cursor-grabbing opacity-60 outline outline-2 outline-nearblack"
-          )}
-          style={{
-            marginLeft: `calc((100% / ${weekCount}) * ${gridPos.startCol - 1 + (dragMode === "move" || dragMode === "resize-start" ? dragDeltaDays / 7 : 0)})`,
-            width: `calc((100% / ${weekCount}) * ${gridPos.span + (dragMode === "resize-start" ? -dragDeltaDays / 7 : dragMode === "resize-end" ? dragDeltaDays / 7 : 0)})`,
-            backgroundColor: COLOR_SWATCH[phase.color_key],
-          }}
-          title={`${phase.name}: ${phase.start_date} to ${phase.end_date}`}
-        />
+        {/* Timeline Day-zoom polish round — item 3's fix: at Day/Week
+            zoom (winPos present) the bar is wrapped in an absolutely
+            positioned box sized by EXACT day-offset percentages
+            (lib/gantt-window.ts), with the actual pointer/transform
+            layer nested inside it — this is the same two-layer pattern
+            UmbrellaBand.tsx uses (outer box = settled percentage
+            position, inner box = drag transform + clipping chevrons).
+            Month zoom (winPos null) keeps the original marginLeft/width
+            calc() from lib/gantt.ts's week grid, byte-for-byte
+            unchanged. */}
+        {winPos ? (
+          winPos.visible && (
+            <div
+              className="absolute inset-y-0 py-2"
+              style={{ left: `${winPos.leftPct}%`, width: `${winPos.widthPct}%` }}
+            >
+              <div
+                onPointerDown={handlePointerDown}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  onContextMenu({ x: e.clientX, y: e.clientY });
+                }}
+                onTouchStart={handleTouchStart}
+                onTouchEnd={clearLongPress}
+                onTouchMove={clearLongPress}
+                onTouchCancel={clearLongPress}
+                className={clsx(
+                  "relative h-4 cursor-grab",
+                  dragging
+                    ? "cursor-grabbing opacity-60 outline outline-2 outline-nearblack transition-none"
+                    : "transition-opacity"
+                )}
+                style={{
+                  backgroundColor: COLOR_SWATCH[phase.color_key],
+                  ...(dragging && win
+                    ? {
+                        transform: dragTransform(dragMode, dragDeltaDays, win.days, winPos.widthPct),
+                        transformOrigin: dragMode === "resize-end" ? "left" : "right",
+                      }
+                    : {}),
+                }}
+                title={`${phase.name}: ${phase.start_date} to ${phase.end_date}`}
+              >
+                {/* Continuation chevrons — BUILD-SPEC item 3: "a
+                    continuation chevron (▸/◂ half-arrow on the clipped
+                    end) when the phase extends beyond" the visible
+                    window. */}
+                {winPos.clippedStart && (
+                  <span className="absolute -left-3 top-1/2 -translate-y-1/2 text-caption text-charcoal/70">◂</span>
+                )}
+                {winPos.clippedEnd && (
+                  <span className="absolute -right-3 top-1/2 -translate-y-1/2 text-caption text-charcoal/70">▸</span>
+                )}
+              </div>
+            </div>
+          )
+        ) : (
+          <div
+            onPointerDown={handlePointerDown}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              onContextMenu({ x: e.clientX, y: e.clientY });
+            }}
+            onTouchStart={handleTouchStart}
+            onTouchEnd={clearLongPress}
+            onTouchMove={clearLongPress}
+            onTouchCancel={clearLongPress}
+            className={clsx(
+              "h-4 cursor-grab transition-opacity",
+              dragging && "cursor-grabbing opacity-60 outline outline-2 outline-nearblack"
+            )}
+            style={{
+              marginLeft: `calc((100% / ${weekCount}) * ${gridPos.startCol - 1 + (dragMode === "move" || dragMode === "resize-start" ? dragDeltaDays / 7 : 0)})`,
+              width: `calc((100% / ${weekCount}) * ${gridPos.span + (dragMode === "resize-start" ? -dragDeltaDays / 7 : dragMode === "resize-end" ? dragDeltaDays / 7 : 0)})`,
+              backgroundColor: COLOR_SWATCH[phase.color_key],
+            }}
+            title={`${phase.name}: ${phase.start_date} to ${phase.end_date}`}
+          />
+        )}
 
         {/* Board cockpit round — timeline tick markers (due_date/
             booking_date/milestone diamonds). Absolutely positioned,
             pointer-events-none WRAPPER (see markerWrapperClass below —
             the wrapper itself never intercepts pointer events; only the
             small clickable tick/diamond inside re-enables them), computed
-            from the SAME grid math as the phase bar above
-            (phaseGridPosition on a synthetic single-day range) but
-            rendered as an independent sibling layer — this never reads
+            from the SAME grid math as the phase bar above at each zoom
+            (windowedMarkerPosition at Day/Week, phaseGridPosition at
+            Month — item 3's "task tick markers, milestone diamonds ALL
+            move to the same windowed math" audit item) but rendered as
+            an independent sibling layer — this never reads
             dragMode/dragDeltaDays and has no drag pointer handlers of
             its own, so it cannot intercept or shift the bar's own drag
             gestures (mirrors this file's existing today-line marker,
@@ -1040,6 +1436,16 @@ function PhaseRow({
             not a client-side-only onClick, so it works with a normal
             navigation (new tab / cmd-click) too. */}
         {markers.map((marker) => {
+          // Timeline Day-zoom polish round — gated on `win` (are we in
+          // windowed Day/Week mode at all), NOT on `winPos` (whether
+          // THIS PHASE'S OWN bar happens to be visible in the current
+          // window) — a marker's visibility is a property of its own
+          // date, independent of whether its parent phase's bar is
+          // currently scrolled into view. Using winPos here would wrongly
+          // hide an in-window marker whenever the phase's own date range
+          // happened to be clipped fully offscreen.
+          const markerWin = win ? windowedMarkerPosition(marker.date, win) : null;
+          if (win && (!markerWin || !markerWin.visible)) return null;
           const markerPos = phaseGridPosition({ start_date: marker.date, end_date: marker.date }, grid);
           const label = `${marker.kind === "milestone" ? "Milestone" : marker.kind === "booking_date" ? "Booking" : "Due"}: ${marker.title} (${marker.date})`;
           return (
@@ -1049,7 +1455,11 @@ function PhaseRow({
               title={label}
               aria-label={label}
               className="absolute top-0 flex h-5 items-start justify-center pointer-events-auto"
-              style={{ left: `calc((100% / ${weekCount}) * ${markerPos.startCol - 1})` }}
+              style={{
+                left: markerWin
+                  ? `${markerWin.leftPct}%`
+                  : `calc((100% / ${weekCount}) * ${markerPos.startCol - 1})`,
+              }}
             >
               {marker.kind === "milestone" ? (
                 <span className="block h-2.5 w-2.5 rotate-45 border border-sand bg-sand" />
@@ -1091,6 +1501,7 @@ function PhaseRow({
                       visit={visit}
                       grid={grid}
                       weekCount={weekCount}
+                      win={win}
                       zoom={zoom}
                       dragMode={drag?.mode ?? null}
                       dragDeltaDays={drag?.deltaDays ?? 0}

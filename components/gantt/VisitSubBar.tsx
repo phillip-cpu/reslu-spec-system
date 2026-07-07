@@ -5,9 +5,10 @@ import clsx from "clsx";
 import type { TradeVisitWithContact } from "@/lib/trade-visits";
 import { formatArrival } from "@/lib/trade-visits";
 import { visitGridPosition, type GanttGrid } from "@/lib/gantt";
+import { dragTransform, windowedPosition, type GanttWindow } from "@/lib/gantt-window";
 import type { DragMode } from "@/lib/phase-drag";
 
-/** Edge zone width — byte-identical to GanttChart.tsx's EDGE_ZONE_PX (phase bars) so a visit sub-bar's grab-to-resize feel matches its parent phase bar exactly. Kept as a local constant rather than importing GanttChart's (that file doesn't export it) — both are the BUILD-SPEC "6px edge zone" figure. */
+/** Edge zone width for a visit sub-bar — deliberately kept at 6px (NOT widened to the phase bar's new 10px this round) since sub-bars are already the thinnest bar in the Gantt; a 10px edge zone would eat too much of an already-narrow bar's centre "move" region. BUILD-SPEC item 4's "10px edge zones" ask is scoped to phase/umbrella bars — see GanttChart.tsx's own EDGE_ZONE_PX doc comment. */
 const EDGE_ZONE_PX = 6;
 
 /**
@@ -40,6 +41,7 @@ export function VisitSubBar({
   visit,
   grid,
   weekCount,
+  win = null,
   zoom,
   dragMode,
   dragDeltaDays,
@@ -49,6 +51,17 @@ export function VisitSubBar({
   visit: TradeVisitWithContact;
   grid: GanttGrid;
   weekCount: number;
+  /**
+   * Timeline Day-zoom polish round — the shared visible window
+   * (lib/gantt-window.ts), passed by GanttChart.tsx whenever zoom is
+   * 'day'/'week'; null at Month zoom, where this component falls back
+   * to its original lib/gantt.ts week-grid math (visitGridPosition)
+   * exactly as before. Visit sub-bars are explicitly one of the "ALL
+   * move to the same windowed math" elements BUILD-SPEC item 3 calls
+   * out — before this round they shared the exact same week-granularity
+   * bug phase bars did.
+   */
+  win?: GanttWindow | null;
   zoom: "day" | "week" | "month";
   dragMode: DragMode | null;
   dragDeltaDays: number;
@@ -56,7 +69,10 @@ export function VisitSubBar({
   onClick: () => void;
 }) {
   const pos = visitGridPosition(visit, grid);
+  const winPos = win ? windowedPosition(visit, win) : null;
   const dragging = dragMode !== null;
+
+  if (winPos && !winPos.visible) return null;
   // Tracks whether the current mouse gesture actually MOVED (not just
   // "a pointerdown happened") — a plain click has a pointerdown with
   // zero subsequent movement, and must still open the visit sheet.
@@ -125,30 +141,51 @@ export function VisitSubBar({
     onClick();
   }
 
-  return (
-    <div
-      onPointerDown={handlePointerDown}
-      onClick={handleClick}
-      title={tooltip}
-      className={clsx(
-        "relative mt-0.5 flex h-3.5 cursor-grab items-center overflow-hidden text-[10px] leading-none transition-opacity",
-        dragging && "cursor-grabbing opacity-70 outline outline-1 outline-nearblack",
-        visit.status === "confirmed" && "bg-charcoal text-white",
-        (visit.status === "unconfirmed" || visit.status === "tentative") &&
-          "border border-dashed border-sand bg-transparent text-charcoal",
-        visit.status === "proposed_change" && "border border-amber-600 bg-[#B98A4A] text-white"
-      )}
-      style={{
+  const wrapperStyle: React.CSSProperties = winPos
+    ? { position: "absolute", left: `${winPos.leftPct}%`, width: `${winPos.widthPct}%` }
+    : {
         marginLeft: `calc((100% / ${weekCount}) * ${pos.startCol - 1 + (dragMode === "move" || dragMode === "resize-start" ? dragDeltaDays / 7 : 0)})`,
         width: `calc((100% / ${weekCount}) * ${pos.span + (dragMode === "resize-start" ? -dragDeltaDays / 7 : dragMode === "resize-end" ? dragDeltaDays / 7 : 0)})`,
-      }}
-    >
-      {/* Day zoom: arrival time/label shown directly on the bar (BUILD-
-          SPEC "Day zoom: arrival time shown on the bar"). Week/Month:
-          no on-bar text (bars are too narrow at those zooms — full
-          detail lives in the `title` tooltip above instead, per
-          BUILD-SPEC "Week/Month: on hover tooltip"). */}
-      {zoom === "day" && <span className="truncate px-1">{label}</span>}
+      };
+  const dragStyle: React.CSSProperties =
+    winPos && dragging && win
+      ? {
+          transform: dragTransform(dragMode, dragDeltaDays, win.days, winPos.widthPct),
+          transformOrigin: dragMode === "resize-end" ? "left" : "right",
+        }
+      : {};
+
+  return (
+    <div style={winPos ? { position: "relative", height: "1rem" } : undefined}>
+      <div
+        onPointerDown={handlePointerDown}
+        onClick={handleClick}
+        title={tooltip}
+        className={clsx(
+          "relative mt-0.5 flex h-3.5 cursor-grab items-center overflow-hidden text-[10px] leading-none",
+          dragging ? "cursor-grabbing opacity-70 outline outline-1 outline-nearblack transition-none" : "transition-opacity",
+          visit.status === "confirmed" && "bg-charcoal text-white",
+          (visit.status === "unconfirmed" || visit.status === "tentative") &&
+            "border border-dashed border-sand bg-transparent text-charcoal",
+          visit.status === "proposed_change" && "border border-amber-600 bg-[#B98A4A] text-white"
+        )}
+        style={{ ...wrapperStyle, ...dragStyle }}
+      >
+        {/* Day zoom: arrival time/label shown directly on the bar (BUILD-
+            SPEC "Day zoom: arrival time shown on the bar"). Week/Month:
+            no on-bar text (bars are too narrow at those zooms — full
+            detail lives in the `title` tooltip above instead, per
+            BUILD-SPEC "Week/Month: on hover tooltip"). */}
+        {zoom === "day" && <span className="truncate px-1">{label}</span>}
+        {/* Continuation chevrons — item 3's "½ chevron" ask, same
+            convention as the phase bar/umbrella band. */}
+        {winPos?.clippedStart && (
+          <span className="absolute -left-2 top-1/2 -translate-y-1/2 text-[9px] text-charcoal/60">◂</span>
+        )}
+        {winPos?.clippedEnd && (
+          <span className="absolute -right-2 top-1/2 -translate-y-1/2 text-[9px] text-charcoal/60">▸</span>
+        )}
+      </div>
     </div>
   );
 }

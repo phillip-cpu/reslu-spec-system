@@ -103,7 +103,15 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   // changes into a Done-like column).
   const [milestonePrompt, setMilestonePrompt] = useState<{ title: string } | null>(null);
   // Board cockpit round — which card's "Book trade" popover is open.
-  const [bookingTaskId, setBookingTaskId] = useState<string | null>(null);
+  // Prefill fix ("Two more" round, 7 July 2026 evening): this used to be
+  // a bare `taskId: string | null`, so BookVisitPanel had nothing but an
+  // id to work with and always rendered blank. Now carries the full
+  // BoardTaskCockpit the popover was opened for, so its phase/trade/
+  // dates can be resolved and passed down as initial* props (see the
+  // BookVisitPanel render below) — same "capture full context at the
+  // moment of opening" fix on every path that can open it (BoardCard,
+  // StackedColumnSection's rows via BoardTaskEditorBody, GroupRows).
+  const [bookingTask, setBookingTask] = useState<BoardTaskCockpit | null>(null);
 
   // Layout preference — read once on mount (SSR-safe: localStorage
   // doesn't exist server-side, so the initial render always uses the
@@ -571,11 +579,16 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
         </p>
       )}
 
-      {bookingTaskId && (
+      {bookingTask && (
         <BookVisitPanel
+          key={bookingTask.id}
           projectId={projectId}
-          onBook={(input) => bookVisit(bookingTaskId, input)}
-          onClose={() => setBookingTaskId(null)}
+          initialPhaseId={groups.find((g) => g.id === bookingTask.phase_group_id)?.phase_id ?? null}
+          initialContactId={bookingTask.contact_id}
+          initialStartDate={bookingTask.booking_date}
+          initialEndDate={bookingTask.booking_end_date}
+          onBook={(input) => bookVisit(bookingTask.id, input)}
+          onClose={() => setBookingTask(null)}
         />
       )}
 
@@ -716,7 +729,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               onAddTask={(title, assigneeIds) => addTask(column.id, title, assigneeIds)}
               onPatchTask={(task, patch, refUpdate) => updateTaskField(task, patch, refUpdate ?? {})}
               onDeleteTask={deleteTask}
-              onBookVisit={(taskId) => setBookingTaskId(taskId)}
+              onBookVisit={(task) => setBookingTask(task)}
               onUnlinkVisit={unlinkVisit}
             />
           ))}
@@ -765,6 +778,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
           {groups.map((group) => (
             <GroupTable
               key={group.id}
+              projectId={projectId}
               group={group}
               columnById={columnById}
               teamById={teamById}
@@ -775,7 +789,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               onDelete={() => deleteGroup(group.id, group.name)}
               onPatchTask={(task, patch, refUpdate) => updateTaskField(task, patch, refUpdate ?? {})}
               onDeleteTask={(task) => deleteTask(task)}
-              onBookVisit={(taskId) => setBookingTaskId(taskId)}
+              onBookVisit={(task) => setBookingTask(task)}
               onUnlinkVisit={(taskId) => unlinkVisit(taskId)}
               onPatchPhaseDates={(patch) => group.phase_id && patchGroupPhaseDates(group.id, group.phase_id, patch)}
               onAddTask={(title, assigneeIds) => {
@@ -804,7 +818,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               groups={groups}
               onPatchTask={(task, patch, refUpdate) => updateTaskField(task, patch, refUpdate ?? {})}
               onDeleteTask={(task) => deleteTask(task)}
-              onBookVisit={(taskId) => setBookingTaskId(taskId)}
+              onBookVisit={(task) => setBookingTask(task)}
               onUnlinkVisit={(taskId) => unlinkVisit(taskId)}
             />
           )}
@@ -1081,7 +1095,8 @@ function BoardColumnView({
   onAddTask: (title: string, assigneeIds: string[]) => void;
   onPatchTask: (task: BoardTaskCockpit, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskCockpit>) => void;
   onDeleteTask: (task: BoardTaskCockpit) => void;
-  onBookVisit: (taskId: string) => void;
+  /** Prefill fix: now passes the full task (was `taskId: string`) so BookVisitPanel can be preloaded with this card's own phase/trade/dates. */
+  onBookVisit: (task: BoardTaskCockpit) => void;
   onUnlinkVisit: (taskId: string) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
@@ -1168,7 +1183,7 @@ function BoardColumnView({
             onDropBefore={() => onDrop(column.id, i)}
             onPatch={(patch, refUpdate) => onPatchTask(task, patch, refUpdate)}
             onDelete={() => onDeleteTask(task)}
-            onBookVisit={() => onBookVisit(task.id)}
+            onBookVisit={() => onBookVisit(task)}
             onUnlinkVisit={() => onUnlinkVisit(task.id)}
           />
         ))}
@@ -1598,6 +1613,7 @@ function formatShortDate(dateStr: string): string {
 // ------------------------------------------------------------
 
 function GroupTable({
+  projectId,
   group,
   columnById,
   teamById,
@@ -1613,6 +1629,8 @@ function GroupTable({
   onPatchPhaseDates,
   onAddTask,
 }: {
+  /** Timeline Day-zoom polish round — item 5's reciprocal "View on timeline" link, built here rather than passed as a ready-made href since the group's own phase_id (below) is what the link target actually needs. */
+  projectId: string;
   group: BoardGroupCockpit;
   columnById: Map<string, BoardColumnCockpit>;
   teamById: Map<string, AssigneeSummary>;
@@ -1626,8 +1644,8 @@ function GroupTable({
   onPatchTask: (task: BoardTaskCockpit, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskCockpit>) => void;
   /** Board cockpit round — item 9 parity: "Remove card" from the shared editor. */
   onDeleteTask: (task: BoardTaskCockpit) => void;
-  /** Board cockpit round — item 9 parity: "Book trade" from the shared editor. */
-  onBookVisit: (taskId: string) => void;
+  /** Board cockpit round — item 9 parity: "Book trade" from the shared editor. Prefill fix: now passes the full task (was `taskId: string`) so BookVisitPanel can be preloaded with this card's own phase/trade/dates. */
+  onBookVisit: (task: BoardTaskCockpit) => void;
   /** Board cockpit round — item 9 parity: "Unlink booking" from the shared editor. */
   onUnlinkVisit: (taskId: string) => void;
   /** Round A "Board group date inputs" — omitted (or a no-op) for groups with no linked phase; the header only renders the inputs when group.phase_id is set (see JSX below). */
@@ -1661,7 +1679,10 @@ function GroupTable({
 
   return (
     <div className="border border-[#dcd6cc]">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#dcd6cc] bg-offwhite px-3 py-2">
+      <div
+        id={`focus-group-${group.id}`}
+        className="flex flex-wrap items-center justify-between gap-2 border-b border-[#dcd6cc] bg-offwhite px-3 py-2"
+      >
         <div className="flex flex-wrap items-center gap-3">
           {renaming ? (
             <input
@@ -1702,6 +1723,21 @@ function GroupTable({
               endDate={group.phase_end_date}
               onPatch={onPatchPhaseDates}
             />
+          )}
+          {/* Timeline Day-zoom polish round — item 5's reciprocal "View
+              on timeline" affordance: only shown for a group linked to a
+              phase (phase_id), same gating as the date inputs above —
+              an unlinked/legacy group has no Timeline row to jump to.
+              FocusOnLoad (already mounted on the Timeline page) handles
+              the scroll+pulse via the target row's id={`focus-phase-<id>`}
+              (GanttChart.tsx's PhaseRow, this same round). */}
+          {group.phase_id && (
+            <a
+              href={`/projects/${projectId}/timeline?focus=phase-${group.phase_id}`}
+              className="text-caption text-charcoal/50 hover:text-sand"
+            >
+              View on timeline ↗
+            </a>
           )}
         </div>
         <button type="button" onClick={onDelete} className="text-caption text-charcoal/40 hover:text-red-700">
@@ -1818,7 +1854,8 @@ function UngroupedTable({
   groups: BoardGroupCockpit[];
   onPatchTask: (task: BoardTaskCockpit, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskCockpit>) => void;
   onDeleteTask: (task: BoardTaskCockpit) => void;
-  onBookVisit: (taskId: string) => void;
+  /** Prefill fix: now passes the full task (was `taskId: string`) so BookVisitPanel can be preloaded with this card's own phase/trade/dates. */
+  onBookVisit: (task: BoardTaskCockpit) => void;
   onUnlinkVisit: (taskId: string) => void;
 }) {
   return (
@@ -1861,8 +1898,8 @@ function GroupRows({
   onPatchTask: (task: BoardTaskCockpit, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskCockpit>) => void;
   /** Board cockpit round — item 9 parity: "Remove card" action, matching kanban's BoardCard. */
   onDeleteTask: (task: BoardTaskCockpit) => void;
-  /** Board cockpit round — item 9 parity: opens ProjectBoard's shared BookVisitPanel for this row's task. */
-  onBookVisit: (taskId: string) => void;
+  /** Board cockpit round — item 9 parity: opens ProjectBoard's shared BookVisitPanel for this row's task. Prefill fix: now passes the full task (was `taskId: string`) so BookVisitPanel can be preloaded with this card's own phase/trade/dates — this is the Grouped-list row path, the daily-driver/mobile view where the blank-prefill bug was most visible. */
+  onBookVisit: (task: BoardTaskCockpit) => void;
   /** Board cockpit round — item 9 parity: unlinks (does not delete) this row's booked visit. */
   onUnlinkVisit: (taskId: string) => void;
 }) {
@@ -1992,7 +2029,7 @@ function GroupRows({
                       contacts={contacts}
                       onPatch={(patch, refUpdate) => onPatchTask(task, patch, refUpdate)}
                       onDelete={() => onDeleteTask(task)}
-                      onBookVisit={() => onBookVisit(task.id)}
+                      onBookVisit={() => onBookVisit(task)}
                       onUnlinkVisit={() => onUnlinkVisit(task.id)}
                     />
                   </td>

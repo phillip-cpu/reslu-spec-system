@@ -16,6 +16,8 @@
 
 import type {
   BinPackResult,
+  BrickInputs,
+  BrickResult,
   FrameOpening,
   PlasterboardInputs,
   PlasterboardResult,
@@ -387,6 +389,140 @@ export const PLASTERBOARD_FIXINGS_NOTE =
   "Allow additional screws (~30/sheet) and adhesive/jointing compound — not quantified by this calculator; confirm with your plasterer's standard rate.";
 
 // ------------------------------------------------------------
+// Brick calculator — "Two more — 7 July 2026 evening". BUILD-SPEC.md
+// formula: bricksPerM2 = 1 / ((L+joint) × (H+joint)) in m², total =
+// ceil(netArea × perM2 × (1+wastage)). No framing defaults: brick
+// dimensions start null (see BrickInputs' own doc comment for why —
+// unlike mortar_joint_mm, there is no single standard brick size to
+// assume).
+// ------------------------------------------------------------
+
+/**
+ * Bricks required per m² of wall FACE (i.e. as laid, ignoring mortar
+ * bed depth/wall thickness — this is a stretcher-bond face count, the
+ * standard "how many bricks do I need per square metre" figure):
+ * 1 / ((length + joint) × (height + joint)), all converted to metres
+ * first so the joint (mm) and brick dims (mm) combine correctly.
+ * Returns 0 if brick length/height is missing/non-positive — this is a
+ * pure function, it does not guess a brick size (BUILD-SPEC.md "no
+ * assumed spec, blank start" rule for this calculator specifically).
+ */
+export function bricksPerM2(brickLengthMm: number, brickHeightMm: number, mortarJointMm: number): number {
+  if (brickLengthMm <= 0 || brickHeightMm <= 0) return 0;
+  const joint = Math.max(0, mortarJointMm) / MM_PER_M;
+  const effectiveLengthM = brickLengthMm / MM_PER_M + joint;
+  const effectiveHeightM = brickHeightMm / MM_PER_M + joint;
+  const moduleAreaM2 = effectiveLengthM * effectiveHeightM;
+  return moduleAreaM2 > 0 ? 1 / moduleAreaM2 : 0;
+}
+
+/**
+ * Rough mortar volume estimate, m³.
+ *
+ * HONEST APPROXIMATION, not a bed-and-perpend take-off: a precise
+ * mortar volume needs the wall's actual construction (single/double
+ * skin, bed joint depth × perpend joint count per brick, wall
+ * thickness) which this calculator does not collect (BUILD-SPEC.md
+ * only briefed brick length/height/width, joint, wall length/height,
+ * openings, wastage — no wall-thickness/skin-count field). Per the
+ * brief's own explicit formula: "use the standard approx 0.02m³ per m²
+ * for single-skin 10mm joints scaled by joint/10". That is:
+ *
+ *   mortar_m3 ≈ net_area_m2 × 0.02 × (mortar_joint_mm / 10)
+ *
+ * i.e. the industry rule-of-thumb figure of ~0.02m³ of mortar per m² of
+ * single-skin brickwork laid with a 10mm joint, LINEARLY scaled for a
+ * different joint width (a 20mm joint roughly doubles mortar volume,
+ * a 5mm joint roughly halves it) — a genuinely rough estimate, not a
+ * derivation from brick geometry, and explicitly NOT adjusted for
+ * double-skin/cavity walls (a double-skin wall needs roughly double
+ * this figure — not modelled here since wall construction/skin count
+ * isn't a collected input). Surfaced in the UI with the same "estimate,
+ * confirm with your bricklayer" caption spirit as PLASTERBOARD_FIXINGS_NOTE
+ * below.
+ */
+export function mortarVolumeM3(netAreaM2: number, mortarJointMm: number): number {
+  if (netAreaM2 <= 0 || mortarJointMm <= 0) return 0;
+  const SINGLE_SKIN_10MM_RATE_M3_PER_M2 = 0.02;
+  return netAreaM2 * SINGLE_SKIN_10MM_RATE_M3_PER_M2 * (mortarJointMm / 10);
+}
+
+/**
+ * Fixed note surfaced alongside the brick result — same spirit as
+ * PLASTERBOARD_FIXINGS_NOTE: the mortar figure above is a rough
+ * single-skin approximation, not a bed/perpend take-off, and does not
+ * account for double-skin/cavity construction.
+ */
+export const BRICK_MORTAR_NOTE =
+  "Mortar volume is a rough single-skin estimate (~0.02m³/m² at a 10mm joint, scaled linearly for your joint width) — not adjusted for double-skin/cavity walls. Confirm with your bricklayer for anything beyond a rough order quantity.";
+
+/**
+ * Unit-aware $/brick rate from a linked material's raw price + its
+ * `unit` string. Materials priced "per 1000" (bricks are commonly sold
+ * that way, e.g. "$850/1000") need dividing by 1000 to get a per-brick
+ * rate; anything else (e.g. "ea") is assumed already per-brick.
+ *
+ * Matching is deliberately narrow — checks for the literal substrings
+ * "1000" or "thousand" (case-insensitive) in the unit string, e.g.
+ * "1000", "per 1000", "/1000", "thousand" — NOT a general unit-parser;
+ * an unrecognised unit is treated as already-per-brick rather than
+ * guessed at, same "don't show a confidently wrong number" discipline
+ * lib/calculators.ts's sheetRatePerM2() doc comment already states for
+ * this module. Returns null when price is null/undefined (no linked/
+ * priced material) — never a fallback rate.
+ */
+export function brickUnitRate(price: number | null, unit: string | null | undefined): number | null {
+  if (price === null || price === undefined) return null;
+  const normalized = (unit ?? "").toLowerCase();
+  const isPerThousand = normalized.includes("1000") || normalized.includes("thousand");
+  return isPerThousand ? price / 1000 : price;
+}
+
+/**
+ * Full brick calculation: bricksPerM2 × net wall area × (1 + wastage)
+ * → total bricks (ceil'd — you can't buy a fractional brick), plus the
+ * mortar volume estimate and cost (if a priced material is linked).
+ * `pricePerBrick` is the caller-normalised $/brick rate (see
+ * brickUnitRate() above) — this function does no unit inference of its
+ * own, it just multiplies, same convention as calculateTimberFrame's
+ * pricePerMetre param.
+ */
+export function calculateBrick(inputs: BrickInputs, pricePerBrick: number | null): BrickResult {
+  const {
+    brick_length_mm,
+    brick_height_mm,
+    mortar_joint_mm,
+    wall_length_mm,
+    wall_height_mm,
+    openings,
+    wastage_pct,
+  } = inputs;
+
+  if (!brick_length_mm || !brick_height_mm || !wall_length_mm || !wall_height_mm) {
+    return { net_area_m2: 0, bricks_per_m2: 0, total_bricks: 0, mortar_volume_m3: 0, cost: null };
+  }
+
+  const net_area_m2 = netWallAreaM2(wall_length_mm, wall_height_mm, openings);
+  const per_m2 = bricksPerM2(brick_length_mm, brick_height_mm, mortar_joint_mm);
+  const wastageFraction = Math.max(0, wastage_pct ?? 0) / 100;
+  const total_bricks = Math.ceil(net_area_m2 * per_m2 * (1 + wastageFraction));
+  const mortar_volume_m3 = mortarVolumeM3(net_area_m2, mortar_joint_mm);
+
+  const cost =
+    pricePerBrick !== null && pricePerBrick !== undefined
+      ? roundMoney(total_bricks * pricePerBrick)
+      : null;
+
+  return {
+    net_area_m2: roundMoney(net_area_m2),
+    bricks_per_m2: per_m2,
+    total_bricks,
+    mortar_volume_m3: Math.round(mortar_volume_m3 * 1000) / 1000,
+    cost,
+  };
+}
+
+// ------------------------------------------------------------
 // Shared money rounding (mirrors lib/estimate.ts roundMoney() exactly
 // — duplicated rather than imported so this module stays fully
 // dependency-free per its header comment; both round-half-up to 2dp).
@@ -455,6 +591,38 @@ export function plasterboardLineDescription(
     `sheet size ${sheet}mm`,
     inputs.openings.length ? `${inputs.openings.length} opening(s)` : null,
     ratePerM2 !== null && ratePerM2 !== undefined ? `@ $${ratePerM2.toFixed(2)}/m² materials` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  return { description, provenance };
+}
+
+/**
+ * "Two more — 7 July 2026 evening" — same provenance-note pattern as
+ * timberFrameLineDescription/plasterboardLineDescription above: a
+ * plain description string + a comma-joined provenance note capturing
+ * the calculator name and the inputs that actually produced the
+ * result (brick spec, joint, wall dims, wastage), so an inserted
+ * estimate line is traceable back to exactly what was typed in.
+ */
+export function brickLineDescription(inputs: BrickInputs): {
+  description: string;
+  provenance: string;
+} {
+  const lenM = inputs.wall_length_mm ? (inputs.wall_length_mm / MM_PER_M).toFixed(2) : "?";
+  const heightM = inputs.wall_height_mm ? (inputs.wall_height_mm / MM_PER_M).toFixed(2) : "?";
+  const brickSpec =
+    inputs.brick_length_mm && inputs.brick_height_mm
+      ? `${inputs.brick_length_mm}×${inputs.brick_height_mm}${inputs.brick_width_mm ? `×${inputs.brick_width_mm}` : ""}mm brick`
+      : "brick";
+  const description = `Brickwork — ${brickSpec} — ${lenM}m × ${heightM}m wall`;
+  const provenance = [
+    "Calculator: Brick",
+    brickSpec,
+    `joint ${inputs.mortar_joint_mm}mm`,
+    `wall ${lenM}m × ${heightM}m`,
+    inputs.openings.length ? `${inputs.openings.length} opening(s)` : null,
+    inputs.wastage_pct ? `${inputs.wastage_pct}% wastage` : null,
   ]
     .filter(Boolean)
     .join(", ");
