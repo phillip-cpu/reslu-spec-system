@@ -107,6 +107,20 @@ interface Props {
    * pointer handlers in PhaseRow/UmbrellaBand.
    */
   timelineMarkers?: GanttTimelineMarker[];
+  /**
+   * Board v3.1 — display-first cells, item 8. Phase ids (schedule_phases.id)
+   * whose LINKED board_groups row currently has at least one non-deleted
+   * task with a booking_date set — these phases' start_date/end_date are
+   * SERVER-DERIVED (lib/phase-rollup.ts's rollupPhaseDatesForGroup, called
+   * from every board_tasks write path) rather than directly editable.
+   * PhaseEditPanel disables its start/end date inputs for exactly these
+   * phases and shows a "dates come from items" hint instead — a manual
+   * edit here would just be silently overwritten by the next rollup, so
+   * the input is disabled rather than left to fail confusingly. Optional/
+   * defaults to [] so this prop is additive, same convention as
+   * timelineMarkers above.
+   */
+  worksDatesLockedPhaseIds?: string[];
 }
 
 const COLOR_KEYS: PhaseColorKey[] = ["sand", "charcoal", "teal", "amber"];
@@ -201,7 +215,7 @@ function toISO(d: Date): string {
  * sticky phase-name column for mobile horizontal scroll, and a mobile
  * bottom sheet for tapping a visit dot.
  */
-export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: Props) {
+export function GanttChart({ projectId, initialPhases, timelineMarkers = [], worksDatesLockedPhaseIds = [] }: Props) {
   const [phases, setPhases] = useState<SchedulePhaseWithVisits[]>(initialPhases);
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -234,6 +248,13 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
   // whole-project `grid` below, per BUILD-SPEC "Month zoom keeps
   // showing everything").
   const [win, setWin] = useState<GanttWindow | null>(null);
+  // Board v3.1 — display-first cells, item 8 — O(1) lookup for
+  // renderPhaseRow's worksDatesLocked flag below, derived once from the
+  // prop rather than an Array#includes per phase per render.
+  const worksDatesLockedPhaseIdSet = useMemo(
+    () => new Set(worksDatesLockedPhaseIds),
+    [worksDatesLockedPhaseIds]
+  );
   // Floating "22 Jul → 26 Jul" date chip shown near the cursor while
   // dragging a phase/umbrella bar (BUILD-SPEC item 4) — screen
   // coordinates + the label text, recomputed on every drag pointermove
@@ -468,12 +489,153 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
    * once a drag/resize gesture has accumulated a non-zero day delta.
    * Reuses patchPhase's optimistic-update/revert-on-failure path so a
    * failed PATCH snaps the bar back exactly like any other edit.
+   *
+   * Board v3.2 — "two-way timeline sync": a DERIVED phase (this
+   * phase's id is in worksDatesLockedPhaseIdSet — the SAME detection
+   * PhaseEditPanel already uses to disable its own date inputs, see
+   * that prop's doc comment) never PATCHes schedule_phases directly
+   * here (a plain PATCH would just be clobbered by the next rollup, as
+   * PhaseEditPanel's own comment already explains) — instead:
+   *   - mode 'move' (drag the bar BODY) -> POST .../shift-items, which
+   *     shifts every linked task's booking dates by the same delta.
+   *   - mode 'resize-start'/'resize-end' (drag an EDGE zone) ->
+   *     POST .../adjust-boundary, boundary-item semantics (only the
+   *     earliest/latest item's own date moves).
+   * A manual (non-derived) phase falls through to the pre-existing
+   * plain patchPhase path, completely unchanged.
    */
   function commitDrag(phase: SchedulePhaseWithVisits, mode: DragMode, deltaDays: number) {
     if (deltaDays === 0) return;
+    if (worksDatesLockedPhaseIdSet.has(phase.id)) {
+      if (mode === "move") {
+        shiftDerivedPhase(phase, deltaDays);
+      } else {
+        adjustDerivedBoundary(phase, mode, deltaDays);
+      }
+      return;
+    }
     const result = applyDrag(phase, mode, deltaDays);
     if (result.start_date === phase.start_date && result.end_date === phase.end_date) return;
     patchPhase(phase, { start_date: result.start_date, end_date: result.end_date });
+  }
+
+  /**
+   * Board v3.2 — derived-phase bar-BODY drag commit. Optimistically
+   * shifts the phase's OWN start/end (the same day delta every linked
+   * task is about to move by, so the bar doesn't visually snap back
+   * before the request resolves) via patchPhase's exact
+   * optimistic-update/revert-on-failure shape, then POSTs
+   * .../shift-items — on success, any visit ids in `reconfirm_visit_ids`
+   * get the same "Dates changed — re-send confirmation?" affordance a
+   * direct visit-sub-bar drag already triggers (see commitVisitDrag).
+   * The phase's dates are then reconciled to the server's rollup-fresh
+   * schedule_phases row via a light re-fetch of THIS phase only
+   * (avoids a full-page reload while still guaranteeing the header/bar
+   * reflect the authoritative rolled-up range, not just this
+   * component's own optimistic guess).
+   */
+  async function shiftDerivedPhase(phase: SchedulePhaseWithVisits, deltaDays: number) {
+    const prev = phases;
+    const optimistic = applyDrag(phase, "move", deltaDays);
+    setPhases((cur) =>
+      cur.map((p) => (p.id === phase.id ? { ...p, start_date: optimistic.start_date, end_date: optimistic.end_date } : p))
+    );
+    setError(null);
+    try {
+      const res = await fetch(`/api/phases/${phase.id}/shift-items`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ delta_days: deltaDays }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? "Could not shift item dates.");
+      const { reconfirm_visit_ids } = (await res.json()) as { reconfirm_visit_ids: string[] };
+      await refreshPhase(phase.id);
+      flagReconfirmForVisits(reconfirm_visit_ids);
+    } catch (err) {
+      setPhases(prev);
+      setError(err instanceof Error ? err.message : "Could not shift item dates.");
+    }
+  }
+
+  /**
+   * Board v3.2 — derived-phase EDGE drag commit (boundary-item
+   * semantics). mode 'resize-start' -> edge 'start', 'resize-end' ->
+   * edge 'end'. Computes the SAME day-snapped new_date applyDrag would
+   * for an ordinary phase (reusing that function purely for its
+   * date-math, not its result shape — only start_date is used for
+   * 'start', only end_date for 'end') and POSTs it to
+   * .../adjust-boundary. No local optimistic date guess is applied to
+   * the phase itself beforehand (unlike shiftDerivedPhase above) since
+   * this route only ever moves ONE item's boundary date, and this
+   * component doesn't hold that item's row locally to update
+   * optimistically — refreshPhase's re-fetch after a successful POST is
+   * the single source of truth here, same "reconcile via a light
+   * re-fetch" approach shiftDerivedPhase uses for its own final step.
+   */
+  async function adjustDerivedBoundary(phase: SchedulePhaseWithVisits, mode: DragMode, deltaDays: number) {
+    const result = applyDrag(phase, mode, deltaDays);
+    const edge: "start" | "end" = mode === "resize-start" ? "start" : "end";
+    const new_date = edge === "start" ? result.start_date : result.end_date;
+    setError(null);
+    try {
+      const res = await fetch(`/api/phases/${phase.id}/adjust-boundary`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ edge, new_date }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? "Could not adjust item date.");
+      const { reconfirm_visit_ids } = (await res.json()) as { reconfirm_visit_ids: string[] };
+      await refreshPhase(phase.id);
+      flagReconfirmForVisits(reconfirm_visit_ids);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not adjust item date.");
+    }
+  }
+
+  /**
+   * Board v3.2 — re-fetches ONE phase's own row (GET
+   * /api/projects/[id]/phases returns the full project list; a single
+   * phase's fresh row is extracted from it) after a shift-items/
+   * adjust-boundary POST, so this phase's displayed start/end reflect
+   * the server-side rollup that route just re-ran rather than this
+   * component's own optimistic guess (shiftDerivedPhase) or no local
+   * update at all (adjustDerivedBoundary). Deliberately reuses the
+   * existing GET /api/projects/[id]/phases route rather than adding a
+   * GET /api/phases/[id] (no such route exists today) — a single extra
+   * list fetch is a fair price for guaranteed consistency and avoids
+   * introducing a new read endpoint for one caller.
+   */
+  async function refreshPhase(phaseId: string) {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/phases`);
+      if (!res.ok) return;
+      const { phases: fresh } = (await res.json()) as { phases: SchedulePhaseWithVisits[] };
+      const updated = fresh.find((p) => p.id === phaseId);
+      if (!updated) return;
+      setPhases((cur) =>
+        cur.map((p) => (p.id === phaseId ? { ...p, start_date: updated.start_date, end_date: updated.end_date } : p))
+      );
+    } catch (err) {
+      console.error("refreshPhase failed after shift-items/adjust-boundary:", err);
+    }
+  }
+
+  /**
+   * Board v3.2 — surfaces the existing "Dates changed — re-send
+   * confirmation?" affordance (reconfirmPrompts, keyed by VISIT id —
+   * the same Set ReconfirmAffordance/commitVisitDrag already use) for
+   * every visit id shift-items/adjust-boundary reports as
+   * `reconfirm_visit_ids` (both routes resolve task -> linked visit
+   * server-side and return the visit id directly, so this is a plain
+   * Set merge with no extra lookup needed).
+   */
+  function flagReconfirmForVisits(visitIds: string[]) {
+    if (visitIds.length === 0) return;
+    setReconfirmPrompts((cur) => {
+      const next = new Set(cur);
+      for (const vid of visitIds) next.add(vid);
+      return next;
+    });
   }
 
   async function deletePhase(phase: SchedulePhaseWithVisits) {
@@ -699,12 +861,14 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
     // toggled before).
     const isExpanded = zoom === "day" || !!expanded[phase.id];
     const boardGroupId = (phase as PhaseWithGroupLink).board_group_id ?? null;
+    const worksDatesLocked = worksDatesLockedPhaseIdSet.has(phase.id);
     return (
       <PhaseRow
         key={phase.id}
         projectId={projectId}
         phase={phase}
         boardGroupId={boardGroupId}
+        worksDatesLocked={worksDatesLocked}
         gridPos={pos}
         // Bug fix, 7 July 2026: this was hardcoded to grid.weekCount
         // (the whole-project week count lib/gantt.ts computes for Month
@@ -1215,6 +1379,7 @@ function PhaseRow({
   projectId,
   phase,
   boardGroupId,
+  worksDatesLocked,
   gridPos,
   weekCount,
   winPos,
@@ -1250,6 +1415,8 @@ function PhaseRow({
   phase: SchedulePhaseWithVisits;
   /** Timeline Day-zoom polish round — item 5's phase-name -> Board deep link. Null for a phase with no linked board_groups row (legacy/unreconciled data) — the name then renders as plain text, same as before this round. */
   boardGroupId: string | null;
+  /** Board v3.1 — display-first cells, item 8: true when this phase's linked group has at least one task with works dates set — its start/end dates are server-derived (lib/phase-rollup.ts) rather than directly editable. Threaded through to PhaseEditPanel, which disables its date inputs and shows a "dates come from items" hint in that case. */
+  worksDatesLocked: boolean;
   gridPos: { startCol: number; span: number };
   weekCount: number;
   /** Timeline Day-zoom polish round — this phase's windowed position (lib/gantt-window.ts), non-null exactly when isWindowedZoom is true. Bar geometry/markers below prefer this over gridPos/grid whenever present. */
@@ -1480,6 +1647,38 @@ function PhaseRow({
                 {winPos.clippedEnd && (
                   <span className="absolute -right-3 top-1/2 -translate-y-1/2 text-caption text-charcoal/70">▸</span>
                 )}
+                {/* Board v3.2 — derived-phase edge-zone tooltips:
+                    thin title-only overlays exactly matching
+                    handlePointerDown's own EDGE_ZONE_PX hit-test width.
+                    NOT pointer-events-none — a native title tooltip
+                    only shows on an element that actually receives the
+                    hover/pointer event — but they don't stop
+                    propagation, so the underlying pointerdown still
+                    bubbles up to the bar's own onPointerDown handler
+                    exactly as before (React attaches DOM listeners at
+                    the root and dispatches by event target ancestry,
+                    so a bubbling event fired on a child fires the
+                    parent's handler too) — this file's existing
+                    byte-for-byte EDGE_ZONE_PX/offsetX drag math is
+                    completely untouched. Rendered ONLY for a derived
+                    phase — a manual phase's edges keep the plain
+                    single-title behaviour ("adjusts the phase's own
+                    start_date/end_date" is already obvious from the
+                    existing tooltip's date range). */}
+                {worksDatesLocked && (
+                  <>
+                    <div
+                      className="absolute inset-y-0 left-0 cursor-ew-resize"
+                      style={{ width: EDGE_ZONE_PX }}
+                      title="Adjusts first item"
+                    />
+                    <div
+                      className="absolute inset-y-0 right-0 cursor-ew-resize"
+                      style={{ width: EDGE_ZONE_PX }}
+                      title="Adjusts last item"
+                    />
+                  </>
+                )}
               </div>
             </div>
           )
@@ -1495,7 +1694,7 @@ function PhaseRow({
             onTouchMove={clearLongPress}
             onTouchCancel={clearLongPress}
             className={clsx(
-              "h-4 cursor-grab transition-opacity",
+              "relative h-4 cursor-grab transition-opacity",
               dragging && "cursor-grabbing opacity-60 outline outline-2 outline-nearblack"
             )}
             style={{
@@ -1504,7 +1703,25 @@ function PhaseRow({
               backgroundColor: COLOR_SWATCH[phase.color_key],
             }}
             title={`${phase.name}: ${phase.start_date} to ${phase.end_date}`}
-          />
+          >
+            {/* Board v3.2 — derived-phase edge-zone tooltips, Month-zoom
+                variant — see the windowed-zoom bar above for the full
+                doc comment on why these aren't pointer-events-none. */}
+            {worksDatesLocked && (
+              <>
+                <div
+                  className="absolute inset-y-0 left-0 cursor-ew-resize"
+                  style={{ width: EDGE_ZONE_PX }}
+                  title="Adjusts first item"
+                />
+                <div
+                  className="absolute inset-y-0 right-0 cursor-ew-resize"
+                  style={{ width: EDGE_ZONE_PX }}
+                  title="Adjusts last item"
+                />
+              </>
+            )}
+          </div>
         )}
 
         {/* Board cockpit round — timeline tick markers (due_date/
@@ -1627,6 +1844,7 @@ function PhaseRow({
         <div className="col-span-full border-b border-[#dcd6cc] bg-offwhite px-3 py-3">
           <PhaseEditPanel
             phase={phase}
+            worksDatesLocked={worksDatesLocked}
             onPatch={onPatch}
             onDelete={onDelete}
             onAddVisit={onAddVisit}
@@ -1643,6 +1861,7 @@ function PhaseRow({
 
 function PhaseEditPanel({
   phase,
+  worksDatesLocked,
   onPatch,
   onDelete,
   onAddVisit,
@@ -1652,6 +1871,8 @@ function PhaseEditPanel({
   onAddVisitOpened,
 }: {
   phase: SchedulePhaseWithVisits;
+  /** Board v3.1 — display-first cells, item 8: see PhaseRow's own prop of the same name — disables the Start/End date inputs below and shows a "dates come from items" hint instead of letting a manual edit be silently overwritten by the next server-side rollup. */
+  worksDatesLocked: boolean;
   onPatch: (patch: Record<string, unknown>, refUpdate?: Partial<SchedulePhaseWithVisits>) => void;
   onDelete: () => void;
   onAddVisit: (visit: TradeVisitWithContact) => void;
@@ -1666,6 +1887,23 @@ function PhaseEditPanel({
   const [end, setEnd] = useState(phase.end_date);
   const [notes, setNotes] = useState(phase.notes ?? "");
   const [contacts, setContacts] = useState<Contact[]>([]);
+
+  // Board v3.1 — display-first cells, item 8: when this phase's dates
+  // are server-derived (worksDatesLocked), keep the (disabled) start/end
+  // inputs' displayed values in sync with the latest rolled-up
+  // phase.start_date/end_date rather than freezing at whatever this
+  // panel's initial useState() captured on mount — a rollup can happen
+  // from the Board tab in a different browser tab/session while this
+  // panel stays open, and a disabled-but-stale date would be
+  // confusing. Scoped to the locked case only (unlocked/manual dates
+  // keep the pre-existing "local draft, resynced only via unmount/
+  // remount" behaviour every other field on this panel already has).
+  useEffect(() => {
+    if (worksDatesLocked) {
+      setStart(phase.start_date);
+      setEnd(phase.end_date);
+    }
+  }, [worksDatesLocked, phase.start_date, phase.end_date]);
 
   // Board cockpit round — fetch-once-on-mount (this panel is already
   // only mounted once a phase row is expanded, so "on mount" here is
@@ -1715,13 +1953,22 @@ function PhaseEditPanel({
           />
         </label>
         <label className="flex flex-col gap-1">
-          <span className="label-caps">Start date</span>
+          <span className="label-caps">
+            Start date
+            {/* Board v3.1 — display-first cells, item 8: hint shown only when this phase's dates are server-derived from its linked group's task works-dates (see this component's own worksDatesLocked prop doc comment). */}
+            {worksDatesLocked && <span className="ml-1 normal-case text-charcoal/40">· dates come from items</span>}
+          </span>
           <input
             type="date"
             value={start}
+            disabled={worksDatesLocked}
             onChange={(e) => setStart(e.target.value)}
             onBlur={() => start !== phase.start_date && onPatch({ start_date: start })}
-            className="border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
+            title={worksDatesLocked ? "Dates come from items — edit works dates on the Board instead" : undefined}
+            className={clsx(
+              "border bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none",
+              worksDatesLocked ? "border-[#c9c2b4] text-charcoal/40" : "border-[#c9c2b4]"
+            )}
           />
         </label>
         <label className="flex flex-col gap-1">
@@ -1729,9 +1976,14 @@ function PhaseEditPanel({
           <input
             type="date"
             value={end}
+            disabled={worksDatesLocked}
             onChange={(e) => setEnd(e.target.value)}
             onBlur={() => end !== phase.end_date && onPatch({ end_date: end })}
-            className="border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
+            title={worksDatesLocked ? "Dates come from items — edit works dates on the Board instead" : undefined}
+            className={clsx(
+              "border bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none",
+              worksDatesLocked ? "border-[#c9c2b4] text-charcoal/40" : "border-[#c9c2b4]"
+            )}
           />
         </label>
         <label className="flex flex-col gap-1">

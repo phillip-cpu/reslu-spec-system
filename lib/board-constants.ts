@@ -315,3 +315,78 @@ export function subItemCountChip(subItems: SubItemSourceTask[]): string {
   const done = subItems.filter((t) => SUMMARY_DONE_COLUMN_NAMES.has(t.columnName.trim().toLowerCase())).length;
   return `${done}/${subItems.length}`;
 }
+
+// ------------------------------------------------------------
+// Board v3.1 — display-first cells, item 8 — client-side mirror of
+// lib/phase-rollup.ts's rollupPhaseDatesForGroup() min/max math, used
+// ONLY to decide/render the grouped-list header's read-only computed
+// range (GroupTable, components/board/ProjectBoard.tsx) — the actual
+// schedule_phases.start_date/end_date WRITE always happens
+// server-side (lib/phase-rollup.ts), this is purely a display
+// projection so the header shows the correct range on the very same
+// render a task's works dates change client-side (optimistic update),
+// without waiting for a round-trip. Deliberately the SAME formula
+// (min(booking_date), max(booking_end_date ?? booking_date)) so the
+// two never disagree about what the "computed range" for a group is.
+// ------------------------------------------------------------
+
+export interface GroupWorksDateSourceTask {
+  booking_date: string | null;
+  booking_end_date: string | null;
+}
+
+export interface GroupWorksDateRange {
+  start_date: string;
+  end_date: string;
+}
+
+/**
+ * Computes the derived works-date range for a group's tasks, or null
+ * when none of them have a booking_date set (in which case the caller
+ * falls back to the group's own manual phase_start_date/phase_end_date
+ * inputs — see GroupTable's header render for the exact branch).
+ */
+export function computeGroupWorksDateRange(tasks: GroupWorksDateSourceTask[]): GroupWorksDateRange | null {
+  const withDates = tasks.filter((t): t is { booking_date: string; booking_end_date: string | null } => !!t.booking_date);
+  if (withDates.length === 0) return null;
+
+  const starts = withDates.map((t) => t.booking_date);
+  const ends = withDates.map((t) => t.booking_end_date ?? t.booking_date);
+
+  const start_date = starts.reduce((min, d) => (d < min ? d : min), starts[0]);
+  const end_date = ends.reduce((max, d) => (d > max ? d : max), ends[0]);
+
+  return { start_date, end_date };
+}
+
+// ------------------------------------------------------------
+// "Update status names" action — Board v3.1 — display-first cells,
+// item 6. Best-guess old-vocabulary -> new-vocabulary column-name
+// mapping, shown prefilled in the small panel opened from the board's
+// "..." overflow menu — the user can adjust any of these in the panel
+// before Save; this function never writes anything itself, it's pure
+// suggestion text for the panel's initial input values.
+// ------------------------------------------------------------
+
+const STATUS_NAME_SUGGESTIONS: Record<string, string> = {
+  waiting: "Not Booked",
+  "to do": "Not Booked",
+  todo: "Not Booked",
+  "in progress": "In Progress",
+  done: "Done",
+  complete: "Done",
+  completed: "Done",
+  booked: "Booked",
+};
+
+/**
+ * Best-guess replacement label for an existing column name, matched
+ * case-insensitively/trimmed against the small set of known old-vocabulary
+ * labels above — returns the column's OWN current name unchanged when it
+ * doesn't match any recognised old label (e.g. a team's own custom column
+ * name), so the panel's prefilled input never proposes a fabricated
+ * rename for a column nobody asked to rename.
+ */
+export function suggestStatusColumnName(currentName: string): string {
+  return STATUS_NAME_SUGGESTIONS[currentName.trim().toLowerCase()] ?? currentName;
+}

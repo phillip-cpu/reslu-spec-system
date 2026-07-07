@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { rollupPhaseDatesForGroup } from "@/lib/phase-rollup";
 import type { PatchBoardTaskInputV2 } from "@/types/phase-12a-b";
 
 const EDITABLE_FIELDS = new Set([
@@ -58,7 +59,7 @@ export async function PATCH(
 
   const { data: existing } = await supabase
     .from("board_tasks")
-    .select("id,project_id,column_id")
+    .select("id,project_id,column_id,phase_group_id")
     .eq("id", id)
     .is("deleted_at", null)
     .single();
@@ -176,6 +177,27 @@ export async function PATCH(
     return NextResponse.json({ error: error.message }, { status });
   }
 
+  // INVARIANT: schedule_phases.start_date/end_date are derived from the
+  // min/max works dates (board_tasks.booking_date/booking_end_date) of
+  // tasks in groups linked to this phase, whenever any linked task has
+  // works dates set. This keeps Timeline (lib/gantt.ts) consistent with
+  // the board's grouped-list rollup display. A phase_group_id change
+  // (drag/drop between groups, or the row's "Phase" select) moves a
+  // task's works dates OUT of its old group's rollup input set and INTO
+  // its new group's — both sides are recomputed. Best-effort: a rollup
+  // failure must never fail this PATCH, which already succeeded above —
+  // log and swallow.
+  try {
+    if ("phase_group_id" in update) {
+      if (existing.phase_group_id !== task.phase_group_id) {
+        await rollupPhaseDatesForGroup(supabase, existing.phase_group_id);
+      }
+      await rollupPhaseDatesForGroup(supabase, task.phase_group_id);
+    }
+  } catch (rollupError) {
+    console.error("rollupPhaseDatesForGroup failed after board-task PATCH:", rollupError);
+  }
+
   return NextResponse.json({ task });
 }
 
@@ -213,6 +235,17 @@ export async function DELETE(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Board v3.1 — rollup: read the task's phase_group_id BEFORE the
+  // soft-delete below so a group whose only works-dated task is this
+  // one gets recomputed (falling back to "no tasks have works dates"
+  // once this task is gone, per rollupPhaseDatesForGroup's own no-op
+  // rule) rather than silently keeping a stale phase range forever.
+  const { data: taskBeforeDelete } = await supabase
+    .from("board_tasks")
+    .select("phase_group_id")
+    .eq("id", id)
+    .maybeSingle();
+
   const { error } = await supabase
     .from("board_tasks")
     .update({ deleted_at: new Date().toISOString() })
@@ -221,6 +254,19 @@ export async function DELETE(
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  // INVARIANT: schedule_phases.start_date/end_date are derived from the
+  // min/max works dates (board_tasks.booking_date/booking_end_date) of
+  // tasks in groups linked to this phase, whenever any linked task has
+  // works dates set. This keeps Timeline (lib/gantt.ts) consistent with
+  // the board's grouped-list rollup display. Best-effort: a rollup
+  // failure must never fail this delete, which already succeeded above
+  // — log and swallow.
+  try {
+    await rollupPhaseDatesForGroup(supabase, taskBeforeDelete?.phase_group_id ?? null);
+  } catch (rollupError) {
+    console.error("rollupPhaseDatesForGroup failed after board-task DELETE:", rollupError);
   }
 
   const { error: childError } = await supabase

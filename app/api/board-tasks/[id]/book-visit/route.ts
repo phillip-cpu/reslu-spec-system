@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { computeInsuranceStatus, insuranceWarningForBooking } from "@/lib/insurance";
+import { rollupPhaseDatesForGroup } from "@/lib/phase-rollup";
 import type { BookVisitInput } from "@/types/board-cockpit";
 
 export const runtime = "nodejs";
@@ -199,6 +200,19 @@ export async function POST(
     return NextResponse.json({ error: updateError.message }, { status: 500 });
   }
 
+  // INVARIANT: schedule_phases.start_date/end_date are derived from the
+  // min/max works dates (board_tasks.booking_date/booking_end_date) of
+  // tasks in groups linked to this phase, whenever any linked task has
+  // works dates set. This keeps Timeline (lib/gantt.ts) consistent with
+  // the board's grouped-list rollup display. Best-effort: a rollup
+  // failure must never fail this booking request, which already
+  // succeeded above — log and swallow.
+  try {
+    await rollupPhaseDatesForGroup(supabase, updatedTask.phase_group_id);
+  } catch (rollupError) {
+    console.error("rollupPhaseDatesForGroup failed after book-visit POST:", rollupError);
+  }
+
   return NextResponse.json({ task: updatedTask, insurance_warning }, { status: 201 });
 }
 
@@ -238,6 +252,19 @@ export async function DELETE(
   }
   if (!task) {
     return NextResponse.json({ error: "Card not found" }, { status: 404 });
+  }
+
+  // INVARIANT: schedule_phases.start_date/end_date are derived from the
+  // min/max works dates (board_tasks.booking_date/booking_end_date) of
+  // tasks in groups linked to this phase, whenever any linked task has
+  // works dates set. This keeps Timeline (lib/gantt.ts) consistent with
+  // the board's grouped-list rollup display. Best-effort: a rollup
+  // failure must never fail this unlink request, which already
+  // succeeded above — log and swallow.
+  try {
+    await rollupPhaseDatesForGroup(supabase, task.phase_group_id);
+  } catch (rollupError) {
+    console.error("rollupPhaseDatesForGroup failed after book-visit DELETE:", rollupError);
   }
 
   return NextResponse.json({ task });

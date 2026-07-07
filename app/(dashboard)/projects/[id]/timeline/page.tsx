@@ -198,6 +198,17 @@ export default async function ProjectTimelinePage({
     : { data: [] as { id: string; title: string; kind: string; due_date: string | null; booking_date: string | null; phase_group_id: string | null }[] };
 
   const timelineMarkers: GanttTimelineMarker[] = [];
+  // Board v3.1 — display-first cells, item 8's Timeline-side rollup
+  // gating: a phase whose linked board_groups row has ANY task with a
+  // booking_date set has its Timeline dates DERIVED from those tasks
+  // (see lib/phase-rollup.ts's rollupPhaseDatesForGroup, called
+  // server-side by every board_tasks write path) — GanttChart's
+  // PhaseEditPanel should disable its own start/end inputs for exactly
+  // these phases rather than let a manual Timeline edit immediately be
+  // clobbered by the next rollup. Reuses `markerTasks` (already fetched
+  // above for the tick-marker join, zero extra queries) rather than a
+  // second query.
+  const worksDatesLockedPhaseIdSet = new Set<string>();
   for (const t of markerTasks ?? []) {
     const phase_id = t.phase_group_id ? phaseIdByGroupId.get(t.phase_group_id) ?? null : null;
     if (t.kind === "milestone" && t.due_date) {
@@ -207,15 +218,22 @@ export default async function ProjectTimelinePage({
     }
     if (t.booking_date) {
       timelineMarkers.push({ task_id: t.id, title: t.title, kind: "booking_date", date: t.booking_date, phase_id });
+      if (phase_id) worksDatesLockedPhaseIdSet.add(phase_id);
     }
   }
+  const worksDatesLockedPhaseIds = [...worksDatesLockedPhaseIdSet];
 
   return (
     <>
       <Header title={project.name} subtitle={`${project.client_name} · Timeline`} titleHref={`/projects/${id}`} />
       <ProjectTabs projectId={id} active="timeline" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
       <main className="flex-1 px-8 py-8">
-        <GanttChart projectId={id} initialPhases={initialPhasesWithGroupLink} timelineMarkers={timelineMarkers} />
+        <GanttChart
+          projectId={id}
+          initialPhases={initialPhasesWithGroupLink}
+          timelineMarkers={timelineMarkers}
+          worksDatesLockedPhaseIds={worksDatesLockedPhaseIds}
+        />
       </main>
     </>
   );

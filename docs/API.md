@@ -4532,3 +4532,216 @@ sub-items), `app/api/settings/phase-task-templates/route.ts` +
 banner; `addSubTask`; dependency-chip memo; sub-item-aware
 `onDropInGroup`/`moveTaskWithinGroup`), `docs/API.md`/`README.md`
 (this round's documentation).
+
+## Board v3.1 — display-first cells + phase date rollup
+
+Cells (status/dates) render as plain text/pills at rest, becoming
+controls only on click — no schema or route changes of their own
+(`components/board/StatusPill.tsx`, `components/board/DateCell.tsx`,
+`components/board/PopoverCell.tsx`). The one server-side addition:
+**phase date rollup** (`lib/phase-rollup.ts`'s
+`rollupPhaseDatesForGroup(supabase, phaseGroupId)`) — whenever ANY
+non-deleted `board_tasks` row in a `phase_group_id`'s group has a
+`booking_date` set, `schedule_phases.start_date`/`end_date` (for that
+group's linked phase) are overwritten to `min(booking_date)`/
+`max(booking_end_date, falling back to booking_date)` across every
+dated task in the group. A group with zero dated tasks is a no-op —
+the phase's dates stay whatever they were (manual or untouched).
+Called, best-effort (try/catch, log-and-swallow — a rollup failure
+never fails the write that triggered it), from every `board_tasks`
+write path that can change a task's works-date footprint: `PATCH
+/api/board-tasks/[id]` (on a `phase_group_id` change, both the old and
+new group are rolled up), `POST`/`DELETE
+/api/board-tasks/[id]/book-visit`, `DELETE /api/board-tasks/[id]`.
+
+**"Derived" is the same condition everywhere it's checked** — this
+matters for Board v3.2 below, which needs to detect it too:
+- Server write: `lib/phase-rollup.ts`'s own `withDates.length === 0`
+  no-op check.
+- Server read (Timeline tab): `app/(dashboard)/projects/[id]/board/../timeline/page.tsx`
+  builds `worksDatesLockedPhaseIds` — any phase whose linked
+  `board_groups` row has a `board_tasks` row with `booking_date` set —
+  and passes it to `<GanttChart worksDatesLockedPhaseIds={...} />`,
+  which disables `PhaseEditPanel`'s Start/End inputs for exactly those
+  phase ids ("dates come from items" hint).
+- Client read (Board tab): `lib/board-constants.ts`'s
+  `computeGroupWorksDateRange(tasks)` — same min/max formula, called
+  from `GroupTable`'s header to show the computed range read-only
+  instead of the manual `GroupPhaseDateInputs`.
+
+All three independently re-derive "does at least one task in this
+group have a `booking_date`" from the same underlying data (no shared
+constant/flag is persisted anywhere) — they cannot drift from each
+other because they're all trivial one-line min/max-over-dated-tasks
+checks, not configurable business logic.
+
+## Board v3.2 — two-way timeline sync + reorder animation
+
+v3.1 made board -> timeline flow one-way (the rollup above). This round
+adds the reverse direction — dragging a DERIVED phase's Timeline bar
+now writes back to its linked group's tasks — plus a purely
+presentational reorder animation on the Board's drag-and-drop.
+
+### POST /api/phases/[id]/shift-items
+Auth: session. Body: `{ delta_days: number }` (whole days, positive =
+later, negative = earlier — the same day-snapped unit
+`lib/phase-drag.ts`'s `snapDeltaDaysFromPxPerDay` already produces for
+an ordinary phase drag). Only valid for a **derived** phase (see the
+shared detection above) — 404 if the phase doesn't exist, 400 if it has
+no linked `board_groups` row or that group has zero tasks with a
+`booking_date` set ("dates are not derived").
+
+Shifts every non-deleted task in the linked group: `booking_date` and
+`booking_end_date` (or `booking_date` again, when a task has no
+distinct end) both move by `delta_days`. Runs as a plain sequential
+loop, not a DB transaction (Supabase's JS client has no multi-row
+transaction primitive here) — each task's update is independent, so one
+bad row's error is collected rather than aborting the rest of the
+group's shift. Response: `{ tasks: ShiftedTaskResult[],
+reconfirm_task_ids: string[], reconfirm_visit_ids: string[] }` where
+`ShiftedTaskResult` is `{ id, booking_date, booking_end_date, ok,
+error? }` per task.
+
+**Confirmed-visit re-send affordance:** for every shifted task that
+carries a `visit_id` linked to a `trade_visits` row currently `status =
+'confirmed'`, that visit's own `start_date`/`end_date` are updated to
+match (keeping the denormalised pair in sync, same discipline
+`POST`/`DELETE /api/board-tasks/[id]/book-visit` already apply) and
+both the task id and the visit id are added to `reconfirm_task_ids`/
+`reconfirm_visit_ids` — returned in both forms since API callers may
+only hold one or the other (the Board holds task ids; `GanttChart.tsx`
+holds visit ids, via each phase's own `visits` array, and keys its
+existing "Dates changed — re-send confirmation?" affordance
+(`ReconfirmAffordance.tsx`) by visit id). The visit's `status` itself is
+**not** reset here — only the explicit `POST
+/api/visits/[id]/resend-confirmation` button-press does that; this
+route only moves dates and flags the affordance. `rollupPhaseDatesForGroup`
+re-runs at the end (best-effort) so `schedule_phases` reflects the
+shifted set immediately.
+
+### POST /api/phases/[id]/adjust-boundary
+Auth: session. Body: `{ edge: 'start'|'end', new_date: string }`. Same
+"derived phase only" gate as shift-items above. A derived phase has no
+single row to resize (its range is computed from its tasks) — dragging
+an EDGE zone instead moves only the ONE **boundary item** that
+currently defines that edge:
+- `edge: 'start'` — the task with the EARLIEST `booking_date` has that
+  date moved to `new_date` (its own end untouched). 400 if `new_date`
+  would land after that same task's own end date.
+- `edge: 'end'` — the task with the LATEST effective end
+  (`booking_end_date`, falling back to `booking_date`) has that date
+  moved to `new_date` (its own start untouched). 400 if `new_date`
+  would land before that same task's own start date.
+
+Ties (two tasks sharing the same earliest/latest date) break on lowest
+`id` — deterministic, no business meaning. Deliberately does NOT
+validate the new date against any OTHER item's range — moving the
+first item's start later than the second-earliest item's start is
+allowed and simply changes which item is "earliest" on the next rollup
+read, same as editing that date directly on the Board. Response: `{
+task: { id, booking_date, booking_end_date }, reconfirm_task_ids:
+string[], reconfirm_visit_ids: string[] }` — same confirmed-visit
+re-send convention as shift-items (at most one id each, since a
+boundary adjustment only ever touches one task). Rollup re-runs
+afterwards.
+
+### GanttChart.tsx wiring
+`commitDrag` (the existing drag-commit function every phase-bar
+gesture already funnelled through) now branches on
+`worksDatesLockedPhaseIdSet.has(phase.id)` — the SAME set
+`PhaseEditPanel` already uses to disable its date inputs (see the
+shared-detection note above):
+- **Derived + mode `'move'`** (drag the bar BODY) -> `shiftDerivedPhase`
+  -> `POST .../shift-items`. Optimistic: the phase's own start/end shift
+  immediately by the same delta (revert-on-failure, same shape every
+  other optimistic edit in this file uses), then a light re-fetch of
+  just this phase (`refreshPhase`, via the existing `GET
+  /api/projects/[id]/phases`) reconciles to the server's rollup-fresh
+  values.
+- **Derived + mode `'resize-start'`/`'resize-end'`** (drag an EDGE
+  zone) -> `adjustDerivedBoundary` -> `POST .../adjust-boundary`, then
+  the same `refreshPhase` reconcile (no local optimistic guess here —
+  this route only touches one item, which this component doesn't hold
+  locally).
+- **Manual (non-derived) phase** — byte-for-byte the pre-existing path:
+  `applyDrag` + `patchPhase` (`PATCH /api/phases/[id]`), completely
+  untouched.
+
+Either derived path's response `reconfirm_visit_ids` is merged into
+`reconfirmPrompts` (`flagReconfirmForVisits`) — the exact same Set
+`ReconfirmAffordance`/`commitVisitDrag` (an ordinary visit sub-bar drag)
+already render from, so a phase-body/edge drag surfaces the identical
+UI a direct visit drag would.
+
+**Edge-zone tooltips:** for a derived phase only, two thin overlays
+exactly matching `handlePointerDown`'s existing `EDGE_ZONE_PX` hit-test
+width render `title="Adjusts first item"` / `"Adjusts last item"` — not
+`pointer-events-none` (a native tooltip needs the hover target to
+actually receive the event) but they don't `stopPropagation`, so the
+pointerdown still bubbles to the bar's own handler and the existing
+`offsetX`-based mode computation is untouched. A manual phase's edges
+keep the plain single tooltip (the date range) unchanged.
+
+### Reorder slot animation (Board — grouped list + sub-items)
+`components/board/ProjectBoard.tsx`'s `GroupRows` (used by both
+`GroupTable` per stage group and the "Ungrouped" bucket) gained
+`dragOverIndex` state — `{ listKey, index } | null`, where `listKey` is
+`"top"` for the top-level task list or a parent task's own id for that
+parent's sub-item list (mirrors `onDropInGroup`/`moveTaskWithinGroup`'s
+existing "same `parent_task_id`" sibling-set rule exactly, so a gap
+only ever opens within the correct list). Each row's `onDragOver` sets
+`dragOverIndex` to the position a drop would actually land at (same
+index `onDropAtIndex` already receives) based on which half of the row
+the pointer is over; every row at/after that index in the SAME list
+renders `transform: translateY(32px)` (a `REORDER_ROW_PX` constant
+matching the row's fixed `h-8`/32px height) with a ~120ms ease-out
+transition, and a 2px sand (`bg-sand`) drop-line row renders immediately
+before the gap position. On drop, `playSettleAnimation` clears the gap
+and flags the dropped row's id for a brief (150ms ease-in) settle
+transform, auto-clearing after it plays once. Cleared on `dragend`
+(fires on the drag source regardless of outcome) and on the table's own
+`onDragLeave` (fallback for a drag that leaves the table without
+dropping).
+
+**This is presentation only** — `dragTaskId`, `onDragStartTask`,
+`onDropAtIndex`/`onDropInGroup`, and the sort-ladder math are all
+byte-for-byte unchanged. **Hit-testing correction:** a CSS `transform`
+does NOT move a row's siblings (no layout/reflow triggered — this is
+exactly why the animation is safe to build on transforms in the first
+place), but it DOES change what `getBoundingClientRect()` reports for
+the TRANSFORMED element itself. Since a row already shifted by a
+previous dragover tick (`gapTransform` returning a non-empty
+`translateY` for it) can itself be the row the pointer is now over,
+`onDragOver`'s hit-test explicitly recomputes that row's untransformed
+top (`rect.top - REORDER_ROW_PX` whenever `gapTransform` is currently
+non-empty for it) before comparing against the cursor's Y position —
+without this correction the gap/drop-line would drift out of sync with
+the cursor as a drag crosses an already-open gap. `onDropAtIndex`
+itself never reads any bounding box at all (it only ever receives the
+plain integer index computed this way), so the actual persisted drop
+position is unaffected either way — this correction only fixes the
+drop-line indicator's visual tracking, not the drop's correctness.
+
+**Kanban stacked sections** (`StackedColumnSection`) do NOT get this
+animation — that view has no per-row drop-index target at all (a drop
+anywhere in a section appends at the end; see that function's own doc
+comment), so there is no real drop position for a gap to represent. Not
+"trivially shareable" per this round's own spec wording.
+
+**Files touched:** `types/board-v3-2.ts` (new — `ShiftItemsInput`/
+`ShiftItemsResponse`/`ShiftedTaskResult`, `AdjustBoundaryInput`/
+`AdjustBoundaryResponse`), `app/api/phases/[id]/shift-items/route.ts`
+(new), `app/api/phases/[id]/adjust-boundary/route.ts` (new),
+`components/gantt/GanttChart.tsx` (`commitDrag` branches on
+derived-phase detection; `shiftDerivedPhase`/`adjustDerivedBoundary`/
+`refreshPhase`/`flagReconfirmForVisits` added; edge-zone tooltip
+overlays on both the windowed and Month-zoom bar variants),
+`components/board/ProjectBoard.tsx` (`GroupRows` gains
+`dragOverIndex`/`settlingId` state + `gapTransform`/
+`playSettleAnimation`/`clearDragOver`; `renderRow`'s `<tr>` gains the
+transform/transition classes, drop-line rows, and `onDragOver`/
+`onDragEnd` wiring; `REORDER_ROW_PX`/`REORDER_GAP_MS` constants added;
+doc-comment note on why `StackedColumnSection` is excluded),
+`docs/API.md`/`README.md` (this round's documentation). No migration —
+this round writes only to existing `board_tasks`/`trade_visits`/
+`schedule_phases` columns.

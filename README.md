@@ -657,6 +657,30 @@ admin enforcement for financial fields is now in place project-wide
   stage's first item — no blocking, no schema. See `docs/API.md`'s
   "Board v3 — Monday parity round" section for the full breakdown.
 
+- **Board v3.1 — display-first cells + phase date rollup.** Board
+  cells (status/dates) now display as quiet text/pills, becoming
+  controls only on click; a group's stage header shows a computed
+  works-date range (read-only, "derived from item dates") whenever any
+  of its tasks has a booking date set, kept in sync with the Timeline
+  via a server-side rollup. See `docs/API.md`'s "Board v3.1 —
+  display-first cells + phase date rollup" section.
+
+- **Board v3.2 — two-way timeline sync + reorder animation.** Dragging
+  a DERIVED phase's Timeline bar now writes back to its linked group's
+  tasks instead of the phase row directly — the bar BODY shifts every
+  task's works dates by the drag delta (`POST
+  /api/phases/[id]/shift-items`), the EDGE zones move only the
+  first/last item's own boundary date (`POST
+  /api/phases/[id]/adjust-boundary`) — a confirmed trade visit whose
+  dates move this way still gets the existing "re-send confirmation?"
+  affordance. Manual (non-derived) phases are unaffected. Board
+  drag-reorder (grouped list + sub-items) now animates: neighbouring
+  rows slide apart to open a slot with a 2px sand drop-line while
+  dragging, settling with a brief transform on drop — pure CSS
+  transforms, no changes to the underlying drag/drop or sort
+  persistence. See `docs/API.md`'s "Board v3.2 — two-way timeline sync
+  + reorder animation" section for the full breakdown.
+
 ## Cron jobs — one still needs wiring up (Phase 12a-B)
 
 `vercel.json` currently schedules `/api/digest/flush` and

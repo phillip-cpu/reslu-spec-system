@@ -30,11 +30,17 @@ import {
   computeDependencyChips,
   groupSummaryLine,
   subItemCountChip,
-  type StatusPillTint,
+  computeGroupWorksDateRange,
+  suggestStatusColumnName,
 } from "@/lib/board-constants";
 import { ContactPicker } from "@/components/shared/ContactPicker";
 import { BookVisitPanel } from "./BookVisitPanel";
 import { MilestoneDiaryPrompt } from "./MilestoneDiaryPrompt";
+// Board v3.1 — display-first cells: quiet-cell click-to-edit controls
+// (see each file's own doc comment for the exact interaction shape).
+import { StatusPill } from "./StatusPill";
+import { DueDateCell, WorksDateCell } from "./DateCell";
+import { PopoverCell } from "./PopoverCell";
 
 interface Props {
   projectId: string;
@@ -45,6 +51,23 @@ interface Props {
 }
 
 const SORT_STEP = 1000;
+
+// Board v3.2 — "Reorder slot animation". Row height in px, matching
+// GroupRows' row className (`h-8` = 2rem = 32px) — used purely to
+// compute how far a row needs to translate to open/close a one-row
+// gap. A constant rather than a measured value: every row in this
+// table renders at the exact same fixed height (no variable-height
+// content — titles truncate via TaskTitleInline's `truncate` prop,
+// see that component's own doc comment), so a literal matches the
+// existing "no layout thrash, transforms only" brief without adding a
+// ResizeObserver/getBoundingClientRect measurement this animation
+// doesn't need.
+const REORDER_ROW_PX = 32;
+// ~120ms ease-out opening the gap while dragging, per BUILD-SPEC.md
+// "Reorder slot animation" item 2 — reused for both the CSS
+// transition duration below and (doubled, "brief... ease" per the
+// same spec line) the on-drop settle animation.
+const REORDER_GAP_MS = 120;
 
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/);
@@ -142,6 +165,12 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   // moment of opening" fix on every path that can open it (BoardCard,
   // StackedColumnSection's rows via BoardTaskEditorBody, GroupRows).
   const [bookingTask, setBookingTask] = useState<BoardTaskV3 | null>(null);
+  // Board v3.1 — display-first cells, item 6: the "Update status
+  // names" panel opened from the board's "..." overflow menu (near the
+  // layout toggle) — the menu itself is a PopoverCell (see the JSX
+  // below), which owns its own open/close state, so this file only
+  // needs to track whether the PANEL is open.
+  const [statusNamesPanelOpen, setStatusNamesPanelOpen] = useState(false);
 
   // Layout preference — read once on mount (SSR-safe: localStorage
   // doesn't exist server-side, so the initial render always uses the
@@ -996,8 +1025,40 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
           >
             Side-by-side
           </button>
+
+          {/* Board v3.1 — display-first cells, item 6: "..." overflow
+              menu, next to the layout toggle — currently a single
+              action ("Update status names") but kept as a menu (not a
+              bare button) so a future round can add more overflow
+              actions here without another UI decision. Reuses the same
+              shared PopoverCell click-to-reveal wrapper as the grouped-
+              list's WHO/CONTACT cells (click-outside + Esc close for
+              free, rather than a third hand-rolled copy of that
+              plumbing). */}
+          <PopoverCell trigger="•••" triggerTitle="More board actions">
+            {(close) => (
+              <button
+                type="button"
+                onClick={() => {
+                  close();
+                  setStatusNamesPanelOpen(true);
+                }}
+                className="block w-full min-w-[10rem] px-2 py-1.5 text-left text-caption text-charcoal hover:bg-cream"
+              >
+                Update status names…
+              </button>
+            )}
+          </PopoverCell>
         </div>
       </div>
+
+      {statusNamesPanelOpen && (
+        <UpdateStatusNamesPanel
+          columns={columns}
+          onRenameColumn={renameColumn}
+          onClose={() => setStatusNamesPanelOpen(false)}
+        />
+      )}
 
       {view === "kanban" && layout === "stacked" && (
         <div className="space-y-6">
@@ -1253,6 +1314,21 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
 // Every row ALSO has a "Move to" dropdown — BUILD-SPEC.md mobile pass:
 // "tap→move-to menu on touch" — so moving a card never strictly
 // requires drag capability.
+//
+// Board v3.2 — "Reorder slot animation" was NOT ported here. That
+// round's brief says to apply it "if trivially shareable", and it
+// isn't: the animation opens a gap at a specific ROW INDEX a drop
+// would land at (GroupRows' dragOverIndex, matched 1:1 against
+// onDropAtIndex's existing index-based semantics) — this section has
+// no equivalent per-row drop-index target at all (see the paragraph
+// above: "drop anywhere in a section... appended at the end", no
+// within-column reorder-by-position), only a single whole-section
+// onDropOnColumn. Animating a gap that doesn't correspond to any real
+// drop position this table already supports would be pure decoration
+// with no matching interaction underneath it — worse than no
+// animation. If a future round adds real within-column position drops
+// here, GroupRows' dragOverIndex/gapTransform/playSettleAnimation
+// pattern is written to be lifted as-is.
 // ------------------------------------------------------------
 
 function StackedColumnSection({
@@ -1405,7 +1481,12 @@ function StackedColumnSection({
         </table>
       )}
 
-      <div className="border-t border-[#e5e0d6] px-2 py-1.5">
+      {/* Board v3.1 — display-first cells, item 7: task composer —
+          already a quiet single-line input + Add/Cancel on one row
+          (no multi-line/heavy chrome to remove here); padding tightened
+          slightly (py-1.5 -> py-1) to match this round's ~32px row
+          rhythm. */}
+      <div className="border-t border-[#e5e0d6] px-2 py-1">
         {composing ? (
           <form onSubmit={submitNewTask} className="flex gap-2">
             <input
@@ -2002,9 +2083,21 @@ function MilestoneDiamond() {
 function TaskTitleInline({
   title,
   onPatch,
+  truncate = false,
 }: {
   title: string;
   onPatch: (patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskV3>) => void;
+  /**
+   * Board v3.1 — display-first cells, item 3: grouped-list rows are
+   * single-line (~32px) — a long title must ellipsis rather than wrap
+   * or push the row taller, with the FULL title available via the
+   * native `title` attribute (hover tooltip). Kanban cards (BoardCard)
+   * have room to wrap and omit this prop, keeping their pre-v3.1
+   * behaviour (plain "Click to rename" tooltip, no truncation) exactly
+   * as before — this is an opt-in per call site, not a global change
+   * to this shared component.
+   */
+  truncate?: boolean;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(title);
@@ -2049,8 +2142,11 @@ function TaskTitleInline({
         setDraft(title);
         setRenaming(true);
       }}
-      title="Click to rename"
-      className="text-left text-body text-nearblack hover:text-sand"
+      title={truncate ? title : "Click to rename"}
+      className={clsx(
+        "text-left text-body text-nearblack hover:text-sand",
+        truncate && "min-w-0 flex-1 truncate"
+      )}
     >
       {title}
     </button>
@@ -2098,6 +2194,16 @@ function formatShortDate(dateStr: string): string {
  * (the Status <select> in GroupRows, untouched), booking badges
  * (unchanged), milestones (◆ diamond, now ALSO carries a "MILESTONE"
  * chip per this round's spec).
+ *
+ * Board v3.2 — "Reorder slot animation" (GroupRows, below): dragging a
+ * row now opens an animated gap (neighbouring rows translateY apart,
+ * ~120ms ease-out, 2px sand drop-line) at whatever position
+ * onDropAtIndex would actually insert at, settling with a brief
+ * transform ease on drop. Purely a CSS-transform presentation layer on
+ * top of the SAME dragTaskId/onDropAtIndex/onDropInGroup plumbing —
+ * the HTML5 DnD backbone, the sort-ladder persistence, and every drop
+ * coordinate/index this table already computed are all byte-for-byte
+ * unchanged (see GroupRows' dragOverIndex/gapTransform doc comments).
  *
  * Prop surface: identical to the pre-v3 GroupTable PLUS three additive
  * props — `allColumnNames` (board-wide column-name list, for the
@@ -2203,6 +2309,22 @@ function GroupTable({
     topLevelTasks.map((t) => ({ isSubItem: false, columnName: columnById.get(t.column_id)?.name ?? "" }))
   );
 
+  // Board v3.1 — display-first cells, item 8: when ANY task in this
+  // group has works dates set, the header shows the COMPUTED range
+  // (read-only text, "derived from item dates" tooltip) instead of the
+  // manual GroupPhaseDateInputs — mirrors the exact same min/max
+  // formula the server-side rollup writes onto the linked
+  // schedule_phases row (lib/phase-rollup.ts's
+  // rollupPhaseDatesForGroup), via lib/board-constants.ts's
+  // computeGroupWorksDateRange, so this client-side display can never
+  // disagree with what the next server round-trip will show. Includes
+  // ALL of the group's tasks (sub-items too) — a sub-item's own works
+  // dates are just as real a signal of "this stage has scheduled work"
+  // as its parent's, unlike the top-level-only summary line above.
+  const groupWorksDateRange = computeGroupWorksDateRange(
+    group.tasks.map((t) => ({ booking_date: t.booking_date, booking_end_date: t.booking_end_date }))
+  );
+
   function submitNewTask(e: React.FormEvent) {
     e.preventDefault();
     if (!newTitle.trim()) return;
@@ -2226,9 +2348,18 @@ function GroupTable({
     setRenaming(false);
   }
 
+  // Board v3.1 — display-first cells, item 5: the 4px stage-colour bar
+  // moves from the HEADER row (pre-v3.1 — only spanned the header) onto
+  // the OUTER wrapper below, which contains the header AND every row
+  // (GroupRows) AND the "+ Add item" footer — so the bar now visually
+  // runs the FULL height of the group, not just its header row. The
+  // header's own title text keeps using the identical `stageColor`
+  // value for its own colour (see the rename button's style further
+  // down), so the two stay visually paired.
   return (
     <div
       className={clsx("border", dragOver ? "border-nearblack" : "border-[#dcd6cc]")}
+      style={{ borderLeft: `4px solid ${stageColor}` }}
       onDragOver={(e) => {
         e.preventDefault();
         setDragOver(true);
@@ -2249,7 +2380,6 @@ function GroupTable({
       <div
         id={`focus-group-${group.id}`}
         className="flex flex-wrap items-center justify-between gap-2 border-b border-[#dcd6cc] bg-offwhite py-2 pr-3"
-        style={{ borderLeft: `4px solid ${stageColor}` }}
       >
         <div className="flex flex-wrap items-center gap-3 pl-3">
           {/* Board v3 — Monday parity round: collapse chevron + summary
@@ -2298,8 +2428,29 @@ function GroupTable({
               onPatchPhaseDates, optimistic — same single-source-of-truth
               path Timeline's own phase edit panel already uses, so a
               date changed here shows up on the Timeline tab and vice
-              versa without any extra sync code. */}
-          {group.phase_id && (
+              versa without any extra sync code.
+
+              Board v3.1 — display-first cells, item 8: when this
+              group has a computed works-date range (groupWorksDateRange,
+              derived above from its tasks' booking_date/booking_end_date
+              — the exact same min/max the server-side rollup writes),
+              show that range as READ-ONLY text with a "derived from item
+              dates" tooltip instead of the manual inputs — a manual edit
+              here would just be silently overwritten by the next rollup.
+              Falls back to the pre-existing manual GroupPhaseDateInputs
+              whenever no task in the group has works dates set yet. */}
+          {group.phase_id && groupWorksDateRange && (
+            <span
+              className="text-caption text-charcoal/60"
+              title="Derived from item dates — set works dates on individual items to change this range"
+            >
+              {formatShortDate(groupWorksDateRange.start_date)}
+              {groupWorksDateRange.end_date !== groupWorksDateRange.start_date
+                ? ` – ${formatShortDate(groupWorksDateRange.end_date)}`
+                : ""}
+            </span>
+          )}
+          {group.phase_id && !groupWorksDateRange && (
             <GroupPhaseDateInputs
               startDate={group.phase_start_date}
               endDate={group.phase_end_date}
@@ -2353,7 +2504,11 @@ function GroupTable({
               onAddTask wiring at this component's call site). Labelled
               "+ Add item" (was "+ Add task") to match this round's ITEM
               column header wording. */}
-          <div className="border-t border-[#e5e0d6] px-3 py-1.5">
+          {/* Board v3.1 — display-first cells, item 7: "add item"
+              composer — already a quiet single-line input + Add/Cancel
+              on one row; padding tightened slightly (py-1.5 -> py-1) to
+              match this round's ~32px row rhythm. */}
+          <div className="border-t border-[#e5e0d6] px-3 py-1">
             {composing ? (
               <form onSubmit={submitNewTask} className="flex gap-2">
                 <input
@@ -2447,37 +2602,13 @@ function DependencyChip({ text }: { text: string }) {
   );
 }
 
-/** Board v3 — Monday parity round: a status pill with the resolved tint (or the plain neutral/bordered fallback when the column name isn't one of the four recognised defaults) — replaces the bare column-name <select> text styling with an actual coloured pill matching Monday's status-column look, while keeping the SAME <select> element/interaction (still a dropdown, still calls the same onPatchTask column_id change) so tap→move and every existing behaviour is unchanged. Sharp corners (no border-radius) throughout, per this app's global tailwind config. */
-function StatusPillSelect({
-  value,
-  columnOptions,
-  tint,
-  onChange,
-}: {
-  value: string;
-  columnOptions: { id: string; name: string }[];
-  tint: StatusPillTint | null;
-  onChange: (columnId: string) => void;
-}) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="border px-1.5 py-1 text-caption focus:outline-none"
-      style={
-        tint
-          ? { backgroundColor: tint.background, color: tint.text, borderColor: tint.border }
-          : { backgroundColor: "transparent", borderColor: "#c9c2b4" }
-      }
-    >
-      {columnOptions.map((c) => (
-        <option key={c.id} value={c.id}>
-          {c.name}
-        </option>
-      ))}
-    </select>
-  );
-}
+// Board v3.1 — display-first cells: the native-<select>-based
+// StatusPillSelect (Board v3 — Monday parity round) that used to live
+// here has been REPLACED by components/board/StatusPill.tsx (a quiet
+// pill at rest, popover menu of pills on click — see that file's own
+// doc comment) — GroupRows' STATUS cell below now renders <StatusPill>
+// instead. Removed rather than left dead, since nothing else in this
+// file referenced it.
 
 function UngroupedTable({
   tasks,
@@ -2648,6 +2779,14 @@ function GroupRows({
   // contacts state, just owned per-row here instead of per-card.
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
+  // Board v3.1 — display-first cells, item 4: whether the CONTACT
+  // cell's click-to-reveal picker (PopoverCell) has been opened at
+  // least once for this group's rows yet — used only to trigger the
+  // lazy contacts fetch below (same "fetch once, on first need" shape
+  // the row-expand editor already had for `contacts`) independently of
+  // a row being expanded, since the contact picker is now reachable
+  // WITHOUT expanding a row.
+  const [contactPopoverOpened, setContactPopoverOpened] = useState(false);
   // Board v3 — Monday parity round: which parent row's sub-items are
   // collapsed (hidden) — a Set of parent task ids, defaults to empty
   // (every parent starts EXPANDED, showing its sub-items, consistent
@@ -2657,14 +2796,70 @@ function GroupRows({
   // inline composer is open.
   const [addingSubItemFor, setAddingSubItemFor] = useState<string | null>(null);
   const [subItemTitle, setSubItemTitle] = useState("");
+  // Board v3.2 — "Reorder slot animation": while a row is being dragged
+  // over this group's rows, `dragOverIndex` records WHICH sibling list
+  // the gap should open in (`listKey`: "top" for the top-level task
+  // list, or a parent task's own id for that parent's sub-item list —
+  // a sub-item can only ever open a gap among its OWN siblings, same
+  // "never across parents or up to top level" rule onDropInGroup/
+  // moveTaskWithinGroup already enforce server-side) and at WHICH index
+  // within that list (matching the exact index onDropAtIndex will be
+  // called with on drop, so the visual gap and the actual drop target
+  // are always the same position — see renderRow's onDragOver below).
+  // null when nothing is being dragged over this group at all.
+  const [dragOverIndex, setDragOverIndex] = useState<{ listKey: string; index: number } | null>(null);
+  // Board v3.2 — which row id is currently playing the brief on-drop
+  // "settle" transform-ease (BUILD-SPEC.md "on drop the row settles
+  // with a brief transform ease") — set on drop, cleared automatically
+  // after REORDER_GAP_MS * 2 via the timeout below. A single id (not a
+  // Set) since only the just-dropped row plays this animation, never
+  // more than one at a time.
+  const [settlingId, setSettlingId] = useState<string | null>(null);
+
+  function clearDragOver() {
+    setDragOverIndex(null);
+  }
+
+  /**
+   * Board v3.2 — called from renderRow's onDrop, right before the
+   * existing onDropAtIndex(siblingIndex) call that actually persists
+   * the reorder — clears the gap immediately (the drop is about to
+   * re-render this list in its new order anyway) and flags the dropped
+   * row for the brief settle animation, auto-clearing after it plays
+   * once. Purely cosmetic — never touches sort/persistence, which
+   * onDropAtIndex (unchanged) still owns entirely.
+   */
+  function playSettleAnimation(taskId: string) {
+    setDragOverIndex(null);
+    setSettlingId(taskId);
+    setTimeout(() => setSettlingId((cur) => (cur === taskId ? null : cur)), REORDER_GAP_MS * 2);
+  }
+
+  /**
+   * Board v3.2 — the translateY offset (px, as a CSS transform string)
+   * this row should render with RIGHT NOW: rows at/after the open gap's
+   * index within the SAME sibling list (`listKey` match) translate one
+   * row-height in the drag direction to visually open a slot for the
+   * dragged row to land in. Returns "" (no transform) for a list that
+   * isn't the one currently being dragged over, or for a row before the
+   * gap — this is pure presentation, computed fresh every render from
+   * dragOverIndex, never mutating row order itself (the actual array
+   * order only ever changes after the server round-trip resolves, via
+   * the existing onDropAtIndex/updateTaskField path).
+   */
+  function gapTransform(listKey: string, indexInList: number): string {
+    if (!dragOverIndex || dragOverIndex.listKey !== listKey) return "";
+    if (indexInList < dragOverIndex.index) return "";
+    return `translateY(${REORDER_ROW_PX}px)`;
+  }
 
   useEffect(() => {
-    if (!expandedId) return;
+    if (!expandedId && !contactPopoverOpened) return;
     fetch("/api/contacts")
       .then((r) => r.json())
       .then((body) => setContacts(body.contacts ?? []))
       .catch(() => {});
-  }, [expandedId]);
+  }, [expandedId, contactPopoverOpened]);
 
   if (tasks.length === 0) {
     return <p className="px-3 py-3 text-caption text-charcoal/40">No cards yet.</p>;
@@ -2718,57 +2913,160 @@ function GroupRows({
     const children = subItemsByParent.get(task.id) ?? [];
     const isParentCollapsed = collapsedParents.has(task.id);
     const showDependencyChip = !isSubItem && task.id === firstNonMilestoneId ? dependencyChip : null;
+    // Board v3.2 — "Reorder slot animation": this row's own sibling-list
+    // key — "top" for a top-level row, or its OWN parent's id for a
+    // sub-item row (every sub-item row IS its parent's own sibling
+    // list — see gapTransform's doc comment for why this must match
+    // onDropInGroup/moveTaskWithinGroup's identical "same
+    // parent_task_id" sibling-set rule). Used to scope the open-gap
+    // transform + drop-line to exactly the list this row belongs to,
+    // so dragging within one parent's sub-items never visually shifts
+    // a different parent's rows (or the top-level list).
+    const listKey = isSubItem ? (task.parent_task_id as string) : "top";
+    const showDropLineBefore = dragOverIndex?.listKey === listKey && dragOverIndex.index === siblingIndex;
+    const isLastInList = siblingIndex === siblingCount - 1;
+    const showDropLineAfter =
+      isLastInList && dragOverIndex?.listKey === listKey && dragOverIndex.index === siblingCount;
 
     return (
       <Fragment key={task.id}>
+        {/* Board v3.2 — 2px sand drop-line, rendered as its own
+            zero-height row directly above the row a drop would insert
+            before (or, when the gap is at the very end of this list,
+            above the closing "+ Add sub-item"/composer area — handled
+            via showDropLineAfter just below the last row instead).
+            Purely visual: this line's presence/position is derived
+            100% from dragOverIndex state, never read by the actual
+            drop handler (onDropAtIndex, unchanged, still keys off
+            `siblingIndex` alone). */}
+        {showDropLineBefore && (
+          <tr aria-hidden className="h-0">
+            <td colSpan={7} className="p-0">
+              <div className="h-[2px] bg-sand" />
+            </td>
+          </tr>
+        )}
         <tr
           id={`focus-board_task-${task.id}`}
           draggable
           onDragStart={() => onDragStartTask(task.id)}
+          // Board v3.2 — dragend fires on the DRAG SOURCE once the
+          // gesture ends, whether it was dropped successfully, dropped
+          // somewhere that doesn't accept it, or cancelled (Escape/
+          // dropped outside any valid target) — the one reliable place
+          // to guarantee the gap always closes, since onDrop only fires
+          // on a successful drop and onDragLeave can fire/re-fire
+          // repeatedly while crossing sibling rows within the same
+          // list (see the table wrapper's own onDragLeave for the
+          // "left the table entirely" fallback).
+          onDragEnd={clearDragOver}
           onDragOver={(e) => {
             e.preventDefault();
             e.stopPropagation();
+            // Board v3.2 — which half of this row the pointer is over
+            // decides whether the gap opens BEFORE this row (index =
+            // siblingIndex) or AFTER it (index = siblingIndex + 1, only
+            // reachable this way for the last row in the list — every
+            // other "after row N" position is already "before row
+            // N+1"). This mirrors onDropAtIndex's own existing
+            // semantics (a drop always inserts "at" a row's index)
+            // exactly — the animation never introduces a drop position
+            // the pre-existing drop math doesn't already support.
+            //
+            // IMPORTANT: getBoundingClientRect() reports THIS row's
+            // CURRENT rendered position — if this row already has
+            // gapTransform's translateY applied (it's at/after an
+            // already-open gap from a PREVIOUS dragover tick), its
+            // reported rect.top is shifted by REORDER_ROW_PX from
+            // where it sits in normal document flow. Hit-testing
+            // against that shifted rect directly would make the
+            // gap/drop-line drift out of sync with the actual cursor
+            // position as the drag progresses (a transform never moves
+            // OTHER rows' layout boxes, only this element's own
+            // reported rect) — so the shift is subtracted back out
+            // before computing the midpoint, recovering this row's
+            // stable, untransformed layout position for the hit-test.
+            const currentTransform = gapTransform(listKey, siblingIndex);
+            const rect = e.currentTarget.getBoundingClientRect();
+            const untransformedTop = currentTransform ? rect.top - REORDER_ROW_PX : rect.top;
+            const overSecondHalf = e.clientY - untransformedTop > rect.height / 2;
+            const index = overSecondHalf && isLastInList ? siblingIndex + 1 : siblingIndex;
+            setDragOverIndex((cur) =>
+              cur?.listKey === listKey && cur.index === index ? cur : { listKey, index }
+            );
           }}
           onDrop={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            onDropAtIndex(siblingIndex);
+            const dropIndex = dragOverIndex?.listKey === listKey ? dragOverIndex.index : siblingIndex;
+            playSettleAnimation(task.id);
+            onDropAtIndex(dropIndex);
           }}
           className={clsx(
-            "h-[30px] cursor-move border-b border-[#e5e0d6] last:border-b-0 hover:bg-nearwhite",
-            isSubItem && "bg-nearwhite/60"
+            // Board v3.1 — display-first cells, item 3: row height
+            // tightened to ~32px (was 30px); hairline divider reuses
+            // the existing charcoal brand token at ~10% opacity
+            // (border-charcoal/10) rather than a new colour literal —
+            // subtle, per this round's brief. No zebra/alternating-row
+            // background exists in this table (confirmed: only a
+            // hover state and a distinct isSubItem tint, neither of
+            // which alternates by row index) — nothing to turn off.
+            "h-8 cursor-move border-b border-charcoal/10 last:border-b-0 hover:bg-nearwhite",
+            isSubItem && "bg-nearwhite/60",
+            // Board v3.2 — reorder slot animation: neighbouring rows
+            // translate apart via a CSS transform (never a layout
+            // property — see gapTransform's own doc comment for the
+            // "no layout thrash" rationale) with a ~120ms ease-out
+            // while a gap is open; the just-dropped row instead plays a
+            // brief settle ease (transition-transform duration-150
+            // ease-in, per BUILD-SPEC.md "brief transform ease"). Both
+            // classes are mutually exclusive in practice (settlingId is
+            // only ever set right as dragOverIndex clears on drop) but
+            // are written as independent conditionals rather than an
+            // either/or for clarity.
+            dragOverIndex && "transition-transform duration-[120ms] ease-out",
+            settlingId === task.id && "transition-transform duration-150 ease-in"
           )}
+          style={{ transform: gapTransform(listKey, siblingIndex) || undefined }}
         >
           <td className="py-1 pl-3 pr-3 text-body text-nearblack">
-            <span className="flex flex-wrap items-center gap-1.5">
+            {/* Board v3.1 — display-first cells, item 3: nowrap +
+                min-w-0 (was flex-wrap) so a long title ellipsis-
+                truncates in this ~32px single-line row instead of
+                wrapping to a second line or pushing the row taller —
+                the full title is still available via TaskTitleInline's
+                own `title` HTML attribute (hover tooltip) when
+                `truncate` is set below. */}
+            <span className="flex flex-nowrap items-center gap-1.5 min-w-0">
               {/* Board v3 — Monday parity round: sub-item indentation —
                   a literal "└" prefix glyph, per BUILD-SPEC.md's own
                   "Skirtings installation 2" example. */}
-              {isSubItem && <span className="text-charcoal/40">└</span>}
+              {isSubItem && <span className="shrink-0 text-charcoal/40">└</span>}
               {!isSubItem && children.length > 0 && (
                 <button
                   type="button"
                   onClick={() => toggleParentCollapsed(task.id)}
                   title={isParentCollapsed ? "Show sub-items" : "Hide sub-items"}
-                  className="text-caption text-charcoal/40 hover:text-nearblack"
+                  className="shrink-0 text-caption text-charcoal/40 hover:text-nearblack"
                 >
                   {isParentCollapsed ? "▸" : "▾"}
                 </button>
               )}
-              {task.kind === "milestone" && <MilestoneDiamond />}
+              {task.kind === "milestone" && <span className="shrink-0"><MilestoneDiamond /></span>}
               <TaskTitleInline
                 title={task.title}
                 onPatch={(patch, refUpdate) => onPatchTask(task, patch, refUpdate)}
+                truncate
               />
               <button
                 type="button"
                 onClick={() => setExpandedId(isExpanded ? null : task.id)}
                 title="Expand to edit description, assignees, due date & more"
-                className="text-caption text-charcoal/40 hover:text-sand"
+                className="shrink-0 text-caption text-charcoal/40 hover:text-sand"
               >
                 {isExpanded ? "▴" : "▾"}
               </button>
-              {task.kind === "milestone" && <MilestoneChip />}
+              {task.kind === "milestone" && <span className="shrink-0"><MilestoneChip /></span>}
               {/* Board v3 — Monday parity round: sub-item count chip —
                   "done/total" e.g. "2/3", a PURE DISPLAY SUMMARY of
                   children. IMPORTANT DEVIATION FROM A LOOSE READING (per
@@ -2780,7 +3078,7 @@ function GroupRows({
                   children. */}
               {!isSubItem && children.length > 0 && (
                 <span
-                  className="label-caps border border-[#c9c2b4] px-1 py-0.5 !text-charcoal/50"
+                  className="label-caps shrink-0 border border-[#c9c2b4] px-1 py-0.5 !text-charcoal/50"
                   title="Sub-items complete / total — a display summary only, does not affect this item's own status"
                 >
                   {subItemCountChip(
@@ -2791,10 +3089,43 @@ function GroupRows({
             </span>
           </td>
           <td className="py-1 pr-3">
-            <AssigneeStack assignees={task.assignees} />
+            {/* Board v3.1 — display-first cells, item 4: WHO — quiet
+                avatar stack at rest; click opens the SAME checkbox
+                picker the kanban composer/editor already uses
+                (AssigneeMultiPicker), via the shared PopoverCell
+                click-to-reveal wrapper. */}
+            <PopoverCell
+              trigger={
+                task.assignees.length > 0 ? (
+                  <AssigneeStack assignees={task.assignees} />
+                ) : (
+                  <span className="text-caption text-charcoal/40">—</span>
+                )
+              }
+              triggerTitle="Click to change who's assigned"
+            >
+              {() => (
+                <AssigneeMultiPicker
+                  team={team}
+                  selected={task.assignees.map((a) => a.id)}
+                  onChange={(ids) =>
+                    onPatchTask(
+                      task,
+                      { assignee_ids: ids },
+                      { assignees: ids.map((id) => teamById.get(id)).filter((p): p is AssigneeSummary => !!p) }
+                    )
+                  }
+                />
+              )}
+            </PopoverCell>
           </td>
           <td className="py-1 pr-3">
-            <StatusPillSelect
+            {/* Board v3.1 — display-first cells, item 1: STATUS — quiet
+                coloured pill at rest; click opens a popover menu of
+                every valid column, same underlying column_id PATCH the
+                pre-v3.1 native <select> (StatusPillSelect) already
+                called. */}
+            <StatusPill
               value={task.column_id}
               columnOptions={columnOptions}
               tint={tint}
@@ -2803,27 +3134,58 @@ function GroupRows({
               }}
             />
           </td>
-          <td className="py-1 pr-3 text-caption text-charcoal/60">{task.contact?.company ?? "—"}</td>
-          <td className="py-1 pr-3 text-caption !text-sand">
-            {task.booking_date
-              ? `${formatShortDate(task.booking_date)}${task.visit ? ` · ${BOOKING_STATUS_LABEL[task.visit.status]}` : ""}`
-              : "—"}
+          <td className="py-1 pr-3 text-caption text-charcoal/60">
+            {/* Board v3.1 — display-first cells, item 4: CONTACT — quiet
+                company name (or "—") at rest; click opens the shared
+                ContactPicker (embedded mode) to change it. */}
+            <PopoverCell
+              trigger={task.contact?.company ?? "—"}
+              triggerTitle="Click to change linked contact"
+              onOpen={() => setContactPopoverOpened(true)}
+            >
+              {(close) => (
+                <ContactPicker
+                  embedded
+                  contacts={contacts}
+                  selectedId={task.contact_id}
+                  onClose={close}
+                  onSelect={(contactId) => {
+                    const contact = contactId ? contacts.find((c) => c.id === contactId) ?? null : null;
+                    onPatchTask(
+                      task,
+                      { contact_id: contactId },
+                      { contact: contact ? { id: contact.id, company: contact.company, contact_name: contact.contact_name } : null }
+                    );
+                    close();
+                  }}
+                />
+              )}
+            </PopoverCell>
           </td>
           <td className="py-1 pr-3">
-            {/* Grouped-list edit parity with kanban — due_date is
-                editable here too, same inline date-input pattern
-                GroupPhaseDateInputs already uses on this same view. */}
-            <input
-              type="date"
-              defaultValue={task.due_date ?? ""}
-              onBlur={(e) => {
-                const v = e.target.value || null;
-                if (v !== task.due_date) onPatchTask(task, { due_date: v }, { due_date: v });
-              }}
-              className={clsx(
-                "border bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none",
-                pastDue ? "border-red-700/40 text-red-700" : "border-[#c9c2b4] text-charcoal/60"
-              )}
+            {/* Board v3.1 — display-first cells, item 2: WORKS — quiet
+                display chip only (booking_date/booking_end_date are not
+                independently PATCHable anywhere in this codebase — see
+                WorksDateCell's own doc comment); click opens the SAME
+                Book trade panel every other works-date affordance in
+                this file already uses. */}
+            <WorksDateCell
+              startDate={task.booking_date}
+              endDate={task.booking_end_date}
+              visitStatusLabel={task.visit ? BOOKING_STATUS_LABEL[task.visit.status] : null}
+              onOpenBookVisit={() => onBookVisit(task)}
+            />
+          </td>
+          <td className="py-1 pr-3">
+            {/* Board v3.1 — display-first cells, item 2: DUE — quiet
+                display chip ("14 Jul" / "—") at rest; click swaps to a
+                real date input. Commits via the SAME onPatchTask
+                due_date PATCH the pre-v3.1 always-visible input already
+                called. */}
+            <DueDateCell
+              value={task.due_date}
+              pastDue={pastDue}
+              onCommit={(v) => onPatchTask(task, { due_date: v }, { due_date: v })}
             />
           </td>
           <td className="py-1 pr-3">
@@ -2936,12 +3298,37 @@ function GroupRows({
           </tr>
         )}
         {!isSubItem && !isParentCollapsed && children.map((child, i) => renderRow(child, i, children.length, true))}
+        {/* Board v3.2 — drop-line for a gap opened AFTER the last row
+            in this sibling list (dragging past the bottom of the
+            list) — see showDropLineAfter's own definition above. */}
+        {showDropLineAfter && (
+          <tr aria-hidden className="h-0">
+            <td colSpan={7} className="p-0">
+              <div className="h-[2px] bg-sand" />
+            </td>
+          </tr>
+        )}
       </Fragment>
     );
   }
 
   return (
-    <table className="w-full table-fixed text-left">
+    <table
+      className="w-full table-fixed text-left"
+      // Board v3.2 — fallback for "drag left the table entirely
+      // without dropping" (e.g. dragged out to another group/section) —
+      // relatedTarget is null/outside the table in that case; a
+      // dragleave fired while moving BETWEEN this table's own rows has
+      // relatedTarget still inside the table, so it's ignored (each
+      // row's own onDragOver already re-sets dragOverIndex on the very
+      // next dragover tick, so this check only needs to catch the
+      // "actually left" case, not every intra-table micro-transition).
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+          clearDragOver();
+        }
+      }}
+    >
       <thead>
         {/* Board v3 — Monday parity round: exact column-header text per
             BUILD-SPEC.md — "ITEM · WHO · STATUS · CONTACT · WORKS ·
@@ -2952,11 +3339,121 @@ function GroupRows({
           <th className="py-1.5 pr-3 font-normal">STATUS</th>
           <th className="py-1.5 pr-3 font-normal">CONTACT</th>
           <th className="py-1.5 pr-3 font-normal">WORKS</th>
-          <th className="py-1.5 pr-3 font-normal">DUE</th>
+          {/* Board v3.1 — display-first cells, item 9: "DUE" keeps its
+              exact BUILD-SPEC.md label, with a subtle secondary hint
+              ("· book by") in muted/smaller styling right next to it —
+              never louder than the column label itself. */}
+          <th className="py-1.5 pr-3 font-normal">
+            DUE <span className="text-charcoal/30">· book by</span>
+          </th>
           <th className="py-1.5 pr-3 font-normal">AFTER</th>
         </tr>
       </thead>
       <tbody>{topLevelTasks.map((task, index) => renderRow(task, index, topLevelTasks.length, false))}</tbody>
     </table>
+  );
+}
+
+// ------------------------------------------------------------
+// "Update status names" panel — Board v3.1 — display-first cells,
+// item 6. Opened from the board's "..." overflow menu (see the main
+// return block above). One text input per status column, prefilled
+// with a best-guess old-vocabulary -> new-vocabulary mapping
+// (lib/board-constants.ts's suggestStatusColumnName — "waiting"/
+// "to do" -> "Not Booked", "in progress" -> "In Progress", "done" ->
+// "Done", "booked" -> "Booked"; any column name that doesn't match one
+// of those old labels is prefilled with its OWN current name
+// unchanged, so a team's custom column names are never silently
+// clobbered by a fabricated suggestion). The user can freely edit any
+// of the prefilled values before Save.
+//
+// Save renames ONLY the columns whose draft differs from the column's
+// current name, via onRenameColumn (ProjectBoard's existing
+// renameColumn(), which itself PATCHes the EXISTING
+// /api/board-columns/[id] route — same "PATCH updates name/sort only,
+// id/task associations untouched" behaviour every other column rename
+// in this app already uses). No new endpoint, no migration — this
+// panel is pure client-side UI + the existing rename call, run once
+// per changed column.
+// ------------------------------------------------------------
+
+function UpdateStatusNamesPanel({
+  columns,
+  onRenameColumn,
+  onClose,
+}: {
+  columns: BoardColumnV3[];
+  onRenameColumn: (columnId: string, name: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [drafts, setDrafts] = useState<Record<string, string>>(() =>
+    Object.fromEntries(columns.map((c) => [c.id, suggestStatusColumnName(c.name)]))
+  );
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  async function save() {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const changed = columns.filter((c) => drafts[c.id]?.trim() && drafts[c.id].trim() !== c.name);
+      for (const c of changed) {
+        await onRenameColumn(c.id, drafts[c.id].trim());
+      }
+      onClose();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Could not update status names.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-nearblack/30 px-4">
+      <div className="w-full max-w-md border border-[#dcd6cc] bg-cream p-4 shadow-sm">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <p className="text-subhead text-nearblack">Update status names</p>
+          <button type="button" onClick={onClose} className="text-caption text-charcoal/50 hover:text-nearblack">
+            Close
+          </button>
+        </div>
+        <p className="mb-3 text-caption text-charcoal/60">
+          Best-guess new labels are prefilled below — adjust any of them before saving. Renaming keeps every
+          card&apos;s status intact (only the label changes).
+        </p>
+        <div className="space-y-2">
+          {columns.map((c) => (
+            <label key={c.id} className="flex items-center gap-2">
+              <span className="w-28 shrink-0 text-caption text-charcoal/50" title={`Current: ${c.name}`}>
+                {c.name}
+              </span>
+              <input
+                value={drafts[c.id] ?? c.name}
+                onChange={(e) => setDrafts((cur) => ({ ...cur, [c.id]: e.target.value }))}
+                className="flex-1 border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-body focus:border-nearblack focus:outline-none"
+              />
+            </label>
+          ))}
+        </div>
+        {saveError && <p className="mt-2 text-caption text-red-700">{saveError}</p>}
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="border border-[#c9c2b4] px-3 py-1.5 text-caption text-charcoal hover:border-nearblack"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving}
+            className="border border-nearblack bg-nearblack px-3 py-1.5 text-caption text-white hover:bg-charcoal disabled:opacity-50"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { rollupPhaseDatesForGroup } from "@/lib/phase-rollup";
 import type { AssigneeSummary, CreateBoardTaskInputV2 } from "@/types/phase-12a-b";
 import type { BoardTaskKind } from "@/types/board-cockpit";
 import { DEFAULT_STATUS_COLUMNS_V3 } from "@/lib/board-constants";
@@ -438,6 +439,25 @@ export async function POST(
         { status: 201 }
       );
     }
+  }
+
+  // INVARIANT: schedule_phases.start_date/end_date are derived from the
+  // min/max works dates (board_tasks.booking_date/booking_end_date) of
+  // tasks in groups linked to this phase, whenever any linked task has
+  // works dates set. This keeps Timeline (lib/gantt.ts) consistent with
+  // the board's grouped-list rollup display. A brand-new task never has
+  // a booking_date yet, so this is a no-op in practice today (the
+  // helper's own guard skips groups with zero works-dated tasks) — kept
+  // here so this route stays consistent with the PATCH/book-visit/
+  // DELETE routes, all of which call the same shared helper, and so any
+  // future path that creates a task WITH booking dates already set
+  // (e.g. a bulk-import or duplicate-card feature) rolls up correctly
+  // without needing to remember to add this call. Best-effort — never
+  // fails the card creation, which already succeeded above.
+  try {
+    await rollupPhaseDatesForGroup(supabase, task.phase_group_id);
+  } catch (rollupError) {
+    console.error("rollupPhaseDatesForGroup failed after board-task POST (create):", rollupError);
   }
 
   return NextResponse.json({ task }, { status: 201 });
