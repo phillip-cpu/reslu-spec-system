@@ -1726,14 +1726,18 @@ function BoardCard({
         dragOver ? "border-nearblack" : "border-[#dcd6cc]"
       )}
     >
-      <button
-        type="button"
-        onClick={() => setExpanded((e) => !e)}
-        className="flex w-full items-center gap-1.5 text-left text-body text-nearblack"
-      >
+      <div className="flex w-full items-center gap-1.5 text-body text-nearblack">
         {task.kind === "milestone" && <MilestoneDiamond />}
-        {task.title}
-      </button>
+        <TaskTitleInline title={task.title} onPatch={onPatch} />
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          title="Expand to edit description, assignees, due date & more"
+          className="ml-auto shrink-0 text-caption text-charcoal/40 hover:text-sand"
+        >
+          {expanded ? "▴" : "▾"}
+        </button>
+      </div>
 
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
         <AssigneeStack assignees={task.assignees} />
@@ -1972,6 +1976,84 @@ function MilestoneDiamond() {
       title="Milestone"
       className="inline-block h-2.5 w-2.5 shrink-0 rotate-45 border border-sand bg-sand/40"
     />
+  );
+}
+
+/**
+ * Bug fix, 7 July 2026: a task/card's title had NO edit path anywhere
+ * in the app — clicking it only ever toggled the expanded card editor
+ * (BoardTaskEditorBody), which itself has no title field (description,
+ * assignees, due date, contact, milestone toggle, book-trade, delete —
+ * but never title). The PATCH endpoint already accepted `title`
+ * (app/api/board-tasks/[id]/route.ts's EDITABLE_FIELDS); only the UI
+ * affordance was missing.
+ *
+ * Click-to-rename directly on the visible title text — same
+ * interaction shape as GanttChart.tsx's PhaseNameInline (click -> input
+ * -> blur/Enter saves, Escape cancels) and GroupTable's own stage-
+ * heading rename, so a task's title now follows the same "click the
+ * text itself" convention already established everywhere else in this
+ * app rather than introducing a new pattern. Used by both BoardCard
+ * (Kanban) and GroupRows (Grouped-list "line items") — each row/card
+ * still has its own SEPARATE expand toggle for the full card editor
+ * (description/assignees/etc.), since overloading one click target for
+ * both "rename" and "expand" isn't possible.
+ */
+function TaskTitleInline({
+  title,
+  onPatch,
+}: {
+  title: string;
+  onPatch: (patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskV3>) => void;
+}) {
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(title);
+
+  function commit() {
+    setRenaming(false);
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== title) {
+      onPatch({ title: trimmed }, { title: trimmed });
+    } else {
+      setDraft(title);
+    }
+  }
+
+  function cancel() {
+    setDraft(title);
+    setRenaming(false);
+  }
+
+  if (renaming) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          if (e.key === "Escape") cancel();
+        }}
+        onClick={(e) => e.stopPropagation()}
+        className="min-w-0 flex-1 border border-nearblack bg-nearwhite px-1 py-0.5 text-body text-nearblack focus:outline-none"
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        setDraft(title);
+        setRenaming(true);
+      }}
+      title="Click to rename"
+      className="text-left text-body text-nearblack hover:text-sand"
+    >
+      {title}
+    </button>
   );
 }
 
@@ -2673,14 +2755,18 @@ function GroupRows({
                   {isParentCollapsed ? "▸" : "▾"}
                 </button>
               )}
+              {task.kind === "milestone" && <MilestoneDiamond />}
+              <TaskTitleInline
+                title={task.title}
+                onPatch={(patch, refUpdate) => onPatchTask(task, patch, refUpdate)}
+              />
               <button
                 type="button"
                 onClick={() => setExpandedId(isExpanded ? null : task.id)}
-                className="flex items-center gap-1.5 text-left hover:text-sand"
-                title="Expand to edit the full card"
+                title="Expand to edit description, assignees, due date & more"
+                className="text-caption text-charcoal/40 hover:text-sand"
               >
-                {task.kind === "milestone" && <MilestoneDiamond />}
-                {task.title}
+                {isExpanded ? "▴" : "▾"}
               </button>
               {task.kind === "milestone" && <MilestoneChip />}
               {/* Board v3 — Monday parity round: sub-item count chip —
