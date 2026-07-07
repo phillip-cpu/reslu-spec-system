@@ -3361,21 +3361,32 @@ function GroupRows({
       <thead>
         {/* Board v3 — Monday parity round: exact column-header text per
             BUILD-SPEC.md — "ITEM · WHO · STATUS · CONTACT · WORKS ·
-            DUE · AFTER". */}
+            DUE · AFTER".
+            Bug fix, 8 July 2026: table-fixed distributes width equally
+            across <th> elements with no explicit width — fine at 4-5
+            columns, but v3.1's new WORKS column (plus DUE's longer
+            "· book by" label) pushed ITEM down to the same cramped
+            width as narrow utility columns like WHO/STATUS/DUE, badly
+            truncating task titles. Explicit percentage widths below
+            give ITEM (the actual content column) the lion's share,
+            narrow columns (WHO/STATUS/DUE) only what a pill/avatar/date
+            needs, and CONTACT/WORKS/AFTER enough for their longer text
+            (company names, "15 Jul · Unconfirmed", dependency chips)
+            without starving ITEM again. */}
         <tr className="border-b border-[#e5e0d6] text-caption text-charcoal/40">
-          <th className="py-1.5 pl-3 pr-3 font-normal">ITEM</th>
-          <th className="py-1.5 pr-3 font-normal">WHO</th>
-          <th className="py-1.5 pr-3 font-normal">STATUS</th>
-          <th className="py-1.5 pr-3 font-normal">CONTACT</th>
-          <th className="py-1.5 pr-3 font-normal">WORKS</th>
+          <th className="w-[30%] py-1.5 pl-3 pr-3 font-normal">ITEM</th>
+          <th className="w-[7%] py-1.5 pr-3 font-normal">WHO</th>
+          <th className="w-[10%] py-1.5 pr-3 font-normal">STATUS</th>
+          <th className="w-[12%] py-1.5 pr-3 font-normal">CONTACT</th>
+          <th className="w-[13%] py-1.5 pr-3 font-normal">WORKS</th>
           {/* Board v3.1 — display-first cells, item 9: "DUE" keeps its
               exact BUILD-SPEC.md label, with a subtle secondary hint
               ("· book by") in muted/smaller styling right next to it —
               never louder than the column label itself. */}
-          <th className="py-1.5 pr-3 font-normal">
+          <th className="w-[10%] py-1.5 pr-3 font-normal">
             DUE <span className="text-charcoal/30">· book by</span>
           </th>
-          <th className="py-1.5 pr-3 font-normal">AFTER</th>
+          <th className="w-[18%] py-1.5 pr-3 font-normal">AFTER</th>
         </tr>
       </thead>
       <tbody>{topLevelTasks.map((task, index) => renderRow(task, index, topLevelTasks.length, false))}</tbody>
