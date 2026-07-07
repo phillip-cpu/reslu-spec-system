@@ -94,6 +94,12 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   const [addingColumn, setAddingColumn] = useState(false);
   const [newColumnName, setNewColumnName] = useState("");
   const [dragTaskId, setDragTaskId] = useState<string | null>(null);
+  // Phase-group reorder (Phillip, 7 July 2026) — dragging a phase's
+  // whole section, not a task within it. Same sort-ladder + optimistic-
+  // update-then-PATCH-then-revert shape as onDropInGroup below, just
+  // operating on `groups` itself via PATCH /api/board-groups/[id]'s
+  // existing `sort` field rather than a task's phase_group_id/sort.
+  const [dragGroupId, setDragGroupId] = useState<string | null>(null);
   const [groupsSeeded, setGroupsSeeded] = useState(initialGroups.length > 0);
   const [addingGroup, setAddingGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
@@ -307,12 +313,20 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   }
 
   function applyTaskPatch(taskId: string, patch: Partial<BoardTaskCockpit>) {
-    setColumns((cur) =>
-      cur.map((c) => ({ ...c, tasks: c.tasks.map((t) => (t.id === taskId ? { ...t, ...patch } : t)) }))
-    );
-    setGroups((cur) =>
-      cur.map((g) => ({ ...g, tasks: g.tasks.map((t) => (t.id === taskId ? { ...t, ...patch } : t)) }))
-    );
+    // Board reorder round (7 July 2026) — re-sorts each bucket by `sort`
+    // after applying the patch, so a sort-only change (drag-reorder
+    // within a group, or the "Move up"/"Move down" touch fallback —
+    // see onDropInGroup/moveTaskWithinGroup below) is reflected in row
+    // ORDER immediately, not just in the underlying field. A patch that
+    // doesn't touch `sort` re-sorts to the exact same order it already
+    // had (a no-op), so this is safe to run unconditionally rather than
+    // branching on which fields changed.
+    const withPatch = (tasks: BoardTaskCockpit[]) =>
+      tasks
+        .map((t) => (t.id === taskId ? { ...t, ...patch } : t))
+        .sort((a, b) => a.sort - b.sort);
+    setColumns((cur) => cur.map((c) => ({ ...c, tasks: withPatch(c.tasks) })));
+    setGroups((cur) => cur.map((g) => ({ ...g, tasks: withPatch(g.tasks) })));
   }
 
   /**
@@ -365,14 +379,21 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
       await patchTask(task, patch);
       // A phase_group_id change moves the task between group buckets —
       // simplest correct approach is a targeted re-slot rather than a
-      // full reload.
+      // full reload. Sorted by `sort` after insertion (not just
+      // appended) so a drag-between-groups drop (onDropInGroup below,
+      // which always sends a `sort` alongside phase_group_id placing
+      // the task at its exact dropped position) lands in the right row
+      // order immediately, not just at the bottom of the destination
+      // group until the next reload.
       if ("phase_group_id" in patch) {
         setGroups((cur) => {
           const withoutTask = cur.map((g) => ({ ...g, tasks: g.tasks.filter((t) => t.id !== task.id) }));
           const targetGroupId = patch.phase_group_id as string | null;
           if (!targetGroupId) return withoutTask;
           return withoutTask.map((g) =>
-            g.id === targetGroupId ? { ...g, tasks: [...g.tasks, { ...task, ...patch, ...refUpdate }] } : g
+            g.id === targetGroupId
+              ? { ...g, tasks: [...g.tasks, { ...task, ...patch, ...refUpdate }].sort((a, b) => a.sort - b.sort) }
+              : g
           );
         });
       }
@@ -569,6 +590,151 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
       setColumns(prev);
       setError(err instanceof Error ? err.message : "Could not move card.");
     }
+  }
+
+  // ---- Drag and drop (Grouped-list view — "Round — trade exports, PDF
+  // bundle + audit, board reorder + rename", 7 July 2026) ----
+  // BUILD-SPEC.md "Export + board batch" item 4: "rows draggable
+  // within a group (persist sort via existing integer-ladder); drag
+  // between groups allowed = phase change (same PATCH as the picker)."
+  // Mirrors onDrop above almost exactly (same before/after midpoint
+  // sort-ladder math, same optimistic-update-then-PATCH-then-revert
+  // shape) but re-slots within `groups` state (and, when the drop
+  // target is a DIFFERENT group, also carries a phase_group_id change
+  // — the exact same single PATCH body updateTaskField's
+  // phase_group_id branch already sends from the per-row <select>
+  // picker above, so drag and the picker are just two input methods
+  // for the identical server-side write). A drop onto the "Ungrouped"
+  // bucket (targetGroupId null) clears phase_group_id the same way the
+  // picker's blank option already does.
+  function onDropInGroup(targetGroupId: string | null, targetIndex: number | null) {
+    if (!dragTaskId) return;
+    const taskId = dragTaskId;
+    setDragTaskId(null);
+
+    const task = allTasks.find((t) => t.id === taskId);
+    if (!task) return;
+
+    const destTasks = targetGroupId
+      ? groups.find((g) => g.id === targetGroupId)?.tasks ?? []
+      : allTasks.filter((t) => !t.phase_group_id);
+    const destTasksWithoutDragged = destTasks.filter((t) => t.id !== taskId);
+    const index = targetIndex === null ? destTasksWithoutDragged.length : targetIndex;
+    const before = destTasksWithoutDragged[index - 1];
+    const after = destTasksWithoutDragged[index];
+    let nextSort: number;
+    if (before && after) {
+      nextSort = Math.round((before.sort + after.sort) / 2);
+      if (nextSort === before.sort) nextSort = before.sort + 1;
+    } else if (before && !after) {
+      nextSort = before.sort + SORT_STEP;
+    } else if (!before && after) {
+      nextSort = after.sort - SORT_STEP;
+    } else {
+      nextSort = 0;
+    }
+
+    const patch: Record<string, unknown> = { sort: nextSort };
+    const refUpdate: Partial<BoardTaskCockpit> = { sort: nextSort };
+    if (targetGroupId !== (task.phase_group_id ?? null)) {
+      patch.phase_group_id = targetGroupId;
+      refUpdate.phase_group_id = targetGroupId;
+    }
+    updateTaskField(task, patch, refUpdate);
+  }
+
+  /**
+   * Drop a dragged phase-group section onto another group's header —
+   * reorders the whole section, inserting it immediately before the
+   * drop target. Same before/after midpoint sort-ladder math as
+   * onDropInGroup above, computed against `groups` (already ordered by
+   * `sort`, per GET /api/projects/[id]/board's query) with the dragged
+   * group removed first, so its own old slot never double-counts.
+   */
+  async function onDropOnGroup(targetGroupId: string) {
+    if (!dragGroupId || dragGroupId === targetGroupId) {
+      setDragGroupId(null);
+      return;
+    }
+    const draggedId = dragGroupId;
+    setDragGroupId(null);
+
+    const withoutDragged = groups.filter((g) => g.id !== draggedId);
+    const targetIndex = withoutDragged.findIndex((g) => g.id === targetGroupId);
+    if (targetIndex === -1) return;
+
+    const before = withoutDragged[targetIndex - 1];
+    const after = withoutDragged[targetIndex];
+    let nextSort: number;
+    if (before && after) {
+      nextSort = Math.round((before.sort + after.sort) / 2);
+      if (nextSort === before.sort) nextSort = before.sort + 1;
+    } else if (before && !after) {
+      nextSort = before.sort + SORT_STEP;
+    } else if (!before && after) {
+      nextSort = after.sort - SORT_STEP;
+    } else {
+      nextSort = 0;
+    }
+
+    const prev = groups;
+    const reordered = [...withoutDragged];
+    const dragged = groups.find((g) => g.id === draggedId);
+    if (!dragged) return;
+    reordered.splice(targetIndex, 0, { ...dragged, sort: nextSort });
+    setGroups(reordered);
+
+    const res = await fetch(`/api/board-groups/${draggedId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sort: nextSort }),
+    });
+    if (!res.ok) {
+      setGroups(prev);
+      setError((await res.json()).error ?? "Could not reorder phase group.");
+    }
+  }
+
+  /**
+   * Touch fallback's "Move up"/"Move down" (item 4) — reorders the
+   * task one slot within its CURRENT group (or the Ungrouped bucket),
+   * same before/after sort-ladder math every other reorder path in
+   * this file uses, no phase change. A no-op at either end of the
+   * list.
+   *
+   * Approach: splice the task OUT of its ordered siblings, then back
+   * IN at the target index — this "remove, then reinsert into the
+   * gapless remainder" is the same technique array reordering always
+   * needs (computing before/after directly against the pre-splice
+   * array double-counts the task's own old slot and off-by-ones
+   * depending on direction, which an earlier draft of this function
+   * got wrong for the "move down" case specifically).
+   */
+  function moveTaskWithinGroup(task: BoardTaskCockpit, direction: -1 | 1) {
+    const siblings = task.phase_group_id
+      ? groups.find((g) => g.id === task.phase_group_id)?.tasks ?? []
+      : allTasks.filter((t) => !t.phase_group_id);
+    const ordered = [...siblings].sort((a, b) => a.sort - b.sort);
+    const index = ordered.findIndex((t) => t.id === task.id);
+    if (index === -1) return;
+    const targetIndex = index + direction;
+    if (targetIndex < 0 || targetIndex >= ordered.length) return;
+
+    const without = ordered.filter((t) => t.id !== task.id);
+    const before = without[targetIndex - 1];
+    const after = without[targetIndex];
+    let nextSort: number;
+    if (before && after) {
+      nextSort = Math.round((before.sort + after.sort) / 2);
+      if (nextSort === before.sort) nextSort = before.sort + 1;
+    } else if (before && !after) {
+      nextSort = before.sort + SORT_STEP;
+    } else if (!before && after) {
+      nextSort = after.sort - SORT_STEP;
+    } else {
+      nextSort = 0;
+    }
+    updateTaskField(task, { sort: nextSort }, { sort: nextSort });
   }
 
   return (
@@ -792,6 +958,9 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               onBookVisit={(task) => setBookingTask(task)}
               onUnlinkVisit={(taskId) => unlinkVisit(taskId)}
               onPatchPhaseDates={(patch) => group.phase_id && patchGroupPhaseDates(group.id, group.phase_id, patch)}
+              onDragStartTask={onDragStart}
+              onDropInGroup={(index) => onDropInGroup(group.id, index)}
+              onMoveTask={moveTaskWithinGroup}
               onAddTask={(title, assigneeIds) => {
                 // "Three from Phillip — 6 July 2026 evening" item 3:
                 // default column = first column (columns is already
@@ -820,6 +989,9 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               onDeleteTask={(task) => deleteTask(task)}
               onBookVisit={(task) => setBookingTask(task)}
               onUnlinkVisit={(taskId) => unlinkVisit(taskId)}
+              onDragStartTask={onDragStart}
+              onDropInGroup={(index) => onDropInGroup(null, index)}
+              onMoveTask={moveTaskWithinGroup}
             />
           )}
 
@@ -1628,6 +1800,9 @@ function GroupTable({
   onUnlinkVisit,
   onPatchPhaseDates,
   onAddTask,
+  onDragStartTask,
+  onDropInGroup,
+  onMoveTask,
 }: {
   /** Timeline Day-zoom polish round — item 5's reciprocal "View on timeline" link, built here rather than passed as a ready-made href since the group's own phase_id (below) is what the link target actually needs. */
   projectId: string;
@@ -1663,11 +1838,18 @@ function GroupTable({
    * calls addTask with this group's id as phaseGroupId.
    */
   onAddTask: (title: string, assigneeIds: string[]) => void;
+  /** Board reorder round (7 July 2026) — HTML5 DnD, same dragTaskId-in-parent-state approach as the Kanban side's onDragStart above (see ProjectBoard's own onDragStart). */
+  onDragStartTask: (taskId: string) => void;
+  /** Drop anywhere in this group (header or row area) — reorders within the group, or moves the dragged task INTO this group (a phase change) if it came from elsewhere. `index` is the row position to insert at, or null to append at the end. */
+  onDropInGroup: (index: number | null) => void;
+  /** Touch fallback's "Move up"/"Move down" (item 4) — reorders one slot within the CURRENT group, no phase change. */
+  onMoveTask: (task: BoardTaskCockpit, direction: -1 | 1) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(group.name);
   const [composing, setComposing] = useState(false);
   const [newTitle, setNewTitle] = useState("");
+  const [dragOver, setDragOver] = useState(false);
 
   function submitNewTask(e: React.FormEvent) {
     e.preventDefault();
@@ -1677,8 +1859,41 @@ function GroupTable({
     setComposing(false);
   }
 
+  function startRename() {
+    setNameDraft(group.name);
+    setRenaming(true);
+  }
+
+  function commitRename() {
+    setRenaming(false);
+    if (nameDraft.trim() && nameDraft.trim() !== group.name) onRename(nameDraft.trim());
+  }
+
+  function cancelRename() {
+    setNameDraft(group.name);
+    setRenaming(false);
+  }
+
   return (
-    <div className="border border-[#dcd6cc]">
+    <div
+      className={clsx("border", dragOver ? "border-nearblack" : "border-[#dcd6cc]")}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        // A drop directly on the header/wrapper (not on a specific row
+        // — see GroupRows' own per-row onDrop below, which stops
+        // propagation) appends at the end of this group, same
+        // "dropped in the general area = end of list" convention
+        // StackedColumnSection's onDropOnColumn already uses for
+        // Kanban sections.
+        onDropInGroup(null);
+      }}
+    >
       <div
         id={`focus-group-${group.id}`}
         className="flex flex-wrap items-center justify-between gap-2 border-b border-[#dcd6cc] bg-offwhite px-3 py-2"
@@ -1689,22 +1904,18 @@ function GroupTable({
               autoFocus
               value={nameDraft}
               onChange={(e) => setNameDraft(e.target.value)}
-              onBlur={() => {
-                setRenaming(false);
-                if (nameDraft.trim() && nameDraft.trim() !== group.name) onRename(nameDraft.trim());
+              onBlur={commitRename}
+              onKeyDown={(e) => {
+                // Board reorder round — Escape now cancels (reverts the
+                // draft, does NOT save) rather than being unhandled;
+                // Enter still commits via blur, same as before.
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                if (e.key === "Escape") cancelRename();
               }}
-              onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
               className="flex-1 border border-nearblack bg-nearwhite px-2 py-1 text-subhead text-nearblack focus:outline-none"
             />
           ) : (
-            <button
-              type="button"
-              onClick={() => {
-                setNameDraft(group.name);
-                setRenaming(true);
-              }}
-              className="label-caps !text-nearblack hover:!text-sand"
-            >
+            <button type="button" onClick={startRename} className="label-caps !text-nearblack hover:!text-sand">
               {group.name} · {group.tasks.length}
             </button>
           )}
@@ -1754,6 +1965,9 @@ function GroupTable({
         onDeleteTask={onDeleteTask}
         onBookVisit={onBookVisit}
         onUnlinkVisit={onUnlinkVisit}
+        onDragStartTask={onDragStartTask}
+        onDropAtIndex={onDropInGroup}
+        onMoveTask={onMoveTask}
       />
       {/* "Three from Phillip — 6 July 2026 evening" item 3: inline
           "+ Add task" composer, one per group — mirrors
@@ -1845,6 +2059,9 @@ function UngroupedTable({
   onDeleteTask,
   onBookVisit,
   onUnlinkVisit,
+  onDragStartTask,
+  onDropInGroup,
+  onMoveTask,
 }: {
   tasks: BoardTaskCockpit[];
   columnById: Map<string, BoardColumnCockpit>;
@@ -1857,9 +2074,26 @@ function UngroupedTable({
   /** Prefill fix: now passes the full task (was `taskId: string`) so BookVisitPanel can be preloaded with this card's own phase/trade/dates. */
   onBookVisit: (task: BoardTaskCockpit) => void;
   onUnlinkVisit: (taskId: string) => void;
+  /** Board reorder round — same DnD/move-menu wiring as GroupTable's own props of the same names; the Ungrouped bucket is a drop target too (dropping here clears phase_group_id, same as onDropInGroup(null, ...) from the main return block's call site). */
+  onDragStartTask: (taskId: string) => void;
+  onDropInGroup: (index: number | null) => void;
+  onMoveTask: (task: BoardTaskCockpit, direction: -1 | 1) => void;
 }) {
+  const [dragOver, setDragOver] = useState(false);
   return (
-    <div className="border border-dashed border-[#c9c2b4]">
+    <div
+      className={clsx("border border-dashed", dragOver ? "border-nearblack" : "border-[#c9c2b4]")}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        onDropInGroup(null);
+      }}
+    >
       <div className="border-b border-dashed border-[#c9c2b4] bg-transparent px-3 py-2">
         <p className="label-caps !text-charcoal/40">Ungrouped · {tasks.length}</p>
       </div>
@@ -1873,6 +2107,9 @@ function UngroupedTable({
         onDeleteTask={onDeleteTask}
         onBookVisit={onBookVisit}
         onUnlinkVisit={onUnlinkVisit}
+        onDragStartTask={onDragStartTask}
+        onDropAtIndex={onDropInGroup}
+        onMoveTask={onMoveTask}
       />
     </div>
   );
@@ -1888,6 +2125,9 @@ function GroupRows({
   onDeleteTask,
   onBookVisit,
   onUnlinkVisit,
+  onDragStartTask,
+  onDropAtIndex,
+  onMoveTask,
 }: {
   tasks: BoardTaskCockpit[];
   columnById: Map<string, BoardColumnCockpit>;
@@ -1902,6 +2142,12 @@ function GroupRows({
   onBookVisit: (task: BoardTaskCockpit) => void;
   /** Board cockpit round — item 9 parity: unlinks (does not delete) this row's booked visit. */
   onUnlinkVisit: (taskId: string) => void;
+  /** Board reorder round — row is draggable; dragstart records this task's id in the parent's dragTaskId state (same as StackedColumnSection's rows). */
+  onDragStartTask: (taskId: string) => void;
+  /** Board reorder round — a drop ON a specific row inserts the dragged task at that row's index (stopPropagation so the group wrapper's own onDrop, which appends at the end, doesn't also fire). */
+  onDropAtIndex: (index: number) => void;
+  /** Board reorder round — touch fallback's "Move up"/"Move down", per row. */
+  onMoveTask: (task: BoardTaskCockpit, direction: -1 | 1) => void;
 }) {
   // Board cockpit round — item 9 "Grouped-list edit parity": clicking a
   // row expands the SAME full card editor component the kanban view
@@ -1935,17 +2181,29 @@ function GroupRows({
           <th className="px-3 py-1.5 font-normal">Due</th>
           <th className="px-3 py-1.5 font-normal">Status</th>
           <th className="px-3 py-1.5 font-normal">Phase</th>
+          <th className="px-3 py-1.5 font-normal">Move</th>
         </tr>
       </thead>
       <tbody>
-        {tasks.map((task) => {
+        {tasks.map((task, index) => {
           const pastDue = isPastDue(task.due_date);
           const isExpanded = expandedId === task.id;
           return (
             <Fragment key={task.id}>
               <tr
                 id={`focus-board_task-${task.id}`}
-                className="border-b border-[#e5e0d6] last:border-b-0 hover:bg-nearwhite"
+                draggable
+                onDragStart={() => onDragStartTask(task.id)}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onDropAtIndex(index);
+                }}
+                className="cursor-move border-b border-[#e5e0d6] last:border-b-0 hover:bg-nearwhite"
               >
                 <td className="px-3 py-2 text-body text-nearblack">
                   <button
@@ -2018,10 +2276,41 @@ function GroupRows({
                     ))}
                   </select>
                 </td>
+                <td className="px-3 py-2">
+                  {/* Board reorder round (item 4) — touch fallback for
+                      the drag-reorder above: "Move up"/"Move down",
+                      reordering one slot within this row's CURRENT
+                      group (or the Ungrouped bucket), no phase change.
+                      Always rendered (not just on touch) since a mouse
+                      user typing on a trackpad benefits from it too —
+                      same "drag AND a menu, both always available"
+                      choice StackedColumnSection's own "Move to"
+                      dropdown already makes for kanban. */}
+                  <div className="flex gap-1">
+                    <button
+                      type="button"
+                      onClick={() => onMoveTask(task, -1)}
+                      disabled={index === 0}
+                      title="Move up"
+                      className="border border-[#c9c2b4] px-1.5 py-1 text-caption text-charcoal/60 hover:border-nearblack disabled:opacity-30"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onMoveTask(task, 1)}
+                      disabled={index === tasks.length - 1}
+                      title="Move down"
+                      className="border border-[#c9c2b4] px-1.5 py-1 text-caption text-charcoal/60 hover:border-nearblack disabled:opacity-30"
+                    >
+                      ↓
+                    </button>
+                  </div>
+                </td>
               </tr>
               {isExpanded && (
                 <tr className="border-b border-[#e5e0d6] bg-nearwhite last:border-b-0">
-                  <td colSpan={7} className="px-3 pb-3">
+                  <td colSpan={8} className="px-3 pb-3">
                     <BoardTaskEditorBody
                       task={task}
                       team={team}

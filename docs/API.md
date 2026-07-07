@@ -152,6 +152,63 @@ for next time. Render failures are now caught and logged to
 `app_errors` (see "System health" below) instead of surfacing as an
 unhandled crash.
 
+**"Export + board batch" round (7 July 2026) additions:**
+
+- `?categories=TW,SW` — multi-category filter, comma-separated category
+  prefixes. Extends the previous single-value filter; the legacy
+  singular `?category=TW` still works and is merged in alongside
+  `?categories=` (both accepted, de-duped). Absent/empty means every
+  category (the export dialog's "all ticked default = full schedule").
+  Applied to both the item query (`.in("category", ...)`) and the
+  cache key, so a category-filtered PDF and the full schedule never
+  collide on one cached object.
+- `?docs=1` — "Include item documents": when set, the response is a
+  merged print bundle instead of the bare schedule — schedule pages
+  first, then (in schedule order) each in-scope item's attached
+  `spec_sheet`/`install_manual` PDFs, each preceded by a brand-styled
+  separator page ("TW-01 — Melbourne Robe Hook — Spec sheet"). Built
+  via `lib/pdf-bundle.ts` using `pdf-lib` for the byte-level page
+  merge (schedule + separators + attached PDFs — see that module's own
+  doc comment for why the separator page itself is rendered with
+  React-PDF, not pdf-lib's low-level text API). Non-PDF attachments
+  (images etc.) and any per-file fetch failure are listed on a trailing
+  "Documents index" page ("not printable — view in app" /
+  "could not be retrieved") rather than blocking the bundle — a
+  bad/missing file never fails the whole download. Folded into the
+  cache key too (a digest of the in-scope items' `item_files` rows —
+  `kind`/`storage_path`/`uploaded_at`, since that table has no
+  `updated_at` column) so attaching/removing a document invalidates
+  the cached bundle.
+- `?filename=` — optional filename override, used by the export dialog
+  to send its own "{project} — {preset|Custom} schedule.pdf" hint
+  instead of the route's generated `{Project}-FFE-Schedule.pdf` /
+  `{Project}-FFE-Print-Bundle.pdf` default.
+
+**Function timeout / bundle size caveat:** per-item document fetches
+inside `buildDocBundle` are sequential (one bad file must never block
+or fail the rest — same reasoning as the existing image pre-pass).
+`vercel.json` (protected, not edited by this round) already sets this
+route's `maxDuration: 60`; a project with an unusually large number of
+attached PDF documents could exceed that purely on download+merge
+time. See README.md's "PDF bundle size" note for the documented fix
+(bump `maxDuration` for this route) — deliberately not applied here
+since `vercel.json` is out of this round's edit boundary.
+
+### GET /api/settings/export-presets
+Auth: session (read; team-visible, same trust tier as
+`/api/settings/phase-template`). Response: `{ presets: [{ name,
+prefixes[] }] }`, read from `app_settings('export_presets')`. Falls
+back to `lib/export-presets.ts`'s `FALLBACK_EXPORT_PRESETS` (Plumber →
+TW+SW, Electrician → LI+EL) when the row has never been written — no
+migration in this round (`app_settings` carries the presets, per
+BUILD-SPEC.md "Export + board batch" item 1).
+
+### PUT /api/settings/export-presets
+Auth: admin only. Body: `{ presets: [{ name, prefixes[] }] }` — full
+replace. Every row needs a non-empty trimmed name and at least one
+category prefix (prefixes are upper-cased and de-duped). Backs
+`components/settings/ExportPresetSettings.tsx`.
+
 ### GET /api/projects/[id]/cover
 Auth: session. Body: none. Response: `{ url: string | null }` — a
 freshly-minted signed URL (1hr TTL) for the project's cover image, or

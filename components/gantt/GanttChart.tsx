@@ -1140,6 +1140,77 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
   );
 }
 
+/**
+ * Board reorder round (7 July 2026) — item 5 "Inline heading rename":
+ * click the phase name -> input -> blur/Enter saves, Escape cancels.
+ * PATCHes `name` only via the same onPatch callback PhaseEditPanel's
+ * own Name field already uses (PATCH /api/phases/[id], which mirrors
+ * the change into the linked board_groups row server-side — see that
+ * route's "Unification" comment) — so a rename here shows up on the
+ * Board's Grouped-list header immediately on next load, same as a
+ * rename from either direction already did before this round.
+ *
+ * Its own small component (not inlined into PhaseRow, which is
+ * already large) purely so the rename input's local draft state
+ * doesn't need to live alongside PhaseRow's own sizeable pile of drag/
+ * touch/expand state — same "small extracted piece for one focused
+ * interaction" convention as GroupPhaseDateInputs in
+ * components/board/ProjectBoard.tsx.
+ */
+function PhaseNameInline({
+  phase,
+  onPatch,
+}: {
+  phase: SchedulePhaseWithVisits;
+  onPatch: (patch: Record<string, unknown>, refUpdate?: Partial<SchedulePhaseWithVisits>) => void;
+}) {
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(phase.name);
+
+  function commit() {
+    setRenaming(false);
+    if (draft.trim() && draft.trim() !== phase.name) {
+      onPatch({ name: draft.trim() }, { name: draft.trim() });
+    }
+  }
+
+  function cancel() {
+    setDraft(phase.name);
+    setRenaming(false);
+  }
+
+  if (renaming) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          if (e.key === "Escape") cancel();
+        }}
+        onClick={(e) => e.stopPropagation()}
+        className="min-w-0 flex-1 border border-nearblack bg-nearwhite px-1.5 py-0.5 text-body text-nearblack focus:outline-none"
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        setDraft(phase.name);
+        setRenaming(true);
+      }}
+      title="Click to rename"
+      className="text-left text-body text-nearblack hover:text-sand"
+    >
+      {phase.name}
+    </button>
+  );
+}
+
 function PhaseRow({
   projectId,
   phase,
@@ -1289,20 +1360,35 @@ function PhaseRow({
               ▸
             </button>
           )}
+          {/* Board reorder round (7 July 2026) — item 5 "Inline heading
+              rename": the phase name is now inline-editable directly in
+              this left column, same click-name-to-input/blur-or-Enter-
+              saves/Escape-cancels interaction as the Board's GroupTable
+              header (components/board/ProjectBoard.tsx) — "Milestone/
+              board group parity maintained" per this round's brief.
+              Deliberately does NOT remove the existing "click name
+              opens the full edit panel" behaviour other fields (dates/
+              colour/notes/contact/visits/delete) still rely on for
+              discoverability — a phase row now has BOTH a rename
+              affordance (this inline editor, PATCHing name only) and
+              the toggle-the-panel affordance (the separate button just
+              below), same "two independent click targets" pattern this
+              file already established for the name button vs. the
+              "View on Board ↗" link right next to it. */}
+          <PhaseNameInline phase={phase} onPatch={onPatch} />
           <button
             type="button"
             onClick={onToggleEdit}
-            className="text-left text-body text-nearblack hover:text-sand"
+            title={editing ? "Hide phase details" : "Edit dates, colour, notes, contact & visits"}
+            className="text-caption text-charcoal/40 hover:text-sand"
           >
-            {phase.name}
+            {editing ? "▴" : "▾"}
           </button>
           {/* Timeline Day-zoom polish round — item 5 "Better board
-              linking": the phase name button above still opens the
-              inline edit panel (unchanged interaction); this SEPARATE
-              small link is the new "go look at the Board" affordance —
-              deliberately not merged into the name button itself so
-              neither click target's existing behaviour changes. Only
-              rendered when this phase has a linked board_groups row
+              linking": this SEPARATE small link is the "go look at the
+              Board" affordance — deliberately not merged into the name
+              or ▾/▴ buttons so no existing click target's behaviour
+              changes. Only rendered when this phase has a linked board_groups row
               (boardGroupId) — a phase with no link (legacy/unreconciled
               data) shows nothing extra here, same as before this round.
               Board's GroupTable header (components/board/ProjectBoard.tsx)

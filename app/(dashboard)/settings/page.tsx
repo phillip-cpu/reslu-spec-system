@@ -10,12 +10,15 @@ import { SystemHealth } from "@/components/settings/SystemHealth";
 import { PhaseTemplateSettings } from "@/components/settings/PhaseTemplateSettings";
 import { PhaseTaskTemplateSettings } from "@/components/settings/PhaseTaskTemplateSettings";
 import { DesignTaskTemplateSettings } from "@/components/settings/DesignTaskTemplateSettings";
+import { ExportPresetSettings } from "@/components/settings/ExportPresetSettings";
 import { FALLBACK_PHASE_TEMPLATE } from "@/lib/phase-template";
 import { FALLBACK_DESIGN_TASK_TEMPLATES } from "@/lib/design-task-templates";
+import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
 import { DESIGN_PHASE_TEMPLATE } from "@/types/phase-12b";
 import type { AppSettingsPhaseTemplateRow } from "@/types/phase-fix-a";
 import type { PhaseTaskTemplatesMap } from "@/types/board-cockpit";
 import type { DesignTaskTemplatesMap } from "@/types/round-c";
+import type { ExportPresetRow } from "@/types/round-export-batch";
 
 /**
  * Settings — category management, team roster + role editing (both
@@ -85,6 +88,17 @@ export default async function SettingsPage() {
     .maybeSingle();
   const designTaskTemplates =
     (designTaskTemplatesRow?.value as DesignTaskTemplatesMap | undefined) ?? FALLBACK_DESIGN_TASK_TEMPLATES;
+
+  // "Export + board batch" round (7 July 2026) — trade export presets
+  // (app_settings 'export_presets'), read directly here same as the
+  // other app_settings-backed editors above (server component, no
+  // round-trip through its own GET route needed).
+  const { data: exportPresetsRow } = await supabase
+    .from("app_settings")
+    .select("value")
+    .eq("key", "export_presets")
+    .maybeSingle();
+  const exportPresets = (exportPresetsRow?.value as ExportPresetRow[] | undefined) ?? FALLBACK_EXPORT_PRESETS;
 
   const mondayConfigured = Boolean(process.env.MONDAY_API_TOKEN);
   const gmailConfigured = Boolean(
@@ -176,6 +190,17 @@ export default async function SettingsPage() {
             initialTemplates={designTaskTemplates}
             canEdit={isAdmin}
           />
+        </section>
+
+        <section>
+          <h2 className="mb-1 text-subhead text-nearblack">Export presets</h2>
+          <p className="mb-4 text-body text-charcoal/60">
+            Quick-pick trade presets shown in the FF&amp;E schedule export dialog
+            (each ticks a set of categories in one click). Edit the name or the
+            category checkboxes on any row, or add a new preset below.
+            {!isAdmin && " Only admins can make changes."}
+          </p>
+          <ExportPresetSettings initialPresets={exportPresets} categories={categories} canEdit={isAdmin} />
         </section>
 
         <section>

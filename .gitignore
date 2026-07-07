@@ -37,3 +37,6 @@ next-env.d.ts
 # supabase
 supabase/.branches
 supabase/.temp
+
+# Claude Code local session/tool state — never app code, never commit
+.claude/

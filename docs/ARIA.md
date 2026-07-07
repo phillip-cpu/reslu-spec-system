@@ -625,3 +625,7 @@ ever reaching into Google/WhatsApp/Gmail itself. Worked example:
 Distinct from `move_lead_stage`: this tool never changes the lead's
 stage, it only appends to the notes feed — the two are independent
 actions and neither implies the other.
+
+## Reading RESLU plans — drawing conventions reference
+
+When analysing uploaded plan sets (plan-analysis loop), consult `docs/DRAWING-CONVENTIONS.pdf` — RESLU's drawing layout style guide. It documents: the drawing sequence (A000 cover → A100 plans → A200 elevations → A300 sections → A400 internal details → A500 window/door schedules → A600 joinery), text conventions (Gill Sans Light, all caps, sizes per label type), the item-code prefixes as used ON DRAWINGS, joinery labels (DRW drawers, HR hanging rail, FS fixed shelf, ADJ adjustable shelf), dimension conventions (blocked/uniform, benchtops one measurement per size with edge profiles via legend), and QA notes (shower grate locations, pop-up wastes must appear on plans). Use it to disambiguate codes and labels during extraction; note the FF&E register's category prefixes (not this guide's older list) are canonical when they conflict.

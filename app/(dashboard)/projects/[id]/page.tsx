@@ -6,6 +6,7 @@ import { ProjectTabs } from "@/components/projects/ProjectTabs";
 import { ProjectOverview } from "@/components/projects/ProjectOverview";
 import { ProjectWorkspace } from "@/components/items/ProjectWorkspace";
 import { MondayBoardPicker } from "@/components/items/MondayBoardPicker";
+import { ExportDialogTrigger } from "@/components/projects/ExportDialogTrigger";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
 import { portalUrlFor } from "@/lib/portal-link";
 import { getCategories } from "@/lib/reference-data";
@@ -90,6 +91,14 @@ export default async function ProjectPage({
     categories = cachedCategories;
   }
 
+  // Export dialog (BUILD-SPEC.md "Export + board batch" item 1) needs
+  // only the categories actually present on this project's own items —
+  // a project with no wet-area items shouldn't show a TW/SW checkbox.
+  // Derived from the same items/categories already fetched above for
+  // the FF&E tab, no extra query.
+  const usedPrefixes = new Set(items.map((it) => it.category));
+  const categoriesInProject = categories.filter((c) => usedPrefixes.has(c.prefix));
+
   return (
     <>
       <Header
@@ -112,14 +121,11 @@ export default async function ProjectPage({
               >
                 Import CSV
               </a>
-              <a
-                href={`/api/projects/${id}/pdf`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
-              >
-                Download PDF
-              </a>
+              <ExportDialogTrigger
+                projectId={id}
+                projectName={project.name}
+                categoriesInProject={categoriesInProject}
+              />
             </>
           ) : undefined
         }

@@ -778,6 +778,50 @@ Times-Roman serif automatically. Drop a `CormorantGaramond.ttf` file
 into `public/fonts/` to bring the brand font back (or update the
 `CORMORANT_PATH` constant near the top of `SchedulePdf.tsx` if you'd
 rather use a different filename, e.g. `CormorantGaramond-Light.ttf`).
+The print bundle's separator/documents-index pages
+(`components/pdf/DocBundlePages.tsx`) register the same font
+independently with the identical fallback behaviour.
+
+## PDF print bundle (pdf-lib)
+
+The export dialog's "Include item documents" checkbox (BUILD-SPEC.md
+"Export + board batch" item 3) merges the FF&E schedule with each
+in-scope item's attached spec sheet/install manual PDFs into ONE
+print-ready download, using `pdf-lib` for the byte-level page merge
+(`lib/pdf-bundle.ts`). **This dependency was added to `package.json`
+in this round but is not yet installed** — the on-machine engineer
+needs to run:
+
+```
+npm install
+```
+
+once (picks up `pdf-lib` from `package.json`; `package-lock.json` was
+intentionally left untouched by this round rather than hand-edited —
+`npm install` will refresh it correctly on first run). Until that's
+done, any request with `?docs=1` (or the dialog's "Include item
+documents" checkbox ticked) will fail at the `import { PDFDocument }
+from "pdf-lib"` line in `lib/pdf-bundle.ts`; the bare schedule (no
+`?docs=1`) is completely unaffected and needs no new install.
+
+`pdf-lib`'s import is confined to server-only files
+(`lib/pdf-bundle.ts`, imported only from
+`app/api/projects/[id]/pdf/route.ts`) — never reachable from a client
+component bundle.
+
+**Bundle size / function timeout caveat:** per-item document fetches
+inside the bundle builder are sequential by design (one bad/slow file
+must never block or fail the rest of the bundle — same reasoning as
+the existing PDF image pre-pass). `vercel.json` (protected, not edited
+by this round) already sets the PDF route's `maxDuration: 60`; a
+project with an unusually large number of attached PDF documents (many
+items, each with a hefty spec sheet PDF) could exceed that budget
+purely on download+merge time, since each fetch is a separate signed
+Storage read. If that starts happening in practice, the fix is a
+one-line bump to `app/api/projects/[id]/pdf/route.ts`'s entry in
+`vercel.json`'s `functions.maxDuration` — deliberately not applied
+pre-emptively here since `vercel.json` is out of this round's edit
+boundary.
 
 ## Troubleshooting
 
