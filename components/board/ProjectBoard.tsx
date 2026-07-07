@@ -2379,16 +2379,31 @@ function GroupTable({
     >
       <div
         id={`focus-group-${group.id}`}
-        className="flex flex-wrap items-center justify-between gap-2 border-b border-[#dcd6cc] bg-offwhite py-2 pr-3"
+        role="button"
+        tabIndex={0}
+        onClick={() => setCollapsed((c) => !c)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setCollapsed((c) => !c);
+          }
+        }}
+        title={collapsed ? "Expand stage" : "Collapse stage"}
+        className="flex flex-wrap items-center justify-between gap-2 border-b border-[#dcd6cc] bg-offwhite py-2 pr-3 cursor-pointer"
       >
         <div className="flex flex-wrap items-center gap-3 pl-3">
-          {/* Board v3 — Monday parity round: collapse chevron + summary
-              line ("5 items · 2 done"). Clicking the chevron toggles
-              `collapsed`; it never affects rename (a separate click
-              target, the name button below) or drag/drop. */}
+          {/* Bug fix, 7 July 2026: the whole header box is now the click
+              target for collapse/expand (onClick above) — was previously
+              only this small chevron. The chevron stays as an explicit
+              visual affordance/icon and still works on its own click,
+              stopping propagation so it doesn't double-toggle (fire its
+              own handler, then bubble up and fire the header's again). */}
           <button
             type="button"
-            onClick={() => setCollapsed((c) => !c)}
+            onClick={(e) => {
+              e.stopPropagation();
+              setCollapsed((c) => !c);
+            }}
             title={collapsed ? "Expand stage" : "Collapse stage"}
             className="text-caption text-charcoal/50 hover:text-nearblack"
           >
@@ -2400,6 +2415,7 @@ function GroupTable({
               value={nameDraft}
               onChange={(e) => setNameDraft(e.target.value)}
               onBlur={commitRename}
+              onClick={(e) => e.stopPropagation()}
               onKeyDown={(e) => {
                 // Board reorder round — Escape now cancels (reverts the
                 // draft, does NOT save) rather than being unhandled;
@@ -2412,7 +2428,10 @@ function GroupTable({
           ) : (
             <button
               type="button"
-              onClick={startRename}
+              onClick={(e) => {
+                e.stopPropagation();
+                startRename();
+              }}
               className="label-caps hover:opacity-70"
               style={{ color: stageColor }}
             >
@@ -2451,11 +2470,13 @@ function GroupTable({
             </span>
           )}
           {group.phase_id && !groupWorksDateRange && (
-            <GroupPhaseDateInputs
-              startDate={group.phase_start_date}
-              endDate={group.phase_end_date}
-              onPatch={onPatchPhaseDates}
-            />
+            <span onClick={(e) => e.stopPropagation()}>
+              <GroupPhaseDateInputs
+                startDate={group.phase_start_date}
+                endDate={group.phase_end_date}
+                onPatch={onPatchPhaseDates}
+              />
+            </span>
           )}
           {/* Timeline Day-zoom polish round — item 5's reciprocal "View
               on timeline" affordance: only shown for a group linked to a
@@ -2467,13 +2488,21 @@ function GroupTable({
           {group.phase_id && (
             <a
               href={`/projects/${projectId}/timeline?focus=phase-${group.phase_id}`}
+              onClick={(e) => e.stopPropagation()}
               className="text-caption text-charcoal/50 hover:text-sand"
             >
               View on timeline ↗
             </a>
           )}
         </div>
-        <button type="button" onClick={onDelete} className="text-caption text-charcoal/40 hover:text-red-700">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          className="text-caption text-charcoal/40 hover:text-red-700"
+        >
           ✕
         </button>
       </div>
