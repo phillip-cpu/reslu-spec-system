@@ -55,12 +55,21 @@ export function stageColorForIndex(indexInSortOrder: number): string {
 // — this constant REPLACES that seed list's content at both of those
 // two call sites only.
 // ------------------------------------------------------------
-export const DEFAULT_STATUS_COLUMNS_V3 = ["Not Booked", "Booked", "In Progress", "Done"] as const;
+// Bug fix / feature add, 8 July 2026 — per Phillip: "Requested" (a
+// trade has been asked, waiting to hear back — distinct from "Not
+// Booked", which is nothing done yet, and "Booked", which is a
+// trade-confirmed visit) slots in between those two. "Done" keeps its
+// existing, unambiguous meaning: the WORKS are physically completed,
+// not just "administratively closed" — no code change needed for that
+// clarification, it's the meaning this column has always carried.
+export const DEFAULT_STATUS_COLUMNS_V3 = ["Not Booked", "Requested", "Booked", "In Progress", "Done"] as const;
 
 /**
- * Tint colours for the four default status pills — BUILD-SPEC.md
- * "Board v3 — Monday parity" §3 "Colours":
+ * Tint colours for the five default status pills — BUILD-SPEC.md
+ * "Board v3 — Monday parity" §3 "Colours", plus "Requested" (added
+ * 8 July 2026, per Phillip):
  *   - Not Booked: terracotta #993C1D-tinted pill
+ *   - Requested: amber/gold-tinted pill
  *   - Booked: sand-tinted pill
  *   - In Progress: muted blue-grey-tinted pill
  *   - Done: green #4c6b4f-tinted pill
@@ -118,6 +127,17 @@ const STATUS_PILL_TINTS: Record<string, StatusPillTint> = {
     background: "#F5DCD3",
     text: "#7A2F16",
     border: "#993C1D",
+  },
+  requested: {
+    // Added 8 July 2026, per Phillip — sits between "not booked"
+    // (terracotta, nothing done) and "booked" (sand, confirmed): a
+    // warm amber/gold, distinct from both neighbours, reading as
+    // "pending — asked, waiting to hear back." Text darkened to
+    // ~4.8:1 against the background for the same WCAG AA bar every
+    // other entry here is held to.
+    background: "#F3E4C6",
+    text: "#8A6208",
+    border: "#C9971E",
   },
   booked: {
     // Sand family (this file's own STAGE_PALETTE sand, #8a6e4b) — a
