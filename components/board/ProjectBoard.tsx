@@ -3135,6 +3135,7 @@ function GroupRows({
         <tr
           id={`focus-board_task-${task.id}`}
           draggable
+          onClick={() => setExpandedId(isExpanded ? null : task.id)}
           onDragStart={() => onDragStartTask(task.id)}
           // Board v3.2 — dragend fires on the DRAG SOURCE once the
           // gesture ends, whether it was dropped successfully, dropped
@@ -3231,7 +3232,10 @@ function GroupRows({
               {!isSubItem && children.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => toggleParentCollapsed(task.id)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleParentCollapsed(task.id);
+                  }}
                   title={isParentCollapsed ? "Show sub-items" : "Hide sub-items"}
                   className="shrink-0 text-caption text-charcoal/40 hover:text-nearblack"
                 >
@@ -3244,9 +3248,18 @@ function GroupRows({
                 onPatch={(patch, refUpdate) => onPatchTask(task, patch, refUpdate)}
                 truncate
               />
+              {/* Bug fix, 8 July 2026: the whole row is now the click
+                  target for expand/collapse (onClick on the <tr> above)
+                  — was previously only this small chevron. Kept as an
+                  explicit visual affordance/icon, stopping propagation
+                  so it doesn't double-toggle (fire its own handler, then
+                  bubble up and fire the row's again). */}
               <button
                 type="button"
-                onClick={() => setExpandedId(isExpanded ? null : task.id)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setExpandedId(isExpanded ? null : task.id);
+                }}
                 title="Expand to edit description, assignees, due date & more"
                 className="shrink-0 text-caption text-charcoal/40 hover:text-sand"
               >
@@ -3274,12 +3287,15 @@ function GroupRows({
               )}
             </span>
           </td>
-          <td className="py-1 pr-3">
+          <td className="py-1 pr-3" onClick={(e) => e.stopPropagation()}>
             {/* Board v3.1 — display-first cells, item 4: WHO — quiet
                 avatar stack at rest; click opens the SAME checkbox
                 picker the kanban composer/editor already uses
                 (AssigneeMultiPicker), via the shared PopoverCell
-                click-to-reveal wrapper. */}
+                click-to-reveal wrapper.
+                Bug fix, 8 July 2026: this <td> stops click propagation
+                (row-level onClick now toggles expand/collapse) so
+                opening this picker never also collapses the row. */}
             <PopoverCell
               trigger={
                 task.assignees.length > 0 ? (
@@ -3305,12 +3321,13 @@ function GroupRows({
               )}
             </PopoverCell>
           </td>
-          <td className="py-1 pr-3">
+          <td className="py-1 pr-3" onClick={(e) => e.stopPropagation()}>
             {/* Board v3.1 — display-first cells, item 1: STATUS — quiet
                 coloured pill at rest; click opens a popover menu of
                 every valid column, same underlying column_id PATCH the
                 pre-v3.1 native <select> (StatusPillSelect) already
-                called. */}
+                called. Bug fix, 8 July 2026: stops propagation so
+                opening this popover never also collapses the row. */}
             <StatusPill
               value={task.column_id}
               columnOptions={columnOptions}
@@ -3320,10 +3337,12 @@ function GroupRows({
               }}
             />
           </td>
-          <td className="py-1 pr-3 text-caption text-charcoal/60">
+          <td className="py-1 pr-3 text-caption text-charcoal/60" onClick={(e) => e.stopPropagation()}>
             {/* Board v3.1 — display-first cells, item 4: CONTACT — quiet
                 company name (or "—") at rest; click opens the shared
-                ContactPicker (embedded mode) to change it. */}
+                ContactPicker (embedded mode) to change it.
+                Bug fix, 8 July 2026: stops propagation so opening this
+                picker never also collapses the row. */}
             <PopoverCell
               trigger={task.contact?.company ?? "—"}
               triggerTitle="Click to change linked contact"
@@ -3348,7 +3367,7 @@ function GroupRows({
               )}
             </PopoverCell>
           </td>
-          <td className="py-1 pr-3">
+          <td className="py-1 pr-3" onClick={(e) => e.stopPropagation()}>
             {/* Board v3.3 — WORKS is now a genuine editable start/end
                 popover (booking_date/booking_end_date REJOINED PATCH
                 /api/board-tasks/[id]'s whitelist — see that route's
@@ -3358,7 +3377,9 @@ function GroupRows({
                 its own explicit buttons (BoardTaskEditorBody's Book
                 trade/Unlink actions below, kanban card, context menu) —
                 this cell only ever edits dates on whatever booking state
-                already exists (none, or a live visit_id link). */}
+                already exists (none, or a live visit_id link). Bug fix,
+                8 July 2026: stops propagation so opening this popover
+                never also collapses the row. */}
             <WorksDateCell
               startDate={task.booking_date}
               endDate={task.booking_end_date}
@@ -3367,12 +3388,13 @@ function GroupRows({
               onCommit={(next) => onPatchTask(task, next, next)}
             />
           </td>
-          <td className="py-1 pr-3">
+          <td className="py-1 pr-3" onClick={(e) => e.stopPropagation()}>
             {/* Board v3.1 — display-first cells, item 2: DUE — quiet
                 display chip ("14 Jul" / "—") at rest; click swaps to a
                 real date input. Commits via the SAME onPatchTask
                 due_date PATCH the pre-v3.1 always-visible input already
-                called. */}
+                called. Bug fix, 8 July 2026: stops propagation so
+                opening this input never also collapses the row. */}
             <DueDateCell
               value={task.due_date}
               pastDue={pastDue}
