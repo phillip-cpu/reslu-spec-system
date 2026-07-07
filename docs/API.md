@@ -4234,3 +4234,301 @@ replaces the old textarea), `components/leads/LeadNotes.tsx` (new),
 `app/api/leads/[id]/notes/route.ts` (new), `mcp/src/index.mjs`
 (`add_lead_note` tool), `docs/API.md`/`docs/ARIA.md`/`README.md` (this
 round's documentation).
+
+## Board v3 — Monday parity round (migration 031)
+
+BUILD-SPEC.md "Board v3 — Monday parity". Four parts: the real
+13-stage construction template (replacing the old 6-phase code
+fallback), sub-items (`board_tasks.parent_task_id`, migration 031),
+the new default status vocabulary + booking soft-mapping, and a
+visual rebuild of the Grouped list view (now THE board default — see
+`components/board/ProjectBoard.tsx`'s own header doc comment; Kanban +
+side-by-side stay behind the existing layout toggle, unchanged).
+
+### Migration 031 — `board_tasks.parent_task_id`
+
+`supabase/migrations/031_board_v3.sql` adds ONE column:
+`board_tasks.parent_task_id uuid null references board_tasks(id) on
+delete cascade`, plus an index (`idx_board_tasks_parent`). Nothing else
+changes schema-wise this round — the 13-stage template, the default
+status-column seed reorder, the visual rebuild, and the dependency
+chips are all application-layer only.
+
+One level of nesting ONLY — enforced in **application code**
+(`POST /api/projects/[id]/board`), not a DB trigger/check constraint,
+per this schema's established "app layer enforces business invariants,
+DB enforces referential integrity" split (same discipline migration
+029 used for `board_tasks.visit_id`'s "one active booking" rule). A
+request whose `parent_task_id` points at a task that ITSELF already
+has a non-null `parent_task_id` is rejected with **HTTP 400**
+("Cannot create a sub-item of a sub-item — only one level of nesting
+is supported").
+
+`ON DELETE CASCADE` is a hard-delete safety net only — this app never
+hard-deletes `board_tasks` rows in normal operation (everything is
+soft-deleted via `deleted_at`). `DELETE /api/board-tasks/[id]` was
+updated this round to ALSO soft-delete any of the task's own sub-items
+in the same request, so a deleted parent never leaves invisible
+orphaned sub-item rows behind.
+
+### 13-stage template (default `phase_template` + `phase_task_templates` code fallback)
+
+`lib/phase-template.ts`'s `FALLBACK_PHASE_TEMPLATE` now holds the real
+13-stage construction sequence (Stage 1 – Site Establishment through
+Stage 13 – Handover & Close Out), replacing the prior 6-phase list
+(Site Setup umbrella / Demolition / Rough-in / Waterproofing & Tiling /
+Fit-off / Handover). **None of the 13 rows are `kind: 'umbrella'`** —
+every umbrella consumer in this codebase (`GanttChart.tsx`'s
+`phases.find(p => p.kind === 'umbrella') ?? null`, the phases route,
+etc.) already treats "no umbrella phase" as a valid, null-safe state,
+so a project seeded from this template simply shows no umbrella band
+on the Timeline.
+
+A new sibling constant, `FALLBACK_PHASE_TASK_TEMPLATES`, is the
+code-level fallback for `app_settings('phase_task_templates')` — the
+full 13-stage checklist (every stage's task list, milestone rows
+included) ships as this constant rather than a migration-time seed row
+(same "code fallback, not a migration seed" mechanism
+`lib/design-task-templates.ts`'s `FALLBACK_DESIGN_TASK_TEMPLATES`
+already established for its own key). Every milestone row's title
+follows the literal `"Stage complete – {outcome}"` wording from
+BUILD-SPEC.md, EXCEPT Stage 13's final row ("Project archived"),
+which is a plain `kind: 'task'` row — Stage 13 is the last stage and
+has no next stage to hand off to.
+
+Both `GET /api/settings/phase-template` and
+`GET /api/settings/phase-task-templates` (plus the Settings page's own
+server-side reads) now fall back to these two constants instead of the
+old 6-phase list / an empty `{}` object, whenever their respective
+`app_settings` row is missing. **Existing `app_settings` override rows
+already saved in a live database are completely untouched** — this is
+a code-level fallback only, consulted solely when no row exists yet.
+
+### "Apply stage template" banner + backfill endpoint
+
+Mirrors `DesignTab.tsx`'s "Apply templates" banner interaction pattern
+exactly. Shown on the Board's Grouped list view whenever
+`groups.length > 0 && allTasks.length === 0` — i.e. stage groups
+already exist (the shared phase-template seed has run) but the WHOLE
+BOARD has zero tasks across EVERY group. **"Sparse" is defined at the
+WHOLE-BOARD level, not per-group** — a board where one stage has cards
+but the other twelve are empty does NOT show this banner (that's
+normal steady-state usage).
+
+`POST /api/projects/[id]/board/apply-stage-template`
+(`app/api/projects/[id]/board/apply-stage-template/route.ts`, thinly
+wrapping `lib/phase-seed.ts`'s `applyStageTemplateToEmptyGroups()`):
+walks every existing `board_groups` row for the project and fills ONLY
+the groups that currently have **zero non-deleted, TOP-LEVEL**
+(`parent_task_id is null`) `board_tasks` — a group that already has at
+least one top-level task is left completely untouched. **Idempotency
+rule: PER GROUP, not per board** — calling this endpoint twice in a
+row, or after someone has since manually added a card to one group but
+not others, never duplicates a single task; it only ever tops up
+whichever groups are still genuinely empty at the moment it runs.
+Response: `{ filled_group_ids, skipped_group_ids, created_count }`.
+
+### Sub-items — API shape (flat, not nested)
+
+**Model choice: FLAT.** `GET /api/projects/[id]/board` continues to
+return every non-deleted `board_tasks` row (sub-items included) as a
+single flat list per column/group — each row now additionally carries
+`parent_task_id` (`BoardTaskV3`, `types/board-v3.ts`). The client
+(`components/board/ProjectBoard.tsx`'s `GroupRows`) does the
+parent/child grouping itself, by filtering the flat list on
+`parent_task_id`, rather than the API embedding a `children[]` array
+on each parent row.
+
+**Why:** least disruption to the EXISTING GET response shape (this
+round's own explicit tie-breaker) — every existing consumer of the
+flat `tasks: BoardTaskCockpit[]` shape (drag-and-drop sort-ladder math,
+`GroupRows`/`UngroupedTable`/`StackedColumnSection`) already assumes a
+flat array of siblings it can sort/splice/filter by `sort`. A nested
+shape would require every one of those call sites to be taught to
+recurse, including the sort-ladder reorder math, which deliberately
+must NEVER apply across parent/child boundaries anyway. Keeping the
+wire shape flat and doing the grouping in ONE place client-side is a
+strictly smaller, additive change.
+
+`POST /api/projects/[id]/board` accepts an optional `parent_task_id`
+in its body (`CreateBoardTaskInputV3`/`CreateSubTaskInputV3`,
+`types/board-v3.ts`):
+- The referenced parent must belong to the same project (400 if not).
+- The referenced parent must ITSELF have `parent_task_id = null` — a
+  depth-2 attempt is rejected with **HTTP 400**
+  ("Cannot create a sub-item of a sub-item…").
+- When `phase_group_id` is OMITTED alongside `parent_task_id`, the
+  sub-item **inherits the parent's `phase_group_id` automatically**
+  ("Sub-items inherit phase_group from parent"). Passing
+  `phase_group_id` explicitly (including `null`) still overrides that
+  inheritance.
+- A sub-item's `sort` scope is its own sibling set (every other task
+  sharing the same `parent_task_id`) — NEVER the whole column. Both
+  `onDropInGroup` and `moveTaskWithinGroup`
+  (`components/board/ProjectBoard.tsx`) branch on `task.parent_task_id`
+  so drag-reorder and the "Move up/down" buttons can never cross a
+  sub-item's reorder into its parent's top-level row order or into a
+  different parent's sub-items.
+
+`DELETE /api/board-tasks/[id]` additionally soft-deletes any sub-items
+of the deleted task in the same request (best-effort — a failure here
+is reported as a non-fatal `warning`, never a 500, since the parent's
+own delete already succeeded).
+
+Row-level UI: "Add sub-item" lives in a top-level row's own expanded
+editor (`GroupRows`' `renderRow`, click the row to expand). Sub-rows
+render indented under their parent with a literal `"└"` prefix glyph,
+plus a "done/total" (e.g. "2/3") count chip on the parent row — **a
+pure display summary of children only**. Per BUILD-SPEC.md's explicit
+deviation note: **there is NO auto-rollup of sub-item completion into
+the parent's own status** — a parent's `column_id` (status) only ever
+changes via that parent's OWN status pill, never derived from its
+children. Sub-items are collapsible per-parent (chevron on the parent
+row) and are EXCLUDED from a group's top-level "N items · M done"
+summary line (`lib/board-constants.ts`'s `groupSummaryLine()`) — only
+parent-level/top-level tasks count toward that.
+
+"My Work" (`GET /api/my-work`, source #1) already includes sub-items
+the same way it includes regular tasks — that source queries
+`board_task_assignees` by `profile_id` and then selects the matching
+`board_tasks` rows directly by id, with no `parent_task_id is null`
+filter anywhere in the query. A sub-item assigned to a team member
+therefore already surfaces in their My Work feed exactly like any
+other assigned card — **no code change was needed** for this
+requirement; it was already structurally inclusive.
+
+### Status vocabulary — new default columns + colours
+
+New boards (a project whose Board has never been opened before — zero
+existing `board_columns` rows) now seed **Not Booked / Booked / In
+Progress / Done**, in that exact order, replacing the prior Board v2
+default (Waiting / To Do / In Progress / Done). This affects exactly
+two call sites, both already gated on "zero existing columns for this
+project": `GET /api/projects/[id]/board` and
+`app/(dashboard)/projects/[id]/board/page.tsx`'s own server-side seed.
+**Existing (already-seeded) boards are NEVER touched or migrated** —
+they keep whatever columns they already have, fully renamable exactly
+as before. The new default list lives at
+`lib/board-constants.ts`'s `DEFAULT_STATUS_COLUMNS_V3`.
+
+Colour constants (`lib/board-constants.ts`'s `STATUS_PILL_TINTS`,
+looked up via `statusPillTintForColumnName()`/`resolveStatusPillTint()`
+— case-insensitive, trimmed match on the column NAME, same heuristic
+`lib/board-cockpit.ts`'s `DONE_COLUMN_NAMES` already established, since
+column sets are per-project/fully editable):
+
+| Column        | Background wash | Text      | Border    |
+|---------------|------------------|-----------|-----------|
+| Not Booked    | `#F5DCD3`        | `#7A2F16` | `#993C1D` |
+| Booked        | `#EDE3D6`        | `#5C4A32` | `#8a6e4b` |
+| In Progress   | `#DDE3E8`        | `#3A4750` | `#7C93A3` |
+| Done          | `#DCE7DD`        | `#2E4531` | `#4c6b4f` |
+
+Each pill uses a light background wash + a darker foreground text of
+the same hue family (same "darker text on light tint" pattern this
+codebase's existing coloured surfaces use, e.g.
+`components/estimate/VersionCompare.tsx`'s added/removed/changed row
+tints) — verified comfortably readable (all four pairs are well above
+the WCAG AA 4.5:1 threshold for normal-size text). Sharp corners
+throughout — no `border-radius` is ever added (this app's
+`tailwind.config.ts` forces `borderRadius` to `0px` globally). A column
+whose name doesn't match one of these four exact labels (a renamed
+column, or a pre-Board-v3 board still on Waiting/To Do/In
+Progress/Done) simply renders the existing neutral/bordered pill style
+— never an error, never a fabricated colour.
+
+Stage-group palette (a SEPARATE, unrelated colour concept — the 4px
+left edge bar + title text on each Grouped-list stage section, NOT the
+status pills above): `lib/board-constants.ts`'s `STAGE_PALETTE`, five
+colours cycling by `sort` order — sand `#8a6e4b`, green `#4c6b4f`,
+terracotta `#993C1D`, charcoal `#313131`, teal-muted `#3d5a5a`.
+
+### Booking soft-mapping (display-only)
+
+**Rule:** a task whose linked visit's `status === 'confirmed'` renders
+its status pill using the **'Booked' column's tint** IF AND ONLY IF
+the board has at least one column whose name matches `/booked/i`
+(case-insensitive substring match — matches "Booked", "Not Booked",
+"Re-booked", etc.). This is checked via
+`lib/board-constants.ts`'s `boardHasBookedColumn()` +
+`resolveStatusPillTint()`, and applied in
+`components/board/ProjectBoard.tsx`'s `GroupRows` (the status pill
+cell).
+
+**This is a soft/display-only mapping only.** It never writes
+anywhere — the task's real `board_tasks.column_id` (this schema's
+actual "status column" FK; there is no literal `status_column_id`
+column, migration 013's `column_id` is the field the spec's wording
+refers to) is completely unaffected. The pill still shows the task's
+TRUE column NAME as its label — only the colour/tint the pill borrows
+is overridden when the condition holds. A board with no column
+matching `/booked/i` never applies this override, regardless of any
+task's visit status.
+
+### Visual rebuild — Grouped list view (now the board default)
+
+Per stage group (`GroupTable`, `components/board/ProjectBoard.tsx`):
+full-width table, a 4px coloured left edge bar + coloured stage title
+text (the rotating `STAGE_PALETTE`, cycling by `sort` order), column
+headers reading **exactly** `ITEM · WHO · STATUS · CONTACT · WORKS ·
+DUE · AFTER`, compact ~30px rows (`h-[30px]` row height, `py-1` cells),
+a collapse chevron + summary line ("N items · M done" — sub-items
+excluded from both counts), and an inline "+ Add item" row at the
+bottom of each group. Milestone rows show the ◆ diamond marker plus a
+"MILESTONE" chip. Every existing behaviour is preserved: inline
+rename, drag reorder, both-dates editing (`GroupPhaseDateInputs`,
+untouched), "Book trade"/"Unlink booking" (via the shared
+`BoardTaskEditorBody`, untouched), focus ids (`focus-group-<id>`,
+`focus-board_task-<id>`, unchanged), phase date inputs + "View on
+timeline" link (untouched), tap→move (the Status pill's underlying
+`<select>`, unchanged interaction), booking badges (unchanged),
+milestones (unchanged ◆ marker, now additionally chipped).
+
+### Stage-complete dependency chips (display-only, no schema, no blocking)
+
+For each stage group (ordered by `sort`), if the PREVIOUS group
+contains a milestone task, the FIRST non-milestone task row in the
+CURRENT group shows a muted chip reading `"after ◆ {prev milestone
+title, trimmed of the literal prefix 'Stage complete – '}"`. Pure
+client-side derivation (`lib/board-constants.ts`'s
+`computeDependencyChips()`, called once per board render in
+`ProjectBoard`'s own `dependencyChipsByGroupId` memo) — **no schema
+changes, no actual blocking of task creation or completion**. A full
+dependency engine is deliberately out of scope for this round.
+
+### Deliberately out of scope this round (per spec)
+
+- SWMS column (document management stays on `contact_documents`/
+  project files).
+- Budget/Actual Cost per task (money stays in the Estimate/invoice
+  pipeline).
+- Formula column (Monday-specific artefact, not needed here).
+
+**Files touched:** `supabase/migrations/031_board_v3.sql` (new —
+`board_tasks.parent_task_id`), `lib/phase-template.ts`
+(`FALLBACK_PHASE_TEMPLATE` replaced with the 13-stage list;
+`FALLBACK_PHASE_TASK_TEMPLATES` added), `lib/phase-seed.ts`
+(`seedPhaseTemplateIfEmpty` falls back to the new task-template
+constant; `applyStageTemplateToEmptyGroups` added),
+`lib/board-constants.ts` (new — `STAGE_PALETTE`,
+`DEFAULT_STATUS_COLUMNS_V3`, `STATUS_PILL_TINTS`/
+`statusPillTintForColumnName`/`boardHasBookedColumn`/
+`resolveStatusPillTint`, `computeDependencyChips`/
+`trimMilestoneTitlePrefix`, `groupSummaryLine`, `subItemCountChip`),
+`types/board-v3.ts` (new — `BoardTaskV3`, `CreateSubTaskInputV3`,
+`BoardColumnV3`/`BoardGroupV3`/`BoardV3Response`,
+`ApplyStageTemplateResponse`), `app/api/projects/[id]/board/route.ts`
+(GET response retyped to `BoardV3Response`; default column seed
+switched to `DEFAULT_STATUS_COLUMNS_V3`; POST accepts
+`parent_task_id` + depth guard + phase_group_id inheritance + sub-item
+sort scoping), `app/(dashboard)/projects/[id]/board/page.tsx` (same
+column-seed switch + V3 response types),
+`app/api/projects/[id]/board/apply-stage-template/route.ts` (new),
+`app/api/board-tasks/[id]/route.ts` (DELETE cascades a soft-delete to
+sub-items), `app/api/settings/phase-task-templates/route.ts` +
+`app/(dashboard)/settings/page.tsx` (fallback switched to
+`FALLBACK_PHASE_TASK_TEMPLATES`), `components/board/ProjectBoard.tsx`
+(GroupTable/GroupRows/UngroupedTable rebuilt; "Apply stage template"
+banner; `addSubTask`; dependency-chip memo; sub-item-aware
+`onDropInGroup`/`moveTaskWithinGroup`), `docs/API.md`/`README.md`
+(this round's documentation).

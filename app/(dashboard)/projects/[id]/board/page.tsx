@@ -5,22 +5,18 @@ import { Header } from "@/components/layout/Header";
 import { ProjectTabs } from "@/components/projects/ProjectTabs";
 import { ProjectBoard } from "@/components/board/ProjectBoard";
 import { portalUrlFor } from "@/lib/portal-link";
+import { DEFAULT_STATUS_COLUMNS_V3 } from "@/lib/board-constants";
 import type { AssigneeSummary } from "@/types/phase-12a-b";
-import type {
-  BoardColumnCockpit,
-  BoardGroupCockpit,
-  BoardTaskCockpit,
-  LinkedVisitSummary,
-} from "@/types/board-cockpit";
+import type { LinkedVisitSummary } from "@/types/board-cockpit";
+import type { BoardColumnV3, BoardGroupV3, BoardTaskV3 } from "@/types/board-v3";
 
-// Board v2 — BUILD-SPEC.md "Board v2" point 2: "'Waiting' becomes the
-// FIRST default column ... for new boards." Only used when a project
-// currently has ZERO columns (first-ever visit) — see this file's own
-// doc comment on the GET route (app/api/projects/[id]/board/route.ts)
-// for why the "existing boards get a one-time reorder only if
-// untouched" half of that spec sentence is deliberately NOT automated
-// here.
-const DEFAULT_COLUMNS_V2 = ["Waiting", "To Do", "In Progress", "Done"];
+// Board v3 — Monday parity round: REPLACES the Board v2 Waiting-first
+// seed with the Monday-parity status vocabulary
+// (lib/board-constants.ts's DEFAULT_STATUS_COLUMNS_V3 — Not Booked/
+// Booked/In Progress/Done). Only used when a project currently has
+// ZERO columns (first-ever visit) — same gating as before this round;
+// see app/api/projects/[id]/board/route.ts's own doc comment for why
+// existing (already-seeded) boards are never migrated/touched.
 const SORT_STEP = 1000;
 
 /**
@@ -67,7 +63,7 @@ export default async function ProjectBoardPage({
     .order("sort", { ascending: true });
 
   if (!columns || columns.length === 0) {
-    const seedRows = DEFAULT_COLUMNS_V2.map((name, i) => ({
+    const seedRows = DEFAULT_STATUS_COLUMNS_V3.map((name, i) => ({
       project_id: id,
       name,
       sort: i * SORT_STEP,
@@ -141,7 +137,7 @@ export default async function ProjectBoardPage({
     assigneesByTask.set(link.task_id, list);
   }
 
-  const tasksWithRefs: BoardTaskCockpit[] = taskRows.map((t) => {
+  const tasksWithRefs: BoardTaskV3[] = taskRows.map((t) => {
     const linkedVisit = t.visit_id ? visitById.get(t.visit_id) : undefined;
     const visitSummary: LinkedVisitSummary | null = linkedVisit
       ? {
@@ -160,8 +156,8 @@ export default async function ProjectBoardPage({
     };
   });
 
-  const tasksByColumn = new Map<string, BoardTaskCockpit[]>();
-  const tasksByGroup = new Map<string, BoardTaskCockpit[]>();
+  const tasksByColumn = new Map<string, BoardTaskV3[]>();
+  const tasksByGroup = new Map<string, BoardTaskV3[]>();
   for (const t of tasksWithRefs) {
     const colList = tasksByColumn.get(t.column_id) ?? [];
     colList.push(t);
@@ -173,12 +169,12 @@ export default async function ProjectBoardPage({
     }
   }
 
-  const initialColumns: BoardColumnCockpit[] = columns.map((c) => ({
+  const initialColumns: BoardColumnV3[] = columns.map((c) => ({
     ...c,
     tasks: tasksByColumn.get(c.id) ?? [],
   }));
 
-  const initialGroups: BoardGroupCockpit[] = (groups ?? []).map((g) => {
+  const initialGroups: BoardGroupV3[] = (groups ?? []).map((g) => {
     const linkedPhase = g.phase_id ? phaseDatesById.get(g.phase_id) : undefined;
     return {
       ...g,

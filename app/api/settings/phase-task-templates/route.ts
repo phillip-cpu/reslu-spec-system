@@ -6,6 +6,7 @@ import type {
   PhaseTaskTemplatesMap,
   PutPhaseTaskTemplatesInput,
 } from "@/types/board-cockpit";
+import { FALLBACK_PHASE_TASK_TEMPLATES } from "@/lib/phase-template";
 
 const VALID_KINDS = new Set(["task", "milestone"]);
 
@@ -17,10 +18,11 @@ const VALID_KINDS = new Set(["task", "milestone"]);
  * as GET /api/settings/phase-template, its sibling key on the same
  * app_settings table). Response: { templates } — an object keyed by
  * phase-template NAME (see migration 029's PART 2 comment for why
- * name, not an id) -> array of { title, kind }. Falls back to `{}`
- * (empty — no checklist for any phase yet) if the row is somehow
- * missing, mirroring GET /api/settings/phase-template's defensive
- * fallback pattern for its own sibling key.
+ * name, not an id) -> array of { title, kind }. Falls back to the real
+ * 13-stage checklist (lib/phase-template.ts's
+ * FALLBACK_PHASE_TASK_TEMPLATES, Board v3 — Monday parity round) if
+ * the row is somehow missing, mirroring GET /api/settings/phase-template's
+ * defensive fallback pattern for its own sibling key.
  */
 export async function GET() {
   const supabase = await createClient();
@@ -41,7 +43,13 @@ export async function GET() {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const templates = (data?.value as PhaseTaskTemplatesMap | undefined) ?? {};
+  // Board v3 — Monday parity round: falls back to the real 13-stage
+  // checklist (lib/phase-template.ts's FALLBACK_PHASE_TASK_TEMPLATES)
+  // instead of `{}` when the app_settings row is missing — same
+  // code-fallback mechanism as GET /api/settings/phase-template's own
+  // FALLBACK_PHASE_TEMPLATE fallback, and lib/design-task-templates.ts's
+  // sibling constant for its own key.
+  const templates = (data?.value as PhaseTaskTemplatesMap | undefined) ?? FALLBACK_PHASE_TASK_TEMPLATES;
   return NextResponse.json({ templates });
 }
 

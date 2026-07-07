@@ -11,7 +11,7 @@ import { PhaseTemplateSettings } from "@/components/settings/PhaseTemplateSettin
 import { PhaseTaskTemplateSettings } from "@/components/settings/PhaseTaskTemplateSettings";
 import { DesignTaskTemplateSettings } from "@/components/settings/DesignTaskTemplateSettings";
 import { ExportPresetSettings } from "@/components/settings/ExportPresetSettings";
-import { FALLBACK_PHASE_TEMPLATE } from "@/lib/phase-template";
+import { FALLBACK_PHASE_TEMPLATE, FALLBACK_PHASE_TASK_TEMPLATES } from "@/lib/phase-template";
 import { FALLBACK_DESIGN_TASK_TEMPLATES } from "@/lib/design-task-templates";
 import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
 import { DESIGN_PHASE_TEMPLATE } from "@/types/phase-12b";
@@ -70,7 +70,11 @@ export default async function SettingsPage() {
     .select("value")
     .eq("key", "phase_task_templates")
     .maybeSingle();
-  const phaseTaskTemplates = (phaseTaskTemplatesRow?.value as PhaseTaskTemplatesMap | undefined) ?? {};
+  // Board v3 — Monday parity round: falls back to the real 13-stage
+  // checklist (FALLBACK_PHASE_TASK_TEMPLATES) instead of `{}`, same as
+  // GET /api/settings/phase-task-templates's own updated fallback.
+  const phaseTaskTemplates =
+    (phaseTaskTemplatesRow?.value as PhaseTaskTemplatesMap | undefined) ?? FALLBACK_PHASE_TASK_TEMPLATES;
 
   // "Two from Phillip — 7 July 2026" item 2 — design task templates
   // (app_settings 'design_task_templates'), read directly here same as

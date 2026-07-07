@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { computeUmbrellaSeedSpan, FALLBACK_PHASE_TEMPLATE } from "@/lib/phase-template";
+import { computeUmbrellaSeedSpan, FALLBACK_PHASE_TEMPLATE, FALLBACK_PHASE_TASK_TEMPLATES } from "@/lib/phase-template";
 import type { PhaseTaskTemplatesMap } from "@/types/board-cockpit";
 
 const SORT_STEP = 1000;
@@ -98,7 +98,16 @@ export async function seedPhaseTemplateIfEmpty(
     .select("value")
     .eq("key", "phase_task_templates")
     .maybeSingle();
-  const taskTemplates = (taskTemplatesRow?.value as PhaseTaskTemplatesMap | undefined) ?? {};
+  // Board v3 — Monday parity round: falls back to the code-level
+  // FALLBACK_PHASE_TASK_TEMPLATES (the real 13-stage checklist,
+  // lib/phase-template.ts) instead of `{}` whenever the app_settings
+  // row is missing — same "code fallback, not a migration seed"
+  // mechanism lib/design-task-templates.ts already established for
+  // 'design_task_templates'. An app_settings row, once saved via
+  // Settings, always wins over this fallback (this is a genuine
+  // fallback, not a merge).
+  const taskTemplates =
+    (taskTemplatesRow?.value as PhaseTaskTemplatesMap | undefined) ?? FALLBACK_PHASE_TASK_TEMPLATES;
 
   // A template task needs SOME board_columns row to live in. Columns
   // are normally seeded by GET /api/projects/[id]/board (Waiting-first
@@ -183,4 +192,142 @@ export async function seedPhaseTemplateIfEmpty(
       await supabase.from("board_tasks").insert(taskRows);
     }
   }
+}
+
+// ============================================================
+// Board v3 — Monday parity round: "Apply stage template" backfill.
+// BUILD-SPEC.md "Board v3 — Monday parity": "Existing projects get the
+// same backfill affordance as design templates: 'Apply stage template'
+// banner for empty/sparse boards; must NEVER duplicate tasks."
+//
+// Mirrors POST /api/projects/[id]/design's exact backfill shape
+// (app/api/projects/[id]/design/route.ts) one level down: that route
+// walks every EXISTING design_phases row and fills only the ones with
+// zero tasks; this walks every existing board_groups row (phases
+// already seeded — this function assumes seedPhaseTemplateIfEmpty has
+// already run at least once for this project, i.e. board_groups is
+// non-empty) and fills only the ones with zero NON-DELETED, TOP-LEVEL
+// (parent_task_id is null) board_tasks — a group that already has
+// cards (or only has orphaned sub-items somehow, though that should
+// never happen in practice since sub-items are always created with a
+// parent) is left completely alone.
+//
+// "Sparse" for the purposes of the BOARD-LEVEL BANNER (see
+// components/board/ProjectBoard.tsx) is defined at the WHOLE-BOARD
+// level — zero tasks across every group on the entire board, not
+// per-group — per this round's explicit instruction to document the
+// distinction: the banner shows/hides based on the whole board being
+// empty, but the endpoint itself is idempotent PER GROUP regardless of
+// why the banner fired, so calling it a second time (or calling it after
+// someone has since manually added a couple of cards to one group) is
+// always safe — it only ever fills groups that are STILL empty at the
+// moment this function runs, never re-fills or duplicates a group that
+// already has tasks.
+export interface ApplyStageTemplateResult {
+  /** Group ids that received a freshly-inserted checklist (had zero top-level tasks). */
+  filled_group_ids: string[];
+  /** Group ids left untouched because they already had at least one top-level task. */
+  skipped_group_ids: string[];
+  /** Total board_tasks rows inserted across every filled group. */
+  created_count: number;
+}
+
+export async function applyStageTemplateToEmptyGroups(
+  supabase: SupabaseClient,
+  projectId: string
+): Promise<ApplyStageTemplateResult> {
+  const { data: groups } = await supabase
+    .from("board_groups")
+    .select("id,name")
+    .eq("project_id", projectId)
+    .order("sort", { ascending: true });
+
+  const groupRows = groups ?? [];
+
+  const { data: taskTemplatesRow } = await supabase
+    .from("app_settings")
+    .select("value")
+    .eq("key", "phase_task_templates")
+    .maybeSingle();
+  const taskTemplates =
+    (taskTemplatesRow?.value as PhaseTaskTemplatesMap | undefined) ?? FALLBACK_PHASE_TASK_TEMPLATES;
+
+  // A template task needs SOME board_columns row to live in — same
+  // "reuse the first existing column, else seed a minimal one" fallback
+  // seedPhaseTemplateIfEmpty already uses above, since a project whose
+  // Board tab has genuinely never been opened (only the Timeline has)
+  // could still have zero board_columns rows at this point.
+  let defaultColumnId: string | null = null;
+  const { data: existingColumn } = await supabase
+    .from("board_columns")
+    .select("id")
+    .eq("project_id", projectId)
+    .order("sort", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (existingColumn) {
+    defaultColumnId = existingColumn.id;
+  } else {
+    const { data: seededColumn } = await supabase
+      .from("board_columns")
+      .insert({ project_id: projectId, name: "Waiting", sort: 0 })
+      .select("id")
+      .single();
+    defaultColumnId = seededColumn?.id ?? null;
+  }
+
+  const filled_group_ids: string[] = [];
+  const skipped_group_ids: string[] = [];
+  let created_count = 0;
+
+  for (const group of groupRows) {
+    // Idempotency guard — PER GROUP: only ever fills a group with ZERO
+    // non-deleted TOP-LEVEL tasks (parent_task_id is null, per Board v3's
+    // "sub-items excluded from top-level group counts" rule applied
+    // here too — a group whose only rows are somehow orphaned sub-items
+    // is not "empty" in the sense that matters, but that state cannot
+    // occur in normal operation since a sub-item's own parent always
+    // lives in the same group).
+    const { count } = await supabase
+      .from("board_tasks")
+      .select("id", { count: "exact", head: true })
+      .eq("phase_group_id", group.id)
+      .is("deleted_at", null)
+      .is("parent_task_id", null);
+    if ((count ?? 0) > 0) {
+      skipped_group_ids.push(group.id);
+      continue;
+    }
+
+    const checklist = taskTemplates[group.name];
+    if (!checklist || checklist.length === 0 || !defaultColumnId) {
+      // Nothing to seed for this group's name (or nowhere to put it) —
+      // not a "skip" in the duplicate-prevention sense, just a no-op;
+      // still reported as filled=false via omission from both lists
+      // being misleading, so it's tracked as skipped for reporting
+      // purposes (the caller only cares "did this group change or
+      // not" — either list answers that correctly here).
+      skipped_group_ids.push(group.id);
+      continue;
+    }
+
+    const taskRows = checklist.map((item, i) => ({
+      project_id: projectId,
+      column_id: defaultColumnId,
+      phase_group_id: group.id,
+      title: item.title,
+      kind: item.kind,
+      sort: i * TASK_SORT_STEP,
+      created_by: null,
+    }));
+    const { error } = await supabase.from("board_tasks").insert(taskRows);
+    if (!error) {
+      filled_group_ids.push(group.id);
+      created_count += taskRows.length;
+    } else {
+      skipped_group_ids.push(group.id);
+    }
+  }
+
+  return { filled_group_ids, skipped_group_ids, created_count };
 }

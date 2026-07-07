@@ -631,6 +631,32 @@ admin enforcement for financial fields is now in place project-wide
   `docs/API.md`'s "Standard spec items + lead notes — migration 030
   round" section for the full breakdown.
 
+- **Board v3 — Monday parity (migration `031_board_v3.sql`)**. The
+  Grouped list view is now the board's default — full-width tables per
+  stage, a 4px coloured left bar + coloured title (a 5-colour rotating
+  palette by sort order), column headers reading exactly "ITEM · WHO ·
+  STATUS · CONTACT · WORKS · DUE · AFTER", ~30px compact rows, a
+  collapse chevron + "N items · M done" summary, and an inline "+ Add
+  item" row. The phase template is now the **real 13-stage construction
+  sequence** (Site Establishment → Handover & Close Out, each ending in
+  its own "◆ Stage complete" milestone — Stage 13 ends with a plain
+  item instead) — existing projects get the same one-click **"Apply
+  stage template"** backfill affordance the Design tab already has,
+  shown only when the whole board is empty, and idempotent per group
+  (never duplicates tasks). **Sub-items** (`board_tasks.parent_task_id`,
+  one level deep, enforced in the API not the DB) — expandable rows
+  under a parent with a "└" prefix and a "done/total" count chip that
+  is a pure display summary only (no auto-rollup into the parent's own
+  status). New boards now seed **Not Booked / Booked / In Progress /
+  Done** status columns (replacing Waiting/To Do/In Progress/Done) with
+  tinted pills — existing boards are never migrated. A task with a
+  **confirmed** booking shows the Booked column's colour purely for
+  display whenever the board has a column matching `/booked/i` — this
+  never changes the task's real status. Muted "after ◆ {previous
+  stage's milestone}" dependency chips are shown display-only on each
+  stage's first item — no blocking, no schema. See `docs/API.md`'s
+  "Board v3 — Monday parity round" section for the full breakdown.
+
 ## Cron jobs — one still needs wiring up (Phase 12a-B)
 
 `vercel.json` currently schedules `/api/digest/flush` and

@@ -5,21 +5,41 @@ import clsx from "clsx";
 import type { AssigneeSummary, BoardGroup } from "@/types/phase-12a-b";
 import type { Contact } from "@/types";
 import { BOARD_LAYOUT_STORAGE_KEY, type BoardLayoutMode } from "@/types/phase-fix-a";
-import type {
-  BoardColumnCockpit,
-  BoardGroupCockpit,
-  BoardTaskCockpit,
-  ContactPickerOption,
-} from "@/types/board-cockpit";
+import type { ContactPickerOption } from "@/types/board-cockpit";
+// Board v3 — Monday parity round: BoardColumnV3/BoardGroupV3/BoardTaskV3
+// (types/board-v3.ts) are structural supersets of their Board-cockpit-
+// round counterparts (BoardColumnCockpit/BoardGroupCockpit/
+// BoardTaskCockpit) — this whole file now uses BoardColumnV3/BoardTaskV3
+// uniformly, including inside the kanban-only functions
+// (StackedColumnSection, BoardColumnView, BoardCard,
+// BoardTaskEditorBody, which never read `parent_task_id`).
+//
+// Bug fix, 7 July 2026: StackedColumnSection/BoardColumnView's `column`
+// prop was left typed as BoardColumnCockpit (the narrower, pre-v3
+// type) even though onMoveTo/every other callback here expects
+// BoardTaskV3 (BoardColumnCockpit's own `tasks` are BoardTaskCockpit,
+// which lacks parent_task_id) — a TS2345 "missing parent_task_id"
+// build error, since a narrower-typed value can't be passed where the
+// wider type is required, regardless of what the actual runtime data
+// happens to contain. Both now correctly declare BoardColumnV3.
+import type { BoardColumnV3, BoardGroupV3, BoardTaskV3 } from "@/types/board-v3";
 import { shouldPromptMilestoneDiary } from "@/lib/board-cockpit";
+import {
+  stageColorForIndex,
+  resolveStatusPillTint,
+  computeDependencyChips,
+  groupSummaryLine,
+  subItemCountChip,
+  type StatusPillTint,
+} from "@/lib/board-constants";
 import { ContactPicker } from "@/components/shared/ContactPicker";
 import { BookVisitPanel } from "./BookVisitPanel";
 import { MilestoneDiaryPrompt } from "./MilestoneDiaryPrompt";
 
 interface Props {
   projectId: string;
-  initialColumns: BoardColumnCockpit[];
-  initialGroups: BoardGroupCockpit[];
+  initialColumns: BoardColumnV3[];
+  initialGroups: BoardGroupV3[];
   team: AssigneeSummary[];
   currentUserId: string;
 }
@@ -88,8 +108,8 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   // Grouped list (phases) is the daily-driver view — Phillip, 6 Jul.
   const [view, setView] = useState<"kanban" | "grouped">("grouped");
   const [layout, setLayout] = useState<BoardLayoutMode>("stacked");
-  const [columns, setColumns] = useState<BoardColumnCockpit[]>(initialColumns);
-  const [groups, setGroups] = useState<BoardGroupCockpit[]>(initialGroups);
+  const [columns, setColumns] = useState<BoardColumnV3[]>(initialColumns);
+  const [groups, setGroups] = useState<BoardGroupV3[]>(initialGroups);
   const [error, setError] = useState<string | null>(null);
   const [addingColumn, setAddingColumn] = useState(false);
   const [newColumnName, setNewColumnName] = useState("");
@@ -103,6 +123,10 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   const [groupsSeeded, setGroupsSeeded] = useState(initialGroups.length > 0);
   const [addingGroup, setAddingGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
+  // Board v3 — Monday parity round: loading flag for the "Apply stage
+  // template" banner button, same shape as every other async-button
+  // "in flight" flag in this codebase.
+  const [applyingTemplate, setApplyingTemplate] = useState(false);
   // Board cockpit round — milestone-complete diary prompt (see
   // lib/board-cockpit.ts's shouldPromptMilestoneDiary(), triggered from
   // updateTaskField below whenever a milestone-kind card's column_id
@@ -112,12 +136,12 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   // Prefill fix ("Two more" round, 7 July 2026 evening): this used to be
   // a bare `taskId: string | null`, so BookVisitPanel had nothing but an
   // id to work with and always rendered blank. Now carries the full
-  // BoardTaskCockpit the popover was opened for, so its phase/trade/
+  // BoardTaskV3 the popover was opened for, so its phase/trade/
   // dates can be resolved and passed down as initial* props (see the
   // BookVisitPanel render below) — same "capture full context at the
   // moment of opening" fix on every path that can open it (BoardCard,
   // StackedColumnSection's rows via BoardTaskEditorBody, GroupRows).
-  const [bookingTask, setBookingTask] = useState<BoardTaskCockpit | null>(null);
+  const [bookingTask, setBookingTask] = useState<BoardTaskV3 | null>(null);
 
   // Layout preference — read once on mount (SSR-safe: localStorage
   // doesn't exist server-side, so the initial render always uses the
@@ -139,6 +163,34 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
 
   // Every non-deleted task, flat, for a quick lookup shared by both views.
   const allTasks = useMemo(() => columns.flatMap((c) => c.tasks), [columns]);
+
+  // Board v3 — Monday parity round: stage-complete dependency chips —
+  // pure derivation (lib/board-constants.ts's computeDependencyChips),
+  // recomputed whenever `groups` changes. Keyed by GROUP id (see that
+  // function's own doc comment for why) — GroupTable looks up its own
+  // chip text by its own group.id.
+  const dependencyChipsByGroupId = useMemo(
+    () =>
+      computeDependencyChips(
+        groups.map((g) => ({
+          id: g.id,
+          sort: g.sort,
+          tasks: g.tasks.filter((t) => !t.parent_task_id).map((t) => ({ kind: t.kind, title: t.title })),
+        }))
+      ),
+    [groups]
+  );
+
+  // Board v3 — Monday parity round: "sparse" for the whole-board
+  // "Apply stage template" banner is defined at the WHOLE-BOARD level
+  // — zero tasks across every group AND every column, not per-group
+  // (documented here, at the point of use, and in
+  // lib/phase-seed.ts/docs/API.md) — so a board where one stage has
+  // cards but the other twelve are empty does NOT show this banner
+  // (that's normal steady-state usage, not a fresh/empty board); the
+  // banner is specifically for a board that has NEVER had a single
+  // task added to ANY of its stage groups yet.
+  const boardIsSparse = groups.length > 0 && allTasks.length === 0;
 
   async function switchToGrouped() {
     setView("grouped");
@@ -163,6 +215,34 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
       } finally {
         setGroupsSeeded(true);
       }
+    }
+  }
+
+  /**
+   * Board v3 — Monday parity round: "Apply stage template" banner
+   * action — mirrors DesignTab.tsx's applyTemplate() exactly (POST the
+   * backfill endpoint, then refetch the whole board so every freshly
+   * created task — with its server-assigned id/sort — lands in state
+   * correctly, rather than trying to hand-splice an unknown number of
+   * new rows across an unknown number of groups client-side). Shown
+   * only when the board is SPARSE at the WHOLE-BOARD level (see the
+   * banner's own render-gate below this function for the exact
+   * definition, repeated at the point of use per this round's
+   * documentation requirement).
+   */
+  async function applyStageTemplate() {
+    setApplyingTemplate(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/board/apply-stage-template`, { method: "POST" });
+      if (!res.ok) throw new Error((await res.json()).error ?? "Could not apply the stage template.");
+      const fresh = await fetch(`/api/projects/${projectId}/board`).then((r) => r.json());
+      if (fresh.columns) setColumns(fresh.columns);
+      if (fresh.groups) setGroups(fresh.groups);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not apply the stage template.");
+    } finally {
+      setApplyingTemplate(false);
     }
   }
 
@@ -245,7 +325,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
       if (!res.ok) throw new Error((await res.json()).error ?? "Could not add card.");
       const { task } = await res.json();
       const assignees = assigneeIds.map((id) => teamById.get(id)).filter((p): p is AssigneeSummary => !!p);
-      const withRefs: BoardTaskCockpit = { ...task, assignees, contact: null };
+      const withRefs: BoardTaskV3 = { ...task, assignees, contact: null };
       setColumns((cur) =>
         cur.map((c) => (c.id === columnId ? { ...c, tasks: [...c.tasks, withRefs] } : c))
       );
@@ -259,7 +339,55 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     }
   }
 
-  async function patchTask(task: BoardTaskCockpit, patch: Record<string, unknown>) {
+  /**
+   * Board v3 — Monday parity round: "Add sub-item" — creates a
+   * board_tasks row with `parent_task_id` set (migration 031), one
+   * level of nesting (the API rejects a depth-2 attempt with 400 — see
+   * POST /api/projects/[id]/board's own doc comment). Deliberately a
+   * SEPARATE function from addTask above (rather than a parameter
+   * added to it) since sub-item creation has its own simpler shape —
+   * no assignee picker, no explicit phase_group_id (always inherited
+   * from the parent server-side, per that route's own inheritance
+   * rule) — matching the row-level "Add sub-item" affordance's minimal
+   * inline-title-only composer (see GroupRows below).
+   *
+   * `parentColumnId` is the PARENT's own column_id — a sub-item is
+   * created into the SAME status column its parent currently sits in
+   * (a sensible default; the row's own status <select> can change it
+   * immediately afterwards like any other task) since there is no
+   * separate "default column" concept for a sub-item the way there is
+   * for a brand-new top-level task via the group's own composer.
+   */
+  async function addSubTask(parentTask: BoardTaskV3, title: string) {
+    setError(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/board`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          column_id: parentTask.column_id,
+          title,
+          assignee_ids: [],
+          parent_task_id: parentTask.id,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? "Could not add sub-item.");
+      const { task } = await res.json();
+      const withRefs: BoardTaskV3 = { ...task, assignees: [], contact: null, visit: null };
+      setColumns((cur) =>
+        cur.map((c) => (c.id === withRefs.column_id ? { ...c, tasks: [...c.tasks, withRefs] } : c))
+      );
+      if (withRefs.phase_group_id) {
+        setGroups((cur) =>
+          cur.map((g) => (g.id === withRefs.phase_group_id ? { ...g, tasks: [...g.tasks, withRefs] } : g))
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not add sub-item.");
+    }
+  }
+
+  async function patchTask(task: BoardTaskV3, patch: Record<string, unknown>) {
     const res = await fetch(`/api/board-tasks/${task.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -296,7 +424,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     });
     if (!res.ok) throw new Error((await res.json()).error ?? "Could not book the visit.");
     const { task: updated, insurance_warning } = await res.json();
-    applyTaskPatch(taskId, updated as Partial<BoardTaskCockpit>);
+    applyTaskPatch(taskId, updated as Partial<BoardTaskV3>);
     return insurance_warning ?? null;
   }
 
@@ -312,7 +440,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     }
   }
 
-  function applyTaskPatch(taskId: string, patch: Partial<BoardTaskCockpit>) {
+  function applyTaskPatch(taskId: string, patch: Partial<BoardTaskV3>) {
     // Board reorder round (7 July 2026) — re-sorts each bucket by `sort`
     // after applying the patch, so a sort-only change (drag-reorder
     // within a group, or the "Move up"/"Move down" touch fallback —
@@ -321,7 +449,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     // doesn't touch `sort` re-sorts to the exact same order it already
     // had (a no-op), so this is safe to run unconditionally rather than
     // branching on which fields changed.
-    const withPatch = (tasks: BoardTaskCockpit[]) =>
+    const withPatch = (tasks: BoardTaskV3[]) =>
       tasks
         .map((t) => (t.id === taskId ? { ...t, ...patch } : t))
         .sort((a, b) => a.sort - b.sort);
@@ -339,7 +467,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
    * below) and the side-by-side kanban's native HTML5 drag-and-drop
    * (via onDrop below) — since either can move a card into Done.
    */
-  function maybePromptMilestoneDiary(task: BoardTaskCockpit, previousColumnId: string, nextColumnId: string) {
+  function maybePromptMilestoneDiary(task: BoardTaskV3, previousColumnId: string, nextColumnId: string) {
     if (previousColumnId === nextColumnId) return;
     const previousColumn = columnById.get(previousColumnId);
     const nextColumn = columnById.get(nextColumnId);
@@ -350,13 +478,13 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   }
 
   async function updateTaskField(
-    task: BoardTaskCockpit,
+    task: BoardTaskV3,
     patch: Record<string, unknown>,
-    refUpdate: Partial<BoardTaskCockpit>
+    refUpdate: Partial<BoardTaskV3>
   ) {
     const prevColumns = columns;
     const prevGroups = groups;
-    applyTaskPatch(task.id, { ...patch, ...refUpdate } as Partial<BoardTaskCockpit>);
+    applyTaskPatch(task.id, { ...patch, ...refUpdate } as Partial<BoardTaskV3>);
     // A column_id change (the Stacked layout's "Move to" dropdown and
     // drag-onto-a-section drop, per-row Fix Round A additions) moves
     // the task between column buckets — same targeted re-slot approach
@@ -404,7 +532,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     }
   }
 
-  async function deleteTask(task: BoardTaskCockpit) {
+  async function deleteTask(task: BoardTaskV3) {
     if (!confirm(`Remove card "${task.title}"?`)) return;
     const prevColumns = columns;
     const prevGroups = groups;
@@ -485,7 +613,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
    * /api/phases/[id], the exact same route Timeline's own edit panel
    * already uses), never board_groups itself — board_groups carries no
    * date columns of its own; `phase_start_date`/`phase_end_date` on
-   * BoardGroupCockpit are a read-only projection of the linked
+   * BoardGroupV3 are a read-only projection of the linked
    * phase's own dates (see that type's own doc comment). Optimistic,
    * reverts on failure — same pattern every other inline edit in this
    * file already uses. Only ever called for a group with `phase_id`
@@ -615,9 +743,43 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     const task = allTasks.find((t) => t.id === taskId);
     if (!task) return;
 
+    // Board v3 — Monday parity round: sub-items reorder ONLY within
+    // their own sibling set (same parent_task_id), NEVER across
+    // parents or up to top level (BUILD-SPEC.md). A sub-item being
+    // dragged (task.parent_task_id is set) is filtered down to its own
+    // siblings here — the SAME parent's other sub-items, wherever they
+    // currently live — and its phase_group_id/parent_task_id are never
+    // touched by this path (dragging a sub-item row never changes
+    // which group or which parent it belongs to, only its `sort`
+    // within that fixed sibling set). Sub-item rows are NOT draggable
+    // in the UI (see GroupRows' row — draggable is only set on
+    // top-level rows), so `task.parent_task_id` is never actually set
+    // here in practice; this guard exists purely so this shared
+    // function can never silently misbehave if that ever changes.
+    if (task.parent_task_id) {
+      const siblings = allTasks.filter((t) => t.parent_task_id === task.parent_task_id);
+      const withoutDragged = siblings.filter((t) => t.id !== taskId).sort((a, b) => a.sort - b.sort);
+      const index = targetIndex === null ? withoutDragged.length : targetIndex;
+      const before = withoutDragged[index - 1];
+      const after = withoutDragged[index];
+      let nextSort: number;
+      if (before && after) {
+        nextSort = Math.round((before.sort + after.sort) / 2);
+        if (nextSort === before.sort) nextSort = before.sort + 1;
+      } else if (before && !after) {
+        nextSort = before.sort + SORT_STEP;
+      } else if (!before && after) {
+        nextSort = after.sort - SORT_STEP;
+      } else {
+        nextSort = 0;
+      }
+      updateTaskField(task, { sort: nextSort }, { sort: nextSort });
+      return;
+    }
+
     const destTasks = targetGroupId
-      ? groups.find((g) => g.id === targetGroupId)?.tasks ?? []
-      : allTasks.filter((t) => !t.phase_group_id);
+      ? (groups.find((g) => g.id === targetGroupId)?.tasks ?? []).filter((t) => !t.parent_task_id)
+      : allTasks.filter((t) => !t.phase_group_id && !t.parent_task_id);
     const destTasksWithoutDragged = destTasks.filter((t) => t.id !== taskId);
     const index = targetIndex === null ? destTasksWithoutDragged.length : targetIndex;
     const before = destTasksWithoutDragged[index - 1];
@@ -635,7 +797,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     }
 
     const patch: Record<string, unknown> = { sort: nextSort };
-    const refUpdate: Partial<BoardTaskCockpit> = { sort: nextSort };
+    const refUpdate: Partial<BoardTaskV3> = { sort: nextSort };
     if (targetGroupId !== (task.phase_group_id ?? null)) {
       patch.phase_group_id = targetGroupId;
       refUpdate.phase_group_id = targetGroupId;
@@ -710,10 +872,23 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
    * depending on direction, which an earlier draft of this function
    * got wrong for the "move down" case specifically).
    */
-  function moveTaskWithinGroup(task: BoardTaskCockpit, direction: -1 | 1) {
-    const siblings = task.phase_group_id
-      ? groups.find((g) => g.id === task.phase_group_id)?.tasks ?? []
-      : allTasks.filter((t) => !t.phase_group_id);
+  function moveTaskWithinGroup(task: BoardTaskV3, direction: -1 | 1) {
+    // Board v3 — Monday parity round: a sub-item's sibling set is
+    // every OTHER task sharing the same parent_task_id — NEVER its
+    // parent's whole group — per BUILD-SPEC.md "sub-items only
+    // reorder within their own sibling set (same parent_task_id),
+    // never across parents or up to top level." A top-level task (no
+    // parent_task_id) keeps the pre-v3 behaviour exactly (its sibling
+    // set is its phase group, or the Ungrouped bucket) — the only
+    // change here is EXCLUDING sub-items from a top-level task's own
+    // sibling set (`!t.parent_task_id` added to both branches below),
+    // so a top-level "Move up/down" can never accidentally swap sort
+    // order with a sub-item row.
+    const siblings = task.parent_task_id
+      ? allTasks.filter((t) => t.parent_task_id === task.parent_task_id)
+      : task.phase_group_id
+        ? (groups.find((g) => g.id === task.phase_group_id)?.tasks ?? []).filter((t) => !t.parent_task_id)
+        : allTasks.filter((t) => !t.phase_group_id && !t.parent_task_id);
     const ordered = [...siblings].sort((a, b) => a.sort - b.sort);
     const index = ordered.findIndex((t) => t.id === task.id);
     if (index === -1) return;
@@ -941,7 +1116,33 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
 
       {view === "grouped" && (
         <div className="space-y-6">
-          {groups.map((group) => (
+          {/* Board v3 — Monday parity round: "Apply stage template"
+              banner. SPARSE, for this banner's purposes, is defined at
+              the WHOLE-BOARD level — zero tasks across the ENTIRE
+              board (every group, every column), not per-group — see
+              boardIsSparse above and lib/phase-seed.ts's
+              applyStageTemplateToEmptyGroups() for the per-group
+              idempotency rule the POST itself follows regardless of
+              why this banner fired. Mirrors DesignTab.tsx's identical
+              "Phases have no tasks yet — pre-fill ...?" banner
+              verbatim (same copy shape, same button label pattern). */}
+          {boardIsSparse && (
+            <div className="flex items-center justify-between border border-[#dcd6cc] bg-offwhite px-4 py-3">
+              <p className="text-body text-charcoal/70">
+                Stages have no tasks yet — pre-fill each stage from the standard construction checklist?
+              </p>
+              <button
+                type="button"
+                onClick={applyStageTemplate}
+                disabled={applyingTemplate}
+                className="border border-nearblack px-4 py-1.5 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white disabled:opacity-50"
+              >
+                {applyingTemplate ? "Applying…" : "Apply stage template"}
+              </button>
+            </div>
+          )}
+
+          {groups.map((group, index) => (
             <GroupTable
               key={group.id}
               projectId={projectId}
@@ -950,7 +1151,10 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               teamById={teamById}
               team={team}
               groups={groups}
+              allColumnNames={columns.map((c) => c.name)}
               currentUserId={currentUserId}
+              stageColor={stageColorForIndex(index)}
+              dependencyChip={dependencyChipsByGroupId.get(group.id) ?? null}
               onRename={(name) => renameGroup(group.id, name)}
               onDelete={() => deleteGroup(group.id, group.name)}
               onPatchTask={(task, patch, refUpdate) => updateTaskField(task, patch, refUpdate ?? {})}
@@ -961,6 +1165,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               onDragStartTask={onDragStart}
               onDropInGroup={(index) => onDropInGroup(group.id, index)}
               onMoveTask={moveTaskWithinGroup}
+              onAddSubTask={(parentTask, title) => addSubTask(parentTask, title)}
               onAddTask={(title, assigneeIds) => {
                 // "Three from Phillip — 6 July 2026 evening" item 3:
                 // default column = first column (columns is already
@@ -978,13 +1183,14 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
             />
           ))}
 
-          {allTasks.some((t) => !t.phase_group_id) && (
+          {allTasks.some((t) => !t.phase_group_id && !t.parent_task_id) && (
             <UngroupedTable
               tasks={allTasks.filter((t) => !t.phase_group_id)}
               columnById={columnById}
               teamById={teamById}
               team={team}
               groups={groups}
+              allColumnNames={columns.map((c) => c.name)}
               onPatchTask={(task, patch, refUpdate) => updateTaskField(task, patch, refUpdate ?? {})}
               onDeleteTask={(task) => deleteTask(task)}
               onBookVisit={(task) => setBookingTask(task)}
@@ -992,6 +1198,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               onDragStartTask={onDragStart}
               onDropInGroup={(index) => onDropInGroup(null, index)}
               onMoveTask={moveTaskWithinGroup}
+              onAddSubTask={(parentTask, title) => addSubTask(parentTask, title)}
             />
           )}
 
@@ -1060,15 +1267,15 @@ function StackedColumnSection({
   onMoveTo,
   onAddTask,
 }: {
-  column: BoardColumnCockpit;
-  columns: BoardColumnCockpit[];
+  column: BoardColumnV3;
+  columns: BoardColumnV3[];
   teamById: Map<string, AssigneeSummary>;
   currentUserId: string;
   onDragStart: (taskId: string) => void;
   onDropOnColumn: () => void;
   onRename: (name: string) => void;
   onDelete: () => void;
-  onMoveTo: (task: BoardTaskCockpit, targetColumnId: string) => void;
+  onMoveTo: (task: BoardTaskV3, targetColumnId: string) => void;
   onAddTask: (title: string, assigneeIds: string[]) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
@@ -1256,7 +1463,7 @@ function BoardColumnView({
   onBookVisit,
   onUnlinkVisit,
 }: {
-  column: BoardColumnCockpit;
+  column: BoardColumnV3;
   team: AssigneeSummary[];
   teamById: Map<string, AssigneeSummary>;
   currentUserId: string;
@@ -1265,10 +1472,10 @@ function BoardColumnView({
   onRename: (name: string) => void;
   onDelete: () => void;
   onAddTask: (title: string, assigneeIds: string[]) => void;
-  onPatchTask: (task: BoardTaskCockpit, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskCockpit>) => void;
-  onDeleteTask: (task: BoardTaskCockpit) => void;
+  onPatchTask: (task: BoardTaskV3, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskV3>) => void;
+  onDeleteTask: (task: BoardTaskV3) => void;
   /** Prefill fix: now passes the full task (was `taskId: string`) so BookVisitPanel can be preloaded with this card's own phase/trade/dates. */
-  onBookVisit: (task: BoardTaskCockpit) => void;
+  onBookVisit: (task: BoardTaskV3) => void;
   onUnlinkVisit: (taskId: string) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
@@ -1463,12 +1670,12 @@ function BoardCard({
   onBookVisit,
   onUnlinkVisit,
 }: {
-  task: BoardTaskCockpit;
+  task: BoardTaskV3;
   team: AssigneeSummary[];
   teamById: Map<string, AssigneeSummary>;
   onDragStart: () => void;
   onDropBefore: () => void;
-  onPatch: (patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskCockpit>) => void;
+  onPatch: (patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskV3>) => void;
   onDelete: () => void;
   /** Board cockpit round — opens ProjectBoard's BookVisitPanel for this card. */
   onBookVisit: () => void;
@@ -1607,11 +1814,11 @@ function BoardTaskEditorBody({
   onBookVisit,
   onUnlinkVisit,
 }: {
-  task: BoardTaskCockpit;
+  task: BoardTaskV3;
   team: AssigneeSummary[];
   teamById: Map<string, AssigneeSummary>;
   contacts: Contact[];
-  onPatch: (patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskCockpit>) => void;
+  onPatch: (patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskV3>) => void;
   onDelete: () => void;
   onBookVisit: () => void;
   onUnlinkVisit: () => void;
@@ -1784,6 +1991,39 @@ function formatShortDate(dateStr: string): string {
 // Grouped list view (Monday-style vertical phase tables)
 // ------------------------------------------------------------
 
+/**
+ * GroupTable — Board v3 — Monday parity round rebuild. BUILD-SPEC.md
+ * "Board v3 — Monday parity" §2 "Visual parity": full-width table per
+ * stage group, 4px coloured left edge bar + coloured stage title text
+ * (rotating 5-colour brand-safe palette, lib/board-constants.ts's
+ * STAGE_PALETTE, cycling by sort order — `stageColor` is passed in by
+ * the caller, already resolved via stageColorForIndex(index in
+ * groups.map)), column headers reading exactly "ITEM · WHO · STATUS ·
+ * CONTACT · WORKS · DUE · AFTER", compact ~30px rows, group collapse
+ * chevron + summary line ("N items · M done" — sub-items excluded),
+ * "+ Add item" inline row at the bottom.
+ *
+ * PRESERVES EVERY EXISTING BEHAVIOUR from the pre-v3 GroupTable this
+ * replaces: inline rename (click name -> input -> blur/Enter commits,
+ * Escape cancels), drag reorder (row-level dragStart/onDropAtIndex,
+ * whole-group onDropInGroup), both-dates editing (GroupPhaseDateInputs,
+ * untouched, still gated on group.phase_id), "Book trade"/"Unlink
+ * booking" (via the shared BoardTaskEditorBody, untouched), focus ids
+ * (`focus-group-<id>` on the header, `focus-board_task-<id>` on each
+ * row, both unchanged), phase date inputs + "View on timeline" link
+ * (untouched), the inline add-task composer (untouched shape, now
+ * labelled "+ Add item" per spec's column-header wording), tap→move
+ * (the Status <select> in GroupRows, untouched), booking badges
+ * (unchanged), milestones (◆ diamond, now ALSO carries a "MILESTONE"
+ * chip per this round's spec).
+ *
+ * Prop surface: identical to the pre-v3 GroupTable PLUS three additive
+ * props — `allColumnNames` (board-wide column-name list, for the
+ * booking soft-mapping's /booked/i check), `stageColor` (this group's
+ * resolved palette colour), `dependencyChip` (precomputed chip text or
+ * null), and `onAddSubTask` (row-level "Add sub-item"). Every existing
+ * prop keeps its exact name and signature.
+ */
 function GroupTable({
   projectId,
   group,
@@ -1791,7 +2031,10 @@ function GroupTable({
   teamById,
   team,
   groups,
+  allColumnNames,
   currentUserId,
+  stageColor,
+  dependencyChip,
   onRename,
   onDelete,
   onPatchTask,
@@ -1800,56 +2043,83 @@ function GroupTable({
   onUnlinkVisit,
   onPatchPhaseDates,
   onAddTask,
+  onAddSubTask,
   onDragStartTask,
   onDropInGroup,
   onMoveTask,
 }: {
   /** Timeline Day-zoom polish round — item 5's reciprocal "View on timeline" link, built here rather than passed as a ready-made href since the group's own phase_id (below) is what the link target actually needs. */
   projectId: string;
-  group: BoardGroupCockpit;
-  columnById: Map<string, BoardColumnCockpit>;
+  group: BoardGroupV3;
+  columnById: Map<string, BoardColumnV3>;
   teamById: Map<string, AssigneeSummary>;
   /** Board cockpit round — item 9 parity: threaded through to GroupRows' shared BoardTaskEditorBody. */
   team: AssigneeSummary[];
-  groups: BoardGroupCockpit[];
+  groups: BoardGroupV3[];
+  /** Board v3 — Monday parity round: every status column's name on this board, for the booking soft-mapping's /booked/i check (lib/board-constants.ts's boardHasBookedColumn/resolveStatusPillTint) — see GroupRows' status cell for where this is actually consumed. */
+  allColumnNames: string[];
   /** Auto-assign-to-me default for the new composer below — same convention as StackedColumnSection's own currentUserId prop. */
   currentUserId: string;
+  /** Board v3 — Monday parity round: this group's resolved colour from the 5-colour rotating STAGE_PALETTE (lib/board-constants.ts), already indexed by the caller via stageColorForIndex(sort-order index). Used for both the 4px left edge bar and the stage title text colour. */
+  stageColor: string;
+  /** Board v3 — Monday parity round: precomputed "after ◆ {prev milestone title}" chip text (lib/board-constants.ts's computeDependencyChips), or null if the previous group has no milestone / this is the first group. Shown on the FIRST non-milestone row only (see GroupRows). */
+  dependencyChip: string | null;
   onRename: (name: string) => void;
   onDelete: () => void;
-  onPatchTask: (task: BoardTaskCockpit, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskCockpit>) => void;
+  onPatchTask: (task: BoardTaskV3, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskV3>) => void;
   /** Board cockpit round — item 9 parity: "Remove card" from the shared editor. */
-  onDeleteTask: (task: BoardTaskCockpit) => void;
+  onDeleteTask: (task: BoardTaskV3) => void;
   /** Board cockpit round — item 9 parity: "Book trade" from the shared editor. Prefill fix: now passes the full task (was `taskId: string`) so BookVisitPanel can be preloaded with this card's own phase/trade/dates. */
-  onBookVisit: (task: BoardTaskCockpit) => void;
+  onBookVisit: (task: BoardTaskV3) => void;
   /** Board cockpit round — item 9 parity: "Unlink booking" from the shared editor. */
   onUnlinkVisit: (taskId: string) => void;
   /** Round A "Board group date inputs" — omitted (or a no-op) for groups with no linked phase; the header only renders the inputs when group.phase_id is set (see JSX below). */
   onPatchPhaseDates: (patch: { start_date?: string; end_date?: string }) => void;
   /**
    * "Three from Phillip — 6 July 2026 evening" item 3: inline
-   * "+ Add task" composer per group, reusing the exact same
+   * "+ Add item" composer per group (labelled "+ Add task" pre-v3;
+   * BUILD-SPEC.md's exact column-header wording for this view is
+   * "ITEM", so this round's footer label follows suit — same
    * title-only-input shape as the stacked-kanban composer
    * (StackedColumnSection above) rather than the richer side-by-side
-   * one with an assignee picker — this view's rows are already dense
-   * (title/assignees/contact/due/status/phase columns), so a minimal
-   * composer matching the simpler of the two existing ones keeps the
-   * footer from competing with the table for attention. The caller
-   * (this file's main return block) resolves the default column +
-   * calls addTask with this group's id as phaseGroupId.
+   * one with an assignee picker). The caller (this file's main return
+   * block) resolves the default column + calls addTask with this
+   * group's id as phaseGroupId.
    */
   onAddTask: (title: string, assigneeIds: string[]) => void;
+  /** Board v3 — Monday parity round: row-level "Add sub-item" — creates a board_tasks row with parent_task_id set to the given parent, inheriting the parent's phase_group_id server-side (see POST /api/projects/[id]/board's doc comment). Threaded down to GroupRows, which renders the actual per-row affordance. */
+  onAddSubTask: (parentTask: BoardTaskV3, title: string) => void;
   /** Board reorder round (7 July 2026) — HTML5 DnD, same dragTaskId-in-parent-state approach as the Kanban side's onDragStart above (see ProjectBoard's own onDragStart). */
   onDragStartTask: (taskId: string) => void;
   /** Drop anywhere in this group (header or row area) — reorders within the group, or moves the dragged task INTO this group (a phase change) if it came from elsewhere. `index` is the row position to insert at, or null to append at the end. */
   onDropInGroup: (index: number | null) => void;
   /** Touch fallback's "Move up"/"Move down" (item 4) — reorders one slot within the CURRENT group, no phase change. */
-  onMoveTask: (task: BoardTaskCockpit, direction: -1 | 1) => void;
+  onMoveTask: (task: BoardTaskV3, direction: -1 | 1) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(group.name);
   const [composing, setComposing] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [dragOver, setDragOver] = useState(false);
+  // Board v3 — Monday parity round: group collapse chevron. Local,
+  // per-group, defaults to expanded (false = not collapsed) — same
+  // "starts open" default every collapsible section in this codebase
+  // uses (e.g. no section in this app starts pre-collapsed without an
+  // explicit reason to).
+  const [collapsed, setCollapsed] = useState(false);
+
+  // Board v3 — Monday parity round: only TOP-LEVEL tasks (no
+  // parent_task_id) count toward this group's own rows/summary line —
+  // sub-items are rendered nested under their parent by GroupRows
+  // itself (which receives the FULL task list, top-level + sub-items,
+  // and does its own grouping), but the group-level "N items · M done"
+  // summary and the group's `tasks.length` header count both ignore
+  // sub-items entirely, per BUILD-SPEC.md "Sub-items are excluded from
+  // top-level group counts."
+  const topLevelTasks = group.tasks.filter((t) => !t.parent_task_id);
+  const summaryLine = groupSummaryLine(
+    topLevelTasks.map((t) => ({ isSubItem: false, columnName: columnById.get(t.column_id)?.name ?? "" }))
+  );
 
   function submitNewTask(e: React.FormEvent) {
     e.preventDefault();
@@ -1896,9 +2166,22 @@ function GroupTable({
     >
       <div
         id={`focus-group-${group.id}`}
-        className="flex flex-wrap items-center justify-between gap-2 border-b border-[#dcd6cc] bg-offwhite px-3 py-2"
+        className="flex flex-wrap items-center justify-between gap-2 border-b border-[#dcd6cc] bg-offwhite py-2 pr-3"
+        style={{ borderLeft: `4px solid ${stageColor}` }}
       >
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3 pl-3">
+          {/* Board v3 — Monday parity round: collapse chevron + summary
+              line ("5 items · 2 done"). Clicking the chevron toggles
+              `collapsed`; it never affects rename (a separate click
+              target, the name button below) or drag/drop. */}
+          <button
+            type="button"
+            onClick={() => setCollapsed((c) => !c)}
+            title={collapsed ? "Expand stage" : "Collapse stage"}
+            className="text-caption text-charcoal/50 hover:text-nearblack"
+          >
+            {collapsed ? "▸" : "▾"}
+          </button>
           {renaming ? (
             <input
               autoFocus
@@ -1915,10 +2198,16 @@ function GroupTable({
               className="flex-1 border border-nearblack bg-nearwhite px-2 py-1 text-subhead text-nearblack focus:outline-none"
             />
           ) : (
-            <button type="button" onClick={startRename} className="label-caps !text-nearblack hover:!text-sand">
-              {group.name} · {group.tasks.length}
+            <button
+              type="button"
+              onClick={startRename}
+              className="label-caps hover:opacity-70"
+              style={{ color: stageColor }}
+            >
+              {group.name}
             </button>
           )}
+          <span className="text-caption text-charcoal/40">{summaryLine}</span>
           {/* Round A "Board owns dates, Timeline is the visual" — compact
               start/end inputs, ONLY for groups linked to a phase
               (phase_id present); unlinked/legacy groups render nothing
@@ -1955,50 +2244,59 @@ function GroupTable({
           ✕
         </button>
       </div>
-      <GroupRows
-        tasks={group.tasks}
-        columnById={columnById}
-        teamById={teamById}
-        team={team}
-        groups={groups}
-        onPatchTask={onPatchTask}
-        onDeleteTask={onDeleteTask}
-        onBookVisit={onBookVisit}
-        onUnlinkVisit={onUnlinkVisit}
-        onDragStartTask={onDragStartTask}
-        onDropAtIndex={onDropInGroup}
-        onMoveTask={onMoveTask}
-      />
-      {/* "Three from Phillip — 6 July 2026 evening" item 3: inline
-          "+ Add task" composer, one per group — mirrors
-          StackedColumnSection's footer composer above (same title-only
-          input + Add/Cancel shape), reusing this file's single addTask()
-          mutator with this group's id preset as phase_group_id (see the
-          onAddTask wiring at this component's call site). */}
-      <div className="border-t border-[#e5e0d6] px-3 py-1.5">
-        {composing ? (
-          <form onSubmit={submitNewTask} className="flex gap-2">
-            <input
-              autoFocus
-              value={newTitle}
-              onChange={(e) => setNewTitle(e.target.value)}
-              onKeyDown={(e) => e.key === "Escape" && setComposing(false)}
-              placeholder="Task title"
-              className="flex-1 border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-body focus:border-nearblack focus:outline-none"
-            />
-            <button type="submit" className="border border-nearblack px-2 py-1 text-caption text-nearblack hover:bg-nearblack hover:text-white">
-              Add
-            </button>
-            <button type="button" onClick={() => { setComposing(false); setNewTitle(""); }} className="text-caption text-charcoal/50 hover:text-nearblack">
-              Cancel
-            </button>
-          </form>
-        ) : (
-          <button type="button" onClick={() => setComposing(true)} className="w-full px-1 py-1 text-left text-caption text-charcoal/50 hover:text-nearblack">
-            + Add task
-          </button>
-        )}
-      </div>
+      {!collapsed && (
+        <>
+          <GroupRows
+            tasks={group.tasks}
+            columnById={columnById}
+            teamById={teamById}
+            team={team}
+            groups={groups}
+            allColumnNames={allColumnNames}
+            dependencyChip={dependencyChip}
+            onPatchTask={onPatchTask}
+            onDeleteTask={onDeleteTask}
+            onBookVisit={onBookVisit}
+            onUnlinkVisit={onUnlinkVisit}
+            onDragStartTask={onDragStartTask}
+            onDropAtIndex={onDropInGroup}
+            onMoveTask={onMoveTask}
+            onAddSubTask={onAddSubTask}
+          />
+          {/* "Three from Phillip — 6 July 2026 evening" item 3: inline
+              "+ Add item" composer, one per group — mirrors
+              StackedColumnSection's footer composer above (same title-only
+              input + Add/Cancel shape), reusing this file's single addTask()
+              mutator with this group's id preset as phase_group_id (see the
+              onAddTask wiring at this component's call site). Labelled
+              "+ Add item" (was "+ Add task") to match this round's ITEM
+              column header wording. */}
+          <div className="border-t border-[#e5e0d6] px-3 py-1.5">
+            {composing ? (
+              <form onSubmit={submitNewTask} className="flex gap-2">
+                <input
+                  autoFocus
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  onKeyDown={(e) => e.key === "Escape" && setComposing(false)}
+                  placeholder="Item title"
+                  className="flex-1 border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-body focus:border-nearblack focus:outline-none"
+                />
+                <button type="submit" className="border border-nearblack px-2 py-1 text-caption text-nearblack hover:bg-nearblack hover:text-white">
+                  Add
+                </button>
+                <button type="button" onClick={() => { setComposing(false); setNewTitle(""); }} className="text-caption text-charcoal/50 hover:text-nearblack">
+                  Cancel
+                </button>
+              </form>
+            ) : (
+              <button type="button" onClick={() => setComposing(true)} className="w-full px-1 py-1 text-left text-caption text-charcoal/50 hover:text-nearblack">
+                + Add item
+              </button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -2012,6 +2310,8 @@ function GroupTable({
  * small component only because GroupTable's header needed re-syncing
  * local drafts whenever the group's phase dates change from elsewhere
  * (e.g. a Timeline drag on the SAME phase, next board refetch).
+ *
+ * UNTOUCHED by Board v3 — Monday parity round (no behaviour change).
  */
 function GroupPhaseDateInputs({
   startDate,
@@ -2049,12 +2349,61 @@ function GroupPhaseDateInputs({
   );
 }
 
+/** Board v3 — Monday parity round: the "MILESTONE" chip shown next to the ◆ diamond on a milestone row's title cell — muted, sharp corners, matching every other small caption-chip in this file (e.g. AssigneeStack's initials chip). */
+function MilestoneChip() {
+  return (
+    <span className="label-caps border border-sand/60 px-1 py-0.5 !text-sand">MILESTONE</span>
+  );
+}
+
+/** Board v3 — Monday parity round: the muted "after ◆ {prev milestone}" dependency chip — display-only, no schema, no blocking (see lib/board-constants.ts's computeDependencyChips doc comment for the full derivation rule). */
+function DependencyChip({ text }: { text: string }) {
+  return (
+    <span className="label-caps whitespace-nowrap border border-[#c9c2b4] px-1.5 py-0.5 !text-charcoal/50" title="Display-only — does not block creating or completing this item">
+      {text}
+    </span>
+  );
+}
+
+/** Board v3 — Monday parity round: a status pill with the resolved tint (or the plain neutral/bordered fallback when the column name isn't one of the four recognised defaults) — replaces the bare column-name <select> text styling with an actual coloured pill matching Monday's status-column look, while keeping the SAME <select> element/interaction (still a dropdown, still calls the same onPatchTask column_id change) so tap→move and every existing behaviour is unchanged. Sharp corners (no border-radius) throughout, per this app's global tailwind config. */
+function StatusPillSelect({
+  value,
+  columnOptions,
+  tint,
+  onChange,
+}: {
+  value: string;
+  columnOptions: { id: string; name: string }[];
+  tint: StatusPillTint | null;
+  onChange: (columnId: string) => void;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="border px-1.5 py-1 text-caption focus:outline-none"
+      style={
+        tint
+          ? { backgroundColor: tint.background, color: tint.text, borderColor: tint.border }
+          : { backgroundColor: "transparent", borderColor: "#c9c2b4" }
+      }
+    >
+      {columnOptions.map((c) => (
+        <option key={c.id} value={c.id}>
+          {c.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function UngroupedTable({
   tasks,
   columnById,
   teamById,
   team,
   groups,
+  allColumnNames,
   onPatchTask,
   onDeleteTask,
   onBookVisit,
@@ -2062,22 +2411,27 @@ function UngroupedTable({
   onDragStartTask,
   onDropInGroup,
   onMoveTask,
+  onAddSubTask,
 }: {
-  tasks: BoardTaskCockpit[];
-  columnById: Map<string, BoardColumnCockpit>;
+  tasks: BoardTaskV3[];
+  columnById: Map<string, BoardColumnV3>;
   teamById: Map<string, AssigneeSummary>;
   /** Board cockpit round — item 9 parity: threaded through to GroupRows' shared BoardTaskEditorBody. */
   team: AssigneeSummary[];
-  groups: BoardGroupCockpit[];
-  onPatchTask: (task: BoardTaskCockpit, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskCockpit>) => void;
-  onDeleteTask: (task: BoardTaskCockpit) => void;
+  groups: BoardGroupV3[];
+  /** Board v3 — Monday parity round: see GroupTable's own prop of the same name. */
+  allColumnNames: string[];
+  onPatchTask: (task: BoardTaskV3, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskV3>) => void;
+  onDeleteTask: (task: BoardTaskV3) => void;
   /** Prefill fix: now passes the full task (was `taskId: string`) so BookVisitPanel can be preloaded with this card's own phase/trade/dates. */
-  onBookVisit: (task: BoardTaskCockpit) => void;
+  onBookVisit: (task: BoardTaskV3) => void;
   onUnlinkVisit: (taskId: string) => void;
   /** Board reorder round — same DnD/move-menu wiring as GroupTable's own props of the same names; the Ungrouped bucket is a drop target too (dropping here clears phase_group_id, same as onDropInGroup(null, ...) from the main return block's call site). */
   onDragStartTask: (taskId: string) => void;
   onDropInGroup: (index: number | null) => void;
-  onMoveTask: (task: BoardTaskCockpit, direction: -1 | 1) => void;
+  onMoveTask: (task: BoardTaskV3, direction: -1 | 1) => void;
+  /** Board v3 — Monday parity round: see GroupTable's own prop of the same name. */
+  onAddSubTask: (parentTask: BoardTaskV3, title: string) => void;
 }) {
   const [dragOver, setDragOver] = useState(false);
   return (
@@ -2095,7 +2449,9 @@ function UngroupedTable({
       }}
     >
       <div className="border-b border-dashed border-[#c9c2b4] bg-transparent px-3 py-2">
-        <p className="label-caps !text-charcoal/40">Ungrouped · {tasks.length}</p>
+        <p className="label-caps !text-charcoal/40">
+          Ungrouped · {groupSummaryLine(tasks.filter((t) => !t.parent_task_id).map((t) => ({ isSubItem: false, columnName: columnById.get(t.column_id)?.name ?? "" })))}
+        </p>
       </div>
       <GroupRows
         tasks={tasks}
@@ -2103,6 +2459,8 @@ function UngroupedTable({
         teamById={teamById}
         team={team}
         groups={groups}
+        allColumnNames={allColumnNames}
+        dependencyChip={null}
         onPatchTask={onPatchTask}
         onDeleteTask={onDeleteTask}
         onBookVisit={onBookVisit}
@@ -2110,17 +2468,61 @@ function UngroupedTable({
         onDragStartTask={onDragStartTask}
         onDropAtIndex={onDropInGroup}
         onMoveTask={onMoveTask}
+        onAddSubTask={onAddSubTask}
       />
     </div>
   );
 }
 
+/**
+ * GroupRows — Board v3 — Monday parity round rebuild. Renders one
+ * stage group's (or the Ungrouped bucket's) rows: column headers
+ * reading exactly "ITEM · WHO · STATUS · CONTACT · WORKS · DUE ·
+ * AFTER" (BUILD-SPEC.md's exact wording — WHO = assignees, WORKS =
+ * booking_date window, DUE = due_date, AFTER = the dependency chip
+ * column), compact ~30px rows (`py-1` cells rather than the pre-v3
+ * `py-2`), sub-item nesting with a "└" prefix glyph + "done/total"
+ * count chip + collapse, milestone ◆ + "MILESTONE" chip, and a
+ * row-level "Add sub-item" affordance.
+ *
+ * SUB-ITEM MODEL: `tasks` is FLAT (every top-level task AND every
+ * sub-item for this group, exactly as the API returns it — see
+ * types/board-v3.ts's "MODEL CHOICE — FLAT, not nested" doc comment
+ * for why). This component does the parent/child grouping itself:
+ * top-level tasks (parent_task_id === null) render as normal rows,
+ * each optionally followed by its own sub-items (parent_task_id ===
+ * that row's id) as additional, visually indented rows immediately
+ * below it — sub-items belonging to a DIFFERENT parent never interleave
+ * with the wrong parent's block, since the render walks top-level
+ * tasks in order and, for each, immediately renders that parent's own
+ * sub-items (in their own sort order) before moving to the next
+ * top-level task.
+ *
+ * PRESERVES EVERY EXISTING BEHAVIOUR: inline expand-to-edit (click
+ * title -> BoardTaskEditorBody, unchanged), drag reorder (row-level
+ * draggable/onDrop, unchanged — sub-item rows are ALSO draggable, but
+ * ProjectBoard's onDropInGroup/moveTaskWithinGroup (this file's main
+ * component) both explicitly branch on `task.parent_task_id`: when
+ * set, the sibling set used for the sort-ladder math is every OTHER
+ * task sharing that SAME parent_task_id — never the whole group/
+ * column — so a sub-item's reorder can never cross into its parent's
+ * top-level row order or into a different parent's sub-items, per
+ * BUILD-SPEC.md's exact rule), due date editing (unchanged), status <select> (now rendered via
+ * StatusPillSelect for the coloured-pill visual, same underlying
+ * <select>/onChange), phase <select> (unchanged, top-level tasks
+ * only — a sub-item's phase is inherited and not independently
+ * editable from this row, consistent with "sub-items inherit
+ * phase_group from parent"), Move up/down touch fallback (unchanged),
+ * booking badge text (unchanged).
+ */
 function GroupRows({
   tasks,
   columnById,
   teamById,
   team,
   groups,
+  allColumnNames,
+  dependencyChip,
   onPatchTask,
   onDeleteTask,
   onBookVisit,
@@ -2128,18 +2530,23 @@ function GroupRows({
   onDragStartTask,
   onDropAtIndex,
   onMoveTask,
+  onAddSubTask,
 }: {
-  tasks: BoardTaskCockpit[];
-  columnById: Map<string, BoardColumnCockpit>;
+  tasks: BoardTaskV3[];
+  columnById: Map<string, BoardColumnV3>;
   teamById: Map<string, AssigneeSummary>;
   /** Board cockpit round — item 9 parity: full assignee roster, needed by the shared BoardTaskEditorBody's "Assigned" checklist when a row expands. */
   team: AssigneeSummary[];
-  groups: BoardGroupCockpit[];
-  onPatchTask: (task: BoardTaskCockpit, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskCockpit>) => void;
+  groups: BoardGroupV3[];
+  /** Board v3 — Monday parity round: every status column's name on this board, for the booking soft-mapping's /booked/i check. */
+  allColumnNames: string[];
+  /** Board v3 — Monday parity round: "after ◆ {prev milestone}" chip text to show on the FIRST non-milestone TOP-LEVEL row, or null. */
+  dependencyChip: string | null;
+  onPatchTask: (task: BoardTaskV3, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskV3>) => void;
   /** Board cockpit round — item 9 parity: "Remove card" action, matching kanban's BoardCard. */
-  onDeleteTask: (task: BoardTaskCockpit) => void;
+  onDeleteTask: (task: BoardTaskV3) => void;
   /** Board cockpit round — item 9 parity: opens ProjectBoard's shared BookVisitPanel for this row's task. Prefill fix: now passes the full task (was `taskId: string`) so BookVisitPanel can be preloaded with this card's own phase/trade/dates — this is the Grouped-list row path, the daily-driver/mobile view where the blank-prefill bug was most visible. */
-  onBookVisit: (task: BoardTaskCockpit) => void;
+  onBookVisit: (task: BoardTaskV3) => void;
   /** Board cockpit round — item 9 parity: unlinks (does not delete) this row's booked visit. */
   onUnlinkVisit: (taskId: string) => void;
   /** Board reorder round — row is draggable; dragstart records this task's id in the parent's dragTaskId state (same as StackedColumnSection's rows). */
@@ -2147,7 +2554,9 @@ function GroupRows({
   /** Board reorder round — a drop ON a specific row inserts the dragged task at that row's index (stopPropagation so the group wrapper's own onDrop, which appends at the end, doesn't also fire). */
   onDropAtIndex: (index: number) => void;
   /** Board reorder round — touch fallback's "Move up"/"Move down", per row. */
-  onMoveTask: (task: BoardTaskCockpit, direction: -1 | 1) => void;
+  onMoveTask: (task: BoardTaskV3, direction: -1 | 1) => void;
+  /** Board v3 — Monday parity round: row-level "Add sub-item" — see GroupTable's own prop of the same name. */
+  onAddSubTask: (parentTask: BoardTaskV3, title: string) => void;
 }) {
   // Board cockpit round — item 9 "Grouped-list edit parity": clicking a
   // row expands the SAME full card editor component the kanban view
@@ -2157,6 +2566,15 @@ function GroupRows({
   // contacts state, just owned per-row here instead of per-card.
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
+  // Board v3 — Monday parity round: which parent row's sub-items are
+  // collapsed (hidden) — a Set of parent task ids, defaults to empty
+  // (every parent starts EXPANDED, showing its sub-items, consistent
+  // with GroupTable's own "starts open" default for the whole stage).
+  const [collapsedParents, setCollapsedParents] = useState<Set<string>>(new Set());
+  // Board v3 — Monday parity round: which parent row's "Add sub-item"
+  // inline composer is open.
+  const [addingSubItemFor, setAddingSubItemFor] = useState<string | null>(null);
+  const [subItemTitle, setSubItemTitle] = useState("");
 
   useEffect(() => {
     if (!expandedId) return;
@@ -2169,165 +2587,290 @@ function GroupRows({
   if (tasks.length === 0) {
     return <p className="px-3 py-3 text-caption text-charcoal/40">No cards yet.</p>;
   }
+
   const columnOptions = [...columnById.values()];
-  return (
-    <table className="w-full text-left">
-      <thead>
-        <tr className="border-b border-[#e5e0d6] text-caption text-charcoal/40">
-          <th className="px-3 py-1.5 font-normal">Title</th>
-          <th className="px-3 py-1.5 font-normal">Assignees</th>
-          <th className="px-3 py-1.5 font-normal">Contact</th>
-          <th className="px-3 py-1.5 font-normal">Booking</th>
-          <th className="px-3 py-1.5 font-normal">Due</th>
-          <th className="px-3 py-1.5 font-normal">Status</th>
-          <th className="px-3 py-1.5 font-normal">Phase</th>
-          <th className="px-3 py-1.5 font-normal">Move</th>
-        </tr>
-      </thead>
-      <tbody>
-        {tasks.map((task, index) => {
-          const pastDue = isPastDue(task.due_date);
-          const isExpanded = expandedId === task.id;
-          return (
-            <Fragment key={task.id}>
-              <tr
-                id={`focus-board_task-${task.id}`}
-                draggable
-                onDragStart={() => onDragStartTask(task.id)}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onDropAtIndex(index);
-                }}
-                className="cursor-move border-b border-[#e5e0d6] last:border-b-0 hover:bg-nearwhite"
+
+  // Board v3 — Monday parity round: split into top-level tasks (this
+  // group's own row order, unchanged from before this round) and a
+  // lookup of sub-items BY parent id (each parent's own sub-items kept
+  // in their existing sort order, exactly as the API/state already
+  // orders `tasks`).
+  const topLevelTasks = tasks.filter((t) => !t.parent_task_id);
+  const subItemsByParent = new Map<string, BoardTaskV3[]>();
+  for (const t of tasks) {
+    if (!t.parent_task_id) continue;
+    const list = subItemsByParent.get(t.parent_task_id) ?? [];
+    list.push(t);
+    subItemsByParent.set(t.parent_task_id, list);
+  }
+
+  // Board v3 — Monday parity round: the dependency chip, per spec,
+  // shows on the FIRST NON-MILESTONE TOP-LEVEL row — find its id once
+  // so the render loop below can check `task.id === firstNonMilestoneId`.
+  const firstNonMilestoneId = topLevelTasks.find((t) => t.kind !== "milestone")?.id ?? null;
+
+  function submitSubItem(parentTask: BoardTaskV3, e: React.FormEvent) {
+    e.preventDefault();
+    if (!subItemTitle.trim()) return;
+    onAddSubTask(parentTask, subItemTitle.trim());
+    setSubItemTitle("");
+    setAddingSubItemFor(null);
+  }
+
+  function toggleParentCollapsed(parentId: string) {
+    setCollapsedParents((cur) => {
+      const next = new Set(cur);
+      if (next.has(parentId)) next.delete(parentId);
+      else next.add(parentId);
+      return next;
+    });
+  }
+
+  /** One row — shared by both top-level tasks and sub-items, differing only in indentation/prefix/count-chip/context-menu contents. `topLevelIndex` is this row's position among ITS OWN sibling set (top-level tasks for a top-level row, or this parent's sub-items for a sub-item row) — used for the Move up/down disabled-at-ends check and drag-drop index, so a sub-item's reorder is scoped to its own sibling set exactly as BUILD-SPEC.md requires ("never across parents or up to top level"). */
+  function renderRow(task: BoardTaskV3, siblingIndex: number, siblingCount: number, isSubItem: boolean) {
+    const pastDue = isPastDue(task.due_date);
+    const isExpanded = expandedId === task.id;
+    const column = columnById.get(task.column_id);
+    const columnName = column?.name ?? "";
+    const tint = resolveStatusPillTint(columnName, task.visit?.status ?? null, allColumnNames);
+    const children = subItemsByParent.get(task.id) ?? [];
+    const isParentCollapsed = collapsedParents.has(task.id);
+    const showDependencyChip = !isSubItem && task.id === firstNonMilestoneId ? dependencyChip : null;
+
+    return (
+      <Fragment key={task.id}>
+        <tr
+          id={`focus-board_task-${task.id}`}
+          draggable
+          onDragStart={() => onDragStartTask(task.id)}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onDropAtIndex(siblingIndex);
+          }}
+          className={clsx(
+            "h-[30px] cursor-move border-b border-[#e5e0d6] last:border-b-0 hover:bg-nearwhite",
+            isSubItem && "bg-nearwhite/60"
+          )}
+        >
+          <td className="py-1 pl-3 pr-3 text-body text-nearblack">
+            <span className="flex flex-wrap items-center gap-1.5">
+              {/* Board v3 — Monday parity round: sub-item indentation —
+                  a literal "└" prefix glyph, per BUILD-SPEC.md's own
+                  "Skirtings installation 2" example. */}
+              {isSubItem && <span className="text-charcoal/40">└</span>}
+              {!isSubItem && children.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => toggleParentCollapsed(task.id)}
+                  title={isParentCollapsed ? "Show sub-items" : "Hide sub-items"}
+                  className="text-caption text-charcoal/40 hover:text-nearblack"
+                >
+                  {isParentCollapsed ? "▸" : "▾"}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setExpandedId(isExpanded ? null : task.id)}
+                className="flex items-center gap-1.5 text-left hover:text-sand"
+                title="Expand to edit the full card"
               >
-                <td className="px-3 py-2 text-body text-nearblack">
+                {task.kind === "milestone" && <MilestoneDiamond />}
+                {task.title}
+              </button>
+              {task.kind === "milestone" && <MilestoneChip />}
+              {/* Board v3 — Monday parity round: sub-item count chip —
+                  "done/total" e.g. "2/3", a PURE DISPLAY SUMMARY of
+                  children. IMPORTANT DEVIATION FROM A LOOSE READING (per
+                  BUILD-SPEC.md): this chip does NOT change the parent's
+                  own completed/not-completed status — there is no
+                  auto-rollup anywhere in this codebase's write paths;
+                  the parent's own column_id is only ever changed by the
+                  parent's OWN Status select, never derived from its
+                  children. */}
+              {!isSubItem && children.length > 0 && (
+                <span
+                  className="label-caps border border-[#c9c2b4] px-1 py-0.5 !text-charcoal/50"
+                  title="Sub-items complete / total — a display summary only, does not affect this item's own status"
+                >
+                  {subItemCountChip(
+                    children.map((c) => ({ columnName: columnById.get(c.column_id)?.name ?? "" }))
+                  )}
+                </span>
+              )}
+            </span>
+          </td>
+          <td className="py-1 pr-3">
+            <AssigneeStack assignees={task.assignees} />
+          </td>
+          <td className="py-1 pr-3">
+            <StatusPillSelect
+              value={task.column_id}
+              columnOptions={columnOptions}
+              tint={tint}
+              onChange={(columnId) => {
+                if (columnId !== task.column_id) onPatchTask(task, { column_id: columnId }, { column_id: columnId });
+              }}
+            />
+          </td>
+          <td className="py-1 pr-3 text-caption text-charcoal/60">{task.contact?.company ?? "—"}</td>
+          <td className="py-1 pr-3 text-caption !text-sand">
+            {task.booking_date
+              ? `${formatShortDate(task.booking_date)}${task.visit ? ` · ${BOOKING_STATUS_LABEL[task.visit.status]}` : ""}`
+              : "—"}
+          </td>
+          <td className="py-1 pr-3">
+            {/* Grouped-list edit parity with kanban — due_date is
+                editable here too, same inline date-input pattern
+                GroupPhaseDateInputs already uses on this same view. */}
+            <input
+              type="date"
+              defaultValue={task.due_date ?? ""}
+              onBlur={(e) => {
+                const v = e.target.value || null;
+                if (v !== task.due_date) onPatchTask(task, { due_date: v }, { due_date: v });
+              }}
+              className={clsx(
+                "border bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none",
+                pastDue ? "border-red-700/40 text-red-700" : "border-[#c9c2b4] text-charcoal/60"
+              )}
+            />
+          </td>
+          <td className="py-1 pr-3">
+            {showDependencyChip && <DependencyChip text={showDependencyChip} />}
+          </td>
+        </tr>
+        {isExpanded && (
+          <tr className="border-b border-[#e5e0d6] bg-nearwhite last:border-b-0">
+            <td colSpan={7} className="px-3 pb-3">
+              <BoardTaskEditorBody
+                task={task}
+                team={team}
+                teamById={teamById}
+                contacts={contacts}
+                onPatch={(patch, refUpdate) => onPatchTask(task, patch, refUpdate)}
+                onDelete={() => onDeleteTask(task)}
+                onBookVisit={() => onBookVisit(task)}
+                onUnlinkVisit={() => onUnlinkVisit(task.id)}
+              />
+              {/* Board v3 — Monday parity round: Move up/down — moved
+                  out of a separate visible column per this round's
+                  denser ~30px row height, into the expanded editor
+                  alongside the other per-row actions (to keep the
+                  compact row itself to the 7 spec'd columns only).
+                  Offered for BOTH top-level rows and sub-item rows —
+                  `onMoveTask` (ProjectBoard's moveTaskWithinGroup) is
+                  itself parent_task_id-aware, so a sub-item's Move
+                  up/down only ever reorders among its own siblings
+                  (see that function's own doc comment). `siblingIndex`/
+                  `siblingCount` were already computed against the
+                  correct sibling set by this row's own caller (either
+                  the top-level tasks array or this parent's `children`
+                  array), so the disabled-at-ends check is correct for
+                  both row kinds without any extra branching here. */}
+              <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-[#dcd6cc] pt-2">
+                <div className="flex gap-1">
                   <button
                     type="button"
-                    onClick={() => setExpandedId(isExpanded ? null : task.id)}
-                    className="flex items-center gap-1.5 text-left hover:text-sand"
-                    title="Expand to edit the full card"
+                    onClick={() => onMoveTask(task, -1)}
+                    disabled={siblingIndex === 0}
+                    title="Move up"
+                    className="border border-[#c9c2b4] px-1.5 py-1 text-caption text-charcoal/60 hover:border-nearblack disabled:opacity-30"
                   >
-                    {task.kind === "milestone" && <MilestoneDiamond />}
-                    {task.title}
+                    ↑ Move up
                   </button>
-                </td>
-                <td className="px-3 py-2">
-                  <AssigneeStack assignees={task.assignees} />
-                </td>
-                <td className="px-3 py-2 text-caption text-charcoal/60">{task.contact?.company ?? "—"}</td>
-                <td className="px-3 py-2 text-caption !text-sand">
-                  {task.booking_date
-                    ? `${formatShortDate(task.booking_date)}${task.visit ? ` · ${BOOKING_STATUS_LABEL[task.visit.status]}` : ""}`
-                    : "—"}
-                </td>
-                <td className="px-3 py-2">
-                  {/* Grouped-list edit parity with kanban — due_date is
-                      editable here too (was display-only before this
-                      round), same inline date-input pattern GroupPhaseDateInputs
-                      already uses on this same view. */}
-                  <input
-                    type="date"
-                    defaultValue={task.due_date ?? ""}
-                    onBlur={(e) => {
-                      const v = e.target.value || null;
-                      if (v !== task.due_date) onPatchTask(task, { due_date: v }, { due_date: v });
-                    }}
-                    className={clsx(
-                      "border bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none",
-                      pastDue ? "border-red-700/40 text-red-700" : "border-[#c9c2b4] text-charcoal/60"
+                  <button
+                    type="button"
+                    onClick={() => onMoveTask(task, 1)}
+                    disabled={siblingIndex === siblingCount - 1}
+                    title="Move down"
+                    className="border border-[#c9c2b4] px-1.5 py-1 text-caption text-charcoal/60 hover:border-nearblack disabled:opacity-30"
+                  >
+                    ↓ Move down
+                  </button>
+                </div>
+                {/* Board v3 — Monday parity round: Phase re-assignment
+                    and "Add sub-item" are TOP-LEVEL-ONLY affordances —
+                    a sub-item's phase is inherited from its parent (not
+                    independently editable, per BUILD-SPEC.md), and
+                    "Add sub-item" is one-level-of-nesting-only (a
+                    sub-item cannot itself have sub-items, matching the
+                    API's own depth guard). */}
+                {!isSubItem && (
+                  <>
+                    <label className="flex flex-col gap-0.5">
+                      <span className="label-caps !text-charcoal/40">Phase</span>
+                      <select
+                        value={task.phase_group_id ?? ""}
+                        onChange={(e) => onPatchTask(task, { phase_group_id: e.target.value || null }, { phase_group_id: e.target.value || null })}
+                        className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none"
+                      >
+                        <option value="">Ungrouped</option>
+                        {groups.map((g) => (
+                          <option key={g.id} value={g.id}>
+                            {g.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {addingSubItemFor === task.id ? (
+                      <form onSubmit={(e) => submitSubItem(task, e)} className="flex gap-2">
+                        <input
+                          autoFocus
+                          value={subItemTitle}
+                          onChange={(e) => setSubItemTitle(e.target.value)}
+                          onKeyDown={(e) => e.key === "Escape" && setAddingSubItemFor(null)}
+                          placeholder="Sub-item title"
+                          className="border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-body focus:border-nearblack focus:outline-none"
+                        />
+                        <button type="submit" className="border border-nearblack px-2 py-1 text-caption text-nearblack hover:bg-nearblack hover:text-white">
+                          Add
+                        </button>
+                        <button type="button" onClick={() => { setAddingSubItemFor(null); setSubItemTitle(""); }} className="text-caption text-charcoal/50 hover:text-nearblack">
+                          Cancel
+                        </button>
+                      </form>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setAddingSubItemFor(task.id)}
+                        className="border border-dashed border-[#c9c2b4] px-2 py-1 text-caption text-charcoal/60 hover:border-nearblack hover:text-nearblack"
+                      >
+                        + Add sub-item
+                      </button>
                     )}
-                  />
-                </td>
-                <td className="px-3 py-2">
-                  {/* Grouped-list edit parity with kanban — status
-                      (column_id) is now an editable select here too,
-                      matching the Stacked kanban section's "Move to"
-                      dropdown, instead of a read-only chip. */}
-                  <select
-                    value={task.column_id}
-                    onChange={(e) => {
-                      if (e.target.value !== task.column_id) onPatchTask(task, { column_id: e.target.value }, { column_id: e.target.value });
-                    }}
-                    className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none"
-                  >
-                    {columnOptions.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
-                </td>
-                <td className="px-3 py-2">
-                  <select
-                    value={task.phase_group_id ?? ""}
-                    onChange={(e) => onPatchTask(task, { phase_group_id: e.target.value || null }, { phase_group_id: e.target.value || null })}
-                    className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none"
-                  >
-                    <option value="">Ungrouped</option>
-                    {groups.map((g) => (
-                      <option key={g.id} value={g.id}>
-                        {g.name}
-                      </option>
-                    ))}
-                  </select>
-                </td>
-                <td className="px-3 py-2">
-                  {/* Board reorder round (item 4) — touch fallback for
-                      the drag-reorder above: "Move up"/"Move down",
-                      reordering one slot within this row's CURRENT
-                      group (or the Ungrouped bucket), no phase change.
-                      Always rendered (not just on touch) since a mouse
-                      user typing on a trackpad benefits from it too —
-                      same "drag AND a menu, both always available"
-                      choice StackedColumnSection's own "Move to"
-                      dropdown already makes for kanban. */}
-                  <div className="flex gap-1">
-                    <button
-                      type="button"
-                      onClick={() => onMoveTask(task, -1)}
-                      disabled={index === 0}
-                      title="Move up"
-                      className="border border-[#c9c2b4] px-1.5 py-1 text-caption text-charcoal/60 hover:border-nearblack disabled:opacity-30"
-                    >
-                      ↑
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onMoveTask(task, 1)}
-                      disabled={index === tasks.length - 1}
-                      title="Move down"
-                      className="border border-[#c9c2b4] px-1.5 py-1 text-caption text-charcoal/60 hover:border-nearblack disabled:opacity-30"
-                    >
-                      ↓
-                    </button>
-                  </div>
-                </td>
-              </tr>
-              {isExpanded && (
-                <tr className="border-b border-[#e5e0d6] bg-nearwhite last:border-b-0">
-                  <td colSpan={8} className="px-3 pb-3">
-                    <BoardTaskEditorBody
-                      task={task}
-                      team={team}
-                      teamById={teamById}
-                      contacts={contacts}
-                      onPatch={(patch, refUpdate) => onPatchTask(task, patch, refUpdate)}
-                      onDelete={() => onDeleteTask(task)}
-                      onBookVisit={() => onBookVisit(task)}
-                      onUnlinkVisit={() => onUnlinkVisit(task.id)}
-                    />
-                  </td>
-                </tr>
-              )}
-            </Fragment>
-          );
-        })}
-      </tbody>
+                  </>
+                )}
+              </div>
+            </td>
+          </tr>
+        )}
+        {!isSubItem && !isParentCollapsed && children.map((child, i) => renderRow(child, i, children.length, true))}
+      </Fragment>
+    );
+  }
+
+  return (
+    <table className="w-full table-fixed text-left">
+      <thead>
+        {/* Board v3 — Monday parity round: exact column-header text per
+            BUILD-SPEC.md — "ITEM · WHO · STATUS · CONTACT · WORKS ·
+            DUE · AFTER". */}
+        <tr className="border-b border-[#e5e0d6] text-caption text-charcoal/40">
+          <th className="py-1.5 pl-3 pr-3 font-normal">ITEM</th>
+          <th className="py-1.5 pr-3 font-normal">WHO</th>
+          <th className="py-1.5 pr-3 font-normal">STATUS</th>
+          <th className="py-1.5 pr-3 font-normal">CONTACT</th>
+          <th className="py-1.5 pr-3 font-normal">WORKS</th>
+          <th className="py-1.5 pr-3 font-normal">DUE</th>
+          <th className="py-1.5 pr-3 font-normal">AFTER</th>
+        </tr>
+      </thead>
+      <tbody>{topLevelTasks.map((task, index) => renderRow(task, index, topLevelTasks.length, false))}</tbody>
     </table>
   );
 }

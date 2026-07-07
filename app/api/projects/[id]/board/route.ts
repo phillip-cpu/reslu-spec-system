@@ -2,16 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import type { AssigneeSummary, CreateBoardTaskInputV2 } from "@/types/phase-12a-b";
 import type { BoardTaskKind } from "@/types/board-cockpit";
+import { DEFAULT_STATUS_COLUMNS_V3 } from "@/lib/board-constants";
 
 /** POST body — Phase 12a-B's CreateBoardTaskInputV2 plus this round's optional `kind` (milestone toggle at creation time). Intersection type rather than editing that interface directly, per this file's own edit-boundary discipline (types/phase-12a-b.ts is a prior, already-completed round's own file). */
 type CreateBoardTaskInputCockpit = CreateBoardTaskInputV2 & { kind?: BoardTaskKind };
-import type {
-  BoardColumnCockpit,
-  BoardGroupCockpit,
-  BoardTaskCockpit,
-  BoardV2CockpitResponse,
-  LinkedVisitSummary,
-} from "@/types/board-cockpit";
+import type { LinkedVisitSummary } from "@/types/board-cockpit";
+import type { BoardColumnV3, BoardGroupV3, BoardTaskV3, BoardV3Response } from "@/types/board-v3";
+/** Board v3 — Monday parity round: this route's POST body ALSO accepts an optional `parent_task_id` (sub-items, migration 031) — see this file's POST handler doc comment for validation + inheritance rules, and types/board-v3.ts's CreateSubTaskInputV3 for the documented shape. Layered as a second intersection rather than editing CreateBoardTaskInputV2 directly, same edit-boundary discipline as the `kind` addition above. */
+type CreateBoardTaskInputV3 = CreateBoardTaskInputCockpit & { parent_task_id?: string | null };
 
 /**
  * Board v2 (BUILD-SPEC.md §"Board v2"). This route supersedes the
@@ -21,17 +19,19 @@ import type {
  *      a single `assignee`. board_tasks.assignee_id is READ-ONLY here
  *      going forward (see migration 020's deprecation comment) — this
  *      route never writes it.
- *   2. Column seed order flips to Waiting-first for BRAND NEW boards
- *      only (DEFAULT_COLUMNS_V2) — BUILD-SPEC.md "Board v2" point 2:
- *      "'Waiting' becomes the FIRST default column ... for new boards.
- *      Existing boards get a one-time reorder only if untouched."  The
- *      "untouched" one-time reorder is intentionally NOT performed by
- *      this route (a silent server-side reorder of a board a team
- *      member may already be relying on the visual order of is a
- *      surprising side effect for a GET) — see this task's final
- *      report for the one-time migration note; only the FIRST-EVER
- *      seed (zero existing columns) uses the new order, which is the
- *      unambiguous, safe half of that spec sentence to automate.
+ *   2. Column seed order/vocabulary for BRAND NEW boards only — Board
+ *      v3 — Monday parity round REPLACES the Board v2 Waiting-first
+ *      seed (Waiting/To Do/In Progress/Done) with the Monday-parity
+ *      status vocabulary (lib/board-constants.ts's
+ *      DEFAULT_STATUS_COLUMNS_V3 — Not Booked/Booked/In Progress/Done,
+ *      in that exact order), used ONLY the FIRST time this route runs
+ *      for a project with zero existing board_columns rows. Existing
+ *      (already-seeded, from either the original Week-9 four columns
+ *      or the Board v2 Waiting-first reorder) boards are NEVER
+ *      migrated/touched by this change — same "only the FIRST-EVER
+ *      seed uses the new list, existing boards keep whatever they
+ *      already have and stay fully renamable" discipline this route
+ *      already followed for the Board v2 reorder before this round.
  *   3. Phase groups (board_groups, seeded from the shared, editable
  *      phase_template — see lib/phase-seed.ts's
  *      seedPhaseTemplateIfEmpty() — on first visit to EITHER the
@@ -61,7 +61,16 @@ import type {
  * profiles.full_name projection the Week-9 page already fetched
  * separately) so the picker UI has it without a second round-trip.
  */
-const DEFAULT_COLUMNS_V2 = ["Waiting", "To Do", "In Progress", "Done"];
+// Board v3 — Monday parity round: REPLACES the prior Board v2 default
+// seed list (Waiting/To Do/In Progress/Done) with the Monday-parity
+// status vocabulary (lib/board-constants.ts's DEFAULT_STATUS_COLUMNS_V3
+// — Not Booked/Booked/In Progress/Done) for brand-new boards ONLY —
+// same "only used when this project currently has zero board_columns
+// rows" gating this constant already had before this round (see the
+// `if (!columns || columns.length === 0)` branch below, unchanged).
+// Existing (already-seeded) boards are NEVER touched/migrated by this
+// change — they keep whatever columns they already have, fully
+// renamable exactly as before.
 const SORT_STEP = 1000;
 
 export async function GET(
@@ -93,7 +102,7 @@ export async function GET(
     .order("sort", { ascending: true });
 
   if (!columns || columns.length === 0) {
-    const seedRows = DEFAULT_COLUMNS_V2.map((name, i) => ({
+    const seedRows = DEFAULT_STATUS_COLUMNS_V3.map((name, i) => ({
       project_id: projectId,
       name,
       sort: i * SORT_STEP,
@@ -174,7 +183,7 @@ export async function GET(
     assigneesByTask.set(link.task_id, list);
   }
 
-  const tasksWithRefs: BoardTaskCockpit[] = taskRows.map((t) => {
+  const tasksWithRefs: BoardTaskV3[] = taskRows.map((t) => {
     const linkedVisit = t.visit_id ? visitById.get(t.visit_id) : undefined;
     const visitSummary: LinkedVisitSummary | null = linkedVisit
       ? {
@@ -193,8 +202,8 @@ export async function GET(
     };
   });
 
-  const tasksByColumn = new Map<string, BoardTaskCockpit[]>();
-  const tasksByGroup = new Map<string, BoardTaskCockpit[]>();
+  const tasksByColumn = new Map<string, BoardTaskV3[]>();
+  const tasksByGroup = new Map<string, BoardTaskV3[]>();
   for (const t of tasksWithRefs) {
     const colList = tasksByColumn.get(t.column_id) ?? [];
     colList.push(t);
@@ -207,12 +216,12 @@ export async function GET(
     }
   }
 
-  const columnsResult: BoardColumnCockpit[] = columns.map((c) => ({
+  const columnsResult: BoardColumnV3[] = columns.map((c) => ({
     ...c,
     tasks: tasksByColumn.get(c.id) ?? [],
   }));
 
-  const groupsResult: BoardGroupCockpit[] = (groups ?? []).map((g) => {
+  const groupsResult: BoardGroupV3[] = (groups ?? []).map((g) => {
     const linkedPhase = g.phase_id ? phaseDatesById.get(g.phase_id) : undefined;
     return {
       ...g,
@@ -222,7 +231,7 @@ export async function GET(
     };
   });
 
-  const body: BoardV2CockpitResponse = {
+  const body: BoardV3Response = {
     columns: columnsResult,
     groups: groupsResult,
     team: team ?? [],
@@ -234,7 +243,22 @@ export async function GET(
  * POST /api/projects/[id]/board
  * body: CreateBoardTaskInputV2 — { column_id (required), title
  * (required), description?, assignee_ids?, contact_id?, due_date?,
- * phase_group_id? }.
+ * phase_group_id? } — Board v3 — Monday parity round additionally
+ * accepts an optional `parent_task_id` (sub-items, migration 031's
+ * board_tasks.parent_task_id): when present, (1) the referenced task
+ * must belong to this project and (2) must NOT itself already have a
+ * parent_task_id — an attempt to nest a sub-item under another
+ * sub-item (depth 2) is rejected with HTTP 400 ("Cannot create a
+ * sub-item of a sub-item..."), enforcing BUILD-SPEC.md's "one level
+ * only" rule at the app layer (see migration 031's own comment for why
+ * this is app-enforced, not a DB constraint). When `phase_group_id` is
+ * OMITTED alongside a `parent_task_id`, the sub-item inherits the
+ * PARENT's phase_group_id automatically (BUILD-SPEC.md "Sub-items
+ * inherit phase_group from parent") — passing phase_group_id
+ * explicitly (including `null`) still overrides that inheritance. A
+ * sub-item's `sort` scope is its own sibling set (every task sharing
+ * the same parent_task_id) rather than the whole column, so drag
+ * reorder among sub-items never interacts with top-level task order.
  *
  * Auto-assign on create (BUILD-SPEC.md "Board v2" point 1): when
  * `assignee_ids` is OMITTED entirely, the creator is assigned
@@ -263,7 +287,7 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: CreateBoardTaskInputCockpit;
+  let body: CreateBoardTaskInputV3;
   try {
     body = await request.json();
   } catch {
@@ -293,11 +317,48 @@ export async function POST(
     );
   }
 
-  if (body.phase_group_id) {
+  // Board v3 — Monday parity round: sub-items (migration 031's
+  // parent_task_id). Resolved BEFORE the phase_group_id check below,
+  // since a sub-item that omits phase_group_id in its own body
+  // inherits the PARENT's phase_group_id (BUILD-SPEC.md "Sub-items
+  // inherit phase_group from parent") — `effectivePhaseGroupId` is
+  // what actually gets validated/inserted from this point on, not the
+  // raw `body.phase_group_id`.
+  let effectivePhaseGroupId = body.phase_group_id ?? null;
+  if (body.parent_task_id) {
+    const { data: parentTask } = await supabase
+      .from("board_tasks")
+      .select("id,project_id,parent_task_id,phase_group_id")
+      .eq("id", body.parent_task_id)
+      .eq("project_id", projectId)
+      .is("deleted_at", null)
+      .maybeSingle();
+    if (!parentTask) {
+      return NextResponse.json(
+        { error: "parent_task_id does not belong to this project" },
+        { status: 400 }
+      );
+    }
+    // THE DEPTH GUARD: one level of nesting only. If the referenced
+    // "parent" itself already has a non-null parent_task_id, this
+    // would create a depth-2 grandchild — reject outright rather than
+    // silently flattening it or allowing an ever-deepening chain.
+    if (parentTask.parent_task_id) {
+      return NextResponse.json(
+        { error: "Cannot create a sub-item of a sub-item — only one level of nesting is supported" },
+        { status: 400 }
+      );
+    }
+    if (body.phase_group_id === undefined) {
+      effectivePhaseGroupId = parentTask.phase_group_id;
+    }
+  }
+
+  if (effectivePhaseGroupId) {
     const { data: group } = await supabase
       .from("board_groups")
       .select("id")
-      .eq("id", body.phase_group_id)
+      .eq("id", effectivePhaseGroupId)
       .eq("project_id", projectId)
       .single();
     if (!group) {
@@ -308,14 +369,30 @@ export async function POST(
     }
   }
 
-  const { data: maxRow } = await supabase
-    .from("board_tasks")
-    .select("sort")
-    .eq("column_id", body.column_id)
-    .is("deleted_at", null)
-    .order("sort", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  // Board v3 — Monday parity round: a sub-item's sort scope is its OWN
+  // sibling set (every other task sharing the same parent_task_id),
+  // NEVER the whole column — BUILD-SPEC.md "Reorder: sub-items only
+  // reorder within their own sibling set (same parent_task_id), never
+  // across parents or up to top level." A top-level task (no
+  // parent_task_id) keeps the original "max sort within this column"
+  // scope, unchanged from before this round.
+  const { data: maxRow } = body.parent_task_id
+    ? await supabase
+        .from("board_tasks")
+        .select("sort")
+        .eq("parent_task_id", body.parent_task_id)
+        .is("deleted_at", null)
+        .order("sort", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+    : await supabase
+        .from("board_tasks")
+        .select("sort")
+        .eq("column_id", body.column_id)
+        .is("deleted_at", null)
+        .order("sort", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
   const nextSort = (maxRow?.sort ?? -SORT_STEP) + SORT_STEP;
 
@@ -332,7 +409,8 @@ export async function POST(
       assignee_id: assigneeIds[0] ?? null,
       contact_id: body.contact_id || null,
       due_date: body.due_date || null,
-      phase_group_id: body.phase_group_id || null,
+      phase_group_id: effectivePhaseGroupId || null,
+      parent_task_id: body.parent_task_id || null,
       kind: body.kind || "task",
       sort: nextSort,
       created_by: user.id,

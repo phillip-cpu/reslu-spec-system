@@ -182,6 +182,23 @@ export async function PATCH(
 /**
  * DELETE /api/board-tasks/[id]
  * Soft-delete (deleted_at) — parity with items/cost_lines/variations.
+ *
+ * Board v3 — Monday parity round: if this task has any sub-items
+ * (board_tasks rows with parent_task_id = this id), they are ALSO
+ * soft-deleted in the same request — a sub-item has no independent
+ * meaning once its parent card disappears from every board view (it
+ * would otherwise become an invisible orphan: still a live row, but
+ * unreachable from any UI, since every sub-item is only ever rendered
+ * nested under its parent's row — see GroupRows,
+ * components/board/ProjectBoard.tsx). This mirrors migration 031's own
+ * ON DELETE CASCADE (which only fires on a genuine hard delete, never
+ * used in normal operation) at the soft-delete layer this app actually
+ * uses day to day. Best-effort: a failure soft-deleting the children
+ * does not block the parent's own deletion (same "one row failing
+ * doesn't abort the rest" discipline this codebase's seed/backfill
+ * paths already use) — it is reported as a non-fatal `warning` on the
+ * response rather than a 500, since the parent's own delete already
+ * succeeded by that point.
  */
 export async function DELETE(
   _request: NextRequest,
@@ -204,6 +221,16 @@ export async function DELETE(
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  const { error: childError } = await supabase
+    .from("board_tasks")
+    .update({ deleted_at: new Date().toISOString() })
+    .eq("parent_task_id", id)
+    .is("deleted_at", null);
+
+  if (childError) {
+    return NextResponse.json({ ok: true, warning: `Card removed, but could not remove all sub-items: ${childError.message}` });
   }
 
   return NextResponse.json({ ok: true });
