@@ -88,7 +88,7 @@ export function VariationsSection({
             </div>
             <p className="mt-1 text-body text-charcoal/70">{v.description}</p>
             <p className="mt-1 text-caption text-charcoal/40">
-              {new Date(v.var_date).toLocaleDateString("en-AU")}
+              {new Date(v.var_date).toLocaleDateString("en-AU", { timeZone: "Australia/Adelaide" })}
             </p>
 
             {v.client_response && v.client_response_note && (

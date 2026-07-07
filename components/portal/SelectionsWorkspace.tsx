@@ -100,7 +100,7 @@ export function SelectionsWorkspace({
       id: i.id,
       item_code: i.item_code,
       name: i.name,
-      location: i.location,
+      rooms: i.rooms,
       selected_image_url: i.selected_image_url,
     }));
 

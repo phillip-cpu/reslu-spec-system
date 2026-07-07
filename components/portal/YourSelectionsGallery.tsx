@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { renditionUrl, RENDITION_SIZES } from "@/lib/image-url";
+import type { PortalItemRoom } from "@/app/portal/types";
 
 const UNASSIGNED = "Other";
 
@@ -12,7 +13,9 @@ export interface YourSelectionGalleryItem {
   id: string;
   item_code: string;
   name: string;
-  location: string | null;
+  /** Bug fix, 7 July 2026 — real room assignment(s) via item_rooms, not
+   * the stale items.location column (see lib/portal-rooms.ts). */
+  rooms: PortalItemRoom[];
   selected_image_url: string | null;
 }
 
@@ -36,11 +39,17 @@ export function YourSelectionsGallery({
   token: string;
   items: YourSelectionGalleryItem[];
 }) {
+  // Groups by real room assignment(s) (item_rooms), not the stale
+  // items.location column — an item in more than one room appears in
+  // each of its room's groups, same convention as the internal Spec
+  // register's "Group by Room".
   const groups = new Map<string, YourSelectionGalleryItem[]>();
   for (const item of items) {
-    const key = item.location?.trim() || UNASSIGNED;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(item);
+    const names = item.rooms.length > 0 ? item.rooms.map((r) => r.name) : [UNASSIGNED];
+    for (const name of names) {
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name)!.push(item);
+    }
   }
   const sortedGroups = [...groups.entries()].sort((a, b) => {
     if (a[0] === UNASSIGNED) return 1;

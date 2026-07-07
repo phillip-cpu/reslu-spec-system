@@ -210,9 +210,13 @@ function EventRow({
   selectedInviteeEmails?: string[];
   onToggleInvitee?: (email: string) => void;
 }) {
+  // Explicit Adelaide pin (not just relying on the browser's own local
+  // timezone, which happened to make this correct only for a team
+  // member physically in Adelaide) — matches the fix applied to the
+  // portal's UpcomingMeetingsCard for the same event data.
   const start = new Date(event.starts_at);
-  const dateLabel = start.toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" });
-  const timeLabel = start.toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" });
+  const dateLabel = start.toLocaleDateString("en-AU", { timeZone: "Australia/Adelaide", day: "numeric", month: "short", year: "numeric" });
+  const timeLabel = start.toLocaleTimeString("en-AU", { timeZone: "Australia/Adelaide", hour: "numeric", minute: "2-digit" });
   const attendeeEmails = selectedInviteeEmails ?? [];
 
   return (

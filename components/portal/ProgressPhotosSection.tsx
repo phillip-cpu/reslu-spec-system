@@ -54,7 +54,7 @@ export function ProgressPhotosSection({ photos }: { photos: PortalProgressPhoto[
           <div className="mx-auto mt-3 w-full max-w-2xl text-center">
             {open.caption && <p className="text-body text-white">{open.caption}</p>}
             <p className="mt-1 text-caption text-white/50">
-              {new Date(open.taken_at ?? open.created_at).toLocaleDateString("en-AU")}
+              {new Date(open.taken_at ?? open.created_at).toLocaleDateString("en-AU", { timeZone: "Australia/Adelaide" })}
             </p>
             <button
               type="button"

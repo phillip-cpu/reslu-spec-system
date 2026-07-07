@@ -706,7 +706,23 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [] }: P
         phase={phase}
         boardGroupId={boardGroupId}
         gridPos={pos}
-        weekCount={grid.weekCount}
+        // Bug fix, 7 July 2026: this was hardcoded to grid.weekCount
+        // (the whole-project week count lib/gantt.ts computes for Month
+        // zoom) regardless of the CURRENT zoom mode. PhaseRow's own
+        // outer wrapper does `gridColumn: "2 / span weekCount"`, which
+        // must match however many columns the CURRENTLY-RENDERED header
+        // actually defines: win.days at Day/Week zoom (repeat(win.days,
+        // ...) — see the windowed-zoom header a few hundred lines up),
+        // grid.weekCount at Month zoom. Passing the wrong (much larger,
+        // unrelated) count at Day/Week zoom stretched every phase row
+        // far wider than the visible date columns, which (a) pushed the
+        // whole page's horizontal scroll extent out to match that
+        // oversized row width — the "window stretches forever" symptom
+        // — and (b) meant winPos's percentage-based left/width, computed
+        // correctly against the 84/14-day window, rendered against that
+        // oversized container instead, clustering every bar near the
+        // left edge regardless of its real scheduled date.
+        weekCount={isWindowedZoom && win ? win.days : grid.weekCount}
         winPos={winPos}
         editing={editingId === phase.id}
         onToggleEdit={() => setEditingId((cur) => (cur === phase.id ? null : phase.id))}

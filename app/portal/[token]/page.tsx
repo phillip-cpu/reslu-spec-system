@@ -18,6 +18,7 @@ import { DiarySection } from "@/components/portal/DiarySection";
 import { TimelineSection } from "@/components/portal/TimelineSection";
 import { HandoverSection } from "@/components/portal/HandoverSection";
 import { getWhatsNext } from "@/lib/portal-whats-next";
+import { fetchItemRoomsMap } from "@/lib/portal-rooms";
 import type { PortalItem, PortalPhase } from "@/types";
 import type {
   PortalItemFile,
@@ -133,6 +134,7 @@ export default async function PortalPage({
   const portalItems = (items ?? []) as (PortalItem & { decision_needed_by: string | null })[];
   const itemIds = portalItems.map((i) => i.id);
   const filesByItemId = new Map<string, PortalItemFile[]>();
+  const roomsByItemId = await fetchItemRoomsMap(supabase, project.id, itemIds);
 
   if (itemIds.length > 0) {
     const { data: fileRows } = await supabase
@@ -161,6 +163,7 @@ export default async function PortalPage({
   const itemsWithFiles: PortalItemWithFiles[] = portalItems.map((item) => ({
     ...item,
     files: filesByItemId.get(item.id) ?? [],
+    rooms: roomsByItemId.get(item.id) ?? [],
   }));
 
   // ---- Documents (project_files where share_to_portal, incl. certificates) ----

@@ -79,7 +79,7 @@ export function DocumentsSection({ documents }: { documents: PortalDocument[] })
                       <span className="label-caps !text-charcoal/40">Awaiting signature</span>
                     )}
                     <span className="text-caption text-charcoal/40">
-                      {new Date(doc.uploaded_at).toLocaleDateString("en-AU")}
+                      {new Date(doc.uploaded_at).toLocaleDateString("en-AU", { timeZone: "Australia/Adelaide" })}
                     </span>
                   </span>
                 </li>

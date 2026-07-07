@@ -25,6 +25,7 @@ export function UpdatesFeed({ updates }: { updates: PortalUpdate[] }) {
           <article key={u.id} className="border-b border-[#e5e0d6] pb-6 last:border-b-0">
             <p className="label-caps mb-1 !text-sand">
               {new Date(u.published_at).toLocaleDateString("en-AU", {
+                timeZone: "Australia/Adelaide",
                 day: "numeric",
                 month: "long",
                 year: "numeric",

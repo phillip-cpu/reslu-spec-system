@@ -72,7 +72,11 @@ export function AwaitingFlaggedList({
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [flaggingId, setFlaggingId] = useState<string | null>(null);
-  const [bulkConfirmLocation, setBulkConfirmLocation] = useState<string | null>(null);
+  // Tracks which group's confirm dialog is open, by group KEY (room id,
+  // or "unassigned" — not the roomId directly, since roomId is itself
+  // `null` for the Unassigned bucket and would be indistinguishable
+  // from "no dialog open").
+  const [bulkConfirmKey, setBulkConfirmKey] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [stepperOpen, setStepperOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -84,17 +88,28 @@ export function AwaitingFlaggedList({
     return needsDecision.filter((i) => i.client_flagged);
   }, [needsDecision, filter]);
 
+  // Bug fix, 7 July 2026: groups by the item's REAL room assignment(s)
+  // (item_rooms, via the `rooms` field) rather than the stale
+  // items.location column — see lib/portal-rooms.ts's doc comment.
+  // An item in multiple rooms appears in each of its room's groups
+  // (same convention as the internal Spec register's "Group by Room").
+  // roomId is null for the Unassigned bucket — carried through to
+  // bulkApprove() below so the confirm/approve call targets real rows
+  // instead of a display-only label string.
   const groups = useMemo(() => {
-    const map = new Map<string, PortalItemWithFiles[]>();
+    const map = new Map<string, { name: string; roomId: string | null; items: PortalItemWithFiles[] }>();
     for (const it of filtered) {
-      const key = it.location?.trim() || UNASSIGNED;
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(it);
+      const rooms = it.rooms.length > 0 ? it.rooms : [{ id: "", name: UNASSIGNED }];
+      for (const room of rooms) {
+        const key = room.id || "unassigned";
+        if (!map.has(key)) map.set(key, { name: room.name, roomId: room.id || null, items: [] });
+        map.get(key)!.items.push(it);
+      }
     }
-    return [...map.entries()].sort((a, b) => {
-      if (a[0] === UNASSIGNED) return 1;
-      if (b[0] === UNASSIGNED) return -1;
-      return a[0].localeCompare(b[0]);
+    return [...map.values()].sort((a, b) => {
+      if (a.roomId === null) return 1;
+      if (b.roomId === null) return -1;
+      return a.name.localeCompare(b.name);
     });
   }, [filtered]);
 
@@ -121,14 +136,14 @@ export function AwaitingFlaggedList({
     }
   }
 
-  async function bulkApprove(location: string) {
+  async function bulkApprove(roomId: string | null) {
     setBulkBusy(true);
     setError(null);
     try {
       const res = await fetch(`/api/portal/${token}/bulk-approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ location }),
+        body: JSON.stringify({ room_id: roomId }),
       });
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
@@ -136,7 +151,7 @@ export function AwaitingFlaggedList({
       }
       const { items: updated } = await res.json();
       onUpdate(updated);
-      setBulkConfirmLocation(null);
+      setBulkConfirmKey(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not approve this room.");
     } finally {
@@ -173,16 +188,17 @@ export function AwaitingFlaggedList({
       )}
 
       <div className="space-y-8">
-        {groups.map(([location, groupItems]) => {
-          const approvableCount = groupItems.filter((i) => !i.client_approved && !i.client_flagged).length;
+        {groups.map((group) => {
+          const groupKey = group.roomId ?? "unassigned";
+          const approvableCount = group.items.filter((i) => !i.client_approved && !i.client_flagged).length;
           return (
-            <section key={location}>
+            <section key={groupKey}>
               <div className="mb-3 flex items-center justify-between border-b border-nearblack bg-cream px-1 pb-2 pt-3">
-                <h3 className="label-caps">{location}</h3>
+                <h3 className="label-caps">{group.name}</h3>
                 {approvableCount > 0 && (
                   <button
                     type="button"
-                    onClick={() => setBulkConfirmLocation(location)}
+                    onClick={() => setBulkConfirmKey(groupKey)}
                     className="label-caps !text-sand hover:!text-nearblack"
                   >
                     Approve all {approvableCount} in this room
@@ -190,24 +206,24 @@ export function AwaitingFlaggedList({
                 )}
               </div>
 
-              {bulkConfirmLocation === location && (
+              {bulkConfirmKey === groupKey && (
                 <div className="mb-3 border border-sand bg-offwhite p-3">
                   <p className="text-body text-charcoal/80">
-                    Approve all {approvableCount} remaining item{approvableCount === 1 ? "" : "s"} in {location}? Flagged items are never
+                    Approve all {approvableCount} remaining item{approvableCount === 1 ? "" : "s"} in {group.name}? Flagged items are never
                     included.
                   </p>
                   <div className="mt-2 flex gap-2">
                     <button
                       type="button"
                       disabled={bulkBusy}
-                      onClick={() => bulkApprove(location)}
+                      onClick={() => bulkApprove(group.roomId)}
                       className="bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal disabled:opacity-60"
                     >
                       {bulkBusy ? "Approving…" : "Confirm approve all"}
                     </button>
                     <button
                       type="button"
-                      onClick={() => setBulkConfirmLocation(null)}
+                      onClick={() => setBulkConfirmKey(null)}
                       className="px-3 py-2 text-subhead text-charcoal/60 hover:text-nearblack"
                     >
                       Cancel
@@ -217,7 +233,7 @@ export function AwaitingFlaggedList({
               )}
 
               <div className="space-y-2">
-                {groupItems.map((item) => {
+                {group.items.map((item) => {
                   const expanded = expandedId === item.id;
                   const overdue = isOverdue(item.decision_needed_by);
                   const justApproved = item.client_approved && justApprovedIds.has(item.id);

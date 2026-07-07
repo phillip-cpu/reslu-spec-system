@@ -29,7 +29,17 @@ export default async function DashboardLayout({
   return (
     <div className="flex min-h-screen bg-cream">
       <Sidebar isAdmin={isAdmin} />
-      <div className="flex-1 flex flex-col"><Suspense fallback={null}><ScrollMemory /><FocusOnLoad /></Suspense>{children}</div>
+      {/* Bug fix, 7 July 2026: min-w-0 is required here — a flex item's
+          default min-width is `auto` (its content's intrinsic width),
+          not 0, so without this a wide-content page (e.g. the Timeline's
+          multi-week Gantt grid) grows THIS whole flex item — and the
+          page itself — to fit that content instead of respecting the
+          sidebar+content split, silently defeating any overflow-x-auto
+          scroll container further down the tree (it never gets a chance
+          to activate, since nothing upstream is actually constraining
+          its width). This is the "window stretches forever, can't see
+          the right-hand buttons" symptom Phillip reported on Timeline. */}
+      <div className="min-w-0 flex-1 flex flex-col"><Suspense fallback={null}><ScrollMemory /><FocusOnLoad /></Suspense>{children}</div>
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { notFound } from "next/navigation";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { ASSET_BUCKET } from "@/lib/storage";
 import { rateLimit } from "@/lib/rate-limit";
+import { fetchItemRoomsMap } from "@/lib/portal-rooms";
 import { SelectionsWorkspace } from "@/components/portal/SelectionsWorkspace";
 import type { PortalItem } from "@/types";
 import type { PortalItemFile, PortalItemWithFiles } from "@/app/portal/types";
@@ -91,6 +92,7 @@ export default async function YourSelectionsPage({
   const portalItems = (items ?? []) as (PortalItem & { decision_needed_by: string | null })[];
   const itemIds = portalItems.map((i) => i.id);
   const filesByItemId = new Map<string, PortalItemFile[]>();
+  const roomsByItemId = await fetchItemRoomsMap(supabase, project.id, itemIds);
 
   if (itemIds.length > 0) {
     const { data: fileRows } = await supabase
@@ -119,6 +121,7 @@ export default async function YourSelectionsPage({
   const itemsWithFiles: PortalItemWithFiles[] = portalItems.map((item) => ({
     ...item,
     files: filesByItemId.get(item.id) ?? [],
+    rooms: roomsByItemId.get(item.id) ?? [],
   }));
 
   const approvedCount = itemsWithFiles.filter((i) => i.client_approved).length;

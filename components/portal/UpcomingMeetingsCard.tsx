@@ -38,16 +38,32 @@ export function UpcomingMeetingsCard({ events }: { events: PortalClientEvent[] }
   );
 }
 
+// Bug fix, 7 July 2026: this component renders as part of the portal
+// page's SERVER component tree, executing on Vercel's Node.js runtime
+// (UTC by default) — NOT the visitor's browser. Without an explicit
+// timeZone, a meeting entered as "9am Thursday" in Adelaide (stored as
+// its correct UTC instant) could render here as "Wednesday" or the
+// wrong time entirely, while the team-side ClientEventsPanel (a client
+// component, rendered in the team's own Adelaide-based browsers)
+// showed it correctly by coincidence — exactly the "set in the client
+// area, wrong on the client link" symptom this was reported as.
+// Explicitly pinning Australia/Adelaide matches this app's one other
+// established real-timezone convention (lib/ics.ts, app/api/digest/
+// flush/route.ts) rather than relying on wherever the code happens to
+// execute.
+const PORTAL_TZ = "Australia/Adelaide";
+
 function MeetingCard({ event }: { event: PortalClientEvent }) {
   const start = new Date(event.starts_at);
   const dateLabel = start.toLocaleDateString("en-AU", {
+    timeZone: PORTAL_TZ,
     weekday: "long",
     day: "numeric",
     month: "long",
   });
-  const startTime = start.toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" });
+  const startTime = start.toLocaleTimeString("en-AU", { timeZone: PORTAL_TZ, hour: "numeric", minute: "2-digit" });
   const timeLabel = event.ends_at
-    ? `${startTime} – ${new Date(event.ends_at).toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" })}`
+    ? `${startTime} – ${new Date(event.ends_at).toLocaleTimeString("en-AU", { timeZone: PORTAL_TZ, hour: "numeric", minute: "2-digit" })}`
     : startTime;
 
   return (

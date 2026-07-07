@@ -12,21 +12,31 @@ type PortalItemWithDeadline = PortalItem & { decision_needed_by: string | null }
 /**
  * POST /api/portal/[token]/bulk-approve
  *
- * Body: { location: string } — approves every NOT-flagged, NOT-yet-
- * approved item in the given room/location for the project matching
- * this token, in one action ("Approve all N in this room" per
- * BUILD-SPEC.md §"Selections (FF&E approvals)"):
+ * Body: { room_id: string | null } — approves every NOT-flagged, NOT-
+ * yet-approved item allocated to the given room (item_rooms), or every
+ * such UNASSIGNED item (room_id: null — no item_rooms row at all) for
+ * the project matching this token, in one action ("Approve all N in
+ * this room" per BUILD-SPEC.md §"Selections (FF&E approvals)"):
  *
  *   "'Approve all N in this room' bulk action (confirm dialog; writes
  *   individual approval_events per item so the audit trail stays
  *   per-item) ... Approving via bulk never includes flagged items."
  *
+ * Bug fix, 7 July 2026: this route used to take `{ location: string }`
+ * and match `.eq("location", location)` — items.location stopped being
+ * the source of truth once Rooms became the primary grouping concept
+ * (see lib/portal-rooms.ts's doc comment), so most items have
+ * location = null and the UI's "Unassigned"/"Other" bucket sent a
+ * display-only label string that matched zero real rows — silently
+ * approving nothing. Now keyed by the item's real item_rooms
+ * allocation.
+ *
  * Security/ownership: same discipline as the existing single-item
  * .../[action]/[itemId] route — token -> project lookup, then every
- * update/insert is scoped `.eq("project_id", project.id)`, so a bulk
- * call can never touch another project's items even if a location
- * name collides across projects. Rate-limited per token+ip like every
- * other portal route.
+ * update/insert is scoped `.eq("project_id", project.id)`, and a
+ * supplied room_id is validated to belong to this project before use,
+ * so a bulk call can never touch another project's items. Rate-limited
+ * per token+ip like every other portal route.
  *
  * Response: { approved_count, items } — the updated PortalItem rows
  * (bare shape, same as the single-item route) so the client can merge
@@ -55,17 +65,17 @@ export async function POST(
     );
   }
 
-  let body: { location?: string };
+  let body: { room_id?: string | null };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
-  const location = body.location?.trim();
-  if (!location) {
-    return NextResponse.json({ error: "location is required" }, { status: 400 });
+  if (body.room_id === undefined) {
+    return NextResponse.json({ error: "room_id is required (null for the Unassigned bucket)" }, { status: 400 });
   }
+  const roomId = body.room_id;
 
   const supabase = createServiceRoleClient();
 
@@ -79,20 +89,66 @@ export async function POST(
     return NextResponse.json({ error: "Invalid link" }, { status: 404 });
   }
 
-  // Select the candidate set first (not-flagged, not-yet-approved, this
-  // room) so we know exactly which item ids are being actioned for the
-  // per-item approval_events audit trail below — a single UPDATE ...
-  // RETURNING would give us the same rows, but selecting first makes
-  // the "never includes flagged items" exclusion explicit and easy to
-  // verify by reading, matching this route's own doc comment.
-  const { data: candidates } = await supabase
+  // A supplied room must actually belong to this project — defence
+  // against a forged/cross-project room_id (same discipline as every
+  // other portal write route's project-scoping). Its name feeds the
+  // approval_events note below.
+  let roomName = "Unassigned";
+  if (roomId) {
+    const { data: room } = await supabase
+      .from("rooms")
+      .select("id,name")
+      .eq("id", roomId)
+      .eq("project_id", project.id)
+      .is("deleted_at", null)
+      .maybeSingle();
+    if (!room) {
+      return NextResponse.json({ error: "Invalid room" }, { status: 400 });
+    }
+    roomName = room.name;
+  }
+
+  // Resolve which item ids are actually IN this room (or, for the
+  // Unassigned bucket, which items have NO item_rooms row at all) —
+  // this is the fix: the old version matched on items.location, a
+  // field that's null for most items now that Rooms replaced it as
+  // the primary grouping concept (see this route's doc comment).
+  const { data: allProjectItems } = await supabase
     .from("items")
-    .select("id,name,supplier,brand,selected_image_url")
+    .select("id")
     .eq("project_id", project.id)
-    .eq("location", location)
-    .eq("client_flagged", false)
-    .eq("client_approved", false)
     .is("deleted_at", null);
+  const allItemIds = (allProjectItems ?? []).map((i) => i.id);
+
+  let scopedItemIds: string[];
+  if (roomId) {
+    const { data: allocs } = await supabase.from("item_rooms").select("item_id").eq("room_id", roomId);
+    scopedItemIds = (allocs ?? []).map((a) => a.item_id);
+  } else {
+    const { data: allocs } = allItemIds.length
+      ? await supabase.from("item_rooms").select("item_id").in("item_id", allItemIds)
+      : { data: [] as { item_id: string }[] };
+    const assigned = new Set((allocs ?? []).map((a) => a.item_id));
+    scopedItemIds = allItemIds.filter((id) => !assigned.has(id));
+  }
+
+  // Select the candidate set first (not-flagged, not-yet-approved,
+  // scoped to this room) so we know exactly which item ids are being
+  // actioned for the per-item approval_events audit trail below — a
+  // single UPDATE ... RETURNING would give us the same rows, but
+  // selecting first makes the "never includes flagged items" exclusion
+  // explicit and easy to verify by reading, matching this route's own
+  // doc comment.
+  const { data: candidates } = scopedItemIds.length
+    ? await supabase
+        .from("items")
+        .select("id,name,supplier,brand,selected_image_url")
+        .eq("project_id", project.id)
+        .in("id", scopedItemIds)
+        .eq("client_flagged", false)
+        .eq("client_approved", false)
+        .is("deleted_at", null)
+    : { data: [] as { id: string; name: string; supplier: string | null; brand: string | null; selected_image_url: string | null }[] };
 
   const rows = candidates ?? [];
   if (rows.length === 0) {
@@ -121,7 +177,7 @@ export async function POST(
   const events = rows.map((r) => ({
     item_id: r.id,
     action: "approve" as const,
-    note: `Approved via 'Approve all in room' (${location}).`,
+    note: `Approved via 'Approve all in room' (${roomName}).`,
     portal_token: token,
     item_snapshot: {
       name: r.name,

@@ -43,6 +43,7 @@ export function ContractsSection({ token, contracts }: { token: string; contract
                 <p className="mt-1 text-body text-charcoal/60">
                   Signed by {c.signed_by} on{" "}
                   {new Date(c.signed_at).toLocaleDateString("en-AU", {
+                    timeZone: "Australia/Adelaide",
                     day: "numeric",
                     month: "long",
                     year: "numeric",

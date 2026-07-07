@@ -18,12 +18,23 @@ export interface PortalItemFile {
   url: string;
 }
 
+/** One room an item is allocated to (item_rooms join) — see lib/portal-rooms.ts. */
+export interface PortalItemRoom {
+  id: string;
+  name: string;
+}
+
 /** PortalItem extended with its downloadable documents. */
 export interface PortalItemWithFiles extends PortalItem {
   files: PortalItemFile[];
   /** Phase 11B — design-phase decision deadline (BUILD-SPEC.md §"Phase
    * 11 additions — confirmed by Phillip" point 2). Null = no deadline set. */
   decision_needed_by: string | null;
+  /** Bug fix, 7 July 2026 — the item's REAL room assignment(s) via
+   * item_rooms, not the stale items.location column (see
+   * lib/portal-rooms.ts's doc comment for why). Empty array = not
+   * assigned to any room. An item can be in more than one room. */
+  rooms: PortalItemRoom[];
 }
 
 // ------------------------------------------------------------
