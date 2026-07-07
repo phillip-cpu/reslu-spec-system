@@ -99,13 +99,36 @@ function resolvedQuantity(
 
 type Risk = { label: string; tone: "late" | "risk" } | null;
 
-/** Late/at-risk from ETA (BUILD-SPEC.md §1.3). Delivered items clear. */
+/**
+ * Late/at-risk from ETA (BUILD-SPEC.md §1.3). Delivered items clear.
+ *
+ * Bug fix, 8 July 2026: `eta` was parsed via local-midnight
+ * (`+ "T00:00:00"`, no explicit zone) and `today` via
+ * `new Date(); .setHours(0,0,0,0)` — both truncate using the RUNTIME's
+ * own local timezone, which differs between the server (Vercel, UTC)
+ * and the client (a browser in Adelaide, UTC+9:30/+10:30) for roughly
+ * 9.5–10.5 hours of every day. Since `today` itself lands on a
+ * different calendar day between the two environments in that window,
+ * the computed `days` value could differ by one between server-
+ * rendered HTML and client hydration — a genuine React hydration
+ * mismatch (error #418), same root cause as
+ * components/board/ProjectBoard.tsx's identical fix. Anchoring `today`
+ * to an explicit Australia/Adelaide calendar date (Intl.DateTimeFormat)
+ * and parsing both dates as UTC-midnight-of-that-calendar-day
+ * (`Date.UTC`, timezone-runtime-independent) makes the whole
+ * computation deterministic regardless of which timezone the
+ * executing environment's own clock happens to be in.
+ */
 function riskFlag(item: Item): Risk {
   if (item.delivered_at || item.status === "Installed") return null;
   if (!item.eta) return null;
-  const eta = new Date(item.eta + "T00:00:00");
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const parseUTC = (dateStr: string) => {
+    const [y, m, d] = dateStr.split("-").map(Number);
+    return new Date(Date.UTC(y, m - 1, d));
+  };
+  const todayAdelaide = new Intl.DateTimeFormat("en-CA", { timeZone: "Australia/Adelaide" }).format(new Date());
+  const eta = parseUTC(item.eta);
+  const today = parseUTC(todayAdelaide);
   const days = Math.round((eta.getTime() - today.getTime()) / 86_400_000);
   if (days < 0) return { label: "Late", tone: "late" };
   if (days <= 14 && item.status !== "Ordered" && item.status !== "On Site") {

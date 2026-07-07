@@ -75,11 +75,28 @@ function initials(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
+/**
+ * Bug fix, 8 July 2026: was `new Date(); today.setHours(0,0,0,0)` — that
+ * truncates to midnight in the RUNTIME's own local timezone, which
+ * differs between the server (Vercel, UTC) and the client (a browser in
+ * Adelaide, UTC+9:30/+10:30). For roughly 9.5–10.5 hours of every single
+ * day, UTC and Adelaide disagree about what calendar day "today" is —
+ * so a task due "yesterday" by Adelaide's clock but still "today" by
+ * the server's UTC clock rendered pastDue=true on the client but
+ * pastDue=false in the server-rendered HTML (or vice versa), a genuine
+ * React hydration mismatch (error #418) on every page load in that
+ * window. Explicitly computing "today" in Australia/Adelaide via
+ * Intl.DateTimeFormat (en-CA locale formats as YYYY-MM-DD) and doing a
+ * plain string comparison against the due_date string sidesteps Date-
+ * object/local-timezone ambiguity entirely — server and client now
+ * compute the identical value regardless of which timezone their own
+ * clock happens to be in, matching this app's established
+ * Australia/Adelaide convention (lib/ics.ts, app/api/digest/flush).
+ */
 function isPastDue(dueDate: string | null): boolean {
   if (!dueDate) return false;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return new Date(dueDate + "T00:00:00") < today;
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Australia/Adelaide" }).format(new Date());
+  return dueDate < today;
 }
 
 /**

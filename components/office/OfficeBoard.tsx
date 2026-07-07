@@ -22,11 +22,21 @@ function initials(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
+/**
+ * Bug fix, 8 July 2026: was `new Date(); today.setHours(0,0,0,0)` — that
+ * truncates to midnight in the RUNTIME's own local timezone, which
+ * differs between the server (Vercel, UTC) and the client (a browser in
+ * Adelaide, UTC+9:30/+10:30) for roughly 9.5–10.5 hours of every day,
+ * causing a genuine React hydration mismatch (error #418) — see
+ * components/board/ProjectBoard.tsx's identical fix for the full
+ * explanation. Explicitly computing "today" in Australia/Adelaide via
+ * Intl.DateTimeFormat and comparing as plain strings sidesteps the
+ * Date-object/local-timezone ambiguity entirely.
+ */
 function isPastDue(dueDate: string | null): boolean {
   if (!dueDate) return false;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return new Date(dueDate + "T00:00:00") < today;
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Australia/Adelaide" }).format(new Date());
+  return dueDate < today;
 }
 
 /**
