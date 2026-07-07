@@ -2291,8 +2291,23 @@ const BOOKING_STATUS_LABEL: Record<string, string> = {
   proposed_change: "Trade proposed a change",
 };
 
+/**
+ * Bug fix, 8 July 2026: was `toLocaleDateString("en-AU", { month:
+ * "short" })` — a genuine React hydration mismatch, confirmed by
+ * reproducing a non-minified error: the SAME date/locale/options
+ * rendered "9 July" on the server (Node's bundled ICU data for en-AU)
+ * but "9 Jul" on the client (Safari/WebKit's own ICU data) — a
+ * cross-engine Intl/ICU data discrepancy (not a timezone issue — see
+ * isPastDue's fix above for that separate bug class). A manual,
+ * hardcoded month-abbreviation array has zero locale/ICU dependency,
+ * so server and client can never disagree, regardless of engine.
+ * Same fix as components/board/DateCell.tsx's identical formatShort.
+ */
+const SHORT_MONTHS_BOARD = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
 function formatShortDate(dateStr: string): string {
-  return new Date(dateStr + "T00:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" });
+  const d = new Date(dateStr + "T00:00:00");
+  return `${d.getDate()} ${SHORT_MONTHS_BOARD[d.getMonth()]}`;
 }
 
 // ------------------------------------------------------------

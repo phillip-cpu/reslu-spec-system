@@ -3,9 +3,27 @@
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 
-/** "14 Jul" — short day-month, en-AU locale, matching this codebase's existing formatShortDate() (components/board/ProjectBoard.tsx) exactly so both display the identical format. */
+/**
+ * Bug fix, 8 July 2026: was `toLocaleDateString("en-AU", { month:
+ * "short" })` — a genuine React hydration mismatch, confirmed by
+ * reproducing it with a non-minified error: the SAME date, SAME
+ * locale, SAME options rendered "9 July" on the server (Node's bundled
+ * ICU data for en-AU) but "9 Jul" on the client (Safari/WebKit's own
+ * ICU data for en-AU) — a cross-engine Intl/ICU data discrepancy, not
+ * a timezone issue (this is a DIFFERENT bug class from isPastDue's
+ * fix above/nearby). `toLocaleDateString` can silently disagree
+ * between the Node runtime that renders the initial HTML and whatever
+ * browser hydrates it, for ANY locale/option combination — there is no
+ * "correct" fix that still delegates to Intl here. A manual, hardcoded
+ * month-abbreviation array has zero locale/ICU dependency, so server
+ * and client can never produce different text for the same date,
+ * regardless of engine or Intl data version.
+ */
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
 function formatShort(dateStr: string): string {
-  return new Date(dateStr + "T00:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" });
+  const d = new Date(dateStr + "T00:00:00");
+  return `${d.getDate()} ${SHORT_MONTHS[d.getMonth()]}`;
 }
 
 /**
@@ -105,8 +123,10 @@ export function formatWorksDateRange(startDate: string, endDate: string | null):
   const endDt = new Date(endDate + "T00:00:00");
   const sameMonth = startDt.getMonth() === endDt.getMonth() && startDt.getFullYear() === endDt.getFullYear();
   if (sameMonth) {
-    const startDay = startDt.toLocaleDateString("en-AU", { day: "numeric" });
-    return `${startDay}–${formatShort(endDate)}`;
+    // Bug fix, 8 July 2026: same Intl/ICU cross-engine reasoning as
+    // formatShort above — a bare day number is very unlikely to differ,
+    // but there's no upside to routing it through Intl at all here.
+    return `${startDt.getDate()}–${formatShort(endDate)}`;
   }
   return `${formatShort(startDate)}–${formatShort(endDate)}`;
 }
