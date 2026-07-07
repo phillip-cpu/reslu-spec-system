@@ -2,11 +2,98 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { computeInsuranceStatus, insuranceWarningForBooking } from "@/lib/insurance";
 import { rollupPhaseDatesForGroup } from "@/lib/phase-rollup";
+import { sendTeamEmail, isGmailConfigured } from "@/lib/gmail/send";
+import { formatArrival } from "@/lib/trade-visits";
+import { hasAnyDocumentPackChoice, documentPackMentionLine } from "@/lib/trade-doc-pack";
 import type { BookVisitInput } from "@/types/board-cockpit";
+import type { BookVisitEmailSkipReason } from "@/types/board-v3-3";
+import type { DocumentPackChoices } from "@/types/trade-doc-pack";
 
 export const runtime = "nodejs";
 
 const VALID_SLOTS = new Set(["first_thing", "midday", "afternoon"]);
+
+/**
+ * Board v3.3 — item 2 "Booking sends the request immediately": composes
+ * and sends the trade's confirmation email the moment a visit is
+ * booked from a card, instead of the trade hearing nothing until the
+ * day-before cron (GET /api/trade-reminders) or a manual re-send. Same
+ * subject/tone/link shape as POST /api/visits/[id]/resend-confirmation
+ * copies from trade-reminders' own template (see that route's own
+ * "STATE-MACHINE FINDING" doc comment for the full history of why THAT
+ * was the nearest existing template to reuse) — this is the SAME reuse,
+ * one level earlier in the lifecycle (at creation, not at a later
+ * date-change). Deliberately its own small helper (not inlined into
+ * POST below, which is already long) so the "existing_visit_id" link
+ * path can call it too — a linked visit is just as freshly-booked-onto-
+ * this-card as a newly-created one, and the trade may never have heard
+ * about it either (e.g. it was created from the Timeline moments ago
+ * with no send of its own — see resend-confirmation's finding that
+ * visit CREATION has never sent anything).
+ *
+ * Returns `{ sent: true }` on an actual send, or `{ sent: false, reason }`
+ * for every no-op case — never throws for a "nothing to send" reason
+ * (no Gmail config / no contact / contact has no email), only a genuine
+ * Gmail API error during an attempted send propagates, which the caller
+ * catches (fire-and-forget, per this codebase's "the booking write is
+ * the source of truth, the email is best-effort" discipline — same as
+ * every other trade-visit email send site).
+ *
+ * "Trade booking document pack" round: when `hasDocumentPack` is true
+ * (the booking's document_pack has at least one of the three choices
+ * ticked — see this route's POST handler for exactly how that's
+ * decided), one extra warm, brief line is appended mentioning that
+ * plans/schedule/SOW are on the booking page — see this file's own
+ * `documentPackMentionLine` helper below, shared by this email AND
+ * resend-confirmation/trade-reminders so the three templates never
+ * drift on wording.
+ */
+async function sendBookingConfirmationEmail(params: {
+  contactEmail: string | null;
+  contactCompany: string | null;
+  projectName: string;
+  phaseName: string;
+  startDate: string;
+  endDate: string;
+  arrivalSlot: string | null;
+  arrivalTime: string | null;
+  confirmToken: string;
+  hasDocumentPack: boolean;
+}): Promise<{ sent: true } | { sent: false; reason: BookVisitEmailSkipReason }> {
+  if (!params.contactEmail) {
+    // Distinguish "no contact linked at all" from "contact has no email
+    // on file" for the UI's skip-reason copy — both are surfaced
+    // identically upstream today (no contact_id vs. a contact with a
+    // null email column), so this helper is only ever called when SOME
+    // contact_id was supplied; see the two call sites below for how
+    // each maps to a reason before even calling this helper.
+    return { sent: false, reason: "no_contact_email" };
+  }
+  if (!isGmailConfigured()) {
+    return { sent: false, reason: "no_gmail_config" };
+  }
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://spec.reslu.com.au";
+  const tradeLink = `${appUrl}/trade/${params.confirmToken}`;
+  const subject = `RESLU · site booking — ${params.projectName}: ${params.phaseName} ${params.startDate}`;
+  const body = [
+    `Hi ${params.contactCompany ?? "there"},`,
+    "",
+    `You've been booked for a site visit:`,
+    `${params.startDate}${params.endDate !== params.startDate ? ` → ${params.endDate}` : ""} — ${formatArrival(params.arrivalSlot as "first_thing" | "midday" | "afternoon" | null, params.arrivalTime)}`,
+    "",
+    `Please confirm this date, or let us know if it doesn't work: ${tradeLink}`,
+    ...(params.hasDocumentPack ? ["", documentPackMentionLine()] : []),
+  ].join("\n");
+  const result = await sendTeamEmail({ to: [params.contactEmail], subject, body });
+  if (result.skipped) {
+    // isGmailConfigured() already guards the common case above, but
+    // sendTeamEmail's own creds() check is the single source of truth —
+    // this covers the (currently theoretical, but cheap to guard)
+    // case of a config change between the two checks.
+    return { sent: false, reason: "no_gmail_config" };
+  }
+  return { sent: true };
+}
 
 /**
  * POST /api/board-tasks/[id]/book-visit
@@ -45,6 +132,53 @@ const VALID_SLOTS = new Set(["first_thing", "midday", "afternoon"]);
  * app-enforced, not DB-unique-enforced, per this schema's established
  * "app layer enforces business invariants, DB enforces referential
  * integrity" split).
+ *
+ * Board v3.3 — item 2 "Booking actually sends": on success, this route
+ * now ALSO sends the trade's confirmation email immediately (see
+ * sendBookingConfirmationEmail above) — the day-before cron (GET
+ * /api/trade-reminders) is left completely unchanged and still fires
+ * for this visit 1-2 days before start_date, gated by its own existing
+ * `reminder_sent_at IS NULL` filter, which this route does NOT stamp
+ * (deliberately — that column stays null so the cron still treats this
+ * as a fresh, never-reminded visit). This means a visit booked far in
+ * advance gets TWO touches: this immediate email, then the day-before
+ * reminder as a second nudge — an accepted, documented behaviour
+ * (BUILD-SPEC.md's own item 2: "decide: cron still sends a reminder if
+ * booked far in advance — yes, keep day-before reminder as a second
+ * touch"). The one edge case worth naming: a visit booked TODAY for
+ * tomorrow or the day after falls inside the cron's own 1-2-day window
+ * and would also get the reminder on its very next run — accepted as
+ * harmless per the same "second touch" reasoning (a trade booked with
+ * 24-48 hours' notice hearing about it twice on the same day is not a
+ * real problem worth extra gating logic for). Response gains
+ * `email_sent` (boolean) and `email_skip_reason` (present only when
+ * `email_sent` is false — "no_gmail_config" / "no_contact" /
+ * "no_contact_email") so BookVisitPanel/the card badge can show
+ * "request sent to {contact}" vs. "booked — email not sent: {reason}"
+ * without a second round-trip. Best-effort: the email send is
+ * fire-and-forget (logged, not thrown) — the booking write above
+ * already committed and must never be rolled back over a notification
+ * failure, same discipline every other trade-visit email send site in
+ * this codebase already follows (resend-confirmation, trade-reminders).
+ *
+ * "Trade booking document pack" round (8 July 2026): body gains an
+ * optional `document_pack` (types/trade-doc-pack.ts's
+ * DocumentPackChoices) — BookVisitPanel's frozen "Include documents"
+ * choices, stored verbatim onto the trade_visits row (migration
+ * 032_visit_document_pack.sql's document_pack column) in the SAME
+ * insert/update as the rest of the booking, never a second write. This
+ * applies on BOTH branches below (a brand-new visit AND
+ * existing_visit_id) — a re-linked visit is just as valid a place to
+ * configure a pack as a freshly created one, and the panel's own
+ * "Include documents" section renders identically regardless of which
+ * branch the booking takes (see BookVisitPanel.tsx). Omitted entirely
+ * from the body (not `null`) leaves document_pack at its column
+ * default (null) for a new visit, and LEAVES AN EXISTING VISIT'S PACK
+ * UNTOUCHED when linking to one that already has a pack from a prior
+ * booking — the update below only ever includes document_pack in its
+ * payload when the body actually supplied one, so relinking a card to
+ * an existing, already-packed visit can never silently blank out a
+ * pack nobody asked to change.
  */
 export async function POST(
   request: NextRequest,
@@ -75,22 +209,50 @@ export async function POST(
     );
   }
 
-  let body: BookVisitInput;
+  let body: BookVisitInput & { document_pack?: DocumentPackChoices };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  // "Trade booking document pack" round — only ever forwarded onto a
+  // trade_visits write when the caller actually supplied it (see this
+  // route's own doc comment above for why an omitted document_pack
+  // must never blank out an existing pack on the existing_visit_id
+  // link path). No shape validation beyond "is it present" — the
+  // panel is this field's only writer today and always sends a
+  // well-formed DocumentPackChoices object or omits the key entirely;
+  // a malformed value would simply fail to render sensibly on the
+  // trade page later rather than corrupt anything else here.
+  const documentPack = body.document_pack;
+
   let visitId: string;
   let bookingStart: string;
   let bookingEnd: string;
   let insurance_warning: string | null = null;
+  // Board v3.3 — item 2: everything sendBookingConfirmationEmail needs,
+  // captured from WHICHEVER branch below actually runs (a brand new
+  // visit, or a link to an existing one) so the send-after-write block
+  // near the bottom of this route doesn't care which path was taken.
+  let visitPhaseId: string;
+  let visitContactId: string | null;
+  let visitArrivalSlot: string | null = null;
+  let visitArrivalTime: string | null = null;
+  let visitConfirmToken: string;
+  // "Trade booking document pack" — whichever pack ends up ACTUALLY
+  // attached to this visit once this branch finishes, used only to
+  // decide whether the confirmation email below mentions it (see
+  // documentPackMentionLine's own doc comment for why the mention's
+  // wording never varies by which of the three choices is set) — never
+  // used to build the trade_visits write itself, which is handled
+  // separately per branch above.
+  let effectiveDocumentPack: DocumentPackChoices | null = documentPack ?? null;
 
   if ("existing_visit_id" in body) {
     const { data: existingVisit } = await supabase
       .from("trade_visits")
-      .select("id,project_id,start_date,end_date")
+      .select("id,project_id,phase_id,contact_id,start_date,end_date,arrival_slot,arrival_time,confirm_token,document_pack")
       .eq("id", body.existing_visit_id)
       .eq("project_id", task.project_id)
       .is("deleted_at", null)
@@ -110,6 +272,26 @@ export async function POST(
     visitId = existingVisit.id;
     bookingStart = existingVisit.start_date;
     bookingEnd = existingVisit.end_date;
+    visitPhaseId = existingVisit.phase_id;
+    visitContactId = existingVisit.contact_id;
+    visitArrivalSlot = existingVisit.arrival_slot;
+    visitArrivalTime = existingVisit.arrival_time;
+    visitConfirmToken = existingVisit.confirm_token;
+
+    // "Trade booking document pack" — a separate, explicit write (not
+    // folded into the board_tasks update below, which touches
+    // board_tasks not trade_visits) ONLY when the caller actually
+    // supplied a pack — see this route's own doc comment for why an
+    // omitted document_pack must never blank out a pack this visit
+    // already had from a prior booking. effectiveDocumentPack falls
+    // back to the visit's EXISTING pack (if any) when the caller
+    // supplied none, so the email mention below still fires correctly
+    // for a visit that already had a pack from an earlier booking.
+    if (documentPack) {
+      await supabase.from("trade_visits").update({ document_pack: documentPack }).eq("id", visitId);
+    } else {
+      effectiveDocumentPack = (existingVisit.document_pack as DocumentPackChoices | null) ?? null;
+    }
   } else {
     if (!body.phase_id || !body.start_date || !body.end_date) {
       return NextResponse.json(
@@ -176,6 +358,15 @@ export async function POST(
         notes: body.notes?.trim() || null,
         status: "unconfirmed",
         created_by: user.id,
+        // "Trade booking document pack" — frozen at creation time,
+        // straight from BookVisitPanel's "Include documents" section.
+        // `|| null` (not `?? null`) is deliberate here even though
+        // documentPack is already `T | undefined`: it mirrors every
+        // other optional field in this exact insert (arrival_slot,
+        // arrival_time, notes all use the same `|| null` fallback
+        // style), for a single consistent idiom across this one insert
+        // call rather than mixing `??` and `||`.
+        document_pack: documentPack || null,
       })
       .select()
       .single();
@@ -187,6 +378,11 @@ export async function POST(
     visitId = newVisit.id;
     bookingStart = newVisit.start_date;
     bookingEnd = newVisit.end_date;
+    visitPhaseId = newVisit.phase_id;
+    visitContactId = newVisit.contact_id;
+    visitArrivalSlot = newVisit.arrival_slot;
+    visitArrivalTime = newVisit.arrival_time;
+    visitConfirmToken = newVisit.confirm_token;
   }
 
   const { data: updatedTask, error: updateError } = await supabase
@@ -213,7 +409,55 @@ export async function POST(
     console.error("rollupPhaseDatesForGroup failed after book-visit POST:", rollupError);
   }
 
-  return NextResponse.json({ task: updatedTask, insurance_warning }, { status: 201 });
+  // Board v3.3 — item 2: send the trade's confirmation email now,
+  // immediately, rather than leaving the trade to hear nothing until
+  // the day-before cron (see this route's own doc comment above for
+  // the full cron-interaction rationale). `email_sent`/
+  // `email_skip_reason` always both resolve to a definite value below
+  // (never left undefined-by-omission) so the client never has to
+  // guess at a missing field's meaning.
+  let email_sent = false;
+  let email_skip_reason: BookVisitEmailSkipReason | undefined;
+  if (!visitContactId) {
+    email_skip_reason = "no_contact";
+  } else {
+    try {
+      const [{ data: phase }, { data: project }, { data: contact }] = await Promise.all([
+        supabase.from("schedule_phases").select("name").eq("id", visitPhaseId).maybeSingle(),
+        supabase.from("projects").select("name").eq("id", task.project_id).maybeSingle(),
+        supabase.from("contacts").select("email,company").eq("id", visitContactId).maybeSingle(),
+      ]);
+      const outcome = await sendBookingConfirmationEmail({
+        contactEmail: contact?.email ?? null,
+        contactCompany: contact?.company ?? null,
+        projectName: project?.name ?? "Project",
+        phaseName: phase?.name ?? "Visit",
+        startDate: bookingStart,
+        endDate: bookingEnd,
+        arrivalSlot: visitArrivalSlot,
+        arrivalTime: visitArrivalTime,
+        confirmToken: visitConfirmToken,
+        hasDocumentPack: hasAnyDocumentPackChoice(effectiveDocumentPack),
+      });
+      if (outcome.sent) {
+        email_sent = true;
+      } else {
+        email_skip_reason = outcome.reason;
+      }
+    } catch (emailError) {
+      console.error("book-visit POST: booking confirmation email send failed", emailError);
+      // Fire-and-forget — the booking itself has already committed
+      // above; email_sent stays false with no more specific reason than
+      // this generic fallback (a real Gmail API error, not a
+      // config/contact skip, which are handled above without throwing).
+      email_skip_reason = "no_gmail_config";
+    }
+  }
+
+  return NextResponse.json(
+    { task: updatedTask, insurance_warning, email_sent, email_skip_reason },
+    { status: 201 }
+  );
 }
 
 /**

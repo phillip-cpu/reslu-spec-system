@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { sendTeamEmail } from "@/lib/gmail/send";
 import { formatArrival } from "@/lib/trade-visits";
+import { hasAnyDocumentPackChoice, documentPackMentionLine } from "@/lib/trade-doc-pack";
+import type { DocumentPackChoices } from "@/types/trade-doc-pack";
 
 /**
  * POST /api/visits/[id]/resend-confirmation
@@ -59,6 +61,13 @@ import { formatArrival } from "@/lib/trade-visits";
  * "the DB write is the source of truth, notification is best-effort"
  * choice; the status reset above still commits even if Gmail is down or
  * unconfigured. Response: { visit }.
+ *
+ * "Trade booking document pack" round: when the visit's own
+ * document_pack has anything ticked (lib/trade-doc-pack.ts's
+ * hasAnyDocumentPackChoice()), the resend body gets the same warm,
+ * brief mention line the booking-confirmation and day-before-reminder
+ * emails use (documentPackMentionLine()) — kept in one shared helper so
+ * all three templates never drift on wording.
  */
 export async function POST(
   _request: NextRequest,
@@ -120,6 +129,7 @@ export async function POST(
     const projectName = project?.name ?? "Project";
     const phaseName = phase?.name ?? "Visit";
     const subject = `RESLU — ${projectName}: ${phaseName} — dates changed, please reconfirm`;
+    const hasPack = hasAnyDocumentPackChoice(existing.document_pack as DocumentPackChoices | null);
     const body = [
       `Hi ${contact.company},`,
       "",
@@ -127,6 +137,7 @@ export async function POST(
       `${visit.start_date}${visit.end_date !== visit.start_date ? ` → ${visit.end_date}` : ""} — ${formatArrival(visit.arrival_slot, visit.arrival_time)}`,
       "",
       `Please confirm this new date, or let us know if it doesn't work: ${tradeLink}`,
+      ...(hasPack ? ["", documentPackMentionLine()] : []),
     ].join("\n");
     try {
       await sendTeamEmail({ to: [contact.email], subject, body });

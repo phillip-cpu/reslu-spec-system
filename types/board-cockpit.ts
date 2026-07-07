@@ -79,7 +79,7 @@ export interface BookVisitResponse {
   task: BoardTaskCockpit;
 }
 
-/** body accepted by PATCH /api/board-tasks/[id] — this round adds kind (milestone toggle) on top of Phase 12a-B's PatchBoardTaskInputV2 fields. Booking_date/booking_end_date/visit_id are NOT independently PATCHable here — they are only ever set via POST .../book-visit or cleared via DELETE .../book-visit (see that route's doc comment) so a card's booking state always has a single, auditable write path rather than two ways to set the same fields. */
+/** body accepted by PATCH /api/board-tasks/[id] — this round adds kind (milestone toggle) on top of Phase 12a-B's PatchBoardTaskInputV2 fields. UPDATE (Board v3.3): booking_date/booking_end_date REJOINED the PATCHable whitelist — see types/board-v3-3.ts's PatchBoardTaskV33Input and PATCH /api/board-tasks/[id]'s own EDITABLE_FIELDS doc comment for the full "reverses v3.1" story. Only visit_id itself remains exclusively set via POST .../book-visit / cleared via DELETE .../book-visit — the LINK still has one auditable write path, only the two DATE columns are now dual-write (this route's PATCH keeps them in sync with any linked visit automatically). */
 export interface PatchBoardTaskCockpitInput {
   kind?: BoardTaskKind;
 }

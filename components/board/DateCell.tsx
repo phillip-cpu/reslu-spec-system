@@ -87,76 +87,174 @@ export function DueDateCell({
 }
 
 /**
- * Board v3.1 — display-first cells, item 2: WORKS cell. Quiet display
- * chip only — "8 Jul" (single day, start === end or no end) or "8–16
- * Jul" (en-dash; short day-month; the END date drops its OWN month
- * label when it's the SAME month as the start, e.g. "8–16 Jul" rather
- * than "8 Jul–16 Jul", falling back to repeating both full "D Mon"
- * labels whenever the range crosses a month boundary, e.g. "28 Jun–3
- * Jul" — never a fabricated shorthand for a cross-month span).
+ * Board v3.1 — display-first cells, item 2: WORKS cell display chip —
+ * "8 Jul" (single day, start === end or no end) or "8–16 Jul" (en-dash;
+ * short day-month; the END date drops its OWN month label when it's
+ * the SAME month as the start, e.g. "8–16 Jul" rather than "8 Jul–16
+ * Jul", falling back to repeating both full "D Mon" labels whenever the
+ * range crosses a month boundary, e.g. "28 Jun–3 Jul" — never a
+ * fabricated shorthand for a cross-month span). Exported (not just used
+ * internally by WorksDateCell below) so the popover's own trigger and
+ * any other read-only display site can share the exact same formatting
+ * rules without copy-pasting them.
+ */
+export function formatWorksDateRange(startDate: string, endDate: string | null): string {
+  const startDt = new Date(startDate + "T00:00:00");
+  const hasRange = !!endDate && endDate !== startDate;
+  if (!hasRange) return formatShort(startDate);
+  const endDt = new Date(endDate + "T00:00:00");
+  const sameMonth = startDt.getMonth() === endDt.getMonth() && startDt.getFullYear() === endDt.getFullYear();
+  if (sameMonth) {
+    const startDay = startDt.toLocaleDateString("en-AU", { day: "numeric" });
+    return `${startDay}–${formatShort(endDate)}`;
+  }
+  return `${formatShort(startDate)}–${formatShort(endDate)}`;
+}
+
+/**
+ * Board v3.3 — "placeholder dates + booking actually sends", item 1:
+ * WORKS cell REBUILT as a genuine start+end popover, exactly like this
+ * file's own DueDateCell above — this REVERSES the v3.1 deviation this
+ * component used to document at length right here (see git history /
+ * BUILD-SPEC.md's "Board v3.3" section item 1 for the full story): v3.1
+ * made this cell open the Book-trade panel because
+ * booking_date/booking_end_date weren't independently PATCHable at all;
+ * v3.3 puts them back in PATCH /api/board-tasks/[id]'s EDITABLE_FIELDS
+ * (see that route's own doc comment), so works dates are now freely
+ * editable placeholders exactly like DUE, committing directly via
+ * `onCommit` rather than opening any panel.
  *
- * DELIBERATELY READ-ONLY, never an editable date input: booking_date/
- * booking_end_date are NOT independently PATCHable anywhere in this
- * codebase (app/api/board-tasks/[id]/route.ts's EDITABLE_FIELDS
- * whitelist explicitly excludes them; migration 029's own column
- * comment: "only ever written via POST/DELETE .../book-visit" — a
- * single, auditable write path so a booking's dates can never desync
- * from its linked trade_visits row). Clicking this chip therefore
- * opens the SAME "Book trade" flow every other works-date affordance
- * in this file already uses (`onOpenBookVisit`) rather than swapping
- * in a raw date input the PATCH route would reject anyway — this is
- * the one cell in this round's "click reveals an input" set that
- * click-reveals a PANEL instead, for that reason.
+ * Quiet chip at rest ("8–16 Jul", or "—" when unset); click reveals two
+ * `<input type="date">`s (Start/End) in a small popover, autofocused on
+ * Start. Enter on either input or a click outside commits; Esc cancels
+ * and reverts to the display chip without committing — same discipline
+ * as every other click-to-reveal control in this round (DueDateCell,
+ * PopoverCell). Commits ONCE, as a single `{ booking_date, booking_end_date }`
+ * pair via `onCommit` (not two separate PATCHes), so the route's own
+ * start<=end validation always sees a consistent pair rather than a
+ * transient invalid intermediate state a two-request sequence could
+ * produce.
+ *
+ * `visitId` (present only when this task has a linked trade_visits row)
+ * drives the "also updates the booked visit" hint shown inside the open
+ * popover — a plain, non-blocking one-line note (not a warning/error;
+ * the sync itself is server-side, this is purely so a click here isn't
+ * a surprise for a booked task) that this edit isn't a placeholder-only
+ * change, it will also move the actual booking (and flag a re-confirm
+ * prompt if that visit is currently 'confirmed' — see PATCH
+ * /api/board-tasks/[id]'s WORKS-DATE / VISIT SYNC doc comment). Book
+ * trade itself remains a SEPARATE, explicit action (its own button) —
+ * this popover only ever edits dates on whatever booking state already
+ * exists (including none), never creates or removes the visit link.
  */
 export function WorksDateCell({
   startDate,
   endDate,
+  visitId,
   visitStatusLabel,
-  onOpenBookVisit,
+  onCommit,
 }: {
   startDate: string | null;
   endDate: string | null;
+  /** Present only when this task carries a linked trade_visits row — drives the "also updates the booked visit" hint, see this component's own doc comment. */
+  visitId: string | null;
   visitStatusLabel: string | null;
-  onOpenBookVisit: () => void;
+  /** Commits BOTH dates as a single pair — see this component's own doc comment for why this is one call, not two. */
+  onCommit: (next: { booking_date: string | null; booking_end_date: string | null }) => void;
 }) {
-  if (!startDate) {
-    return (
-      <button
-        type="button"
-        onClick={onOpenBookVisit}
-        title="Click to book a trade visit"
-        className="px-1 py-0.5 text-caption text-charcoal/40 hover:text-nearblack"
-      >
-        —
-      </button>
-    );
+  const [editing, setEditing] = useState(false);
+  const [startDraft, setStartDraft] = useState(startDate ?? "");
+  const [endDraft, setEndDraft] = useState(endDate ?? "");
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const startInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) {
+      setStartDraft(startDate ?? "");
+      setEndDraft(endDate ?? "");
+    }
+  }, [editing, startDate, endDate]);
+
+  useEffect(() => {
+    if (!editing) return;
+    function onDocClick(e: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        commit();
+      }
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, startDraft, endDraft]);
+
+  function commit() {
+    setEditing(false);
+    const nextStart = startDraft || null;
+    const nextEnd = endDraft || null;
+    if (nextStart !== startDate || nextEnd !== endDate) {
+      onCommit({ booking_date: nextStart, booking_end_date: nextEnd });
+    }
   }
 
-  const startDt = new Date(startDate + "T00:00:00");
-  const hasRange = !!endDate && endDate !== startDate;
-  let label: string;
-  if (!hasRange) {
-    label = formatShort(startDate);
-  } else {
-    const endDt = new Date(endDate + "T00:00:00");
-    const sameMonth = startDt.getMonth() === endDt.getMonth() && startDt.getFullYear() === endDt.getFullYear();
-    if (sameMonth) {
-      const startDay = startDt.toLocaleDateString("en-AU", { day: "numeric" });
-      label = `${startDay}–${formatShort(endDate)}`;
-    } else {
-      label = `${formatShort(startDate)}–${formatShort(endDate)}`;
-    }
+  function cancel() {
+    setStartDraft(startDate ?? "");
+    setEndDraft(endDate ?? "");
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <div ref={wrapperRef} className="relative inline-block">
+        <div className="absolute left-0 top-full z-30 mt-1 flex flex-col gap-1.5 border border-[#dcd6cc] bg-nearwhite p-2 shadow-sm">
+          <div className="flex items-center gap-1.5">
+            <label className="flex flex-col gap-0.5">
+              <span className="label-caps !text-charcoal/40">Start</span>
+              <input
+                ref={startInputRef}
+                autoFocus
+                type="date"
+                value={startDraft}
+                onChange={(e) => setStartDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commit();
+                  if (e.key === "Escape") cancel();
+                }}
+                className="w-36 border border-[#c9c2b4] bg-cream px-1.5 py-1 text-caption text-charcoal focus:border-nearblack focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-0.5">
+              <span className="label-caps !text-charcoal/40">End</span>
+              <input
+                type="date"
+                value={endDraft}
+                onChange={(e) => setEndDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commit();
+                  if (e.key === "Escape") cancel();
+                }}
+                className="w-36 border border-[#c9c2b4] bg-cream px-1.5 py-1 text-caption text-charcoal focus:border-nearblack focus:outline-none"
+              />
+            </label>
+          </div>
+          {visitId && (
+            <p className="max-w-[15rem] text-caption text-charcoal/50">
+              Also updates the booked visit{visitStatusLabel === "Confirmed" ? " — re-confirm may be needed." : "."}
+            </p>
+          )}
+        </div>
+      </div>
+    );
   }
 
   return (
     <button
       type="button"
-      onClick={onOpenBookVisit}
-      title="Booked works window — click to view/change the booking"
-      className="px-1 py-0.5 text-caption !text-sand hover:opacity-70"
+      onClick={() => setEditing(true)}
+      title={visitId ? "Booked works window — click to change (also updates the booking)" : "Click to set works dates"}
+      className={clsx("px-1 py-0.5 text-caption hover:opacity-70", startDate ? "!text-sand" : "text-charcoal/40")}
     >
-      {label}
-      {visitStatusLabel ? ` · ${visitStatusLabel}` : ""}
+      {startDate ? formatWorksDateRange(startDate, endDate) : "—"}
+      {startDate && visitStatusLabel ? ` · ${visitStatusLabel}` : ""}
     </button>
   );
 }

@@ -3,6 +3,8 @@ import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { sendTeamEmail } from "@/lib/gmail/send";
 import { formatArrival, findOverlappingVisits } from "@/lib/trade-visits";
 import type { TradeVisit } from "@/lib/trade-visits";
+import { hasAnyDocumentPackChoice, documentPackMentionLine } from "@/lib/trade-doc-pack";
+import type { DocumentPackChoices } from "@/types/trade-doc-pack";
 
 export const runtime = "nodejs";
 
@@ -148,6 +150,15 @@ export async function GET(request: NextRequest) {
 
     const link = `${appUrl}/trade/${visit.confirm_token}`;
     const subject = `RESLU — ${projectName}: ${phaseName} ${visit.start_date}`;
+    // "Trade booking document pack" round — `visit` came off this
+    // route's own `select("*")` above, so `document_pack` is present
+    // on the raw row even though lib/trade-visits.ts's TradeVisit type
+    // (this round did not touch that file) doesn't declare it; cast
+    // narrowly, same "read-only reuse via a cast" pattern the other two
+    // email send sites use.
+    const hasPack = hasAnyDocumentPackChoice(
+      (visit as unknown as { document_pack: DocumentPackChoices | null }).document_pack
+    );
     const body = [
       `Hi ${contact.company},`,
       "",
@@ -156,6 +167,7 @@ export async function GET(request: NextRequest) {
       "",
       ...(whoElseLines.length ? ["Who else is on site this week:", ...whoElseLines, ""] : []),
       `Please confirm or let us know if anything's changed: ${link}`,
+      ...(hasPack ? ["", documentPackMentionLine()] : []),
     ].join("\n");
 
     try {

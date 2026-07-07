@@ -197,17 +197,30 @@ since `vercel.json` is out of this round's edit boundary.
 ### GET /api/settings/export-presets
 Auth: session (read; team-visible, same trust tier as
 `/api/settings/phase-template`). Response: `{ presets: [{ name,
-prefixes[] }] }`, read from `app_settings('export_presets')`. Falls
-back to `lib/export-presets.ts`'s `FALLBACK_EXPORT_PRESETS` (Plumber →
-TW+SW, Electrician → LI+EL) when the row has never been written — no
+prefixes[], contact_categories? }] }`, read from
+`app_settings('export_presets')`. Falls back to
+`lib/export-presets.ts`'s `FALLBACK_EXPORT_PRESETS` (Plumber → TW+SW,
+Electrician → LI+EL) when the row has never been written — no
 migration in this round (`app_settings` carries the presets, per
-BUILD-SPEC.md "Export + board batch" item 1).
+BUILD-SPEC.md "Export + board batch" item 1). **"Trade booking
+document pack" round (8 July 2026):** each preset row gained an
+optional `contact_categories: string[]` field — free-text categories
+(e.g. `["Plumber", "Plumbing"]`) this preset is understood to apply to,
+matched case-insensitively/containment against a booking contact's own
+`contacts.category` by `BookVisitPanel`'s Schedule auto-pick
+(`lib/export-presets.ts`'s `pickPresetForContactCategory()`). Omitted
+on any preset that never declares one — falls through to a
+name-keyword heuristic, then "full schedule."
 
 ### PUT /api/settings/export-presets
-Auth: admin only. Body: `{ presets: [{ name, prefixes[] }] }` — full
-replace. Every row needs a non-empty trimmed name and at least one
-category prefix (prefixes are upper-cased and de-duped). Backs
-`components/settings/ExportPresetSettings.tsx`.
+Auth: admin only. Body: `{ presets: [{ name, prefixes[],
+contact_categories? }] }` — full replace. Every row needs a non-empty
+trimmed name and at least one category prefix (prefixes are upper-cased
+and de-duped; `contact_categories`, if present, is trimmed/de-duped but
+NOT upper-cased — it's a longer human label matched case-insensitively
+at read time, not a fixed short code). Backs
+`components/settings/ExportPresetSettings.tsx`, which now also renders
+an "Applies to contact categories" free-text field per row.
 
 ### GET /api/projects/[id]/cover
 Auth: session. Body: none. Response: `{ url: string | null }` — a
@@ -1698,11 +1711,22 @@ the subject visit's covered week(s) — see `lib/trade-visits.ts`'s
 three response actions below. **No contact phone/email of ANY trade
 (self or other) is ever included in this page's data or render path.**
 
-**On-machine follow-up required:** `/trade` and `/api/trade` are not
-yet in `lib/supabase/middleware.ts`'s `isPublicPath` allowlist — until
-a human adds them, an unauthenticated visitor hitting this page gets
-redirected to `/login`. See this feature's build notes for the exact
-lines to add (that file is read-only for this agent).
+**Middleware note (corrected 8 July 2026):** `/trade` and `/api/trade`
+are now present in `lib/supabase/middleware.ts`'s `isPublicPath`
+allowlist (added since this doc note was first written) — no
+on-machine follow-up is needed; both prefixes, including the "Trade
+booking document pack" round's new
+`/api/trade/[token]/documents/plans|schedule|sow` proxies below, are
+correctly public today.
+
+**"Trade booking document pack" round (8 July 2026):** when the
+visit's `document_pack` is non-null (see migration
+`032_visit_document_pack.sql` below), this page also renders a
+DOCUMENTS section (`components/trade/TradeDocuments.tsx`) resolved
+fresh on every load from the pack's frozen choices against the
+project's CURRENT plans/schedule/SOW — see that migration's own
+schema-reference entry and the three new proxy routes immediately
+below for the full design.
 
 ### POST /api/trade/[token]/respond
 Public, unauthenticated. Rate-limited tighter than the page
@@ -1726,6 +1750,62 @@ dispatched on `action`:
   Validates `proposed_end >= proposed_start`.
 
 Response: `{ visit }` or `{ error }`.
+
+### GET /api/trade/[token]/documents/plans
+### GET /api/trade/[token]/documents/schedule
+### GET /api/trade/[token]/documents/sow
+
+"Trade booking document pack" round (8 July 2026) — three tokened proxy
+routes powering the trade page's DOCUMENTS section, one per document
+kind. All three share the same gating shape (each re-derived
+independently, same discipline as `respond` above):
+
+1. Rate-limited by token+IP (`trade-doc-plans`/`trade-doc-schedule`/
+   `trade-doc-sow` buckets, default 30/min — a read, not a mutation).
+2. `confirm_token` must resolve to a real, non-deleted `trade_visits`
+   row (implicitly project-scoped: the row IS the one project this
+   token belongs to).
+3. `isVisitExpired()` re-checked independently of the page.
+4. `document_pack` must have the corresponding choice actually ticked
+   — `include_plans` / `schedule_categories` key present /
+   `include_sow` — or the route 404s ("No plans/schedule/scope of
+   works were included with this booking") even for an otherwise valid,
+   unexpired visit. **This is the "only pack-selected docs reachable"
+   guarantee** — a trade can never reach a document type their booking
+   didn't offer, regardless of whether that document exists.
+
+Each route then resolves the CURRENT live document fresh (never a
+stored URL/id from booking time — see migration
+`032_visit_document_pack.sql`'s "frozen choices, live revisions" note):
+
+- **`.../documents/plans`** — finds the project's latest `project_files`
+  row with `kind='plans'` (`lib/trade-doc-pack.ts`'s `latestPlansFile`,
+  same newest-revision-first sort as `ProjectDocuments.tsx`), mints a
+  fresh signed URL (`SIGNED_URL_TTL_SECONDS`, 1 hour) against the
+  private `assets` bucket, and **redirects** to it (cheaper than
+  proxying the bytes through this function). 404s if the pack ticked
+  Plans but every revision has since been deleted.
+- **`.../documents/schedule`** — renders the exact same spec-view
+  schedule as `GET /api/projects/[id]/pdf` (byte-for-byte identical
+  `PDF_ITEM_FIELDS` allowlist — **no pricing columns**, verified
+  letter-for-letter against that route), filtered to the visit's frozen
+  `schedule_categories`. Reuses that route's own PDF-cache Storage path
+  (`pdf-cache/{projectId}/{hash}.pdf`) and cache-key shape (items
+  `updated_at`/count + `job_number` + category set), so a schedule
+  already rendered via the team-facing route or export dialog for the
+  same category set is served from cache with no re-render. Streams
+  the PDF bytes directly (`Content-Type: application/pdf`), not a
+  redirect.
+- **`.../documents/sow`** — renders the same branded SOW PDF as
+  `GET /api/projects/[id]/sow/[sowId]/pdf`, for the project's latest
+  **issued** `sow_documents` revision (`lib/trade-doc-pack.ts`'s
+  `latestIssuedSow` — a draft-in-progress SOW is never served). No
+  caching (matches the team-facing SOW route's own uncached behaviour).
+  404s if the pack ticked SOW but no revision has ever been issued (or
+  the only issued one was since soft-deleted).
+
+Response: `200` with the PDF bytes (or a redirect, for plans) on
+success; `404`/`410`/`429` with `{ error }` otherwise.
 
 ### GET /api/trade-reminders
 Vercel Cron entry point, `vercel.json` schedule `"0 21 * * *"` (21:00
@@ -1771,6 +1851,23 @@ query never needs to filter by phase kind.
   public `/trade/[token]` page and its respond route never use this
   policy; they go through the service-role client (bypasses RLS
   entirely), same trust model as the client portal.
+- **Migration `032_visit_document_pack.sql`** (8 July 2026) adds
+  `trade_visits.document_pack jsonb` (nullable, no RLS change — a new
+  column on an already-permissive table): `{include_plans: boolean,
+  schedule_categories?: string[]|null, include_sow: boolean}`. Column
+  `null` = no pack configured (every pre-round visit). `schedule_categories`
+  is a genuine three-state field — KEY ABSENT means the Schedule choice
+  was unticked, `null` means "ticked, full schedule," a `string[]`
+  means "ticked, filtered to these category prefixes" — see that
+  migration's own comment and `types/trade-doc-pack.ts`'s
+  `DocumentPackChoices` for the full rationale. Written by `BookVisitPanel.tsx`'s
+  "Include documents" section, forwarded through
+  `POST /api/board-tasks/[id]/book-visit`'s optional `document_pack`
+  body field (frozen at booking time; an omitted field on a re-link
+  never blanks out an existing pack). Read by the trade page's
+  DOCUMENTS section and the three `.../documents/plans|schedule|sow`
+  proxy routes above, always re-resolved against CURRENT live documents
+  (never a stored file reference).
 
 ## Portal v2, diary, gallery & notifications (Phase 11B)
 
@@ -4745,3 +4842,311 @@ doc-comment note on why `StackedColumnSection` is excluded),
 `docs/API.md`/`README.md` (this round's documentation). No migration —
 this round writes only to existing `board_tasks`/`trade_visits`/
 `schedule_phases` columns.
+
+## Board v3.3 — placeholder dates + booking actually sends
+
+Corrects a workflow-breaking deviation (v3.1 made works dates read-only)
+and closes the booking loop (a booked visit used to sit silent until the
+day-before cron). Three parts, no migration — every column touched
+already exists (`board_tasks.booking_date`/`booking_end_date`,
+`trade_visits.start_date`/`end_date`/`reminder_sent_at`).
+
+### 1. Works dates rejoin the PATCH whitelist (reverses v3.1)
+
+`PATCH /api/board-tasks/[id]`'s `EDITABLE_FIELDS` gains `booking_date`/
+`booking_end_date` back. **Whitelist/comment reconciliation:** the
+route's own comment previously said these two columns were "only ever
+written via POST/DELETE .../book-visit" (a true statement through
+v3.1/v3.2). That comment has been REPLACED in place (not merely
+appended to) with the full "reverses v3.1" story — migration 029's own
+SQL column comments on `board_tasks.booking_date`/`booking_end_date`
+still say the old thing (no migration this round, so that SQL-level text
+is now stale relative to the route) — `types/board-cockpit.ts`'s
+`PatchBoardTaskCockpitInput` doc comment (a prior round's own file) was
+also updated in place, one line, to point at the new behaviour rather
+than left contradicting it.
+
+Validation: end >= start whenever the RESULTING row (post-merge with
+whatever the caller didn't touch this request) would have both dates
+set — not just the two keys literally present in the body. **Visit
+sync:** when the task carries a `visit_id`, the new dates are pushed
+onto the linked `trade_visits` row in the same request (mirrors
+`shift-items`/`adjust-boundary`'s identical sync block); if that visit
+was `status = 'confirmed'`, its id comes back in the response's
+`reconfirm_visit_ids` so the client can surface the shared "Dates
+changed — re-send confirmation?" affordance
+(`components/gantt/ReconfirmAffordance.tsx`, now also imported into
+`ProjectBoard.tsx` — not duplicated). A task with no `visit_id` is a
+pure placeholder; its dates just write to `board_tasks`.
+
+**Rollup confirmed still fires:** `rollupPhaseDatesForGroup` already ran
+on a `phase_group_id` change (v3.1); it now ALSO runs whenever this
+request touched `booking_date`/`booking_end_date` directly (previously
+only book-visit's own POST/DELETE could trigger it for those columns —
+verified this was the one gap, since v3.1 never anticipated a direct
+booking-date PATCH existing at all).
+
+`components/board/DateCell.tsx`'s `WorksDateCell` is rebuilt as a
+genuine start+end popover (two `<input type="date">`s, autofocus on
+Start), committing BOTH dates as one `{ booking_date, booking_end_date }`
+PATCH (never two separate requests, so the server's start<=end
+validation never sees a transient invalid pair); Esc cancels; shows
+"Also updates the booked visit" inside the popover whenever `visitId` is
+set. `ProjectBoard.tsx`'s `GroupRows` row wires this cell's `onCommit`
+straight to `onPatchTask` — "Book trade" no longer lives on this cell at
+all; it remains reachable only via its own explicit buttons
+(`BoardTaskEditorBody`'s Book trade/Unlink actions, the kanban card, the
+grouped-list row's expanded editor). New types:
+`types/board-v3-3.ts`'s `PatchBoardTaskV33Input` (intersection over
+Phase 12a-B's `PatchBoardTaskInputV2`, per this codebase's per-round-
+own-file convention — neither prior file is edited) and
+`PatchBoardTaskV33Response`.
+
+### 2. Booking sends the request immediately
+
+`POST /api/board-tasks/[id]/book-visit` now composes and sends the
+trade's confirmation email the moment a visit is booked (or an existing
+one is linked) — reuses `POST /api/visits/[id]/resend-confirmation`'s
+own template shape (itself copied from `trade-reminders`' template, per
+that route's own "STATE-MACHINE FINDING" doc comment — there was no
+literal "the send used at creation" to reuse, since visit CREATION had
+never sent anything before this round; the nearest existing tone/subject
+shape is what's reused, subject prefixed "RESLU · site booking" per
+BUILD-SPEC's own wording). New helper `sendBookingConfirmationEmail`
+(same file) — called for BOTH the "create a new visit" and "link an
+existing visit" branches (a linked visit may equally never have had a
+send of its own).
+
+**Cron interaction:** `reminder_sent_at` is deliberately left `null` by
+this route — `GET /api/trade-reminders`'s day-before cron is completely
+unchanged and still fires 1-2 days before `start_date`, gated by its own
+existing `reminder_sent_at IS NULL` filter. This means a visit booked
+far in advance gets TWO touches (this immediate email, then the
+day-before reminder) — accepted and documented per BUILD-SPEC's own
+item 2 wording ("yes, keep day-before reminder as a second touch").
+**Documented edge case:** a visit booked TODAY for tomorrow/the day
+after falls inside the cron's 1-2-day window too and would get the
+reminder on its very next run — same day as the immediate send. Accepted
+as harmless (a trade hearing about a 24-48-hour-notice booking twice in
+one day is not worth extra gating logic).
+
+**No duplicate emails within one booking flow:** the immediate send
+happens exactly once, inside the POST handler, after the task/visit
+write already committed — nothing else in the request path calls
+`sendTeamEmail` a second time, and the day-before cron is a wholly
+separate scheduled invocation (never triggered synchronously by this
+route), so a single booking action can never itself cause two sends.
+
+Response gains `email_sent` (boolean) and `email_skip_reason` (one of
+`no_gmail_config` / `no_contact` / `no_contact_email`, present only when
+`email_sent` is false). `BookVisitPanel.tsx` shows "Request sent to
+{contact}" vs. "Email not sent: {reason}" inline on success;
+`ProjectBoard.tsx` also flashes a short-lived board-level echo
+(`bookingEmailNotice` state) near the existing error banner, since
+`email_sent`/`email_skip_reason` are one-time outcomes with nowhere
+persisted to read them from on a later page load (no new migration this
+round). New types: `types/board-v3-3.ts`'s `BookVisitEmailSkipReason`,
+`BookVisitV33Response`.
+
+### 3. Prefill trace + fix
+
+Traced every `BookVisitPanel` opener (`BoardCard`'s kanban card,
+`StackedColumnSection`'s rows via `BoardTaskEditorBody`,
+`GroupTable`/`GroupRows`, `UngroupedTable`) — all four already pass the
+full `BoardTaskV3` through to `ProjectBoard`'s `bookingTask` state and
+on into `initialPhaseId`/`initialContactId`/`initialStartDate`/
+`initialEndDate`, exactly as the prior "Two more" round's own prefill
+fix intended. **No opener currently drops the context** — that fix
+holds. What was still missing: the panel gave no VISIBLE signal that it
+HAD arrived with card context, so a genuinely-blank field (an unphased
+card, a trade-less card) was indistinguishable from a dropped-context
+bug at a glance — the likely reading of the 00:21 screenshot report.
+Fixed with a "From: {title}" trace line (`cardContext` prop, new
+`BookVisitPanelCardContext` type) shown whenever the panel has card
+context, plus a phase-select lock (a quiet read-only chip with its own
+"Change" link, swapping to the ordinary `<select>` on click) whenever a
+card supplied a resolved initial phase — judged the safer default since
+a phase MISMATCH was the specific failure mode reported, while the trade
+picker stays a normal, always-editable control (not locked) since
+contact_id isn't the field the report was about.
+
+**Files touched:** `app/api/board-tasks/[id]/route.ts` (EDITABLE_FIELDS,
+PATCH validation/sync/rollup, doc comments), `app/api/board-tasks/[id]/book-visit/route.ts`
+(`sendBookingConfirmationEmail`, response fields, doc comments),
+`components/board/DateCell.tsx` (`WorksDateCell` rebuilt,
+`formatWorksDateRange` extracted/exported), `components/board/BookVisitPanel.tsx`
+(`cardContext` prop, phase lock, email outcome display),
+`components/board/ProjectBoard.tsx` (`WorksDateCell`'s call site,
+`reconfirmPrompts`/`resendConfirmation`/`dismissReconfirm` state +
+threading through `GroupTable`/`UngroupedTable`/`GroupRows`,
+`bookingEmailNotice` state + banner, `bookVisit`'s return shape),
+`types/board-v3-3.ts` (new), `types/board-cockpit.ts` (one doc-comment
+line corrected in place), `docs/API.md`/`README.md` (this round's
+documentation). No migration.
+
+## Trade booking document pack (8 July 2026)
+
+BUILD-SPEC.md "Trade booking document pack": staff can attach a
+project's Plans, a filtered FF&E schedule, and the latest issued Scope
+of Works to a trade's own booking page, chosen once at booking time in
+`BookVisitPanel`'s new "Include documents" section.
+
+**Migration `032_visit_document_pack.sql`** adds
+`trade_visits.document_pack jsonb` (nullable, no RLS change). See the
+"Schema reference" entry under the Phase 11A trade-confirmation-engine
+section above for the full column shape, and this migration's own
+comment for the three-state `schedule_categories` encoding (key absent
+= Schedule unticked; `null` = full schedule; `string[]` = filtered).
+
+**Resolution semantics — read before touching any of this round's
+code:** `document_pack` stores CHOICES frozen at booking time, never
+which file/revision satisfies them. Every render/request re-resolves
+the CURRENT latest matching document (`lib/trade-doc-pack.ts`'s
+`latestPlansFile`/`latestIssuedSow`) against `project_files`/
+`sow_documents` at that moment — a plan revised after booking is what
+the trade sees next load, with no re-booking; a document later deleted
+with nothing newer just drops its row rather than showing a broken
+link. The CHOICE itself (whether each doc type is offered at all, and
+which schedule categories) stays exactly as picked at booking time —
+there is no "edit an existing visit's pack" affordance in this round
+(BUILD-SPEC's item 1 only asks for storage, not a later-edit UI).
+
+**Export presets gain `contact_categories`** (see the
+`GET`/`PUT /api/settings/export-presets` entries above) — an optional
+free-text field per preset used only by the Schedule auto-pick below;
+no schema change (`app_settings` already carried presets with no
+migration).
+
+### BookVisitPanel "Include documents" section
+
+Three checkboxes, each defaulting ON exactly once per panel open when
+its corresponding document is available (a `defaultsApplied`-guarded
+effect — never re-fights a staff member's own subsequent untick):
+
+- **Plans** — ON if any `project_files` row with `kind='plans'` exists
+  for the project; shows the latest revision label
+  (`lib/trade-doc-pack.ts`'s `latestPlansFile`, same newest-first sort
+  `ProjectDocuments.tsx` uses).
+- **Schedule** — always defaults ON when this section renders at all.
+  Auto-picks a category subset via
+  `lib/export-presets.ts`'s `pickPresetForContactCategory()`: (1)
+  case-insensitive containment match of the selected contact's
+  `category` against any preset's `contact_categories`, tried in both
+  directions; (2) failing that, a small built-in keyword table (plumb,
+  electric, tiler, carpen, paint, plaster, cabinet, waterproof,
+  concret, brick, roof, glaz, landscap, hvac, airconditio) matched
+  against both the contact's category and each preset's own NAME; (3)
+  failing both, falls back to the full schedule (no category filter).
+  The picked preset's name (or "Full schedule"/"Custom") is shown with
+  a "Change" link that reveals a plain `<select>` over every configured
+  preset plus "Full schedule".
+- **Scope of Works** — ON if any `sow_documents` row with
+  `status='issued'` exists; shows that revision's label
+  (`lib/trade-doc-pack.ts`'s `latestIssuedSow`).
+
+On submit, the three choices are frozen into
+`{include_plans, schedule_categories?, include_sow}` (the schedule key
+present only when Schedule is ticked — see the migration's own
+three-state note) and sent as `document_pack` on the existing
+`onBook()` call, which `ProjectBoard.tsx`'s `bookVisit()` forwards
+verbatim in its `POST /api/board-tasks/[id]/book-visit` body. The whole
+field is omitted (not an all-false object) when nothing is ticked.
+
+### POST /api/board-tasks/[id]/book-visit — `document_pack` addition
+
+Body gains an optional `document_pack` (see above). Written onto the
+SAME insert/update as the rest of the booking — never a second write —
+on BOTH branches (a brand-new visit, or `existing_visit_id`). On the
+link-an-existing-visit branch, an OMITTED `document_pack` in the
+request body leaves that visit's existing pack (if any, from an
+earlier booking) completely untouched — only an explicitly-supplied
+pack ever overwrites one. The confirmation email (see Board v3.3 item 2
+above) now also mentions the pack (see below) whenever the EFFECTIVE
+pack — the one just supplied, or the visit's pre-existing one when none
+was supplied — has anything ticked.
+
+### Trade page DOCUMENTS section
+
+`app/trade/[token]/page.tsx` renders a `components/trade/
+TradeDocuments.tsx` section whenever the visit's `document_pack` is
+non-null, resolved server-side (service-role client, same trust
+boundary as the rest of the page) on every load:
+
+- **Plans row** — latest `project_files` `kind='plans'` row, labelled
+  with its revision (or bare "Plans" if unlabelled); a best-effort
+  Storage `list()` call adds a human file-size label
+  (`lib/trade-doc-pack.ts`'s `formatFileSize`) when cheap to determine.
+  Omitted entirely if every plans revision has since been deleted.
+- **Schedule row** — always present when the pack's `schedule_categories`
+  key exists at all, labelled "Your schedule — {preset name|Custom|Full
+  schedule}" via `findPresetNameForCategories()` (an exact prefix-set
+  match against the studio's CURRENT presets — a preset renamed/deleted
+  since booking collapses to "Custom", same as a hand-edited selection).
+- **SOW row** — latest ISSUED `sow_documents` revision, labelled with
+  its revision. Omitted if none has ever been issued (or the only
+  issued one was since soft-deleted).
+
+Each row's `href` points at one of the three new tokened proxy
+endpoints below; no signed URL or byte stream is embedded directly in
+the page's own HTML.
+
+### GET /api/trade/[token]/documents/plans / .../schedule / .../sow
+
+Documented in full under the Phase 11A "Trade confirmation engine"
+section above (search "Trade booking document pack round" there) —
+summary: token-gated identically to `respond` (rate-limited, token
+resolves to a real non-deleted non-expired visit, AND the visit's
+`document_pack` must have the specific choice ticked or the route 404s
+regardless of the visit's own validity — the "only pack-selected docs
+reachable" guarantee this round's own verification pass targeted).
+Plans redirects to a fresh 1-hour signed URL; Schedule streams the
+byte-for-byte-verified-pricing-free spec PDF (reusing
+`GET /api/projects/[id]/pdf`'s own cache); SOW streams the branded SOW
+PDF uncached (matching the team-facing SOW route's own behaviour).
+
+### Email copy — item 4
+
+Three send sites gain one shared, optional line
+(`lib/trade-doc-pack.ts`'s `documentPackMentionLine()` — "Plans, your
+schedule and the scope of works are on your booking page."), appended
+only when `hasAnyDocumentPackChoice()` is true for the relevant visit's
+(effective) pack:
+
+- **`POST /api/board-tasks/[id]/book-visit`**'s immediate booking email
+  (`sendBookingConfirmationEmail`, this round's `hasDocumentPack` param).
+- **`POST /api/visits/[id]/resend-confirmation`**.
+- **`GET /api/trade-reminders`**'s day-before reminder (visit read via
+  that route's own existing `select("*")`, cast narrowly since
+  `lib/trade-visits.ts`'s `TradeVisit` type — untouched this round —
+  doesn't declare `document_pack`).
+
+The wording never varies by which of the three choices is actually
+ticked — a trade opening their booking page sees precisely which rows
+are present in the DOCUMENTS section itself; the email line is a
+heads-up, not a literal inventory.
+
+**Files touched:** `supabase/migrations/032_visit_document_pack.sql`
+(new), `types/trade-doc-pack.ts` (new), `lib/trade-doc-pack.ts` (new —
+`latestPlansFile`, `latestIssuedSow`, `scheduleLabel`,
+`findPresetNameForCategories`, `formatFileSize`,
+`hasAnyDocumentPackChoice`, `documentPackMentionLine`),
+`types/round-export-batch.ts` (`ExportPresetRow.contact_categories`,
+in place), `lib/export-presets.ts` (`cleanPresetRow` extended,
+`pickPresetForContactCategory` + heuristic helpers, new),
+`components/settings/ExportPresetSettings.tsx` ("Applies to contact
+categories" field), `components/board/BookVisitPanel.tsx` ("Include
+documents" section, availability-aware defaults, Schedule auto-pick +
+change-select), `components/board/ProjectBoard.tsx` (`bookVisit`'s
+input type only), `app/api/board-tasks/[id]/book-visit/route.ts`
+(`document_pack` body field, `sendBookingConfirmationEmail`'s
+`hasDocumentPack` param), `app/api/visits/[id]/resend-confirmation/route.ts`
+(mention line), `app/api/trade-reminders/route.ts` (mention line),
+`app/trade/[token]/page.tsx` (DOCUMENTS section resolution + render,
+corrected stale middleware doc-comment), `components/trade/
+TradeDocuments.tsx` (new), `app/api/trade/[token]/documents/plans/route.ts`
+(new), `app/api/trade/[token]/documents/schedule/route.ts` (new),
+`app/api/trade/[token]/documents/sow/route.ts` (new), `docs/API.md` /
+`README.md` (this round's documentation). Single migration (032); no
+protected file touched (verified `lib/supabase/middleware.ts`,
+`vercel.json`, and the rest of the protected list by mtime — all
+pre-date this round's work).

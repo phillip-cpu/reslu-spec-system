@@ -26,13 +26,31 @@ interface Props {
  * Presets are consumed by components/projects/ExportDialog.tsx (the
  * "Download PDF" replacement) as quick-pick chips that tick a subset
  * of that dialog's own category checkboxes.
+ *
+ * "Trade booking document pack" round (8 July 2026) addition: each row
+ * gains a free-text "Applies to contact categories" input — comma-
+ * separated, e.g. "Plumber, Plumbing" — backing ExportPresetRow's new
+ * optional contact_categories field. Consumed by BookVisitPanel's
+ * "Schedule" auto-pick (lib/export-presets.ts's
+ * pickPresetForContactCategory()) to match a booking's contact
+ * category against a preset without staff having to rename the preset
+ * itself to match the Address Book's own category wording.
  */
 export function ExportPresetSettings({ initialPresets, categories, canEdit }: Props) {
   const [rows, setRows] = useState<ExportPresetRow[]>(initialPresets);
   const [name, setName] = useState("");
   const [prefixes, setPrefixes] = useState<string[]>([]);
+  const [contactCategories, setContactCategories] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  /** Comma-separated free text -> trimmed, non-empty array — shared by the add form and each row's inline edit below. */
+  function parseContactCategories(value: string): string[] {
+    return value
+      .split(",")
+      .map((c) => c.trim())
+      .filter(Boolean);
+  }
 
   async function save(next: ExportPresetRow[]) {
     setSaving(true);
@@ -59,9 +77,32 @@ export function ExportPresetSettings({ initialPresets, categories, canEdit }: Pr
   function add(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim() || prefixes.length === 0) return;
-    save([...rows, { name: name.trim(), prefixes: [...prefixes] }]);
+    const cleanedCategories = parseContactCategories(contactCategories);
+    save([
+      ...rows,
+      {
+        name: name.trim(),
+        prefixes: [...prefixes],
+        ...(cleanedCategories.length > 0 ? { contact_categories: cleanedCategories } : {}),
+      },
+    ]);
     setName("");
     setPrefixes([]);
+    setContactCategories("");
+  }
+
+  /** Inline edit of a row's contact_categories — same trim/split-on-comma parsing as the add form, applied on blur so a partial in-progress edit doesn't save on every keystroke. Empty input clears the field entirely (an explicit choice, not merged with the old value). */
+  function updateContactCategories(index: number, value: string) {
+    const cleaned = parseContactCategories(value);
+    save(
+      rows.map((r, i) => {
+        if (i !== index) return r;
+        const next = { ...r };
+        if (cleaned.length > 0) next.contact_categories = cleaned;
+        else delete next.contact_categories;
+        return next;
+      })
+    );
   }
 
   function remove(index: number) {
@@ -129,6 +170,26 @@ export function ExportPresetSettings({ initialPresets, categories, canEdit }: Pr
                 );
               })}
             </div>
+            {/* "Trade booking document pack" round — applies-to contact
+                categories, matched against contacts.category by
+                BookVisitPanel's Schedule auto-pick. Free text,
+                comma-separated; blank means "no explicit mapping —
+                fall through to the name heuristic / full schedule". */}
+            {canEdit ? (
+              <input
+                defaultValue={(row.contact_categories ?? []).join(", ")}
+                onBlur={(e) => updateContactCategories(index, e.target.value)}
+                placeholder="Applies to contact categories, e.g. Plumber"
+                title="Applies to contact categories"
+                className="w-56 shrink-0 border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-caption focus:border-nearblack focus:outline-none"
+              />
+            ) : (
+              (row.contact_categories?.length ?? 0) > 0 && (
+                <span className="text-caption text-charcoal/50">
+                  {row.contact_categories!.join(", ")}
+                </span>
+              )
+            )}
             {canEdit && (
               <button
                 type="button"
@@ -187,6 +248,15 @@ export function ExportPresetSettings({ initialPresets, categories, canEdit }: Pr
               })}
             </div>
           </div>
+          <label className="flex flex-col gap-1">
+            <span className="label-caps">Applies to contact categories</span>
+            <input
+              value={contactCategories}
+              onChange={(e) => setContactCategories(e.target.value)}
+              placeholder="e.g. Plumber, Plumbing (optional)"
+              className="w-full border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none"
+            />
+          </label>
         </form>
       )}
     </div>

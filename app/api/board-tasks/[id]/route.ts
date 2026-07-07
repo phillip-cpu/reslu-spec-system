@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { rollupPhaseDatesForGroup } from "@/lib/phase-rollup";
-import type { PatchBoardTaskInputV2 } from "@/types/phase-12a-b";
+import type { PatchBoardTaskV33Input } from "@/types/board-v3-3";
 
 const EDITABLE_FIELDS = new Set([
   "column_id",
@@ -11,28 +11,46 @@ const EDITABLE_FIELDS = new Set([
   "due_date",
   "sort",
   "phase_group_id",
-  // Board cockpit round (migration 029): milestone toggle. Note
-  // booking_date/booking_end_date/visit_id are deliberately NOT in this
-  // whitelist — those are only ever written via POST/DELETE
-  // /api/board-tasks/[id]/book-visit, which keeps the trio in sync with
-  // the linked trade_visits row (see that route's own doc comment);
-  // allowing a bare PATCH to touch them here would let a caller set a
-  // booking_date with no linked visit at all, or desync it from the
-  // visit's real dates.
+  // Board cockpit round (migration 029): milestone toggle.
   "kind",
+  // Board v3.3 — "placeholder dates + booking actually sends" (8 July
+  // 2026): booking_date/booking_end_date REJOIN this whitelist,
+  // REVERSING the v3.1 deviation recorded directly above until this
+  // edit. The prior comment here (still visible in migration 029's own
+  // column comments on board_tasks.booking_date/booking_end_date, which
+  // this route does not — and cannot, per this round's "no migration"
+  // constraint — rewrite) claimed these two columns were "only ever
+  // written via POST/DELETE .../book-visit". That was true through
+  // v3.1/v3.2 but is BY DESIGN no longer the whole story: works dates
+  // are meant to be freely editable placeholders on a card that has NO
+  // linked visit (WorksDateCell, components/board/DateCell.tsx, now
+  // opens a start/end popover that commits straight through this PATCH,
+  // the same way DueDateCell's popover always has) — v3.1's read-only
+  // treatment was itself the deviation from the original spec, not the
+  // other way around. Book-visit's own single-write-path guarantee is
+  // preserved for the ONE case it actually matters — a task WITH a
+  // linked visit — by the sync block below (search "WORKS-DATE / VISIT
+  // SYNC"), which pushes any direct booking_date/booking_end_date PATCH
+  // through to the linked trade_visits row immediately, so the two can
+  // never drift apart; POST/DELETE .../book-visit remain the only way
+  // to CREATE or REMOVE that link in the first place, only the DATES
+  // themselves are now dual-write (this route AND book-visit), not the
+  // link.
+  "booking_date",
+  "booking_end_date",
 ]);
 
 const VALID_KINDS = new Set(["task", "milestone"]);
 
 /**
  * PATCH /api/board-tasks/[id]
- * body: PatchBoardTaskInputV2 (partial) — used for both field edits
- * (title/description/contact/due_date/phase_group_id) AND drag-drop
- * moves (column_id + sort together). Response: { task }. When
- * `column_id` or `phase_group_id` is supplied, it's validated against
- * the task's own project (a card can never be dragged into another
- * project's column/group via a forged id). Aria-relevant (Aria
- * operates boards).
+ * body: PatchBoardTaskV33Input (partial) — used for both field edits
+ * (title/description/contact/due_date/phase_group_id/booking_date/
+ * booking_end_date) AND drag-drop moves (column_id + sort together).
+ * Response: { task, reconfirm_visit_ids? }. When `column_id` or
+ * `phase_group_id` is supplied, it's validated against the task's own
+ * project (a card can never be dragged into another project's
+ * column/group via a forged id). Aria-relevant (Aria operates boards).
  *
  * Board v2 — multi-assignee (migration 020): `assignee_ids` is handled
  * SEPARATELY from the generic EDITABLE_FIELDS update loop below, since
@@ -43,6 +61,30 @@ const VALID_KINDS = new Set(["task", "milestone"]);
  * column, migration 020) is kept in sync as a courtesy — set to the
  * first id in the new list, or null — but is never read by this route
  * or any Board v2 UI; see migration 020's deprecation comment.
+ *
+ * Board v3.3 — WORKS-DATE / VISIT SYNC: `booking_date`/
+ * `booking_end_date` are now plain PATCHable fields (see
+ * EDITABLE_FIELDS's own doc comment above for the full "reverses v3.1"
+ * rationale). Validated end >= start whenever the RESULTING row would
+ * have both set (covers every combination: both supplied this request,
+ * only one supplied against an existing value for the other, etc — the
+ * check runs against the post-merge values, not just the two keys this
+ * request happens to touch). When the task carries a `visit_id`, a
+ * direct works-date edit is NOT a placeholder edit — this card's dates
+ * ARE the booked visit's dates (denormalized copies, migration 029) —
+ * so the write pushes through to the linked trade_visits row in the
+ * same request (single logical commit, best-effort on the visit side
+ * per this codebase's established "primary write already succeeded,
+ * don't fail the request over a secondary sync" discipline — see
+ * shift-items/adjust-boundary's identical pattern, which this block
+ * mirrors). If that visit was `status = 'confirmed'`, its id is
+ * returned in `reconfirm_visit_ids` so the client can surface the same
+ * "Dates changed — re-send confirmation?" affordance shift-items/
+ * adjust-boundary already trigger — status itself is left untouched
+ * here (re-sending is a deliberate, separate staff action via POST
+ * /api/visits/[id]/resend-confirmation, never auto-fired by a date
+ * edit). A task with NO visit_id is a pure placeholder — its dates
+ * simply write to board_tasks and nothing else.
  */
 export async function PATCH(
   request: NextRequest,
@@ -59,7 +101,7 @@ export async function PATCH(
 
   const { data: existing } = await supabase
     .from("board_tasks")
-    .select("id,project_id,column_id,phase_group_id")
+    .select("id,project_id,column_id,phase_group_id,visit_id,booking_date,booking_end_date")
     .eq("id", id)
     .is("deleted_at", null)
     .single();
@@ -67,7 +109,7 @@ export async function PATCH(
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
   }
 
-  let body: PatchBoardTaskInputV2;
+  let body: PatchBoardTaskV33Input;
   try {
     body = await request.json();
   } catch {
@@ -99,6 +141,24 @@ export async function PATCH(
     if (!group) {
       return NextResponse.json(
         { error: "phase_group_id does not belong to this project" },
+        { status: 400 }
+      );
+    }
+  }
+
+  // Board v3.3 — validate the RESULTING booking_date/booking_end_date
+  // pair (post-merge with whichever of the two the caller didn't touch
+  // this request), not just whichever key(s) appear in `body` — e.g.
+  // PATCHing only booking_end_date against an existing later
+  // booking_date must still be rejected. `null` on either side means
+  // "no range to compare" (a single date, or neither set) — only reject
+  // when BOTH resolve to a real date and end < start.
+  if ("booking_date" in body || "booking_end_date" in body) {
+    const nextStart = "booking_date" in body ? body.booking_date ?? null : existing.booking_date;
+    const nextEnd = "booking_end_date" in body ? body.booking_end_date ?? null : existing.booking_end_date;
+    if (nextStart && nextEnd && nextEnd < nextStart) {
+      return NextResponse.json(
+        { error: "booking_end_date must be on or after booking_date" },
         { status: 400 }
       );
     }
@@ -177,6 +237,41 @@ export async function PATCH(
     return NextResponse.json({ error: error.message }, { status });
   }
 
+  // Board v3.3 — WORKS-DATE / VISIT SYNC (see this route's own PATCH
+  // doc comment above for the full rationale): a direct booking_date/
+  // booking_end_date write on a task that carries a visit_id pushes the
+  // same new dates onto the linked trade_visits row, and flags a
+  // re-confirm affordance if that visit was 'confirmed' — identical
+  // shape to shift-items/adjust-boundary's own sync block. Only runs
+  // when this request actually touched a booking date AND the task has
+  // a visit_id (a placeholder-only task with no visit has nothing to
+  // sync). Best-effort: never fails this PATCH, which already
+  // committed above.
+  const reconfirmVisitIds: string[] = [];
+  const bookingDatesChanged = "booking_date" in update || "booking_end_date" in update;
+  if (bookingDatesChanged && task.visit_id) {
+    try {
+      const { data: visit } = await supabase
+        .from("trade_visits")
+        .select("id,status")
+        .eq("id", task.visit_id)
+        .is("deleted_at", null)
+        .maybeSingle();
+      if (visit) {
+        await supabase
+          .from("trade_visits")
+          .update({ start_date: task.booking_date, end_date: task.booking_end_date ?? task.booking_date })
+          .eq("id", task.visit_id)
+          .is("deleted_at", null);
+        if (visit.status === "confirmed") {
+          reconfirmVisitIds.push(visit.id);
+        }
+      }
+    } catch (visitSyncError) {
+      console.error("board-task PATCH: failed to sync linked visit dates:", visitSyncError);
+    }
+  }
+
   // INVARIANT: schedule_phases.start_date/end_date are derived from the
   // min/max works dates (board_tasks.booking_date/booking_end_date) of
   // tasks in groups linked to this phase, whenever any linked task has
@@ -184,21 +279,26 @@ export async function PATCH(
   // the board's grouped-list rollup display. A phase_group_id change
   // (drag/drop between groups, or the row's "Phase" select) moves a
   // task's works dates OUT of its old group's rollup input set and INTO
-  // its new group's — both sides are recomputed. Best-effort: a rollup
-  // failure must never fail this PATCH, which already succeeded above —
-  // log and swallow.
+  // its new group's — both sides are recomputed. Board v3.3: a direct
+  // booking_date/booking_end_date PATCH (now possible — see
+  // EDITABLE_FIELDS above) also re-runs the rollup for the task's
+  // (single, unchanged-by-this-request) group, same as book-visit's own
+  // POST/DELETE always have. Best-effort: a rollup failure must never
+  // fail this PATCH, which already succeeded above — log and swallow.
   try {
     if ("phase_group_id" in update) {
       if (existing.phase_group_id !== task.phase_group_id) {
         await rollupPhaseDatesForGroup(supabase, existing.phase_group_id);
       }
       await rollupPhaseDatesForGroup(supabase, task.phase_group_id);
+    } else if (bookingDatesChanged) {
+      await rollupPhaseDatesForGroup(supabase, task.phase_group_id);
     }
   } catch (rollupError) {
     console.error("rollupPhaseDatesForGroup failed after board-task PATCH:", rollupError);
   }
 
-  return NextResponse.json({ task });
+  return NextResponse.json({ task, reconfirm_visit_ids: reconfirmVisitIds });
 }
 
 /**

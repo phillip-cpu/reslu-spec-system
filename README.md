@@ -104,6 +104,14 @@ This downloads everything the app needs. It can take a few minutes the first tim
      `leads.notes` text into one imported `lead_notes` row per lead on
      first run; see `docs/API.md` §"Standard spec items + lead notes —
      migration 030 round")
+   - `supabase/migrations/031_board_v3.sql` (Board v3 — Monday parity
+     round; see `docs/API.md`'s dated section)
+   - `supabase/migrations/032_visit_document_pack.sql` (adds
+     `trade_visits.document_pack jsonb` — frozen "Include documents"
+     choices from `BookVisitPanel`, powering the trade booking page's
+     new DOCUMENTS section; no RLS change, additive column on an
+     already-permissive table — see `docs/API.md`'s "Trade booking
+     document pack" section)
    - `supabase/seed.sql` (adds the category codes and a demo project)
    - `supabase/seed_contacts.sql` (optional — Address Book seed data
      parsed from RESLU's Monday.com export, ~109 companies across 30
@@ -680,6 +688,39 @@ admin enforcement for financial fields is now in place project-wide
   transforms, no changes to the underlying drag/drop or sort
   persistence. See `docs/API.md`'s "Board v3.2 — two-way timeline sync
   + reorder animation" section for the full breakdown.
+
+- **Board v3.3 — placeholder dates + booking actually sends.** Reverses
+  v3.1's read-only works-date deviation: the WORKS cell is a genuine
+  start/end popover again, PATCHing `board_tasks` directly (syncing a
+  linked visit's dates + flagging re-confirm when it changes a confirmed
+  booking). Booking a trade from a card now sends its confirmation email
+  immediately instead of staying silent until the day-before cron (which
+  still fires unchanged as a second nudge). `BookVisitPanel` shows a
+  "From: {card title}" trace line and locks its phase field when opened
+  from a card. See `docs/API.md`'s "Board v3.3 — placeholder dates +
+  booking actually sends" section for the full breakdown.
+
+- **Trade booking document pack (migration `032_visit_document_pack.sql`).**
+  `BookVisitPanel` gains an "Include documents" section — three
+  checkboxes (Plans, Schedule, Scope of Works), each defaulting ON when
+  the corresponding document is available. Schedule auto-picks a
+  category-filtered export preset by matching the booking contact's own
+  category against the studio's export presets (which now support an
+  optional "Applies to contact categories" field in Settings), falling
+  back to a small trade-keyword heuristic, then the full schedule. The
+  three choices are frozen onto the visit as `document_pack` and shown
+  on the trade's own `/trade/[token]` booking page as a new DOCUMENTS
+  section — Plans (latest revision), "Your schedule — {preset}" (the
+  same pricing-free spec PDF the team downloads, filtered to the picked
+  categories), and the Scope of Works (latest issued revision) — each
+  served through a new tokened proxy endpoint
+  (`/api/trade/[token]/documents/plans|schedule|sow`) that re-checks the
+  visit token and the specific pack choice on every request, so a trade
+  can only ever reach documents their own booking actually offered. The
+  booking confirmation, resend, and day-before reminder emails all gain
+  one shared, brief mention line when a visit's pack has anything
+  ticked. See `docs/API.md`'s "Trade booking document pack" section for
+  the full breakdown.
 
 ## Cron jobs — one still needs wiring up (Phase 12a-B)
 

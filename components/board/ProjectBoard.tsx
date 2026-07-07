@@ -34,8 +34,12 @@ import {
   suggestStatusColumnName,
 } from "@/lib/board-constants";
 import { ContactPicker } from "@/components/shared/ContactPicker";
+import type { DocumentPackChoices } from "@/types/trade-doc-pack";
 import { BookVisitPanel } from "./BookVisitPanel";
 import { MilestoneDiaryPrompt } from "./MilestoneDiaryPrompt";
+// Board v3.3 — shared with GanttChart.tsx's own identical "Dates
+// changed — re-send confirmation?" affordance, not duplicated here.
+import { ReconfirmAffordance } from "@/components/gantt/ReconfirmAffordance";
 // Board v3.1 — display-first cells: quiet-cell click-to-edit controls
 // (see each file's own doc comment for the exact interaction shape).
 import { StatusPill } from "./StatusPill";
@@ -51,6 +55,19 @@ interface Props {
 }
 
 const SORT_STEP = 1000;
+
+// Board v3.3 — item 2: same skip-reason copy BookVisitPanel.tsx shows
+// inline, mirrored here (not imported — this file doesn't import
+// component-local constants from a sub-component, same "each file owns
+// its own display strings" convention this file's own BOOKING_STATUS_LABEL
+// constant further down already follows relative to other files) for
+// the transient board-level echo (see bookingEmailNotice's own doc
+// comment for what this banner is and isn't).
+const EMAIL_SKIP_REASON_LABEL: Record<string, string> = {
+  no_gmail_config: "email not configured",
+  no_contact: "no trade linked",
+  no_contact_email: "trade has no email on file",
+};
 
 // Board v3.2 — "Reorder slot animation". Row height in px, matching
 // GroupRows' row className (`h-8` = 2rem = 32px) — used purely to
@@ -182,12 +199,44 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   // moment of opening" fix on every path that can open it (BoardCard,
   // StackedColumnSection's rows via BoardTaskEditorBody, GroupRows).
   const [bookingTask, setBookingTask] = useState<BoardTaskV3 | null>(null);
+  // Board v3.3 — item 2: a short-lived, board-level echo of the booking
+  // email outcome BookVisitPanel already shows inline — the panel's own
+  // message is the primary surface (it's already open, already reading
+  // the exact "request sent to {contact}" / "email not sent: {reason}"
+  // copy), but this ALSO flashes a matching banner up near the board's
+  // existing error banner so the outcome is still visible for a moment
+  // after the panel closes, e.g. if a staff member clicks Close quickly
+  // without reading it — "the card badge surfaces" per this round's own
+  // brief, in the absence of a persisted DB column to show it from on
+  // every future page load (no new migration this round — see BUILD's
+  // own constraint — so this is necessarily transient, not a permanent
+  // per-card badge state). Cleared whenever a new booking flow opens.
+  const [bookingEmailNotice, setBookingEmailNotice] = useState<string | null>(null);
   // Board v3.1 — display-first cells, item 6: the "Update status
   // names" panel opened from the board's "..." overflow menu (near the
   // layout toggle) — the menu itself is a PopoverCell (see the JSX
   // below), which owns its own open/close state, so this file only
   // needs to track whether the PANEL is open.
   const [statusNamesPanelOpen, setStatusNamesPanelOpen] = useState(false);
+  // Board v3.3 — "Dates changed — re-send confirmation?" affordance,
+  // surfaced on a row whose linked visit was 'confirmed' at the moment
+  // a direct works-date PATCH (WorksDateCell, GroupRows below) moved
+  // its dates — same Set-of-visit-ids convention GanttChart.tsx's own
+  // reconfirmPrompts already uses (components/gantt/ReconfirmAffordance.tsx
+  // is shared, imported below, not duplicated), populated from PATCH
+  // /api/board-tasks/[id]'s `reconfirm_visit_ids` response field.
+  const [reconfirmPrompts, setReconfirmPrompts] = useState<Set<string>>(new Set());
+  function dismissReconfirm(visitId: string) {
+    setReconfirmPrompts((cur) => {
+      const next = new Set(cur);
+      next.delete(visitId);
+      return next;
+    });
+  }
+  async function resendConfirmation(visitId: string) {
+    const res = await fetch(`/api/visits/${visitId}/resend-confirmation`, { method: "POST" });
+    if (!res.ok) throw new Error((await res.json()).error ?? "Could not re-send confirmation.");
+  }
 
   // Layout preference — read once on mount (SSR-safe: localStorage
   // doesn't exist server-side, so the initial render always uses the
@@ -440,7 +489,20 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
       body: JSON.stringify(patch),
     });
     if (!res.ok) throw new Error((await res.json()).error ?? "Could not update card.");
-    const { task: updated } = await res.json();
+    // Board v3.3 — `reconfirm_visit_ids` populated only when this PATCH
+    // touched booking_date/booking_end_date on a task linked to a
+    // CONFIRMED visit (see PATCH /api/board-tasks/[id]'s WORKS-DATE /
+    // VISIT SYNC doc comment) — flagged here so every caller of
+    // updateTaskField (not just the WorksDateCell popover) gets the
+    // affordance for free the moment it happens to touch booking dates.
+    const { task: updated, reconfirm_visit_ids: reconfirmVisitIds } = await res.json();
+    if (Array.isArray(reconfirmVisitIds) && reconfirmVisitIds.length > 0) {
+      setReconfirmPrompts((cur) => {
+        const next = new Set(cur);
+        for (const visitId of reconfirmVisitIds) next.add(visitId);
+        return next;
+      });
+    }
     return updated;
   }
 
@@ -454,24 +516,37 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
    * other card mutation in this file uses.
    */
   /**
-   * Returns the trade-insurance warning (or null) from the book-visit
-   * response — same non-blocking check every other booking path in the
-   * app surfaces (GanttChart's AddVisitForm, VisitBottomSheet); this
-   * was the one booking path that silently dropped it.
+   * Returns the trade-insurance warning (or null) PLUS this round's
+   * email outcome from the book-visit response — same non-blocking
+   * insurance check every other booking path in the app surfaces
+   * (GanttChart's AddVisitForm, VisitBottomSheet); this was the one
+   * booking path that silently dropped it. Board v3.3 — item 2: also
+   * returns `email_sent`/`email_skip_reason` (see POST
+   * /api/board-tasks/[id]/book-visit's own doc comment for what each
+   * skip reason means) so BookVisitPanel can show "request sent to
+   * {contact}" vs. "booked — email not sent: {reason}" immediately,
+   * without a second fetch.
    */
   async function bookVisit(
     taskId: string,
-    input: { phase_id: string; contact_id?: string | null; start_date: string; end_date: string }
-  ): Promise<string | null> {
+    input: {
+      phase_id: string;
+      contact_id?: string | null;
+      start_date: string;
+      end_date: string;
+      /** "Trade booking document pack" — forwarded verbatim to POST /api/board-tasks/[id]/book-visit's own optional document_pack body field; see that route's doc comment for the full frozen-choices write-through. */
+      document_pack?: DocumentPackChoices;
+    }
+  ): Promise<{ insuranceWarning: string | null; emailSent: boolean; emailSkipReason?: string }> {
     const res = await fetch(`/api/board-tasks/${taskId}/book-visit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
     });
     if (!res.ok) throw new Error((await res.json()).error ?? "Could not book the visit.");
-    const { task: updated, insurance_warning } = await res.json();
+    const { task: updated, insurance_warning, email_sent, email_skip_reason } = await res.json();
     applyTaskPatch(taskId, updated as Partial<BoardTaskV3>);
-    return insurance_warning ?? null;
+    return { insuranceWarning: insurance_warning ?? null, emailSent: !!email_sent, emailSkipReason: email_skip_reason };
   }
 
   /** Unlinks a card's booking without deleting the underlying visit — see DELETE /api/board-tasks/[id]/book-visit's doc comment. */
@@ -966,6 +1041,23 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
         </p>
       )}
 
+      {/* Board v3.3 — item 2: transient echo of the booking email
+          outcome — see bookingEmailNotice's own doc comment. Dismissible
+          (not auto-clearing on a timer) since a staff member may be mid-
+          scroll/mid-task when it appears. */}
+      {bookingEmailNotice && (
+        <p className="flex items-center justify-between gap-3 border border-sand bg-cream px-3 py-2 text-body text-charcoal">
+          <span>{bookingEmailNotice}</span>
+          <button
+            type="button"
+            onClick={() => setBookingEmailNotice(null)}
+            className="shrink-0 text-caption text-charcoal/50 underline hover:text-nearblack"
+          >
+            Dismiss
+          </button>
+        </p>
+      )}
+
       {bookingTask && (
         <BookVisitPanel
           key={bookingTask.id}
@@ -974,7 +1066,22 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
           initialContactId={bookingTask.contact_id}
           initialStartDate={bookingTask.booking_date}
           initialEndDate={bookingTask.booking_end_date}
-          onBook={(input) => bookVisit(bookingTask.id, input)}
+          cardContext={{ title: bookingTask.title }}
+          onBook={async (input) => {
+            const result = await bookVisit(bookingTask.id, input);
+            // Board v3.3 — item 2: transient board-level echo of the
+            // panel's own inline message — see bookingEmailNotice's own
+            // doc comment above for why this exists alongside (not
+            // instead of) the panel's message.
+            setBookingEmailNotice(
+              result.emailSent
+                ? `Request sent to the trade for "${bookingTask.title}".`
+                : `"${bookingTask.title}" booked — email not sent: ${
+                    EMAIL_SKIP_REASON_LABEL[result.emailSkipReason ?? ""] ?? "unknown reason"
+                  }.`
+            );
+            return result;
+          }}
           onClose={() => setBookingTask(null)}
         />
       )}
@@ -1244,6 +1351,9 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               onDropInGroup={(index) => onDropInGroup(group.id, index)}
               onMoveTask={moveTaskWithinGroup}
               onAddSubTask={(parentTask, title) => addSubTask(parentTask, title)}
+              reconfirmPrompts={reconfirmPrompts}
+              onResendConfirmation={resendConfirmation}
+              onDismissReconfirm={dismissReconfirm}
               onAddTask={(title, assigneeIds) => {
                 // "Three from Phillip — 6 July 2026 evening" item 3:
                 // default column = first column (columns is already
@@ -1277,6 +1387,9 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               onDropInGroup={(index) => onDropInGroup(null, index)}
               onMoveTask={moveTaskWithinGroup}
               onAddSubTask={(parentTask, title) => addSubTask(parentTask, title)}
+              reconfirmPrompts={reconfirmPrompts}
+              onResendConfirmation={resendConfirmation}
+              onDismissReconfirm={dismissReconfirm}
             />
           )}
 
@@ -2252,6 +2365,9 @@ function GroupTable({
   onDragStartTask,
   onDropInGroup,
   onMoveTask,
+  reconfirmPrompts,
+  onResendConfirmation,
+  onDismissReconfirm,
 }: {
   /** Timeline Day-zoom polish round — item 5's reciprocal "View on timeline" link, built here rather than passed as a ready-made href since the group's own phase_id (below) is what the link target actually needs. */
   projectId: string;
@@ -2300,6 +2416,10 @@ function GroupTable({
   onDropInGroup: (index: number | null) => void;
   /** Touch fallback's "Move up"/"Move down" (item 4) — reorders one slot within the CURRENT group, no phase change. */
   onMoveTask: (task: BoardTaskV3, direction: -1 | 1) => void;
+  /** Board v3.3 — visit ids currently showing the "Dates changed — re-send confirmation?" affordance (see ProjectBoard's own state of the same name). */
+  reconfirmPrompts: Set<string>;
+  onResendConfirmation: (visitId: string) => Promise<void>;
+  onDismissReconfirm: (visitId: string) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(group.name);
@@ -2541,6 +2661,9 @@ function GroupTable({
             onDropAtIndex={onDropInGroup}
             onMoveTask={onMoveTask}
             onAddSubTask={onAddSubTask}
+            reconfirmPrompts={reconfirmPrompts}
+            onResendConfirmation={onResendConfirmation}
+            onDismissReconfirm={onDismissReconfirm}
           />
           {/* "Three from Phillip — 6 July 2026 evening" item 3: inline
               "+ Add item" composer, one per group — mirrors
@@ -2671,6 +2794,9 @@ function UngroupedTable({
   onDropInGroup,
   onMoveTask,
   onAddSubTask,
+  reconfirmPrompts,
+  onResendConfirmation,
+  onDismissReconfirm,
 }: {
   tasks: BoardTaskV3[];
   columnById: Map<string, BoardColumnV3>;
@@ -2691,6 +2817,10 @@ function UngroupedTable({
   onMoveTask: (task: BoardTaskV3, direction: -1 | 1) => void;
   /** Board v3 — Monday parity round: see GroupTable's own prop of the same name. */
   onAddSubTask: (parentTask: BoardTaskV3, title: string) => void;
+  /** Board v3.3 — see GroupTable's own prop of the same name. */
+  reconfirmPrompts: Set<string>;
+  onResendConfirmation: (visitId: string) => Promise<void>;
+  onDismissReconfirm: (visitId: string) => void;
 }) {
   const [dragOver, setDragOver] = useState(false);
   return (
@@ -2728,6 +2858,9 @@ function UngroupedTable({
         onDropAtIndex={onDropInGroup}
         onMoveTask={onMoveTask}
         onAddSubTask={onAddSubTask}
+        reconfirmPrompts={reconfirmPrompts}
+        onResendConfirmation={onResendConfirmation}
+        onDismissReconfirm={onDismissReconfirm}
       />
     </div>
   );
@@ -2790,6 +2923,9 @@ function GroupRows({
   onDropAtIndex,
   onMoveTask,
   onAddSubTask,
+  reconfirmPrompts,
+  onResendConfirmation,
+  onDismissReconfirm,
 }: {
   tasks: BoardTaskV3[];
   columnById: Map<string, BoardColumnV3>;
@@ -2816,6 +2952,10 @@ function GroupRows({
   onMoveTask: (task: BoardTaskV3, direction: -1 | 1) => void;
   /** Board v3 — Monday parity round: row-level "Add sub-item" — see GroupTable's own prop of the same name. */
   onAddSubTask: (parentTask: BoardTaskV3, title: string) => void;
+  /** Board v3.3 — visit ids currently showing the "Dates changed — re-send confirmation?" affordance (ProjectBoard's own reconfirmPrompts state), surfaced below the WORKS cell for any row whose visit_id is in this set — see WorksDateCell/PATCH /api/board-tasks/[id]'s own doc comments for when this gets populated. */
+  reconfirmPrompts: Set<string>;
+  onResendConfirmation: (visitId: string) => Promise<void>;
+  onDismissReconfirm: (visitId: string) => void;
 }) {
   // Board cockpit round — item 9 "Grouped-list edit parity": clicking a
   // row expands the SAME full card editor component the kanban view
@@ -3209,17 +3349,22 @@ function GroupRows({
             </PopoverCell>
           </td>
           <td className="py-1 pr-3">
-            {/* Board v3.1 — display-first cells, item 2: WORKS — quiet
-                display chip only (booking_date/booking_end_date are not
-                independently PATCHable anywhere in this codebase — see
-                WorksDateCell's own doc comment); click opens the SAME
-                Book trade panel every other works-date affordance in
-                this file already uses. */}
+            {/* Board v3.3 — WORKS is now a genuine editable start/end
+                popover (booking_date/booking_end_date REJOINED PATCH
+                /api/board-tasks/[id]'s whitelist — see that route's
+                EDITABLE_FIELDS doc comment) — reverses v3.1's read-only
+                treatment, which used to open the Book-trade panel from
+                this exact cell. "Book trade" remains reachable ONLY via
+                its own explicit buttons (BoardTaskEditorBody's Book
+                trade/Unlink actions below, kanban card, context menu) —
+                this cell only ever edits dates on whatever booking state
+                already exists (none, or a live visit_id link). */}
             <WorksDateCell
               startDate={task.booking_date}
               endDate={task.booking_end_date}
+              visitId={task.visit_id}
               visitStatusLabel={task.visit ? BOOKING_STATUS_LABEL[task.visit.status] : null}
-              onOpenBookVisit={() => onBookVisit(task)}
+              onCommit={(next) => onPatchTask(task, next, next)}
             />
           </td>
           <td className="py-1 pr-3">
@@ -3238,6 +3383,23 @@ function GroupRows({
             {showDependencyChip && <DependencyChip text={showDependencyChip} />}
           </td>
         </tr>
+        {/* Board v3.3 — "Dates changed — re-send confirmation?" — shown
+            right under a row whose linked visit was CONFIRMED at the
+            moment a direct works-date edit (WorksDateCell above, or any
+            other booking_date/booking_end_date PATCH) moved its dates.
+            Same shared ReconfirmAffordance component GanttChart.tsx's
+            visit sub-bars already use, keyed by visit id (not task id)
+            for consistency with that file's own convention. */}
+        {task.visit_id && reconfirmPrompts.has(task.visit_id) && (
+          <tr className="border-b border-[#e5e0d6] last:border-b-0">
+            <td colSpan={7} className="px-3 pb-1.5">
+              <ReconfirmAffordance
+                onResend={() => onResendConfirmation(task.visit_id as string)}
+                onDismiss={() => onDismissReconfirm(task.visit_id as string)}
+              />
+            </td>
+          </tr>
+        )}
         {isExpanded && (
           <tr className="border-b border-[#e5e0d6] bg-nearwhite last:border-b-0">
             <td colSpan={7} className="px-3 pb-3">
