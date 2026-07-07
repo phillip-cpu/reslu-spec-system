@@ -173,6 +173,13 @@ export function roomSectionTemplate(roomName: string): SowTemplateSection {
       note(`Ref: {{drawing references for ${roomName}}}`),
       inc("DEMOLISH — full strip-out as shown by hatch on plan. Remove and dispose off-site. {{scope specifics}}"),
       note("PARTITIONS & PLASTERING — {{new stud walls / MR plasterboard to wet areas / make good ceiling at service penetrations, as applicable}}."),
+      // Added per Phillip 7 Jul — screed/subfloor was missing from the
+      // extracted pattern. Sequencing vs membrane left as a template
+      // variable: RESLU's issued SOW wording says "waterproofing ...
+      // completed prior to tile bed" while Phillip described bed-first —
+      // both assemblies exist; the editable placeholder forces a per-job
+      // decision instead of hard-coding one.
+      note("SUBFLOOR — {{screed bed to falls to waste / levelling compound as required; sequencing relative to membrane per waterproofing system specification}}."),
       note("ELECTRICAL & LIGHTING — {{downlights, wall lights, exhaust fan, GPOs per FF&E schedule item codes}}."),
       note("WATERPROOFING — full floor waterproofing including 200mm minimum upturn to all walls; full-height waterproofing to all shower walls. Waterproofing by tiling contractor, completed prior to tile bed. An independent third-party inspector to be engaged by RESLU to inspect and certify waterproofing compliance prior to tiling."),
       note("FLOOR FINISHES — {{tile/floor product code per FF&E schedule}}."),

@@ -142,11 +142,14 @@ begin
 
   insert into estimate_template_lines (section_id, description, unit, sort)
   values
-    (v_section_id, 'Bathroom floor & shower — waterproofing membrane', null, 1),
-    (v_section_id, 'Ensuite floor & shower — waterproofing membrane', null, 2),
-    (v_section_id, 'Laundry — waterproofing membrane', null, 3),
-    (v_section_id, 'Balcony / wet area waterproofing', null, 4),
-    (v_section_id, 'Independent waterproofing inspection & certificate', null, 5);
+    -- Screed beds precede the membranes (falls formed in the bed) —
+    -- added per Phillip 7 Jul: was missing from the Excel template too.
+    (v_section_id, 'Wet area screed beds / subfloor prep — falls to waste', null, 1),
+    (v_section_id, 'Bathroom floor & shower — waterproofing membrane', null, 2),
+    (v_section_id, 'Ensuite floor & shower — waterproofing membrane', null, 3),
+    (v_section_id, 'Laundry — waterproofing membrane', null, 4),
+    (v_section_id, 'Balcony / wet area waterproofing', null, 5),
+    (v_section_id, 'Independent waterproofing inspection & certificate', null, 6);
 
   -- ---- Section 9: Tiling ----
   insert into estimate_template_sections (template_id, name, sort)

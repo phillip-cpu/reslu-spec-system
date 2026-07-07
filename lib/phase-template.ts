@@ -160,6 +160,10 @@ export const FALLBACK_PHASE_TASK_TEMPLATES: Record<string, PhaseTaskTemplateSeed
     { title: "Insulation installed", kind: "task" },
     { title: "Plasterboard walls & ceilings", kind: "task" },
     { title: "Set & sand", kind: "task" },
+    // Screed beds MUST precede waterproofing (falls to waste formed in
+    // the bed, membrane goes over it) — was missing from the Monday
+    // template; added per Phillip 7 Jul.
+    { title: "Wet area subfloor prep & screed beds (falls to waste)", kind: "task" },
     { title: "Internal waterproofing to wet areas", kind: "task" },
     { title: "Stage complete – Linings complete", kind: "milestone" },
   ],
