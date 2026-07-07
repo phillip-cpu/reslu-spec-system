@@ -3,7 +3,9 @@ import { createClient } from "@/lib/supabase/server";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
 import { signedRenditionUrl, RENDITION_SIZES } from "@/lib/image-url";
 import { nextJobNumber } from "@/lib/job-number";
+import { copyStandardItems } from "@/lib/library-items";
 import type { CreateProjectInput, ProjectWithCounts } from "@/types";
+import type { StandardItemIdsInput } from "@/types/round-d";
 
 /**
  * GET /api/projects
@@ -93,7 +95,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: CreateProjectInput & { job_number?: string };
+  let body: CreateProjectInput & { job_number?: string } & StandardItemIdsInput;
   try {
     body = await request.json();
   } catch {
@@ -149,6 +151,17 @@ export async function POST(request: NextRequest) {
         ? `Job number "${jobNumber}" is already in use by another project.`
         : error.message;
     return NextResponse.json({ error: message }, { status });
+  }
+
+  // Migration 030 round — "Standard spec items" checklist
+  // (components/projects/ProjectForm.tsx): copies each selected
+  // standard library item onto the new project's register via the
+  // SAME copy logic POST /api/projects/[id]/items already uses for a
+  // single library_item_id, shared via lib/library-items.ts so this
+  // isn't a forked/duplicated version of that insert. Best-effort —
+  // never blocks the project itself from being created.
+  if (Array.isArray(body.standard_item_ids) && body.standard_item_ids.length > 0) {
+    await copyStandardItems(supabase, project.id, body.standard_item_ids, createdBy);
   }
 
   return NextResponse.json({ project }, { status: 201 });

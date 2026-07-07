@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { Category, DuplicateMatch, LibraryItem } from "@/types";
+import type { LibraryItemWithStandardFlag } from "@/types/round-d";
 
 interface Props {
   categories: Category[];
@@ -32,7 +33,7 @@ function isTradePriceStale(receivedAt: string | null): boolean {
 }
 
 export function LibraryBrowser({ categories }: Props) {
-  const [items, setItems] = useState<LibraryItem[]>([]);
+  const [items, setItems] = useState<LibraryItemWithStandardFlag[]>([]);
   const [q, setQ] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("");
   const [loading, setLoading] = useState(true);
@@ -59,14 +60,37 @@ export function LibraryBrowser({ categories }: Props) {
     };
   }, [q, categoryFilter]);
 
-  function prepend(item: LibraryItem) {
+  function prepend(item: LibraryItemWithStandardFlag) {
     setItems((cur) => [item, ...cur]);
   }
   function remove(id: string) {
     setItems((cur) => cur.filter((i) => i.id !== id));
   }
-  function patch(id: string, next: LibraryItem) {
+  function patch(id: string, next: LibraryItemWithStandardFlag) {
     setItems((cur) => cur.map((i) => (i.id === id ? next : i)));
+  }
+
+  /**
+   * Migration 030 round — "Standard spec" toggle. Optimistic flip with
+   * rollback on failure, same pattern the trade-price panel below uses
+   * for its own PATCH calls.
+   */
+  async function toggleStandard(item: LibraryItemWithStandardFlag) {
+    const next = !item.is_standard;
+    patch(item.id, { ...item, is_standard: next });
+    try {
+      const res = await fetch(`/api/library/${item.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_standard: next }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? "Could not update");
+      const { item: saved } = await res.json();
+      patch(item.id, saved);
+    } catch (err) {
+      patch(item.id, item);
+      setError(err instanceof Error ? err.message : "Could not update standard flag");
+    }
   }
 
   const categoryName = new Map(categories.map((c) => [c.prefix, c.name]));
@@ -146,7 +170,14 @@ export function LibraryBrowser({ categories }: Props) {
                     </span>
                   )}
                 </div>
-                <h3 className="mt-1 text-subhead text-nearblack">{item.name}</h3>
+                <div className="mt-1 flex items-center gap-2">
+                  <h3 className="text-subhead text-nearblack">{item.name}</h3>
+                  {item.is_standard && (
+                    <span className="border border-sand px-1.5 py-0.5 text-caption text-sand">
+                      ★ Standard
+                    </span>
+                  )}
+                </div>
                 <div className="mt-1 flex flex-wrap gap-x-4 text-body text-charcoal/60">
                   {item.brand && <span>{item.brand}</span>}
                   {item.supplier && <span>{item.supplier}</span>}
@@ -179,23 +210,36 @@ export function LibraryBrowser({ categories }: Props) {
                 ) : (
                   <span />
                 )}
-                <button
-                  type="button"
-                  onClick={async () => {
-                    if (!confirm(`Delete "${item.name}" from the library?`)) return;
-                    remove(item.id);
-                    const res = await fetch(`/api/library/${item.id}`, {
-                      method: "DELETE",
-                    });
-                    if (!res.ok) {
-                      setError("Could not delete product");
-                      prepend(item);
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => toggleStandard(item)}
+                    className={
+                      item.is_standard
+                        ? "text-caption text-sand hover:text-charcoal"
+                        : "text-caption text-charcoal/50 hover:text-sand"
                     }
-                  }}
-                  className="text-caption text-charcoal/50 hover:text-red-700"
-                >
-                  Delete
-                </button>
+                  >
+                    {item.is_standard ? "Unmark standard" : "Mark standard"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!confirm(`Delete "${item.name}" from the library?`)) return;
+                      remove(item.id);
+                      const res = await fetch(`/api/library/${item.id}`, {
+                        method: "DELETE",
+                      });
+                      if (!res.ok) {
+                        setError("Could not delete product");
+                        prepend(item);
+                      }
+                    }}
+                    className="text-caption text-charcoal/50 hover:text-red-700"
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
             </article>
           ))}
@@ -219,8 +263,8 @@ function TradePricePanel({
   onSaved,
   onError,
 }: {
-  item: LibraryItem;
-  onSaved: (next: LibraryItem) => void;
+  item: LibraryItemWithStandardFlag;
+  onSaved: (next: LibraryItemWithStandardFlag) => void;
   onError: (msg: string | null) => void;
 }) {
   const [price, setPrice] = useState(item.price_trade === null ? "" : String(item.price_trade));
@@ -314,7 +358,7 @@ function LibraryForm({
   onError,
 }: {
   categories: Category[];
-  onCreated: (item: LibraryItem) => void;
+  onCreated: (item: LibraryItemWithStandardFlag) => void;
   onError: (msg: string | null) => void;
 }) {
   const [form, setForm] = useState({

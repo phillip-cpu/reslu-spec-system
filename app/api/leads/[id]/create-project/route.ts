@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { nextJobNumber } from "@/lib/job-number";
+import { copyStandardItems } from "@/lib/library-items";
 import type { Lead, Project } from "@/types";
+import type { StandardItemIdsInput } from "@/types/round-d";
 
 export const runtime = "nodejs";
 
@@ -63,11 +65,18 @@ function extractSurname(surnameProject: string): string {
  * out-of-order lead isn't blocked.
  */
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
   const supabase = await createClient();
+
+  // Migration 030 round — "Standard spec items" checklist, same body
+  // field as POST /api/projects (see that route + this round's
+  // components/leads/LeadDetailPanel.tsx compact checklist). A missing
+  // or unparsable body is fine here — this route previously accepted
+  // no body at all — so parse failures are swallowed, not surfaced.
+  const body: StandardItemIdsInput = await request.json().catch(() => ({}));
 
   const info = await getUserRole(supabase);
   if (!info) {
@@ -172,6 +181,17 @@ export async function POST(
       { error: `Project created, but failed to link it back to the lead: ${linkError.message}`, project },
       { status: 500 }
     );
+  }
+
+  // Migration 030 round — "Standard spec items" checklist, compact
+  // version in the "Progress to job" confirm step
+  // (components/leads/LeadDetailPanel.tsx). Only runs on THIS fresh-
+  // create path, never on the idempotent early-return above (re-
+  // clicking "Progress to job" after a refresh must never re-copy
+  // items onto an already-existing project). Same shared copy helper
+  // as POST /api/projects — no duplicated item-construction logic.
+  if (Array.isArray(body.standard_item_ids) && body.standard_item_ids.length > 0) {
+    await copyStandardItems(supabase, project.id, body.standard_item_ids, createdBy);
   }
 
   return NextResponse.json(

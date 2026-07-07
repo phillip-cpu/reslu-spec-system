@@ -401,6 +401,32 @@ const TOOLS = [
         body: JSON.stringify({ stage }),
       }),
   },
+  // ------------------------------------------------------------
+  // Migration 030 round (7 July 2026) — lead_notes, mirroring the
+  // existing item-notes pattern (POST /api/items/[id]/notes has no
+  // MCP tool of its own today, but this is the exact same thin-fetch
+  // shape). Use this for logging call/email outcomes against a lead —
+  // see docs/ARIA.md's own worked example.
+  // ------------------------------------------------------------
+  {
+    name: "add_lead_note",
+    description:
+      "Add an attributed, timestamped note to a lead — e.g. logging the outcome of a call or email. Admin-only (leads are admin-only, financial-adjacent, same as every other leads route/tool). Distinct from move_lead_stage: this never changes the lead's stage, just appends to its notes feed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        lead_id: { type: "string", description: "Lead UUID" },
+        text: { type: "string", description: "Note text, e.g. 'Called 7 Jul — no answer, left voicemail.'" },
+      },
+      required: ["lead_id", "text"],
+      additionalProperties: false,
+    },
+    handler: async ({ lead_id, text }) =>
+      apiFetch(`/api/leads/${lead_id}/notes`, {
+        method: "POST",
+        body: JSON.stringify({ text }),
+      }),
+  },
   {
     name: "get_needs_attention",
     description:

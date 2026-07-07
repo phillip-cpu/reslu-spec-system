@@ -7,6 +7,9 @@ import { LEAD_STAGES, type Lead, type LeadStageEvent, type PatchLeadInput } from
 import { googleCalendarUrl } from "@/lib/ics";
 import { AddToCalendarMenu } from "@/components/shared/AddToCalendarMenu";
 import type { InviteeOption } from "@/types/phase-small-round";
+import type { StandardItemIdsInput } from "@/types/round-d";
+import { LeadNotes } from "@/components/leads/LeadNotes";
+import { StandardItemsChecklist } from "@/components/projects/StandardItemsChecklist";
 
 interface Props {
   lead: Lead;
@@ -79,6 +82,12 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
   // (client-side, via lib/ics.ts googleCalendarUrl()).
   const [invitees, setInvitees] = useState<InviteeOption[]>([]);
   const [selectedInviteeEmails, setSelectedInviteeEmails] = useState<string[]>([]);
+  // Migration 030 round — "Standard spec items" checklist, compact
+  // variant, shown alongside "Progress to job" (see
+  // components/projects/StandardItemsChecklist.tsx / handleCreateProject
+  // below).
+  const [standardItemIds, setStandardItemIds] = useState<string[]>([]);
+  const [notesError, setNotesError] = useState<string | null>(null);
 
   useEffect(() => {
     setDraft(lead);
@@ -143,7 +152,11 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
       design_end: draft.design_end,
       construction_start: draft.construction_start,
       construction_end: draft.construction_end,
-      notes: draft.notes,
+      // Migration 030 round: leads.notes is no longer editable via this
+      // panel — the attributed lead_notes feed (LeadNotes, rendered
+      // below) replaces it as the editable surface. Deliberately NOT
+      // included in this PATCH body any more (contrast with the prior
+      // version of this file, which sent `notes: draft.notes`).
     };
     try {
       const updated = await onPatch(patch);
@@ -186,7 +199,16 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
     setCreatingProject(true);
     setError(null);
     try {
-      const res = await fetch(`/api/leads/${lead.id}/create-project`, { method: "POST" });
+      // Migration 030 round: standard_item_ids rides along so the new
+      // project's register is pre-seeded from the same checklist shown
+      // just above the button (StandardItemsChecklist) — same body
+      // field/shared copy helper as POST /api/projects.
+      const payload: StandardItemIdsInput = { standard_item_ids: standardItemIds };
+      const res = await fetch(`/api/leads/${lead.id}/create-project`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "Could not create the job.");
       onProjectCreated(body.project.id);
@@ -407,15 +429,20 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
             </label>
           </div>
 
-          <label className="block">
-            <span className={labelClass}>Notes</span>
-            <textarea
-              value={draft.notes ?? ""}
-              onChange={(e) => setField("notes", e.target.value || null)}
-              rows={4}
-              className={inputClass}
-            />
-          </label>
+          {/* Migration 030 round: leads.notes free-text editing is
+              retired from this panel — the attributed, timestamped
+              lead_notes feed below is now the only editable notes
+              surface (display migrated into the feed; see
+              components/leads/LeadNotes.tsx and
+              GET/POST /api/leads/[id]/notes). */}
+          <div className="border-t border-[#dcd6cc] pt-4">
+            {notesError && (
+              <p className="mb-2 border border-red-700/40 bg-red-50 px-3 py-2 text-caption text-red-700">
+                {notesError}
+              </p>
+            )}
+            <LeadNotes leadId={lead.id} onError={setNotesError} />
+          </div>
 
           <div className="flex flex-wrap items-center gap-2">
             {dirty && (
@@ -428,7 +455,18 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
                 {saving ? "Saving…" : "Save changes"}
               </button>
             )}
+          </div>
 
+          {/* "Standard spec items" checklist (migration 030 round) —
+              compact variant, shown only alongside the "Progress to
+              job" affordance itself (renders nothing when no library
+              items are flagged standard — see
+              components/projects/StandardItemsChecklist.tsx). */}
+          {PROGRESS_TO_JOB_STAGES.has(draft.stage) && !draft.project_id && (
+            <StandardItemsChecklist selectedIds={standardItemIds} onChange={setStandardItemIds} compact />
+          )}
+
+          <div className="flex flex-wrap items-center gap-2">
             {PROGRESS_TO_JOB_STAGES.has(draft.stage) && !draft.project_id && (
               <button
                 type="button"

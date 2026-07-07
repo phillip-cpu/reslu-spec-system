@@ -52,10 +52,24 @@ Auth: session. Body: none. Response: `{ projects: ProjectWithCounts[] }`
 projects are included). **Aria-relevant.**
 
 ### POST /api/projects
-Auth: session. Body: `{ name, client_name, address?, monday_board_id?, budget?, job_number? }`.
+Auth: session. Body: `{ name, client_name, address?, monday_board_id?, budget?, job_number?, standard_item_ids? }`.
 Response: `{ project }` (201) or `{ error }` (409 on a job_number
 clash). `client_token` is DB-generated, never accepted from the
 request. **Aria-relevant.**
+
+**Standard spec items (migration `030_standards_lead_notes.sql`,
+"Two from Phillip — 7 July 2026"):** `standard_item_ids?` — an array of
+`library_items.id` (normally every id currently flagged `is_standard`,
+pre-ticked by `components/projects/StandardItemsChecklist.tsx`, but any
+subset the caller supplies is honoured). Each id is copied onto the new
+project's spec register via `lib/library-items.ts`
+`copyLibraryItemToProject()` — the SAME insert shape
+`POST /api/projects/[id]/items` already builds for a single
+`library_item_id`, extracted into a shared helper rather than
+duplicated. Best-effort: an id that no longer exists is silently
+skipped; nothing here can fail project creation itself. The identical
+field/behaviour is also accepted by
+`POST /api/leads/[id]/create-project` (see that route below).
 
 **Job numbers (migration `028_job_numbers.sql`, "Three from Phillip —
 6 July 2026 evening" item 2):** when `job_number` is omitted, one is
@@ -320,13 +334,17 @@ full name, falling back to email, then `"Team member"`.
 
 ### GET /api/library
 Auth: session (financial fields admin-only). Body: none. Query:
-`?q=`, `?category=`. Response: `{ items }`, ordered
-`usage_count desc, name asc`, capped at 200 (Phase 14A: `?limit=`
-override, max 1000; `?offset=` for paging; response also carries
-`total` (exact count), `limit`, `offset`). `FINANCIAL_FIELDS =
-["price_trade", "trade_price_received_at", "trade_price_source"]`
-stripped for non-admins; `price_rrp` is NOT gated (public reference
-price). **Aria-relevant.**
+`?q=`, `?category=`, `?standard=1` (migration `030_standards_lead_notes.sql`
+— only items with `is_standard = true`; this is the exact query
+`components/projects/StandardItemsChecklist.tsx` calls for the "Standard
+spec items" checklist at Create Project and the leads "Progress to
+job" step). Response: `{ items }`, ordered `usage_count desc, name asc`,
+capped at 200 (Phase 14A: `?limit=` override, max 1000; `?offset=` for
+paging; response also carries `total` (exact count), `limit`,
+`offset`). `FINANCIAL_FIELDS = ["price_trade",
+"trade_price_received_at", "trade_price_source"]` stripped for
+non-admins; `price_rrp` is NOT gated (public reference price).
+**Aria-relevant.**
 
 ### POST /api/library
 Auth: session (financial fields admin-only). Body: `{ name, category
@@ -337,13 +355,20 @@ trade_price_source?, trade_price_received_at? }`. Response: `{ item }`
 (201, stripped for non-admins). A non-admin's financial fields are
 silently forced to null rather than rejected. Setting `price_trade`
 auto-stamps `trade_price_received_at` to today if not supplied.
-`product_url_normalized` computed server-side.
+`product_url_normalized` computed server-side. `is_standard` defaults
+`false` on this route (not accepted at creation — flip it afterwards
+via `PATCH /api/library/[id]`, same as every other library toggle).
 
 ### PATCH /api/library/[id]
 Auth: session (financial fields admin-only). Body: any of the
-editable fields listed under POST above. Response: `{ item }`
+editable fields listed under POST above, **plus** `is_standard?`
+(migration `030_standards_lead_notes.sql` — boolean, not financial, not
+gated; any signed-in team member can toggle it, matching every other
+non-financial library field on this route). Response: `{ item }`
 (stripped for non-admins). Non-admin financial-field keys in the body
-are silently ignored (not rejected).
+are silently ignored (not rejected). The Library UI badge '★ Standard'
+and its "Mark standard"/"Unmark standard" toggle
+(`components/library/LibraryBrowser.tsx`) both go through this route.
 
 ### DELETE /api/library/[id]
 Auth: **session only — no admin check.** Body: none. Response:
@@ -1273,15 +1298,26 @@ Same data `POST .../stage` returns inline, but independently fetchable
 for the detail panel's stage-history timeline on open/refresh.
 
 ### POST /api/leads/[id]/create-project
-Auth: admin. Body: none. BUILD-SPEC.md: "Moving a lead to Design Work
-In Progress offers one-click 'Create project' (links lead -> project)."
-**Phase 11 extension (5 July 2026):** UI label renamed **"Progress to
-job"** in `components/leads/LeadDetailPanel.tsx` — this route path is
-unchanged. The button is now surfaced whenever the lead's stage is
-`'Design Work In Progress'`, `'Construction In Progress'`, or
-`'Complete'` (previously only right after a stage change into 'Design
-Work In Progress'), so older leads already further along can still be
-progressed to a job.
+Auth: admin. Body: `{ standard_item_ids? }` (previously no body at
+all — see "Standard spec items" below). BUILD-SPEC.md: "Moving a lead
+to Design Work In Progress offers one-click 'Create project' (links
+lead -> project)." **Phase 11 extension (5 July 2026):** UI label
+renamed **"Progress to job"** in `components/leads/LeadDetailPanel.tsx`
+— this route path is unchanged. The button is now surfaced whenever the
+lead's stage is `'Design Work In Progress'`, `'Construction In
+Progress'`, or `'Complete'` (previously only right after a stage change
+into 'Design Work In Progress'), so older leads already further along
+can still be progressed to a job.
+
+**Standard spec items (migration `030_standards_lead_notes.sql`):**
+same `standard_item_ids?` field and shared copy helper
+(`lib/library-items.ts` `copyStandardItems()`/`copyLibraryItemToProject()`)
+as `POST /api/projects` — see that route's own doc comment above for
+the full behaviour. Only runs on the fresh-create path below, never on
+the idempotent early-return (re-clicking "Progress to job" after a
+refresh never re-copies items onto an already-existing project).
+`components/leads/LeadDetailPanel.tsx` shows the same compact checklist
+(`StandardItemsChecklist`) right above the "Progress to job" button.
 
 Creates a project prepopulated from the lead:
 - `name` <- `leads.surname_project` (unchanged, whole string incl. any descriptor)
@@ -1330,6 +1366,38 @@ also overdue genuinely needs both signals surfaced. This is **the**
 route BUILD-SPEC's "Aria API layer" names for her nurturer/monitor
 automations to poll (see `docs/ARIA.md`). **Aria-relevant**
 (`get_needs_attention` MCP tool).
+
+### GET /api/leads/[id]/notes
+Auth: admin (migration `030_standards_lead_notes.sql`). Body: none.
+Response: `{ notes: LeadNote[] }` — **newest first** (contrast with
+`GET /api/items/[id]/notes`, which is oldest first; the lead notes feed
+is explicitly newest-first per this round's spec so a freshly-added
+note is immediately visible without scrolling). Otherwise a structural
+mirror of the item-notes route: same `{ id, lead_id, author_id,
+author_name, text, created_at }` shape (`LeadNote`, `types/round-d.ts`)
+against `lead_notes` instead of `item_notes`.
+
+### POST /api/leads/[id]/notes
+Auth: admin. Body: `{ text }` (required, trimmed). Response: `{ note }`
+(201). `author_name` denormalised from the caller's profile full name,
+falling back to email, then `"Team member"` — byte-for-byte the same
+fallback chain as `POST /api/items/[id]/notes`. Replaces
+`leads.notes` as the editable notes surface —
+`components/leads/LeadDetailPanel.tsx` no longer offers the old
+free-text field; `components/leads/LeadNotes.tsx` (feed + composer) is
+the only UI writer of this table now. **Aria-relevant**
+(`add_lead_note` MCP tool — e.g. logging the outcome of a call or
+email; see `docs/ARIA.md`).
+
+**Data migration (one-time, in `030_standards_lead_notes.sql` itself):**
+every lead with a non-empty legacy `leads.notes` value got exactly one
+`lead_notes` row inserted — `author_name = 'Imported note'`,
+`author_id = null`, `text = ` the old `leads.notes` value verbatim,
+`created_at = leads.created_at`. Idempotent (guarded by a `NOT EXISTS`
+check on `(lead_id, author_name = 'Imported note')`), so re-running the
+migration never duplicates the import. `leads.notes` itself is **not**
+dropped — it just stops being written to by the app from this round
+on; still readable directly against the table if ever needed.
 
 ### Schema reference (migration `014_leads.sql`)
 
@@ -4020,3 +4088,92 @@ gap this round could NOT fill without a migration — a `materials.contact_id`
 linking a material to a supplier contact record — is documented above
 and in the route's own doc comment rather than worked around with a
 schema change.
+
+---
+
+## Standard spec items + lead notes — migration 030 round (7 July 2026)
+
+BUILD-SPEC.md "Two from Phillip — 7 July 2026 (migration 030 round)"
+incl. the per-project checklist amendment. Migration:
+`supabase/migrations/030_standards_lead_notes.sql`.
+
+**1. Standard spec items.** `library_items.is_standard boolean not null
+default false` (new column). Toggled from the Library UI (badge
+'★ Standard' in the list + "Mark standard"/"Unmark standard" button,
+`components/library/LibraryBrowser.tsx`) via the `PATCH
+/api/library/[id]` whitelist addition (see that route's section
+above). `GET /api/library?standard=1` (new filter, same route file)
+returns only flagged items — this is what feeds the "Standard spec
+items · N" expandable checklist
+(`components/projects/StandardItemsChecklist.tsx`), pre-ticked and
+individually untickable, rendering nothing at all when no items are
+flagged. That checklist appears in two places:
+- **Create Project** (`components/projects/ProjectForm.tsx`) — full
+  expandable variant; selected ids ride along as `standard_item_ids` in
+  the `POST /api/projects` body (see that route's section above).
+- **Leads "Progress to job"** (`components/leads/LeadDetailPanel.tsx`)
+  — `compact` variant, shown only alongside the "Progress to job"
+  button itself; selected ids ride along as `standard_item_ids` in the
+  `POST /api/leads/[id]/create-project` body (see that route's section
+  above).
+
+Both POST routes copy each selected id onto the new project's spec
+register via the **same shared helper**,
+`lib/library-items.ts`'s `copyLibraryItemToProject()` /
+`copyStandardItems()` — extracted from the exact insert shape `POST
+/api/projects/[id]/items` already builds when its body carries a
+single `library_item_id` (that route itself is untouched; the shared
+helper is a new call site for a SECOND use of the same logic, not a
+fork of it). `item_code` is left to the existing DB trigger
+(`assign_item_code()`); usage tracking (`usage_count++` +
+`project_library_items` upsert) mirrors the existing single-item route
+exactly. Copying is best-effort — a stale/deleted id is silently
+skipped, never blocking project creation.
+
+**2. Lead notes.** New `lead_notes` table — a structural mirror of
+`item_notes` (`id, lead_id, author_id, author_name, text, created_at`,
+cascade on `leads` delete, `team_all` RLS same as every other table in
+this schema; admin enforcement happens at the route layer like every
+other leads table). Routes: `GET`/`POST /api/leads/[id]/notes` (see
+their own sections above) — admin-gated like all leads routes, mirror
+`GET`/`POST /api/items/[id]/notes` exactly except newest-first
+ordering. UI: `components/leads/LeadNotes.tsx` (feed + composer,
+timestamps rendered as `"{author_name} · 7 Jul, 10:42am"`, en-AU date +
+12-hour time) replaces the old free-text `leads.notes` textarea inside
+`components/leads/LeadDetailPanel.tsx` — that column is **not
+editable in the UI any more**, display has migrated into the feed.
+
+**Notes migration handling:** the migration itself folds every lead's
+pre-existing non-empty `leads.notes` value into exactly one
+`lead_notes` row — `author_name = 'Imported note'`, `author_id =
+null`, `text` = the legacy value verbatim, `created_at =
+leads.created_at`. Guarded by a `NOT EXISTS` check keyed on `(lead_id,
+author_name = 'Imported note')` so re-running the migration (this
+schema's standing re-run-safety discipline) never duplicates the
+import. `leads.notes` itself is **not dropped** — irreversible schema
+changes are avoided; the column simply stops being written to by the
+app from this round on.
+
+**MCP:** `add_lead_note` tool (`mcp/src/index.mjs`) — thin fetch to
+`POST /api/leads/[id]/notes`, `{ lead_id, text }`. See `docs/ARIA.md`'s
+own section on this round for a worked example (logging a call/email
+outcome).
+
+**Files touched:** `supabase/migrations/030_standards_lead_notes.sql`
+(new), `types/round-d.ts` (new — `LeadNote`, `StandardFlagFields`,
+`StandardItemIdsInput`, etc.; `types/index.ts` is protected for this
+round), `lib/library-items.ts` (new — shared copy helper),
+`app/api/library/route.ts` (`?standard=1` filter),
+`app/api/library/[id]/route.ts` (`is_standard` in `EDITABLE`),
+`components/library/LibraryBrowser.tsx` (badge + toggle),
+`app/api/projects/route.ts` (`standard_item_ids` body field + copy),
+`components/projects/ProjectForm.tsx` (checklist),
+`components/projects/StandardItemsChecklist.tsx` (new, shared by both
+Create Project and the leads panel),
+`app/api/leads/[id]/create-project/route.ts` (`standard_item_ids` body
+field + copy, only on the fresh-create path),
+`components/leads/LeadDetailPanel.tsx` (compact checklist + notes feed
+replaces the old textarea), `components/leads/LeadNotes.tsx` (new),
+`app/api/leads/[id]/notes/route.ts` (new), `mcp/src/index.mjs`
+(`add_lead_note` tool), `docs/API.md`/`docs/ARIA.md`/`README.md` (this
+round's documentation).

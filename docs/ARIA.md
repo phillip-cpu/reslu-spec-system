@@ -130,9 +130,13 @@ as API routes or MCP tools, and none should be added here:
 
 If a future automation needs the Spec System to know that a calendar
 invite/email/WhatsApp message was sent (e.g. for an audit trail), the
-right shape is Aria writing that fact back via `PATCH /api/leads/[id]`
-(e.g. into `notes`) — not this app reaching out to Google/WhatsApp
-itself.
+right shape is Aria writing that fact back via the `add_lead_note` MCP
+tool (migration 030 round — see "Lead notes" below) — **not** `PATCH
+/api/leads/[id]` with a `notes` field any more: `leads.notes` is no
+longer the writable notes surface (superseded by the attributed
+`lead_notes` feed), so a stray PATCH there would land somewhere the UI
+no longer reads. Not this app reaching out to Google/WhatsApp itself
+either way.
 
 ## Rate guidance
 
@@ -585,3 +589,39 @@ human reviewing the materials list later has context. The Materials UI
 (`components/calculators/MaterialLinkControl.tsx`) shows a "Waiting for
 Aria" caption on any material in this state, so a team member browsing
 the calculator sees the same signal Aria is working from.
+
+## Lead notes — migration 030 round (7 July 2026)
+
+New tool: `add_lead_note`. `leads.notes` (the old flat free-text
+column) is no longer the writable notes surface for anyone, Aria
+included — it's been superseded by an attributed, timestamped
+`lead_notes` feed (same shape as item notes), and the UI
+(`components/leads/LeadDetailPanel.tsx`) no longer offers the old field
+for editing at all.
+
+```
+add_lead_note({ lead_id, text })
+```
+
+→ `POST /api/leads/[id]/notes`, `{ text }`. Admin-only (leads are
+admin-only, financial-adjacent — same gate as every other leads
+route/tool). `author_name` is stamped server-side from Aria's own
+profile (`"Aria (agent)"`), exactly like every note/task she creates
+elsewhere in this system — never passed in the tool call.
+
+**This is the tool to use for exactly the "write it back" cases this
+file's "What stays Aria-side" section above calls out** — logging that
+a call was made, an email was sent, a WhatsApp message went out, or any
+other outcome worth keeping on the lead's record, without this app
+ever reaching into Google/WhatsApp/Gmail itself. Worked example:
+
+> Aria calls a lead per the nurturer automation, gets voicemail, then
+> calls `add_lead_note({ lead_id: "...", text: "Called 7 Jul, 2:15pm —
+> no answer, left voicemail asking to call back re: proposal
+> follow-up." })` so the next person (human or Aria) who opens this
+> lead sees the attempt logged, timestamped and attributed, in the
+> feed — not buried in a single overwritable `notes` string.
+
+Distinct from `move_lead_stage`: this tool never changes the lead's
+stage, it only appends to the notes feed — the two are independent
+actions and neither implies the other.

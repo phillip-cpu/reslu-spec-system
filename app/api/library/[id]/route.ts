@@ -23,6 +23,10 @@ const EDITABLE = new Set([
   "price_trade",
   "trade_price_received_at",
   "trade_price_source",
+  // Migration 030 round — "Standard spec" toggle (not financial, not
+  // gated; any team member can flag/unflag a standard item, same tier
+  // as every other non-financial library field on this route).
+  "is_standard",
 ]);
 const NUMERIC = new Set([
   "width_mm",

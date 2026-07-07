@@ -94,6 +94,16 @@ This downloads everything the app needs. It can take a few minutes the first tim
      placeholder, so don't rename the demo project away from
      "Goldsworthy" before running this migration if you want that
      backfill rule to apply to it)
+   - `supabase/migrations/029_board_cockpit.sql` (Board cockpit round —
+     `board_tasks.kind`/`visit_id`/`booking_date`/`booking_end_date`,
+     `phase_task_templates` app setting, `materials.price_refresh_status`
+     — see `docs/API.md`'s dated section)
+   - `supabase/migrations/030_standards_lead_notes.sql`
+     (`library_items.is_standard` flag + `lead_notes` table, replacing
+     `leads.notes` as the editable notes surface — folds any existing
+     `leads.notes` text into one imported `lead_notes` row per lead on
+     first run; see `docs/API.md` §"Standard spec items + lead notes —
+     migration 030 round")
    - `supabase/seed.sql` (adds the category codes and a demo project)
    - `supabase/seed_contacts.sql` (optional — Address Book seed data
      parsed from RESLU's Monday.com export, ~109 companies across 30
@@ -602,6 +612,24 @@ admin enforcement for financial fields is now in place project-wide
   on timeline ↗" link; left-column date ranges now render "22 Jul → 25
   Jul" instead of raw ISO. Portal `TimelineSection.tsx` is untouched —
   it keeps `lib/gantt.ts`'s original whole-range week math.
+
+- **Standard spec items + lead notes (7 July 2026, migration
+  `030_standards_lead_notes.sql`)**. Library items can now be flagged
+  **"★ Standard"** (toggle in the Library UI) — a "Standard spec items ·
+  N" checklist, pre-ticked and untickable, then shows up both at
+  **Create Project** and at the leads **"Progress to job"** step
+  (compact variant), and every ticked item is copied onto the new
+  project's register via the existing library→project copy logic
+  (shared, not duplicated — `lib/library-items.ts`). Renders nothing
+  when no items are flagged standard. Separately, **leads gain an
+  attributed, timestamped notes feed** (`lead_notes`, same shape as
+  item notes) replacing the old single free-text `leads.notes` field —
+  the migration folds any pre-existing `leads.notes` text into one
+  imported note per lead so nothing is lost; the column itself isn't
+  dropped, just no longer editable from the UI. New MCP tool
+  `add_lead_note` for logging call/email outcomes against a lead. See
+  `docs/API.md`'s "Standard spec items + lead notes — migration 030
+  round" section for the full breakdown.
 
 ## Cron jobs — one still needs wiring up (Phase 12a-B)
 

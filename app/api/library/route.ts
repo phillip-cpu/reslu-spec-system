@@ -54,6 +54,13 @@ export async function GET(request: NextRequest) {
 
   const q = request.nextUrl.searchParams.get("q")?.trim();
   const category = request.nextUrl.searchParams.get("category")?.trim();
+  // Migration 030 round: "Standard spec items" checklist (Create
+  // Project + leads "Progress to job") fetches exactly this filter —
+  // see components/projects/ProjectForm.tsx and
+  // components/leads/LeadDetailPanel.tsx. `?standard=1` is the only
+  // truthy value checked (matches this route's existing loose query
+  // param conventions elsewhere in this file).
+  const standardOnly = request.nextUrl.searchParams.get("standard") === "1";
 
   const limitParam = Number(request.nextUrl.searchParams.get("limit"));
   const offsetParam = Number(request.nextUrl.searchParams.get("offset"));
@@ -72,6 +79,7 @@ export async function GET(request: NextRequest) {
     .range(offset, offset + limit - 1);
 
   if (category) query = query.eq("category", category);
+  if (standardOnly) query = query.eq("is_standard", true);
   if (q) {
     const like = `%${q}%`;
     query = query.or(
