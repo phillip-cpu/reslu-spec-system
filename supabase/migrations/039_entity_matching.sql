@@ -73,20 +73,29 @@ returns table (entity_id uuid, name text, similarity float)
 language plpgsql
 as $$
 begin
+  -- word_similarity(), not similarity(): plain similarity() penalises
+  -- length differences heavily (verified live: similarity('Bayside',
+  -- 'Bayside Clinic Fitout') = 0.36, well under the brief's own 0.55
+  -- threshold, even though this exact pairing is the brief's own
+  -- acceptance example). word_similarity() instead finds the best-
+  -- matching substring extent of query_text WITHIN name, which is
+  -- what "a short mention matches within a longer real name" actually
+  -- needs — confirmed live: word_similarity('Bayside', 'Bayside
+  -- Clinic Fitout') clears 0.55 comfortably.
   if p_entity_type = 'item' then
     return query
-      select i.id, i.name, similarity(i.name, query_text)::float as similarity
+      select i.id, i.name, word_similarity(query_text, i.name)::float as similarity
       from items i
       where i.deleted_at is null
-        and similarity(i.name, query_text) > p_threshold
+        and word_similarity(query_text, i.name) > p_threshold
       order by similarity desc
       limit p_limit;
   elsif p_entity_type = 'project' then
     return query
-      select p.id, p.name, similarity(p.name, query_text)::float as similarity
+      select p.id, p.name, word_similarity(query_text, p.name)::float as similarity
       from projects p
       where p.deleted_at is null
-        and similarity(p.name, query_text) > p_threshold
+        and word_similarity(query_text, p.name) > p_threshold
       order by similarity desc
       limit p_limit;
   end if;
