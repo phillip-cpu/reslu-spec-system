@@ -156,11 +156,14 @@ function mergeCandidates(a: MatchCandidate[], b: MatchCandidate[]): MatchCandida
 
 const ADJUDICATION_TOOL: ClaudeTool = {
   name: "adjudicate_match",
-  description: "Decide which candidate (if any) the mention text refers to.",
+  description: "Decide which candidate (if any) the mention text most likely refers to, and how confident you are.",
   input_schema: {
     type: "object",
     properties: {
-      entity_id: { type: ["string", "null"], description: "The matching candidate's entity_id, or null if none genuinely match" },
+      entity_id: {
+        type: ["string", "null"],
+        description: "The candidate's entity_id you consider most likely correct (with confidence reflecting your uncertainty), or null only if NONE of the candidates are even plausible",
+      },
       confidence: { type: "number", minimum: 0, maximum: 1 },
     },
     required: ["entity_id", "confidence"],
@@ -172,7 +175,11 @@ async function adjudicate(text: string, entityType: MatchEntityType, candidates:
   const candidateList = candidates.map((c) => `- id=${c.entity_id}: "${c.name}" (similarity score ${c.score.toFixed(3)})`).join("\n");
   const { toolInput } = await callClaude({
     model: "claude-sonnet-5",
-    system: `You are adjudicating an entity match for RESLU, an interior design studio. Given a free-text mention extracted from a supplier/client email, and a short list of candidate ${entityType === "item" ? "spec-register items" : "projects"} that a similarity search found, decide which candidate (if any) the mention genuinely refers to. Only pick a candidate if you are reasonably confident it is the same real-world thing the mention is talking about — if the mention is too vague, generic, or none of the candidates plausibly match, return entity_id: null. Call adjudicate_match exactly once.`,
+    system: `You are adjudicating an entity match for RESLU, an interior design studio. Given a free-text mention extracted from a supplier/client email, and a short list of candidate ${entityType === "item" ? "spec-register items" : "projects"} that a similarity search found, pick whichever candidate you think MOST LIKELY refers to the same real-world thing as the mention, and set confidence to reflect how sure you actually are — not just whether you're sure at all. Three distinct cases:
+1. One candidate is clearly, obviously the right one: high confidence (0.90+), that entity_id.
+2. One candidate seems more likely than the others but you're genuinely not certain (e.g. two similarly-named items and the mention doesn't disambiguate which one) — still return that best-guess entity_id, but with a MODERATE confidence (roughly 0.60-0.85) reflecting the real uncertainty. Do NOT return null just because you're unsure WHICH candidate — return your best guess at a lower confidence instead, so a human can quickly confirm or correct it.
+3. None of the candidates are even plausibly what the mention refers to (e.g. the mention is about something else entirely, or too vague/generic to mean anything specific): entity_id null, low confidence.
+Call adjudicate_match exactly once.`,
     messages: [{ role: "user", content: `Mention text: "${text}"\n\nCandidates:\n${candidateList}` }],
     tool: ADJUDICATION_TOOL,
     maxTokens: 256,
