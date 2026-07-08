@@ -11,13 +11,17 @@
 Aria (OpenClaw agent, Mac mini, Ollama installed) talks to the RESLU spec system (Supabase + Vercel) via MCP. Three subsystems:
 
 1. **aria_queue** — spec system events land in a table; Aria picks them up. Idle polling costs zero tokens: a script checks the table and only wakes the LLM when rows exist.
-2. **workspace_index** — every project/lead/item/diary/SOW entry embedded (OpenAI `text-embedding-3-small`, 1536 dims — MCP + API run on Vercel, which cannot reach local Ollama, and query/index embeddings must come from the same model) with hybrid vector + full-text search.
+2. **workspace_index** — every project/lead/item/diary/SOW entry embedded (OpenAI `text-embedding-3-small`, 1536 dims — the API and indexer run on Vercel, which cannot reach local Ollama, and query/index embeddings must come from the same model) with hybrid vector + full-text search.
 3. **Context snapshot** — `GET /api/me/context` returns compact project state in one call, replacing 6–8 MCP round-trips.
 4. **Email comb** (new, biggest subsystem) — every inbound email: strip → triage (Haiku) → schema extraction (Sonnet) → match to job/items → diff against stored prices/lead times → write proposal → Phillip approves. Nothing writes to live data without approval. Every extracted value passes a deterministic string-match verification gate.
 
+### Topology (corrected after Step 2 — the original "MCP + API run on Vercel" assumption was wrong; this is what's actually true)
+
+The MCP server runs on Aria's Mac mini as a **thin proxy only** — it holds zero business logic. All logic lives in Vercel API routes; every new MCP tool = one new API route + a dumb proxy passthrough (`apiFetch()` in `mcp/src/index.mjs` — see that file's own header comment). Atomic multi-row operations (e.g. "claim the oldest N unlocked queue rows") use a Postgres function, called via `supabase.rpc(...)` from the API route — the plain PostgREST/supabase-js query builder has no `LIMIT` on `UPDATE` and can't express `SELECT ... FOR UPDATE SKIP LOCKED ... LIMIT n` at all, so this is a real gap, not a style preference. Embeddings remain OpenAI `text-embedding-3-small` from Vercel — the indexer is a Vercel cron, and query/index embeddings must share that one model.
+
 ### Division of labor (fixed — do not change)
-- **Mac mini (free, deterministic):** mail fetch, talon strip, pdftotext/ocrmypdf, regex first pass, queue heartbeat script.
-- **Vercel:** MCP server, API routes, indexer cron, embeddings via OpenAI.
+- **Mac mini (free, deterministic):** mail fetch, talon strip, pdftotext/ocrmypdf, regex first pass, queue heartbeat script, and the MCP server itself (thin proxy — see Topology above).
+- **Vercel:** ALL business logic — API routes (including every MCP tool's real implementation), the indexer cron, embeddings via OpenAI.
 - **Ollama local LLM:** enum-constrained classification ONLY. It never generates a value (price, date, lead time). It picks labels from a fixed list via structured output grammar. If a task needs a generated value, it is not an Ollama task.
 - **Claude API (paid):** schema extraction on actionable mail only, vision on scanned PDFs only, match adjudication, anything needing judgment.
 - **Scripts (no model):** queue polling, verification gate, diffing, dedupe.
@@ -27,6 +31,8 @@ Aria (OpenClaw agent, Mac mini, Ollama installed) talks to the RESLU spec system
 ## Global conventions (paste into every session)
 
 - Stack: Supabase (Postgres + pgvector), Vercel (Next.js API routes), existing MCP server in this repo. Adapt naming to existing migration tooling and schema — `projects`, `leads`, `items`, `diary_entries`, `sow_entries` tables already exist; inspect them before writing FKs.
+- **Topology (corrected after Step 2):** the MCP server runs on Aria's Mac mini as a thin proxy only — zero business logic there. Every new MCP tool = a new Vercel API route holding the real logic + a dumb `apiFetch()` passthrough in `mcp/src/index.mjs`. Never implement tool logic directly in the MCP server file.
+- Atomic multi-row operations (claim-N-oldest-unlocked-rows, anything needing `FOR UPDATE SKIP LOCKED` or a `LIMIT` on a write) need a Postgres function called via `supabase.rpc(...)` — the query builder has no `LIMIT` on `UPDATE` and can't express `SELECT ... FOR UPDATE SKIP LOCKED ... LIMIT n`. Don't try to approximate this with plain `UPDATE ... WHERE ...`; it won't give the same concurrency guarantee.
 - Every MCP tool returns concise, high-signal output: names + IDs + one-line summaries, never full records. Support `response_format: 'concise' | 'detailed'`, default concise. Paginate anything unbounded. Error messages must tell the agent how to fix the call.
 - All timestamps `timestamptz`, all IDs `uuid default gen_random_uuid()`.
 - Env vars available: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` (embeddings only). Ollama at `http://localhost:11434` (Mac mini scripts only — never reachable from Vercel).
