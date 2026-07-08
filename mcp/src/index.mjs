@@ -1095,6 +1095,58 @@ const TOOLS = [
     handler: async ({ project_id } = {}) =>
       apiFetch(project_id ? `/api/me/context?project_id=${encodeURIComponent(project_id)}` : "/api/me/context"),
   },
+  // ------------------------------------------------------------
+  // RESLU Second Brain, Step 11 (docs/RESLU-second-brain-build-brief.md).
+  // Approve/reject a pending change_proposals row — the human-in-the-
+  // loop gate every price/lead-time fact from the email pipeline goes
+  // through before it ever touches items. Same thin-fetch pattern —
+  // the actual atomic write lives in approve_proposal() (migration
+  // 040), never duplicated here.
+  // ------------------------------------------------------------
+  {
+    name: "approve_proposal",
+    description:
+      "Approve a pending change_proposals row — atomically writes the proposed value to the matched item's field (price_trade or lead_time_weeks) and appends an audit_log row. Fails if the proposal is not pending (already resolved). Use get_aria_queue (kind='email_proposal') to find proposals waiting on Phillip.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string", description: "change_proposals row UUID" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    handler: async ({ id }) => apiFetch(`/api/second-brain/proposals/${id}/approve`, { method: "POST" }),
+  },
+  {
+    name: "reject_proposal",
+    description:
+      "Reject a pending change_proposals row — never touches items. If the rejection is really 'wrong item was matched, not wrong price', separately correct the underlying match with the correct_match tool so the same mention doesn't misfire again.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "change_proposals row UUID" },
+        note: { type: "string", description: "Optional reason for the rejection" },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    handler: async ({ id, ...body }) =>
+      apiFetch(`/api/second-brain/proposals/${id}/reject`, { method: "POST", body: JSON.stringify(body) }),
+  },
+  {
+    name: "correct_match",
+    description:
+      "Correct a Step 10 entity match (email_entity_matches row, status 'review' or 'no_match') to the right entity — updates the match row and inserts an entity_aliases row, so the same mention text auto-links correctly next time without needing this correction repeated.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "email_entity_matches row UUID" },
+        entity_id: { type: "string", description: "The correct project or item UUID this mention actually refers to" },
+      },
+      required: ["id", "entity_id"],
+      additionalProperties: false,
+    },
+    handler: async ({ id, ...body }) =>
+      apiFetch(`/api/second-brain/matches/${id}/correct`, { method: "POST", body: JSON.stringify(body) }),
+  },
   {
     name: "book_trade_visit",
     description:

@@ -43,6 +43,10 @@
     {
       "path": "/api/second-brain/match",
       "schedule": "10-59/15 * * * *"
+    },
+    {
+      "path": "/api/second-brain/propose",
+      "schedule": "12-59/15 * * * *"
     }
   ]
 }
