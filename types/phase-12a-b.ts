@@ -207,7 +207,15 @@ export type MyWorkItemKind =
   // "design_tasks assigned to me with due dates join the aggregator
   // with a 'Design' context chip" (rendered via this kind's `meta`
   // field, set to "Design" in the source query below).
-  | "design_task";
+  | "design_task"
+  // Order-by engine (8 July 2026) — one rollup line PER PROJECT that
+  // has at least one item in 'ordering_due' status (due_soon/overdue —
+  // see lib/order-by.ts), grouped by matched trade/preset name. See
+  // app/api/my-work/route.ts source #9. Admin-only (procurement data),
+  // same gating pattern as source #2 (lead follow-ups) — the exact
+  // "if (isAdmin) { ... }" block shape, reused verbatim for this
+  // source rather than any new gating mechanism.
+  | "ordering_due";
 
 /**
  * One row in the My Work feed, normalised across five very different

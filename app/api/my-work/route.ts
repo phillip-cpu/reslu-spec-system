@@ -3,6 +3,9 @@ import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { groupMyWorkItems } from "@/lib/my-work";
 import { computeInsuranceStatus } from "@/lib/insurance";
+import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
+import { deriveOrderBy, formatOrderByWorksDate, type OrderByContactInput, type OrderByItemInput, type WorksDateSource } from "@/lib/order-by";
+import type { ExportPresetRow } from "@/types/round-export-batch";
 import type { MyWorkItem, MyWorkResponse } from "@/types/phase-12a-b";
 
 export const runtime = "nodejs";
@@ -397,6 +400,164 @@ export async function GET() {
         href: project ? `/projects/${project.id}/design?focus=design_task-${t.id}` : "/",
         meta: "Design",
       });
+    }
+  }
+
+  // ---- 9. Order-by engine — ordering_due rollup (admin only) ----
+  // BUILD-SPEC.md "Order-by engine" item 3: "My Work rollup line per
+  // project ('Order 4 items for Carpentry — works 21 Jul', links to
+  // P&P filtered)". Admin-only — this surfaces P&P/procurement data
+  // (lead_time_weeks, order_by), same gating as source #2's lead
+  // follow-ups: an identical `if (isAdmin) { ... }` block, not a new
+  // gating mechanism.
+  //
+  // One line PER (project, matched preset name) pair with at least one
+  // due_soon/overdue item — e.g. two projects each needing Carpentry
+  // orders produce two separate lines (each with its own project chip
+  // and deep link), and one project needing both Carpentry and
+  // Plumbing orders produces two lines for that one project. `due` is
+  // the line's own order_by date (the earliest one among its grouped
+  // items, so the bucket reflects the most urgent item in that group);
+  // the title's "works <date>" suffix uses the EARLIEST matching works
+  // date across the group for the same reason. This mirrors board_task
+  // source #1's "works <DD/MM>" suffix formatting via
+  // lib/order-by.ts's formatOrderByWorksDate() (identical DD/MM, no
+  // locale formatting — same fixed short-date convention this file's
+  // own formatWorksDate() already established for booking_date).
+  if (isAdmin) {
+    const { data: unorderedItems } = await supabase
+      .from("items")
+      .select("id,project_id,category,lead_time_weeks,ordered_at")
+      .is("deleted_at", null)
+      .is("ordered_at", null);
+
+    const itemRows = (unorderedItems ?? []) as OrderByItemInput[];
+
+    if (itemRows.length > 0) {
+      const projectIdsForOrdering = [...new Set(itemRows.map((i) => i.project_id))];
+
+      const [{ data: presetSetting }, { data: allVisits }, { data: allBookedTasks }] = await Promise.all([
+        supabase.from("app_settings").select("value").eq("key", "export_presets").maybeSingle(),
+        supabase
+          .from("trade_visits")
+          .select("id,project_id,contact_id,start_date,status")
+          .in("project_id", projectIdsForOrdering)
+          .is("deleted_at", null)
+          .neq("status", "declined"),
+        supabase
+          .from("board_tasks")
+          .select("id,project_id,contact_id,booking_date")
+          .in("project_id", projectIdsForOrdering)
+          .is("deleted_at", null)
+          .not("booking_date", "is", null),
+      ]);
+
+      const presets = (presetSetting?.value as ExportPresetRow[] | undefined) ?? FALLBACK_EXPORT_PRESETS;
+
+      const orderingSources: WorksDateSource[] = [
+        ...((allVisits ?? []) as { id: string; project_id: string; contact_id: string | null; start_date: string }[]).map(
+          (v) => ({
+            source_id: v.id,
+            source_kind: "visit" as const,
+            project_id: v.project_id,
+            contact_id: v.contact_id,
+            start_date: v.start_date,
+          })
+        ),
+        ...(
+          (allBookedTasks ?? []) as { id: string; project_id: string; contact_id: string | null; booking_date: string | null }[]
+        )
+          .filter((t) => t.booking_date)
+          .map((t) => ({
+            source_id: t.id,
+            source_kind: "board_task_booking" as const,
+            project_id: t.project_id,
+            contact_id: t.contact_id,
+            start_date: t.booking_date as string,
+          })),
+      ];
+
+      const orderingContactIds = [...new Set(orderingSources.map((s) => s.contact_id).filter(Boolean))] as string[];
+      const { data: orderingContactRows } = orderingContactIds.length
+        ? await supabase
+            .from("contacts")
+            .select("id,category")
+            .in("id", orderingContactIds)
+            .is("deleted_at", null)
+        : { data: [] as { id: string; category: string | null }[] };
+      const orderingContacts: OrderByContactInput[] = (orderingContactRows ?? []).map((c) => ({
+        id: c.id,
+        category: c.category,
+      }));
+
+      const orderingResults = deriveOrderBy(itemRows, presets, orderingContacts, orderingSources);
+      const dueOrOverdue = orderingResults.filter((r) => r.status === "due_soon" || r.status === "overdue");
+
+      if (dueOrOverdue.length > 0) {
+        const orderingProjectIds = [...new Set(dueOrOverdue.map((r) => itemRows.find((i) => i.id === r.item_id)?.project_id))].filter(
+          (id): id is string => !!id
+        );
+        const { data: orderingProjects } = await supabase
+          .from("projects")
+          .select("id,name,alias")
+          .in("id", orderingProjectIds);
+        const orderingProjectById = new Map((orderingProjects ?? []).map((p) => [p.id, p]));
+        const itemById = new Map(itemRows.map((i) => [i.id, i]));
+
+        // Group by (project_id, matched preset name) — a Map keyed by a
+        // joined string since plain objects can't key on a tuple.
+        // `first_item_id` is whichever item first populated this group
+        // (order of iteration over dueOrOverdue) — used only to build a
+        // deep link that focuses on ONE representative row in
+        // ProcurementView, not a claim about which item is "most"
+        // representative.
+        const rollup = new Map<
+          string,
+          {
+            project_id: string;
+            preset_name: string;
+            count: number;
+            earliest_order_by: string;
+            earliest_works_date: string;
+            first_item_id: string;
+          }
+        >();
+
+        for (const r of dueOrOverdue) {
+          const item = itemById.get(r.item_id);
+          if (!item || !r.order_by || !r.works_date) continue;
+          const presetName = r.matched_preset?.name ?? "Unmapped trade";
+          const key = `${item.project_id}::${presetName}`;
+          const existing = rollup.get(key);
+          if (!existing) {
+            rollup.set(key, {
+              project_id: item.project_id,
+              preset_name: presetName,
+              count: 1,
+              earliest_order_by: r.order_by,
+              earliest_works_date: r.works_date,
+              first_item_id: r.item_id,
+            });
+          } else {
+            existing.count += 1;
+            if (r.order_by < existing.earliest_order_by) existing.earliest_order_by = r.order_by;
+            if (r.works_date < existing.earliest_works_date) existing.earliest_works_date = r.works_date;
+          }
+        }
+
+        for (const [key, group] of rollup) {
+          const project = orderingProjectById.get(group.project_id);
+          items.push({
+            kind: "ordering_due",
+            id: key,
+            title: `Order ${group.count} item${group.count === 1 ? "" : "s"} for ${group.preset_name} — works ${formatOrderByWorksDate(group.earliest_works_date)}`,
+            project: project ? { id: project.id, name: project.name, alias: project.alias } : null,
+            due: group.earliest_order_by,
+            href: `/projects/${group.project_id}?tab=ffe&focus=ordering_due-${group.first_item_id}`,
+            meta: "Ordering due",
+          });
+        }
+      }
     }
   }
 

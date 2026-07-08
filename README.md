@@ -722,6 +722,29 @@ admin enforcement for financial fields is now in place project-wide
   ticked. See `docs/API.md`'s "Trade booking document pack" section for
   the full breakdown.
 
+- **Order-by engine — product deadlines from trade bookings (8 July
+  2026, no new migration).** An item a trade installs must be ordered a
+  lead time before that trade's works date — e.g. a sliding door frame,
+  Carpenter booked 21 Jul, 3-week lead time = order by 30 Jun. Computed
+  entirely from existing schema (`items.lead_time_weeks`/`ordered_at`,
+  `trade_visits`, `board_tasks.booking_date`, `contacts.category`) by
+  new pure module `lib/order-by.ts`, matching each unordered item's
+  category to a trade booking via the same export-presets mapping the
+  document-pack Schedule auto-pick already uses (Settings now labels
+  this list "Trade mappings", copy only). Surfaces: a new **ORDER BY**
+  column in the Pricing & Procurement view (red/overdue, amber/due-soon,
+  amber "Set lead time", a subtle dot on any item missing a lead time
+  even before a booking exists); a new admin-only
+  `GET /api/projects/[id]/attention` feed (`ordering_due` +
+  `missing_lead_times`, additive alongside every existing per-domain
+  attention endpoint); a My Work rollup line ("Order 4 items for
+  Carpentry — works 21 Jul"); and an Aria MCP tool
+  (`get_ordering_attention`, per-project) plus a `lead_time_weeks` arg on
+  `update_item_pricing` so lead times get recorded straight from a
+  supplier quote. See `docs/API.md`'s "Order-by engine" section and
+  `docs/ARIA.md`'s "Order-by engine — chasing overdue orders" section
+  for the full breakdown.
+
 ## Cron jobs — one still needs wiring up (Phase 12a-B)
 
 `vercel.json` currently schedules `/api/digest/flush` and

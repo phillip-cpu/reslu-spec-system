@@ -465,7 +465,13 @@ export function BookVisitPanel({
                     <input
                       type="date"
                       value={startDate}
-                      onChange={(e) => setStartDate(e.target.value)}
+                      onChange={(e) => {
+                  const v = e.target.value;
+                  setStartDate(v);
+                  // Phillip 8 Jul: picking a start snaps the end field to
+                  // the same date when empty/earlier — no month-flicking.
+                  if (v && (!endDate || endDate < v)) setEndDate(v);
+                }}
                       className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
                     />
                   </label>

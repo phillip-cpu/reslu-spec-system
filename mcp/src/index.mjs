@@ -270,7 +270,7 @@ const TOOLS = [
   {
     name: "update_item_pricing",
     description:
-      "Record a QUOTED trade price on a spec register item (admin-gated — Aria's account qualifies). Writes price_trade + stamps trade_price_received_at today, and appends the quote reference to the item's notes for the audit trail. GUARDRAILS by design: never writes price_rrp (scraper/manual territory), never writes markup or client pricing (Phillip's), and never records ACTUAL paid amounts — actuals flow exclusively through the invoice queue (create_invoice → human approval). Quantity/supplier updates ride along only when the quote changes them.",
+      "Record a QUOTED trade price on a spec register item (admin-gated — Aria's account qualifies). Writes price_trade + stamps trade_price_received_at today, and appends the quote reference to the item's notes for the audit trail. GUARDRAILS by design: never writes price_rrp (scraper/manual territory), never writes markup or client pricing (Phillip's), and never records ACTUAL paid amounts — actuals flow exclusively through the invoice queue (create_invoice → human approval). Quantity/supplier updates ride along only when the quote changes them. Order-by engine (8 July 2026): pass lead_time_weeks whenever the supplier's quote states one — trade quotes are exactly where lead times are learned, so recording it here (rather than only via the P&P UI) closes the 'missing lead time' gap at quoting time, before any trade is even booked, per BUILD-SPEC.md's 'lead-time hygiene happens at quoting time, not in a panic at booking time'.",
     inputSchema: {
       type: "object",
       properties: {
@@ -287,6 +287,11 @@ const TOOLS = [
           type: "string",
           description: "Optional — only if quoting supplier differs from the spec",
         },
+        lead_time_weeks: {
+          type: "number",
+          description:
+            "Optional — the supplier's stated lead time in weeks (may be fractional, e.g. 2.5). Feeds the order-by engine (lib/order-by.ts): without this, an item with a trade booking still shows 'set lead time' rather than a real order-by date. Record it whenever the quote states one.",
+        },
         notes: {
           type: "string",
           description:
@@ -296,13 +301,14 @@ const TOOLS = [
       required: ["item_id", "unit_price_ex_gst"],
       additionalProperties: false,
     },
-    handler: async ({ item_id, unit_price_ex_gst, quantity, supplier, notes } = {}) => {
+    handler: async ({ item_id, unit_price_ex_gst, quantity, supplier, lead_time_weeks, notes } = {}) => {
       const patch = {
         price_trade: unit_price_ex_gst,
         trade_price_received_at: new Date().toISOString().slice(0, 10),
       };
       if (typeof quantity === "number") patch.quantity = quantity;
       if (supplier) patch.supplier = supplier;
+      if (typeof lead_time_weeks === "number") patch.lead_time_weeks = lead_time_weeks;
       const result = await apiFetch(`/api/items/${item_id}`, {
         method: "PATCH",
         body: JSON.stringify(patch),
@@ -430,7 +436,7 @@ const TOOLS = [
   {
     name: "get_needs_attention",
     description:
-      "Get the four needs-attention lead groups: nurture (Proposal Sent >=4 days), stale_proposals (Awaiting to Send Proposal >=7 days), follow_ups_due (follow-up date today or past), site_visits_upcoming (next 7 days). This is the exact endpoint the lead-nurturer and lead-monitor automations should poll.",
+      "Get the four needs-attention LEAD groups: nurture (Proposal Sent >=4 days), stale_proposals (Awaiting to Send Proposal >=7 days), follow_ups_due (follow-up date today or past), site_visits_upcoming (next 7 days). This is the exact endpoint the lead-nurturer and lead-monitor automations should poll. NOTE — for CHASING OVERDUE ORDERS/BOOKINGS (not leads), use get_bookings_overdue (cross-project, trade booking confirmations) and get_ordering_attention (per-project, order-by deadlines + missing lead times) instead — those are separate tools with their own groups, not part of this one's four lead groups.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     handler: async () => apiFetch("/api/leads/attention"),
   },
@@ -945,6 +951,43 @@ const TOOLS = [
       "Aria's booking-chase attention feed: board cards with an overdue, still-unconfirmed trade booking (booking_date in the past, linked visit status still unconfirmed/tentative/proposed_change), or an overdue milestone card (kind='milestone' with a past due_date). Use this to find bookings that need chasing across ALL projects — no project_id filter, this is a cross-project feed like get_needs_attention.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     handler: async () => apiFetch("/api/board-tasks/attention"),
+  },
+  // ------------------------------------------------------------
+  // Order-by engine (Phillip, 8 July 2026) — "product deadlines from
+  // trade bookings." An item a trade installs must be ordered
+  // [lead time] before that trade's works date (lib/order-by.ts). This
+  // tool is the chase-list equivalent of get_bookings_overdue above,
+  // for ORDERING rather than booking-confirmation: 'ordering_due' items
+  // (order_by date due within 7 days or already past) and a
+  // 'missing_lead_times' count+link (items with no lead_time_weeks set
+  // at all, flagged even before any trade is booked, so the gap gets
+  // fixed at quoting time — see update_item_pricing's lead_time_weeks
+  // arg above, the intended fix path for Aria specifically).
+  //
+  // UNLIKE get_bookings_overdue/get_needs_attention, this IS
+  // project_id-scoped (GET /api/projects/[id]/attention, not a
+  // cross-project feed) — order-by derivation depends on a project's
+  // OWN trade bookings, so a cross-project version would need to either
+  // fan out per-project internally or return an unbounded cross-project
+  // dataset; scoping to one project at a time mirrors get_project's own
+  // shape and keeps this tool's payload bounded. Aria should call
+  // list_projects first, then call this per project of interest (e.g.
+  // every active project) when building a chase list across the whole
+  // studio.
+  // ------------------------------------------------------------
+  {
+    name: "get_ordering_attention",
+    description:
+      "Order-by engine chase list for ONE project: 'ordering_due' (items whose order_by date — the trade's works date minus lead_time_weeks — is within 7 days or already past, sorted overdue-first) and 'missing_lead_times' (count + P&P deep link for unordered items with no lead_time_weeks set at all, regardless of booking status). Admin-gated (procurement data). Use alongside get_bookings_overdue to chase both booking confirmations AND order deadlines. When an item shows up here with no lead time, prefer fixing it via update_item_pricing's lead_time_weeks arg the next time you record that item's trade quote.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project UUID" },
+      },
+      required: ["project_id"],
+      additionalProperties: false,
+    },
+    handler: async ({ project_id }) => apiFetch(`/api/projects/${project_id}/attention`),
   },
   {
     name: "book_trade_visit",

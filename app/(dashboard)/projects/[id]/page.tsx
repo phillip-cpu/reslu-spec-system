@@ -39,7 +39,14 @@ export default async function ProjectPage({
   // ProcurementView (interim — see docs/HANDOFF-focus-register.md), so
   // a focus param for that kind needs the FF&E tab to open straight
   // into the Procurement sub-view rather than its "Spec" default.
-  const initialFfeView = focus?.startsWith("decision_overdue-") ? "procurement" : undefined;
+  // Order-by engine (8 July 2026) addition: ordering_due-<id> focus
+  // links (My Work's new rollup line, the project attention feed's
+  // 'missing_lead_times' href) point at the SAME ProcurementView row —
+  // its ORDER BY column only renders there too — so this reuses the
+  // identical startsWith() branch pattern rather than a new condition
+  // shape.
+  const initialFfeView =
+    focus?.startsWith("decision_overdue-") || focus?.startsWith("ordering_due-") ? "procurement" : undefined;
   const supabase = await createClient();
 
   const [{ data: project }, info] = await Promise.all([

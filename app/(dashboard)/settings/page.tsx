@@ -197,11 +197,26 @@ export default async function SettingsPage() {
         </section>
 
         <section>
-          <h2 className="mb-1 text-subhead text-nearblack">Export presets</h2>
+          {/* Order-by engine round (8 July 2026) — COPY ONLY. Renamed
+              from "Export presets" to "Trade mappings": these rows are
+              now the single source both the FF&E schedule export
+              dialog AND the Pricing & Procurement ORDER BY column read
+              from (lib/order-by.ts derives an item's order date by
+              matching its category against a preset's prefixes[], then
+              that preset's contact_categories[] against a booked
+              trade's contact). Component name/props/data shape below
+              (ExportPresetSettings, app_settings key 'export_presets')
+              are UNCHANGED — see that component's own header comment. */}
+          <h2 className="mb-1 text-subhead text-nearblack">Trade mappings</h2>
           <p className="mb-4 text-body text-charcoal/60">
-            Quick-pick trade presets shown in the FF&amp;E schedule export dialog
-            (each ticks a set of categories in one click). Edit the name or the
-            category checkboxes on any row, or add a new preset below.
+            Named trade mappings — each pairs the item categories a trade
+            covers with that trade&apos;s Address Book contact categories.
+            Used two ways: as quick-pick presets in the FF&amp;E schedule
+            export dialog (each ticks a set of categories in one click), and
+            by the order-by engine to work out an item&apos;s ORDER BY date from
+            that trade&apos;s booked works date. Edit the name, the item
+            categories, or the contact categories on any row, or add a new
+            mapping below.
             {!isAdmin && " Only admins can make changes."}
           </p>
           <ExportPresetSettings initialPresets={exportPresets} categories={categories} canEdit={isAdmin} />

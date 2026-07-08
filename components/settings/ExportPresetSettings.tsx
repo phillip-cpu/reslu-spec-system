@@ -35,6 +35,20 @@ interface Props {
  * pickPresetForContactCategory()) to match a booking's contact
  * category against a preset without staff having to rename the preset
  * itself to match the Address Book's own category wording.
+ *
+ * "Order-by engine" round (8 July 2026) — COPY ONLY, no structural
+ * change: BUILD-SPEC.md "Single mapping = export presets (no new
+ * mapping table): presets already carry prefixes[] + contact_
+ * categories[] — this IS categories<->trade<->contacts. Settings copy
+ * updated to present presets as 'Trade mappings' ... used by BOTH
+ * schedule exports and ordering deadlines." This component's own name,
+ * exported symbol, props, and every field it reads/writes are
+ * UNCHANGED — only the on-page heading/helper text below is reworded
+ * to explain the SECOND consumer (the order-by engine, lib/order-by.ts)
+ * alongside the original one (schedule PDF exports), so staff editing
+ * this list understand a change here now also shifts ORDER BY dates in
+ * the Pricing & Procurement view, not just which categories a Download-
+ * PDF preset ticks.
  */
 export function ExportPresetSettings({ initialPresets, categories, canEdit }: Props) {
   const [rows, setRows] = useState<ExportPresetRow[]>(initialPresets);

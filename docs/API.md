@@ -5150,3 +5150,152 @@ TradeDocuments.tsx` (new), `app/api/trade/[token]/documents/plans/route.ts`
 protected file touched (verified `lib/supabase/middleware.ts`,
 `vercel.json`, and the rest of the protected list by mtime — all
 pre-date this round's work).
+
+## Order-by engine — product deadlines from trade bookings (8 July 2026)
+
+BUILD-SPEC.md "Order-by engine": an item a trade installs must be
+ordered [lead time] before that trade's works date — e.g. a sliding
+door frame (DR), Carpenter booked 21 Jul, 3-week lead time = order by
+30 Jun. **No new migration.** Everything is computed on read from
+existing schema (`items.lead_time_weeks`/`ordered_at`, `trade_visits`,
+`board_tasks.booking_date`, `contacts.category`, and the existing
+export-presets `app_settings` row).
+
+**The mapping is the existing export presets, reframed.** Presets
+already carry `prefixes[]` (item category prefixes) and
+`contact_categories[]` (trade contact categories) — this one row IS the
+category↔trade↔contact mapping the engine needs; no new mapping table.
+In Settings, this list is now labelled **"Trade mappings"** (copy only
+— see `components/settings/ExportPresetSettings.tsx`'s and
+`app/(dashboard)/settings/page.tsx`'s header comments; the component
+name, props, and `app_settings('export_presets')` shape are unchanged)
+since it now backs both the schedule PDF export dialog AND this engine.
+
+**`lib/order-by.ts`** (new, pure, no I/O) is the single derivation used
+by every surface below:
+
+- `deriveOrderBy(items, presets, contacts, sources, now?)` — for each
+  UNORDERED item (`ordered_at` is null): finds every preset whose
+  `prefixes[]` includes the item's `category`, finds every works-date
+  source (`WorksDateSource` — a trade visit or a board-task booking
+  placeholder, caller-normalised) in the SAME project whose linked
+  contact matches one of those presets (via
+  `lib/export-presets.ts`'s `pickPresetForContactCategory()`, reused
+  verbatim — never reimplemented), and takes the EARLIEST such date.
+  `order_by = works_date − (lead_time_weeks × 7 days)`. Status:
+  `'overdue'` (order_by has passed), `'due_soon'` (order_by ≤ 7 days
+  out), `'ok'` (further out), `'no_lead_time'` (a works date was found
+  but the item has no lead time — "set lead time", never guessed),
+  `'no_booking'` (no relevant works date at all, regardless of lead
+  time).
+- `missingLeadTimes(items)` — a SEPARATE, additive check: every
+  unordered item with no `lead_time_weeks`, regardless of whether any
+  booking exists. (Phillip, 8 Jul: "lead-time hygiene happens at
+  quoting time, not in a panic at booking time.")
+- Date math is date-only (`Date.UTC` day boundaries), matching
+  `lib/board-cockpit.ts`'s `isDateOnlyPast()` convention — no
+  time-of-day/timezone drift.
+
+### GET /api/projects/[id]/order-by
+
+Admin-only (403 for non-admins, before any query runs — same gating as
+`GET /api/projects/[id]/estimate`; order_by is derived from
+`lead_time_weeks`, a Pricing & Procurement-only field). Returns
+`{ rows: OrderByRow[], missing_lead_time_item_ids: string[] }` — one row
+per unordered item in the project (status/order_by/works_date/matched
+preset name/matched contact), plus the project-scoped missing-lead-time
+id list. Consumed by `ProcurementView.tsx`'s new **ORDER BY** column,
+lazy-fetched by `ProjectWorkspace.tsx` the first time an admin opens the
+Procurement view (identical trigger condition to the existing
+measurement-link fetch).
+
+### GET /api/projects/[id]/attention
+
+New, additive, project-scoped route (this codebase's existing
+attention feeds — `GET /api/visits/attention`,
+`GET /api/board-tasks/attention`, `GET /api/contacts/attention`,
+`GET /api/leads/attention`, `GET /api/materials/attention` — are each
+their own per-domain, cross-project endpoint; none of them or their
+response shapes are touched by this round). Admin-only, same gating as
+`GET /api/projects/[id]/order-by`. Returns:
+
+```json
+{
+  "ordering_due": [
+    { "item_id": "...", "item_code": "DR-03", "item_name": "Sliding door frame",
+      "status": "overdue", "order_by": "2026-06-30", "works_date": "2026-07-21",
+      "matched_preset_name": "Carpenter" }
+  ],
+  "missing_lead_times": { "count": 4, "href": "/projects/{id}?tab=ffe&focus=ordering_due-{itemId}" }
+}
+```
+
+`ordering_due` includes only `due_soon`/`overdue` items, sorted
+overdue-first then by `order_by` ascending. `missing_lead_times` is a
+count + P&P deep link built from `lib/order-by.ts`'s
+`missingLeadTimes()`.
+
+### ProcurementView — ORDER BY column
+
+New column between Delivered and Status. Chip rendering: red-outlined
+date if overdue, sand-outlined date if due_soon, plain date if ok, sand
+"Set lead time" label if a works date was found but no lead time is
+set, `—` if no relevant booking exists. A small sand dot renders next
+to the chip on ANY row missing `lead_time_weeks` (suppressed only when
+the main chip already says "Set lead time", to avoid the same signal
+twice on one row) — this is the row-independent "missing lead time"
+marker, driven by `missing_lead_time_item_ids`, not by whether a
+booking was ever found. Each row also carries a
+`focus-ordering_due-{itemId}` anchor (alongside its pre-existing
+`focus-decision_overdue-{itemId}` id) for My Work / attention-feed deep
+links (`FocusOnLoad.tsx`).
+
+### My Work — "ordering_due" rollup line
+
+`GET /api/my-work` gains an admin-only ninth source (same
+`if (isAdmin) { ... }` gating as the existing lead-follow-ups source):
+one line per (project, matched trade/preset) pair with at least one
+`due_soon`/`overdue` item, formatted `"Order N items for {trade name} —
+works {DD/MM}"`, `due` = the group's earliest `order_by` date, `href` =
+`/projects/{id}?tab=ffe&focus=ordering_due-{itemId}` — the SAME
+`?tab=`/`?focus=` deep-link convention every other My Work line already
+uses (see the existing `decision_overdue` source for precedent). The
+FF&E tab's `?focus=` handling (`app/(dashboard)/projects/[id]/page.tsx`)
+now also opens straight into the Procurement sub-view for
+`ordering_due-` focus ids, mirroring its existing `decision_overdue-`
+branch.
+
+### MCP / Aria
+
+- **`update_item_pricing`** gains an optional `lead_time_weeks` number
+  arg — Aria records it whenever a supplier's quote states one, closing
+  the lead-time-hygiene gap at quoting time rather than only via the
+  P&P UI. The items PATCH route's field whitelist already included
+  `lead_time_weeks` (added in an earlier round) — no change needed
+  there.
+- **`get_ordering_attention`** (new tool, `project_id` required) — thin
+  fetch to `GET /api/projects/[id]/attention`. Per-project (unlike
+  `get_bookings_overdue`/`get_needs_attention`, which are cross-project)
+  since order-by derivation is inherently project-scoped; Aria calls
+  `list_projects` then this tool per project of interest to build a
+  cross-studio chase list.
+- **`get_needs_attention`**'s description now explicitly notes it is
+  LEADS-only and points Aria at `get_bookings_overdue`/
+  `get_ordering_attention` for booking/ordering chases instead (its own
+  four lead groups are unchanged).
+
+**Files touched:** `lib/order-by.ts` (new), `types/order-by.ts` (new),
+`app/api/projects/[id]/order-by/route.ts` (new),
+`app/api/projects/[id]/attention/route.ts` (new),
+`components/items/ProcurementView.tsx` (ORDER BY column — this file is
+explicitly NOT protected this round),
+`components/items/ProjectWorkspace.tsx` (lazy order-by fetch, prop
+wiring), `app/(dashboard)/projects/[id]/page.tsx` (`ordering_due-` focus
+branch), `app/api/my-work/route.ts` + `types/phase-12a-b.ts`
+(`ordering_due` source + kind), `mcp/src/index.mjs`
+(`update_item_pricing` extension, `get_ordering_attention` new tool,
+`get_needs_attention` description update),
+`components/settings/ExportPresetSettings.tsx` +
+`app/(dashboard)/settings/page.tsx` ("Trade mappings" copy only),
+`docs/API.md` / `docs/ARIA.md` / `README.md` (this round's
+documentation). Zero new migrations; no protected file touched.

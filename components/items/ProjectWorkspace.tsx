@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import clsx from "clsx";
 import type { Category, Item, ProjectAllocation, RoomWithCount } from "@/types";
 import type { MeasurementWithGroup } from "@/types";
+import type { OrderByResponse } from "@/types/order-by";
 import { SpecRegister } from "./SpecRegister";
 import { ProcurementView } from "./ProcurementView";
 import { ProcurementBoardView } from "./ProcurementBoardView";
@@ -79,6 +80,17 @@ export function ProjectWorkspace({
   // every visit to the Spec view, which never needs it.
   const [measurements, setMeasurements] = useState<MeasurementWithGroup[]>([]);
   const [measurementsLoaded, setMeasurementsLoaded] = useState(false);
+  // Order-by engine (8 July 2026) — the ORDER BY column's derived
+  // data (lib/order-by.ts, via GET /api/projects/[id]/order-by).
+  // Deliberately mirrors the measurements lazy-load immediately above:
+  // admin-only (the route itself 403s a non-admin, but this component
+  // additionally never even calls it for a non-admin session, same
+  // "hidden, not merely disabled" discipline the measurements fetch
+  // uses), and only triggered once the Procurement view is actually
+  // opened — no point paying for this request on every visit to the
+  // Spec view, which never renders the ORDER BY column at all.
+  const [orderBy, setOrderBy] = useState<OrderByResponse | null>(null);
+  const [orderByLoaded, setOrderByLoaded] = useState(false);
 
   // Rooms + per-room allocations for the spec register's Room grouping and
   // per-item editor. Loaded client-side (they change often via bulk assign).
@@ -122,6 +134,25 @@ export function ProjectWorkspace({
         // "no measurements yet" copy for an empty list.
       });
   }, [view, isAdmin, measurementsLoaded, projectId]);
+
+  // Order-by engine — lazy-load the ORDER BY column's data the first
+  // time an admin opens the Procurement view, same trigger condition as
+  // the measurements fetch immediately above (not on initial mount,
+  // never at all for a non-admin session).
+  useEffect(() => {
+    if (view !== "procurement" || !isAdmin || orderByLoaded) return;
+    setOrderByLoaded(true);
+    fetch(`/api/projects/${projectId}/order-by`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body: OrderByResponse | null) => {
+        if (body) setOrderBy(body);
+      })
+      .catch(() => {
+        // Best-effort — ProcurementView renders no ORDER BY chips at
+        // all (falls back to a blank/'—' cell) if this fails, same
+        // "degrade quietly" behaviour as the measurements fetch.
+      });
+  }, [view, isAdmin, orderByLoaded, projectId]);
 
   async function patchItem(id: string, patch: Partial<Item>) {
     const prev = items;
@@ -254,6 +285,7 @@ export function ProjectWorkspace({
           onPatch={patchItem}
           measurements={isAdmin ? measurements : []}
           isAdmin={isAdmin}
+          orderBy={isAdmin ? orderBy : null}
         />
       ) : (
         <ProcurementBoardView items={items} onPatch={patchItem} />

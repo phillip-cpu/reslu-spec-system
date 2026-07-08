@@ -24,7 +24,32 @@ const KIND_LABEL: Record<MyWorkItem["kind"], string> = {
   // route's own doc comment) and rendered by the existing `item.meta`
   // line below; this KIND_LABEL entry is the pill next to the title.
   design_task: "Design",
+  // Bug fix, 8 July 2026: order-by engine (GET /api/my-work source #9)
+  // added "ordering_due" to MyWorkItemKind (types/phase-12a-b.ts) but
+  // this Record was never updated to match — a genuine TS2741 build
+  // error (Record<MyWorkItemKind, string> requires every kind to have
+  // an entry), not a stale-cache artifact. This file is outside that
+  // round's own designated file list, which is exactly why it was
+  // missed.
+  ordering_due: "Order by",
 };
+
+/**
+ * Bug fix, 8 July 2026: was `toLocaleDateString("en-AU", { day:
+ * "numeric", month: "short" })` — the same genuine cross-engine Intl/
+ * ICU hydration mismatch already fixed in components/board/DateCell.tsx
+ * and ProjectBoard.tsx (Node's en-AU "short" month renders "July";
+ * Safari/WebKit's renders "Jul" — same date, same locale, same
+ * options, different server-vs-client text). A manual, hardcoded
+ * month-abbreviation array has zero locale/ICU dependency, so server
+ * and client can never disagree.
+ */
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function formatDueShort(due: string): string {
+  const d = new Date(due.length <= 10 ? `${due}T00:00:00` : due);
+  return `${d.getDate()} ${SHORT_MONTHS[d.getMonth()]}`;
+}
 
 const SECTIONS: { key: keyof MyWorkGroups; label: string; emptyLabel: string }[] = [
   { key: "overdue", label: "Overdue", emptyLabel: "Nothing overdue." },
@@ -153,10 +178,7 @@ function ItemRow({ item, overdue }: { item: MyWorkItem; overdue: boolean }) {
         </div>
         {item.due && (
           <span className={clsx("shrink-0 text-caption", overdue ? "text-red-700" : "text-charcoal/50")}>
-            {new Date(item.due.length <= 10 ? `${item.due}T00:00:00` : item.due).toLocaleDateString("en-AU", {
-              day: "numeric",
-              month: "short",
-            })}
+            {formatDueShort(item.due)}
           </span>
         )}
       </a>

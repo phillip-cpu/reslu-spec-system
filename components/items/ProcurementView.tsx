@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import clsx from "clsx";
 import type { Category, Item, ItemStatus, MeasurementWithGroup } from "@/types";
+import type { OrderByResponse, OrderByRow } from "@/types/order-by";
 import { MeasurementLinkPicker } from "@/components/estimate/MeasurementLinkPicker";
 import { derivedQuantity, derivedQuantityNote } from "@/lib/item-quantity";
 
@@ -53,6 +54,15 @@ interface Props {
   measurements?: MeasurementWithGroup[];
   /** Round B — gates the link/unlink affordance itself, not just the data. */
   isAdmin?: boolean;
+  /**
+   * Order-by engine (8 July 2026) — derived ORDER BY column data (see
+   * lib/order-by.ts, fetched by ProjectWorkspace.tsx via GET
+   * /api/projects/[id]/order-by, admin-only same as `measurements`).
+   * Null while loading/not-yet-fetched/non-admin — every row simply
+   * renders '—' in that case, same "degrade quietly" behaviour as the
+   * Qty cell's measurement-link picker when `measurements` is empty.
+   */
+  orderBy?: OrderByResponse | null;
 }
 
 // ── computations ────────────────────────────────────────────
@@ -139,6 +149,82 @@ function riskFlag(item: Item): Risk {
 
 function money(v: number | null): string {
   return v === null ? "—" : aud.format(v);
+}
+
+/**
+ * Order-by engine — DD/MM formatting for the ORDER BY chip, matching
+ * lib/order-by.ts's formatOrderByWorksDate() / app/api/my-work/route.ts's
+ * formatWorksDate() exactly (same fixed non-locale format) so a date
+ * shown here reads identically to the same date surfaced in My Work.
+ */
+function formatOrderByDate(dateOnly: string): string {
+  const [, month, day] = dateOnly.split("-");
+  return `${day}/${month}`;
+}
+
+/**
+ * Order-by engine — renders the ORDER BY column's chip for one item.
+ * `row` is this item's entry from GET /api/projects/[id]/order-by (via
+ * ProcurementView's `orderBy` prop), or undefined when the fetch hasn't
+ * completed yet / the item has no row at all (e.g. `orderBy` is null).
+ * `missingLeadTime` is the row-independent "no lead time" signal (BUILD-
+ * SPEC's amendment: flags ANY unordered item missing a lead time, even
+ * with no booking) — rendered as a small subtle dot ALONGSIDE whatever
+ * the main chip shows, never replacing it, since an item can be both
+ * "missing a lead time" (dot) and "no relevant booking found yet"
+ * ('—' chip) at once, or missing a lead time while ALSO having a
+ * matched works date (in which case `row.status` is already
+ * 'no_lead_time' and the main chip itself reads "set lead time" — the
+ * dot would be redundant there, so it's suppressed in that one case to
+ * avoid showing the same signal twice on one row).
+ */
+function OrderByCell({
+  row,
+  missingLeadTime,
+}: {
+  row: OrderByRow | undefined;
+  missingLeadTime: boolean;
+}) {
+  const status = row?.status;
+  const showDot = missingLeadTime && status !== "no_lead_time";
+
+  let chip: React.ReactNode = <span className="text-body text-charcoal/40">—</span>;
+  if (status === "overdue" && row?.order_by) {
+    chip = (
+      <span className="label-caps inline-block border border-red-700 px-2 py-1 !text-red-700">
+        {formatOrderByDate(row.order_by)}
+      </span>
+    );
+  } else if (status === "due_soon" && row?.order_by) {
+    chip = (
+      <span className="label-caps inline-block border border-sand px-2 py-1 !text-sand">
+        {formatOrderByDate(row.order_by)}
+      </span>
+    );
+  } else if (status === "ok" && row?.order_by) {
+    chip = <span className="text-body text-charcoal/70">{formatOrderByDate(row.order_by)}</span>;
+  } else if (status === "no_lead_time") {
+    chip = (
+      <span
+        className="label-caps inline-block border border-sand px-2 py-1 !text-sand"
+        title="A relevant trade booking was found, but this item has no lead time set — order date can't be calculated."
+      >
+        Set lead time
+      </span>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-end gap-1.5">
+      {showDot && (
+        <span
+          title="Missing lead time — set it so order dates can be calculated once a trade is booked."
+          className="inline-block h-1.5 w-1.5 shrink-0 rounded-full !bg-sand"
+        />
+      )}
+      {chip}
+    </div>
+  );
 }
 
 // ── inline editors (uncontrolled; remount on value change via key) ──
@@ -306,6 +392,7 @@ export function ProcurementView({
   onPatch,
   measurements = [],
   isAdmin = false,
+  orderBy = null,
 }: Props) {
   // Round B — which item's measurement-link picker is currently open
   // (null = none). Only one open at a time, same "single open popover"
@@ -315,6 +402,18 @@ export function ProcurementView({
   const measurementsById = useMemo(
     () => new Map(measurements.map((m) => [m.id, m])),
     [measurements]
+  );
+
+  // Order-by engine — O(1) row/missing-lead-time lookups for the ORDER
+  // BY column, recomputed only when the fetched `orderBy` prop changes
+  // (not on every render/keystroke elsewhere in this component).
+  const orderByRowById = useMemo(
+    () => new Map((orderBy?.rows ?? []).map((r) => [r.item_id, r])),
+    [orderBy]
+  );
+  const missingLeadTimeIds = useMemo(
+    () => new Set(orderBy?.missing_lead_time_item_ids ?? []),
+    [orderBy]
   );
 
   const sortedCategories = useMemo(
@@ -430,6 +529,7 @@ export function ProcurementView({
                   <th className="label-caps px-2 py-1.5">Ordered</th>
                   <th className="label-caps px-2 py-1.5">ETA</th>
                   <th className="label-caps px-2 py-1.5">Delivered</th>
+                  <th className="label-caps px-2 py-1.5 text-right">Order by</th>
                   <th className="label-caps px-2 py-1.5">Status</th>
                   <th className="label-caps px-2 py-1.5">Flag</th>
                 </tr>
@@ -443,7 +543,18 @@ export function ProcurementView({
                       id={`focus-decision_overdue-${item.id}`}
                       className="border-b border-[#e5e0d6] align-middle"
                     >
-                      <td className="px-2 py-1.5 text-body text-nearblack">
+                      <td className="relative px-2 py-1.5 text-body text-nearblack">
+                        {/* Order-by engine — a second, independently-
+                            targetable focus anchor for My Work's
+                            "ordering_due" deep link (?focus=ordering_due-<id>),
+                            alongside this row's own pre-existing
+                            focus-decision_overdue-<id> id above. A plain
+                            zero-size span (not the <tr> itself, which
+                            already owns the decision_overdue id and
+                            cannot carry two ids at once) — FocusOnLoad's
+                            document.getElementById() + scrollIntoView
+                            still lands the user on this row either way. */}
+                        <span id={`focus-ordering_due-${item.id}`} className="absolute" aria-hidden />
                         {item.item_code}
                       </td>
                       <td className="max-w-[220px] truncate px-2 py-1.5 text-body">
@@ -505,6 +616,12 @@ export function ProcurementView({
                         <DateCell
                           value={item.delivered_at}
                           onCommit={(v) => onPatch(item.id, { delivered_at: v })}
+                        />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <OrderByCell
+                          row={orderByRowById.get(item.id)}
+                          missingLeadTime={missingLeadTimeIds.has(item.id)}
                         />
                       </td>
                       <td className="px-2 py-1">

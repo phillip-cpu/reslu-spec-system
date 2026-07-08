@@ -590,6 +590,63 @@ human reviewing the materials list later has context. The Materials UI
 Aria" caption on any material in this state, so a team member browsing
 the calculator sees the same signal Aria is working from.
 
+## Order-by engine — chasing overdue orders (8 July 2026)
+
+A THIRD chase pairing, alongside booking-chase and blocked-site-pricing
+above, but with the "resolve it" half folded into an existing tool
+(`update_item_pricing`) rather than a brand-new write tool: **an item a
+trade installs must be ordered a lead time BEFORE that trade's works
+date.** `lib/order-by.ts` derives, for every unordered item, the
+earliest relevant trade booking (a `trade_visits` row or a board-task
+booking placeholder) whose contact's category maps — via the "Trade
+mappings" list (`components/settings/ExportPresetSettings.tsx`, the
+renamed export-presets editor) — to that item's category, then
+subtracts `lead_time_weeks`.
+
+### `get_ordering_attention({ project_id })` → `GET /api/projects/[id]/attention`
+
+**Per-project, unlike `get_bookings_overdue`/`get_needs_attention`** —
+call `list_projects` first, then this tool for each active project you
+want a chase list for. Returns two groups:
+
+- `ordering_due` — items whose `order_by` date is within 7 days or
+  already past, sorted overdue-first. Each entry carries `item_code`,
+  `item_name`, `status` (`'due_soon'` or `'overdue'`), `order_by`,
+  `works_date`, and `matched_preset_name` (the trade mapping that
+  produced the works date — e.g. "Carpenter"). This is your chase list:
+  a human needs to place these orders, or you can draft the supplier PO
+  language for them to send.
+- `missing_lead_times` — `{ count, href }`. Items with NO
+  `lead_time_weeks` set at all, regardless of whether a booking exists
+  yet. This is a lower-urgency nudge — Phillip's own framing (8 Jul):
+  "lead-time hygiene happens at quoting time, not in a panic at booking
+  time." If you're recording a trade quote via `update_item_pricing`
+  and the supplier's quote states a lead time, pass it — see below.
+
+### Closing the gap: `update_item_pricing`'s `lead_time_weeks` arg
+
+`update_item_pricing` (existing tool) now accepts an optional
+`lead_time_weeks` number alongside `unit_price_ex_gst`. Supplier quotes
+are exactly where lead times are learned — record it in the SAME call
+as the price whenever the quote states one, rather than leaving it for
+a human to notice later in a `missing_lead_times` nudge or, worse, at
+`get_bookings_overdue` panic time. This is the one case where recording
+a quote should proactively also close an ordering-hygiene gap, not just
+log the price.
+
+### What NOT to do
+
+- Never guess a `lead_time_weeks` value to make an amber "set lead
+  time" flag go away — an item showing `status: 'no_lead_time'` in
+  `get_ordering_attention`'s underlying data (surfaced in the P&P UI,
+  not this tool's own `ordering_due` list — see `lib/order-by.ts`'s
+  status enum) means a real works date was found but the lead time is
+  genuinely unknown; only set it from an actual supplier quote.
+- Don't call `get_ordering_attention` cross-project in a loop expecting
+  it to behave like `get_bookings_overdue` — it is intentionally
+  per-project (order-by derivation depends on a project's own bookings,
+  not a global feed), so budget one call per project of interest.
+
 ## Lead notes — migration 030 round (7 July 2026)
 
 New tool: `add_lead_note`. `leads.notes` (the old flat free-text

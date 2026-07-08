@@ -234,7 +234,13 @@ export function WorksDateCell({
                 autoFocus
                 type="date"
                 value={startDraft}
-                onChange={(e) => setStartDraft(e.target.value)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setStartDraft(v);
+                  // Phillip 8 Jul: picking a start snaps the end field to
+                  // the same date when empty/earlier — no month-flicking.
+                  if (v && (!endDraft || endDraft < v)) setEndDraft(v);
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") commit();
                   if (e.key === "Escape") cancel();
