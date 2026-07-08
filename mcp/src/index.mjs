@@ -989,6 +989,61 @@ const TOOLS = [
     },
     handler: async ({ project_id }) => apiFetch(`/api/projects/${project_id}/attention`),
   },
+  // ------------------------------------------------------------
+  // RESLU Second Brain, Step 2 (docs/RESLU-second-brain-build-brief.md).
+  // aria_queue (migration 033) is Aria's own work queue — events other
+  // parts of this app raise (price requests, trade reminders, lead
+  // flags, approval-needed items, email proposals from a later step)
+  // land there as rows; these two tools are how Aria drains it. Same
+  // thin-fetch pattern as every tool in this file — the actual claim
+  // logic (FOR UPDATE SKIP LOCKED, the 15-minute visibility timeout)
+  // lives in the claim_aria_queue_items() Postgres function (migration
+  // 034), called by POST /api/aria-queue/claim, never reimplemented
+  // here or in that route.
+  //
+  // Heartbeat usage (per the brief): a Mac-mini script should check
+  // whether the queue is non-empty (a cheap call — get_aria_queue
+  // itself is that check; an empty `items` array costs one API round-
+  // trip, not a model invocation) BEFORE ever invoking Aria on a
+  // schedule, so idle polling costs zero tokens.
+  // ------------------------------------------------------------
+  {
+    name: "get_aria_queue",
+    description:
+      "Claim up to `limit` pending work items from Aria's queue (oldest first) — atomically, so two concurrent callers never claim the same row. A row picked up more than 15 minutes ago and never resolved is treated as abandoned (Aria crashed mid-item) and is re-exposed here again. Empty result means nothing to do right now — check this before invoking any model on a schedule, not the other way around. Resolve every claimed item with resolve_queue_item once handled, whether it succeeded or failed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Max items to claim, default 10, capped at 50" },
+      },
+      additionalProperties: false,
+    },
+    handler: async ({ limit } = {}) =>
+      apiFetch("/api/aria-queue/claim", {
+        method: "POST",
+        body: JSON.stringify(limit === undefined ? {} : { limit }),
+      }),
+  },
+  {
+    name: "resolve_queue_item",
+    description:
+      "Mark a claimed aria_queue item 'done' or 'failed'. Resolved rows are never deleted — they are this queue's own audit trail. Always resolve a claimed item (even a failure) so it doesn't sit picked-up until the 15-minute visibility timeout re-exposes it unnecessarily. `note` is optional context (e.g. why it failed, or what action was taken) stored on the row.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "aria_queue row UUID" },
+        status: { type: "string", enum: ["done", "failed"] },
+        note: { type: "string", description: "Optional context — why it failed, or what was done" },
+      },
+      required: ["id", "status"],
+      additionalProperties: false,
+    },
+    handler: async ({ id, ...body }) =>
+      apiFetch(`/api/aria-queue/${id}/resolve`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+  },
   {
     name: "book_trade_visit",
     description:
