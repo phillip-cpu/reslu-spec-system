@@ -1044,6 +1044,37 @@ const TOOLS = [
         body: JSON.stringify(body),
       }),
   },
+  // ------------------------------------------------------------
+  // RESLU Second Brain, Step 6 (docs/RESLU-second-brain-build-brief.md).
+  // Hybrid (full-text + vector) search over workspace_index (Step 4/5)
+  // — one call instead of 6-8 separate list/get round-trips to find a
+  // project/lead/item/diary-entry/SOW-entry by name or description.
+  // Same thin-fetch pattern as every tool above — the actual RRF
+  // ranking lives in hybrid_search() (migration 036), the query
+  // embedding call lives in POST /api/second-brain/search, neither
+  // duplicated here.
+  // ------------------------------------------------------------
+  {
+    name: "search",
+    description:
+      "Hybrid search (full-text + semantic) across projects, leads, items, diary/portal updates, and SOW documents — one call instead of separate list/get round-trips. Full-text catches exact codes (product names, AS/NZS references) that semantic search alone can miss; semantic catches paraphrases/related concepts full-text alone can miss. Use entity_type to scope to one kind (project/lead/item/diary/sow) when you already know what you're looking for. response_format 'concise' (default) returns a <=140-char snippet per result; 'detailed' returns the full indexed content.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search text" },
+        entity_type: { type: "string", enum: ["project", "lead", "item", "diary", "sow"], description: "Optional — scope to one entity type" },
+        limit: { type: "number", description: "Max results, default 8, capped at 30" },
+        response_format: { type: "string", enum: ["concise", "detailed"], description: "Default concise" },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+    handler: async (args) =>
+      apiFetch("/api/second-brain/search", {
+        method: "POST",
+        body: JSON.stringify(args),
+      }),
+  },
   {
     name: "book_trade_visit",
     description:
