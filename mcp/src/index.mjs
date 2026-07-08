@@ -1045,6 +1045,27 @@ const TOOLS = [
       }),
   },
   // ------------------------------------------------------------
+  // RESLU Second Brain, Step 12 (docs/RESLU-second-brain-build-brief.md).
+  // Manual reindex trigger — invokes the Step 5 indexer route
+  // directly (same Vercel deployment; the route already supports an
+  // optional entity_type filter, added in Step 5 specifically so this
+  // Step 12 tool would cost nothing extra to add later).
+  // ------------------------------------------------------------
+  {
+    name: "index_rebuild",
+    description:
+      "Manually trigger a workspace_index reindex (Step 5's indexer) — normally runs on its own daily cron, use this to force a fresh run (e.g. after a bulk data import, or to confirm search results reflect a just-made change without waiting for the schedule). Optional entity_type scopes the rebuild to just one kind (project/lead/item/diary/sow) instead of everything.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        entity_type: { type: "string", enum: ["project", "lead", "item", "diary", "sow"], description: "Optional — scope to one entity type" },
+      },
+      additionalProperties: false,
+    },
+    handler: async ({ entity_type } = {}) =>
+      apiFetch(entity_type ? `/api/second-brain/reindex?entity_type=${encodeURIComponent(entity_type)}` : "/api/second-brain/reindex"),
+  },
+  // ------------------------------------------------------------
   // RESLU Second Brain, Step 6 (docs/RESLU-second-brain-build-brief.md).
   // Hybrid (full-text + vector) search over workspace_index (Step 4/5)
   // — one call instead of 6-8 separate list/get round-trips to find a
@@ -1217,6 +1238,34 @@ const TOOLS = [
 const toolsByName = new Map(TOOLS.map((t) => [t.name, t]));
 
 // ------------------------------------------------------------
+// RESLU Second Brain, Step 12 (docs/RESLU-second-brain-build-brief.md)
+// — "Truncation guard on every MCP tool: cap responses ~2,000 tokens
+// with a message telling the agent how to narrow." Implemented once,
+// centrally, at the single point every tool's result actually gets
+// serialized (CallToolRequestSchema handler below) — not scattered
+// across each of the ~40 individual tool handlers above, which would
+// be both a much larger change and much easier to accidentally miss
+// on the next new tool. ~4 chars/token is a rough, deliberately
+// conservative estimate (a safety cap, not a precise token count) —
+// erring toward truncating slightly early costs nothing; erring
+// toward never truncating defeats the whole point.
+// ------------------------------------------------------------
+const MAX_RESPONSE_CHARS = 2000 * 4;
+
+function truncateForResponse(text) {
+  if (text.length <= MAX_RESPONSE_CHARS) return text;
+  return JSON.stringify(
+    {
+      truncated: true,
+      message: `Response exceeded roughly 2,000 tokens (${text.length} chars) and was truncated. Narrow the request — a smaller limit, a more specific filter (e.g. entity_type, project_id), or response_format:'concise' if this tool supports it — then try again.`,
+      preview: text.slice(0, MAX_RESPONSE_CHARS),
+    },
+    null,
+    2
+  );
+}
+
+// ------------------------------------------------------------
 // MCP server wiring — low-level Server + StdioServerTransport,
 // setRequestHandler for tools/list and tools/call. (The higher-level
 // McpServer/registerTool API is more ergonomic but pulls in zod as a
@@ -1255,8 +1304,9 @@ async function main() {
 
     try {
       const result = await tool.handler(args ?? {});
+      const text = JSON.stringify(result, null, 2);
       return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        content: [{ type: "text", text: truncateForResponse(text) }],
       };
     } catch (err) {
       // Never throw out of a tool handler — always return isError
