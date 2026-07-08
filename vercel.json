@@ -23,6 +23,10 @@
     {
       "path": "/api/client-events/remind",
       "schedule": "0 21 * * *"
+    },
+    {
+      "path": "/api/leads/queue-sync",
+      "schedule": "0 21 * * *"
     }
   ]
 }

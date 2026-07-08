@@ -98,8 +98,8 @@ export async function GET(request: NextRequest) {
       ? supabase.from("projects").select("id,name").in("id", projectIds)
       : Promise.resolve({ data: [] as { id: string; name: string }[] }),
     contactIds.length
-      ? supabase.from("contacts").select("id,email,company").in("id", contactIds)
-      : Promise.resolve({ data: [] as { id: string; email: string | null; company: string }[] }),
+      ? supabase.from("contacts").select("id,email,company,category").in("id", contactIds)
+      : Promise.resolve({ data: [] as { id: string; email: string | null; company: string; category: string | null }[] }),
     // Every visit in the affected projects, for the overlap ("who else
     // is on site") computation — fetched once per batch, not per visit.
     projectIds.length
@@ -184,6 +184,33 @@ export async function GET(request: NextRequest) {
         .update({ reminder_sent_at: new Date().toISOString() })
         .eq("id", visit.id);
       sent++;
+
+      // RESLU Second Brain, Step 3 (docs/RESLU-second-brain-build-brief.md)
+      // — "trade reminder due" event site. Raised at the same point the
+      // reminder EMAIL actually sends (not earlier — a Gmail-config skip
+      // above `continue`s before reaching here, so this never fires for
+      // a reminder that didn't really go out), alongside that email, not
+      // instead of it. `trade` is the contact's category (e.g.
+      // "Plumber") — falls back to company name when no category is set
+      // — since deduping by trade TYPE within a project/date makes more
+      // sense than deduping by one specific company. Dedupe key already
+      // includes due_date (per the brief's own literal spec), so it's
+      // naturally unique per occurrence with no separate week component
+      // needed — on conflict do nothing.
+      const trade = contact.category ?? contact.company;
+      await supabase
+        .from("aria_queue")
+        .insert({
+          kind: "trade_reminder",
+          payload: { project_id: visit.project_id, trade, due_date: visit.start_date, visit_id: visit.id },
+          dedupe_key: `trade_reminder:${visit.project_id}:${trade}:${visit.start_date}`,
+          source: "trade-reminders-cron",
+        })
+        .then(({ error: queueError }) => {
+          if (queueError && queueError.code !== "23505") {
+            console.error("trade-reminders: aria_queue insert failed for visit", visit.id, queueError.message);
+          }
+        });
     } catch (err) {
       console.error("trade-reminders: send failed for visit", visit.id, err);
       failed++;

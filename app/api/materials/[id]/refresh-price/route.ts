@@ -234,6 +234,47 @@ export async function POST(
     }).catch(() => {
       // best-effort by design
     });
+
+    // RESLU Second Brain, Step 3 (docs/RESLU-second-brain-build-brief.md)
+    // — "price request raised" event site. Alongside the existing email
+    // above (not replacing it — this route's email notification predates
+    // aria_queue and keeps working exactly as before), also raise a
+    // price_request queue row so Aria's queue-driven flow (get_aria_queue)
+    // picks this up without needing to parse an inbox.
+    //
+    // Payload/dedupe adapted from the brief's literal spec — the brief
+    // assumed an `items` row ({item_id, project_id, supplier}), but this
+    // event site is on `materials` (migration 027), which has no
+    // project_id or supplier column at all (it's a global, non-project-
+    // scoped commodity price list — see that migration's own header).
+    // Using the real column names this table actually has instead of
+    // inventing fields that don't exist. Dedupe is monthly (not weekly,
+    // matching the brief's own literal `{yyyy-mm}` for this specific
+    // event, unlike the weekly dedupe on the other two Step 3 events) —
+    // on conflict do nothing, so a retry within the same month is a
+    // silent no-op. Best-effort: never blocks or fails this route.
+    const monthKey = new Date().toISOString().slice(0, 7); // yyyy-mm
+    await supabase
+      .from("aria_queue")
+      .insert({
+        kind: "price_request",
+        payload: {
+          material_id: id,
+          material_name: material.name,
+          product_url: material.product_url,
+          mode: isSupplierQuote ? "supplier_quote" : "scrape_failed",
+        },
+        dedupe_key: `price_request:${id}:${monthKey}`,
+        source: "materials.refresh-price",
+      })
+      .then(({ error: queueError }) => {
+        if (queueError && queueError.code !== "23505") {
+          // 23505 = unique_violation on dedupe_key, the expected/silent
+          // "already queued this month" case — anything else is worth
+          // knowing about, but still never blocks this route's response.
+          reportError("materials-refresh-price-queue", new Error(queueError.message));
+        }
+      });
   }
 
   const payload: RefreshPriceResponse = {
