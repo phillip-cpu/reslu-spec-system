@@ -1,0 +1,19 @@
+# Python deps for scripts/email_ingest.py (Step 8 — Mac-mini email pipeline).
+# Install into a dedicated venv at the repo root:
+#
+#   python3 -m venv .venv-email-ingest
+#   .venv-email-ingest/bin/pip install -r scripts/requirements-email-ingest.txt
+#
+# Also required (system binaries, install via Homebrew — NOT pip):
+#   brew install ocrmypdf tesseract         # ocrmypdf pulls poppler (pdftotext/pdfinfo) + ghostscript
+#
+requests
+email-reply-parser
+html2text
+
+# talon (Mailgun) does quote + signature stripping in one library and is
+# the brief's first choice, but its cchardet dependency has no wheel and
+# fails to build on CPython 3.14 (this machine). The script falls back to
+# email-reply-parser + a heuristic signature scrubber automatically when
+# talon can't be imported. To use talon, install on a Python <=3.12 venv:
+#   talon

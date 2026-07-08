@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Step 8 email-ingest schedule (Mac mini).
+
+  The brief says "cron every 10 min"; this machine schedules with
+  launchd exclusively (no crontab), so this is the local equivalent:
+  StartInterval=600 (10 min). Matches the ai.reslu.* LaunchAgent
+  convention already in ~/Library/LaunchAgents.
+
+  Install (does NOT run until you load it — validate with a manual
+  --limit 20 run first):
+    cp scripts/ai.reslu.email-ingest.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.reslu.email-ingest.plist
+    launchctl kickstart -p gui/$(id -u)/ai.reslu.email-ingest   # optional: run once now
+  Disable:
+    launchctl bootout gui/$(id -u)/ai.reslu.email-ingest
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.reslu.email-ingest</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/vale/reslu-spec-system/.venv-email-ingest/bin/python</string>
+        <string>/Users/vale/reslu-spec-system/scripts/email_ingest.py</string>
+    </array>
+
+    <!-- 10-minute cadence (brief's "cron every 10 min"). -->
+    <key>StartInterval</key>
+    <integer>600</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/vale/.openclaw/workspace/vault/agent-openclaw/daily/email-ingest.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/vale/.openclaw/workspace/vault/agent-openclaw/daily/email-ingest-errors.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- pdftotext / pdfinfo / ocrmypdf / tesseract live in /opt/homebrew/bin -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/vale</string>
+    </dict>
+</dict>
+</plist>
