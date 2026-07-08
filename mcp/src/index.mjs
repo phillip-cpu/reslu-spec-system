@@ -1075,6 +1075,26 @@ const TOOLS = [
         body: JSON.stringify(args),
       }),
   },
+  // ------------------------------------------------------------
+  // RESLU Second Brain, Step 7 (docs/RESLU-second-brain-build-brief.md).
+  // Compact snapshot replacing 6-8 separate round-trips at the start
+  // of a session. Same thin-fetch pattern — GET /api/me/context holds
+  // the actual query/aggregation logic, not duplicated here.
+  // ------------------------------------------------------------
+  {
+    name: "get_context_snapshot",
+    description:
+      "Compact workspace snapshot: active projects (id, name, status, flags, item_count, last diary one-liner), active leads (id, name, stage, days_since_contact), pending aria_queue count by kind, 5 most recent diary/portal-update one-liners. IDs + names + counts + one-liners ONLY — use search or a project's own tools for full detail. Pass project_id to instead get ONE project expanded: its items with current price + lead time, open_proposals (always 0 until the email-proposal pipeline ships), recent_emails (always [] until that pipeline ships).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Optional — expand one project instead of the full snapshot" },
+      },
+      additionalProperties: false,
+    },
+    handler: async ({ project_id } = {}) =>
+      apiFetch(project_id ? `/api/me/context?project_id=${encodeURIComponent(project_id)}` : "/api/me/context"),
+  },
   {
     name: "book_trade_visit",
     description:
