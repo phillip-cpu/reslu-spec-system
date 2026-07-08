@@ -9,6 +9,7 @@ import { AddToCalendarMenu } from "@/components/shared/AddToCalendarMenu";
 import type { InviteeOption } from "@/types/phase-small-round";
 import type { StandardItemIdsInput } from "@/types/round-d";
 import { LeadNotes } from "@/components/leads/LeadNotes";
+import { LeadAttachments } from "@/components/leads/LeadAttachments";
 import { StandardItemsChecklist } from "@/components/projects/StandardItemsChecklist";
 
 interface Props {
@@ -428,6 +429,11 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
               />
             </label>
           </div>
+
+          {/* Photos the prospect attached to the /begin enquiry form
+              (POST /api/leads/intake, migration 042) — renders nothing
+              for leads without attachments. */}
+          <LeadAttachments leadId={lead.id} />
 
           {/* Migration 030 round: leads.notes free-text editing is
               retired from this panel — the attributed, timestamped

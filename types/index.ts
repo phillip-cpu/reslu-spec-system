@@ -1160,7 +1160,9 @@ export interface PortalPhase {
 
 // ---- Leads pipeline (Week 10) ----
 
-export type LeadSource = "META" | "DIRECT";
+// "WEBSITE" added migration 042 — enquiries arriving from the
+// reslu.com.au /begin form via POST /api/leads/intake.
+export type LeadSource = "META" | "DIRECT" | "WEBSITE";
 
 /** Pipeline order — the 10 stages, in the exact order the kanban board
  * renders its columns (see components/leads/LeadsBoard.tsx). Not
@@ -1212,6 +1214,18 @@ export interface Lead {
   construction_end: string | null;
   monday_item_id: string | null;
   notes: string | null;
+  // Website intake fields (migration 042) — stored verbatim from
+  // POST /api/leads/intake. gclid + utm_* are MUST-KEEP: Aria's
+  // offline conversion import matches booked studio visits back to
+  // the ad click via gclid (RESLU-Spec-Lead-Intake.md).
+  project_type: string | null;
+  message: string | null;
+  page: string | null;
+  gclid: string | null;
+  utm_source: string | null;
+  utm_medium: string | null;
+  utm_campaign: string | null;
+  utm_content: string | null;
   project_id: string | null;
   created_by: string | null;
   created_at: string;
@@ -1225,6 +1239,21 @@ export interface LeadStageEvent {
   from_stage: LeadStage | null;
   to_stage: LeadStage;
   at: string;
+}
+
+/** One stored file on a lead (migration 042) — today always an intake
+ * photo from the /begin form (source 'intake'). storage_path points
+ * into the private assets bucket; the API returns a short-TTL signed
+ * `url` alongside (GET /api/leads/[id]/attachments), never a public URL. */
+export interface LeadAttachment {
+  id: string;
+  lead_id: string;
+  filename: string;
+  storage_path: string;
+  mime: string | null;
+  size_bytes: number | null;
+  source: string;
+  created_at: string;
 }
 
 /** body accepted by POST /api/leads. */

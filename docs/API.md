@@ -1367,6 +1367,46 @@ Auth: admin. Response: `{ events: LeadStageEvent[] }`, newest first.
 Same data `POST .../stage` returns inline, but independently fetchable
 for the detail panel's stage-history timeline on open/refresh.
 
+### POST /api/leads/intake
+Auth: **bearer secret**, not a session — `Authorization: Bearer
+$LEAD_INTAKE_SECRET` (same value the website's Vercel project holds as
+`CRM_WEBHOOK_SECRET`; see `.env.local.example` and
+`RESLU-Spec-Lead-Intake.md`). Fail-closed: env var unset → 503 for
+every request. Rate-limited per client IP (10/min, in-memory,
+best-effort). The website enquiry webhook — reslu.com.au /begin's
+Vercel function POSTs every enquiry here.
+
+Body (JSON, shape fixed by the website handoff spec): `{ type: "lead",
+source, received_at, first_name, last_name, email, phone, project_type,
+suburb, message, page, gclid, utm_source, utm_medium, utm_campaign,
+utm_content, photos? }`. `type !== "lead"` or missing/invalid `email`
+→ 400.
+
+Creates one lead: stage `'Potential Lead'`, source `'WEBSITE'`,
+`surname_project` = `Surname_ProjectType` (fallbacks: first name /
+email local part; `"Enquiry"` when no project type). **`gclid` and the
+four `utm_*` fields are stored verbatim on the lead (migration 042) —
+MUST-KEEP: Aria's offline conversion import matches booked studio
+visits back to the ad click via `gclid`.** `message` additionally
+lands in the `lead_notes` feed as author "Website enquiry" so it's
+visible in the detail panel.
+
+`photos` (max 3, `[{ filename, content }]`, content = base64 JPEG,
+data-URL prefix tolerated): each is magic-byte validated
+(`lib/file-sniff.ts`), capped at 2 MB decoded, uploaded to the private
+assets bucket under `leads/<id>/intake/…`, and recorded as a
+`lead_attachments` row. A bad photo never fails the lead — it's
+skipped and reported. Response 201: `{ ok, lead_id, photos_stored,
+photo_errors? }`.
+
+### GET /api/leads/[id]/attachments
+Auth: admin. Files stored on a lead (today: intake photos from the
+/begin form). Response: `{ attachments: (LeadAttachment & { url })[] }`
+— `url` is a short-TTL signed URL minted per request from the private
+assets bucket (never a public URL). Rendered by
+`components/leads/LeadAttachments.tsx` as a read-only photo strip in
+the lead detail panel.
+
 ### POST /api/leads/[id]/create-project
 Auth: admin. Body: `{ standard_item_ids? }` (previously no body at
 all — see "Standard spec items" below). BUILD-SPEC.md: "Moving a lead
@@ -5299,3 +5339,157 @@ branch), `app/api/my-work/route.ts` + `types/phase-12a-b.ts`
 `app/(dashboard)/settings/page.tsx` ("Trade mappings" copy only),
 `docs/API.md` / `docs/ARIA.md` / `README.md` (this round's
 documentation). Zero new migrations; no protected file touched.
+
+## Daily Brief + reminder times (Phillip, 8 July 2026, migration 041)
+
+A single shared team brief (v1 — not per-user, see `user_id`'s own
+column comment) on the My Work page: a sticky-note acknowledgement
+layer over the existing attention feeds. Ticking an item means
+"seen/handled" — it NEVER completes the underlying record; `link_href`
+("open ->") is how you action the real thing.
+
+**Admin-gated, v1.** Every `/api/brief*` route below returns 403 for a
+non-admin session. The brief mixes admin-only-sourced rows (leads
+nurture/stale, ordering_due) with team-visible ones (bookings, trade
+proposals, insurance) into one shared feed — splitting it per-role
+would either leak admin-only titles/links to non-admins or require
+maintaining two divergent brief views, so the whole feed is gated
+rather than per-source (unlike `GET /api/my-work`, which gates
+per-source since each of ITS sources renders as its own independent
+list). `components/my-work/DailyBrief.tsx` treats a 403 as "render
+nothing" — a non-admin's My Work page simply shows no Daily Brief
+section, no error banner.
+
+- **`GET/POST /api/brief/generate`** (**session, admin-only** OR
+  `CRON_SECRET` bearer) — runs the generator: aggregates bookings
+  overdue, ordering_due, lead nurture/stale, trade proposed_change, and
+  expiring/expired insurance into `daily_brief_items` rows. **Dedupe/
+  idempotency**: a candidate is skipped when an OPEN item already
+  exists with the same `(source, link_href)` within the last 7 days —
+  running this route twice in a day (the cron entry, plus a manual
+  "regenerate") produces zero duplicates. An item nobody ticks stays
+  open indefinitely — it isn't re-created, it just keeps showing up on
+  every `GET /api/brief` call (which queries every OPEN item
+  regardless of `brief_date`, not just today's), tagged "from
+  yesterday" / "from {weekday}" by how old its `brief_date` is. See
+  `lib/daily-brief.ts`'s and `lib/daily-brief-generate.ts`'s own header
+  comments for the full derivation. `?send=1` additionally sends the
+  7am glance email (see below) after generating — see `README.md`'s
+  "Daily Brief cron" section for the exact `vercel.json` entry and its
+  DST caveat.
+- **`GET /api/brief`** (**session, admin-only**) — "today's open +
+  recent done": every OPEN item (any `brief_date`) plus every DONE item
+  whose `acknowledged_at` falls within the last 24 hours (so a
+  carried-over item ticked done today still counts toward today's
+  done/total). Each item is annotated with `project` (resolved from
+  `project_id`), `carried_over_label` (null for a genuinely-today item),
+  and `converted_label` ("added to {project}" / "added to Office",
+  derived from `converted_task_id`/`converted_office_task_id` at read
+  time — never stored, see the migration's own "no note column" doc
+  comment).
+- **`POST /api/brief/items`** (**session, admin-only** OR Bearer JWT —
+  Aria's account) — manual/Aria add. body `{ title, source? ('manual'
+  default | 'aria'), link_href?, project_id? }`. This is the
+  `add_brief_item` MCP tool's target route.
+- **`PATCH /api/brief/items/[id]`** (**session, admin-only**) — tick/
+  untick. body `{ status: 'open' | 'done' }`. Untick clears
+  `acknowledged_at` back to null (fully reversible, same as Office
+  board's complete/uncomplete pair).
+- **`POST /api/brief/items/[id]/convert`** (**session, admin-only**) —
+  "Add to project ->". body `{ project_id?: string | null }`.
+  - `project_id` given: creates a `board_tasks` row (title from the
+    item, due today, the project's first board column — seeded if the
+    project's board has never been opened — and first board group as
+    defaults), sets `converted_task_id`, auto-ticks the brief item.
+  - `project_id` omitted/null: creates an `office_tasks` row in the
+    'Phillip' department group (matched by name, case-insensitive;
+    falls back to the first office group if 'Phillip' doesn't exist),
+    sets `converted_office_task_id` (a SEPARATE column from
+    `converted_task_id` — see the migration's own "SECOND DEVIATION
+    NOTE": an office task lives in a different table, so it can't be
+    stored in a column FK'd to `board_tasks`), auto-ticks the item.
+  - Refuses (400) a second conversion attempt on an already-converted
+    item — one-shot per item.
+
+**The 7am email** (`sendTeamEmail` to every admin profile, via
+`?send=1` on the generate route): subject `"Daily brief — {date} · N
+items"`, body = counts by source + up to 5 item titles + a link to
+`{appUrl}/my-work`. Skips cleanly (no email sent, no error) when Gmail
+isn't configured, there are zero open items, or there are zero admin
+recipients — see `lib/daily-brief.ts`'s `buildBriefEmailContent()` for
+the exact formatting and `app/api/brief/generate/route.ts`'s
+`sendBriefEmailIfNeeded()` for the skip conditions.
+
+### due_time ("Small pair" item 2, same migration 041)
+
+`board_tasks`, `office_tasks`, and `design_tasks` all gain a nullable
+`due_time time` column alongside their existing `due_date`. Every due-
+date editor that previously offered just a date input now offers an
+optional time beside it:
+
+- **Board**: `DueDateCell` (`components/board/DateCell.tsx`) — the
+  click-to-reveal popover gains a second `<input type="time">`,
+  disabled until a date is set; commits `{ due_date, due_time }` as one
+  PATCH pair, mirroring `WorksDateCell`'s own "commit once as a pair"
+  discipline. `PATCH /api/board-tasks/[id]`'s `EDITABLE_FIELDS`
+  whitelist gains `due_time`; `POST /api/projects/[id]/board` accepts
+  it at creation too.
+- **Office**: the expanded task row (`components/office/OfficeBoard.tsx`)
+  gains a second `<input type="time">` beside the existing date input.
+  `PATCH /api/office/tasks/[id]`'s whitelist and `POST
+  /api/office/tasks`'s create body both gain `due_time` (never set for
+  `kind: 'rule'` cards, same as `due_date`).
+- **Design**: the expanded task row
+  (`components/projects/design/DesignPhaseSection.tsx`) gains the same
+  time input. `PATCH /api/design-tasks/[id]`'s whitelist and `POST
+  /api/design-tasks`'s create body both gain `due_time`.
+- **My Work** (`GET /api/my-work`): sources #1 (board_task), #6
+  (office_task), and #8 (design_task) now select+return `due_time`.
+  `lib/my-work.ts`'s `groupMyWorkItems()` sorts same-day items by time
+  ascending (untimed items sort after every timed item that day) and
+  shows `"2:30pm"` next to the date; `bucketFor()` moves a "today" item
+  into the "overdue" (red) bucket once its `due_time` has passed, per
+  BUILD-SPEC's "overdue turns red by datetime when time present, else
+  by date" — a task with no `due_time` keeps the exact prior date-only
+  rule.
+- **Overdue check**: `lib/time-format.ts`'s `isOverdueByDateTime()` is
+  the one shared implementation every surface above uses (board's
+  `pastDue`, office's, design's, and `lib/my-work.ts`'s bucket logic) —
+  Adelaide-anchored via `Intl.DateTimeFormat` STRING comparison
+  (mirroring `ProjectBoard.tsx`'s existing `isPastDue()` fix), never a
+  raw `Date` object comparison, to avoid the exact server(UTC)/client
+  (Adelaide) hydration-mismatch bug class that fix already eliminated
+  for date-only comparisons.
+- **Aria**: `create_board_task`, `create_office_task`, and
+  `create_design_task` (`mcp/src/index.mjs`) all accept an optional
+  `due_time` ("HH:MM", 24h) alongside their existing `due_date`.
+
+### MCP — `add_brief_item`
+
+New tool, thin fetch to `POST /api/brief/items`. `{ title, link_href?,
+project_id? }` — always lands with `source: 'aria'`. See
+`docs/ARIA.md`'s "Daily Brief" section for when to use this instead of
+WhatsApp.
+
+**Files touched:** `supabase/migrations/041_brief_and_due_times.sql`
+(new — see its own header for the file-number/schema deviation notes),
+`lib/daily-brief.ts` (new), `lib/daily-brief-generate.ts` (new),
+`lib/time-format.ts` (new), `types/round-daily-brief.ts` (new),
+`app/api/brief/generate/route.ts` (new), `app/api/brief/route.ts`
+(new), `app/api/brief/items/route.ts` (new),
+`app/api/brief/items/[id]/route.ts` (new),
+`app/api/brief/items/[id]/convert/route.ts` (new),
+`components/my-work/DailyBrief.tsx` (new),
+`components/my-work/MyWorkWorkspace.tsx` (mounts `DailyBrief` first),
+`types/phase-12a-b.ts` (`due_time` on `BoardTaskWithAssignees`/
+`CreateBoardTaskInputV2`/`PatchBoardTaskInputV2`/`MyWorkItem`),
+`types/phase-13.ts` / `types/phase-12b.ts` (`due_time` on
+office/design task types), `app/api/board-tasks/[id]/route.ts`,
+`app/api/projects/[id]/board/route.ts`, `app/api/office/tasks/route.ts`,
+`app/api/office/tasks/[id]/route.ts`, `app/api/design-tasks/route.ts`,
+`app/api/design-tasks/[id]/route.ts`, `app/api/my-work/route.ts`,
+`lib/my-work.ts`, `components/board/DateCell.tsx`,
+`components/board/ProjectBoard.tsx`, `components/office/OfficeBoard.tsx`,
+`components/projects/design/DesignPhaseSection.tsx`, `mcp/src/index.mjs`,
+`README.md` / `docs/API.md` / `docs/ARIA.md` (this round's
+documentation). No protected file touched.

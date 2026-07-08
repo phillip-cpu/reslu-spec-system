@@ -102,7 +102,7 @@ export async function PATCH(
   if (body.stage && !LEAD_STAGES.includes(body.stage)) {
     return NextResponse.json({ error: `Invalid stage: ${body.stage}` }, { status: 400 });
   }
-  if (body.source && !["META", "DIRECT"].includes(body.source)) {
+  if (body.source && !["META", "DIRECT", "WEBSITE"].includes(body.source)) {
     return NextResponse.json({ error: `Invalid source: ${body.source}` }, { status: 400 });
   }
 
