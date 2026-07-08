@@ -130,11 +130,17 @@ async function fetchSowPage(supabase: SupabaseClient, offset: number): Promise<R
     .order("id")
     .range(offset, offset + PAGE_SIZE - 1);
   if (error) throw new Error(`sow_documents fetch failed: ${error.message}`);
+  // projects(name) is a many-to-one embed (many sow_documents -> one
+  // project) — PostgREST returns it as a single object, not an array,
+  // confirmed against the live API (the generic supabase-js client's
+  // own inferred type claims an array here, which is wrong for this
+  // relationship direction; this repo has no generated Database type
+  // to catch that mismatch at compile time).
   const typedDocs = (docs ?? []) as unknown as {
     id: string;
     revision_label: string | null;
     project_id: string;
-    projects: { name: string }[] | null;
+    projects: { name: string } | null;
   }[];
   if (typedDocs.length === 0) return [];
 
@@ -171,7 +177,7 @@ async function fetchSowPage(supabase: SupabaseClient, offset: number): Promise<R
     const indexable: IndexableSowDocument = {
       id: d.id,
       revision_label: d.revision_label,
-      project_name: d.projects?.[0]?.name ?? "(unknown project)",
+      project_name: d.projects?.name ?? "(unknown project)",
       sections: sectionsByDoc.get(d.id) ?? [],
     };
     return { id: d.id, ...contentForSow(indexable) };
