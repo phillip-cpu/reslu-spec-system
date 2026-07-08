@@ -126,6 +126,33 @@ async function subsetPdfPages(bytes: Uint8Array, pages: number[] | null): Promis
   return out.save();
 }
 
+const CLAUDE_IMAGE_MEDIA_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+const EXT_TO_MEDIA_TYPE: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+};
+
+/**
+ * Some email clients send image attachments with a generic/incorrect
+ * Content-Type (observed live: real .jpeg attachments stored with
+ * mime='application/octet-stream' by Step 8's ingest, which stores
+ * whatever Content-Type the message itself declared) — Claude's
+ * vision API only accepts image/jpeg|png|gif|webp and correctly
+ * rejects anything else with a 400. Falls back to the filename
+ * extension when the stored mime isn't one of those four; returns
+ * null (skip this attachment) if neither the mime nor the extension
+ * resolve to a real image type, rather than sending something Claude
+ * will reject.
+ */
+function resolveImageMediaType(mime: string | null, filename: string | null): string | null {
+  if (mime && CLAUDE_IMAGE_MEDIA_TYPES.has(mime)) return mime;
+  const ext = filename?.split(".").pop()?.toLowerCase();
+  return (ext && EXT_TO_MEDIA_TYPE[ext]) ?? null;
+}
+
 async function buildVisionBlocks(
   supabase: SupabaseClient,
   attachments: ExtractionAttachment[]
@@ -140,20 +167,27 @@ async function buildVisionBlocks(
     }
     const bytes = new Uint8Array(await data.arrayBuffer());
 
-    blocks.push({ type: "text", text: `<attachment id="${att.id}" filename="${att.filename ?? ""}">` });
     if (att.mime === "application/pdf") {
+      blocks.push({ type: "text", text: `<attachment id="${att.id}" filename="${att.filename ?? ""}">` });
       const subset = await subsetPdfPages(bytes, att.kept_pages);
       blocks.push({
         type: "document",
         source: { type: "base64", media_type: "application/pdf", data: Buffer.from(subset).toString("base64") },
       });
+      blocks.push({ type: "text", text: `</attachment>` });
     } else {
+      const mediaType = resolveImageMediaType(att.mime, att.filename);
+      if (!mediaType) {
+        console.error("extraction: unrecognized image type, skipping attachment", att.id, att.mime, att.filename);
+        continue;
+      }
+      blocks.push({ type: "text", text: `<attachment id="${att.id}" filename="${att.filename ?? ""}">` });
       blocks.push({
         type: "image",
-        source: { type: "base64", media_type: att.mime, data: Buffer.from(bytes).toString("base64") },
+        source: { type: "base64", media_type: mediaType, data: Buffer.from(bytes).toString("base64") },
       });
+      blocks.push({ type: "text", text: `</attachment>` });
     }
-    blocks.push({ type: "text", text: `</attachment>` });
   }
   return blocks;
 }
