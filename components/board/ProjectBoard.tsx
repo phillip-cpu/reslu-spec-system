@@ -24,6 +24,10 @@ import type { ContactPickerOption } from "@/types/board-cockpit";
 // happens to contain. Both now correctly declare BoardColumnV3.
 import type { BoardColumnV3, BoardGroupV3, BoardTaskV3 } from "@/types/board-v3";
 import { shouldPromptMilestoneDiary } from "@/lib/board-cockpit";
+// migration 041 ("Small pair" item 2) — datetime-aware overdue check,
+// used wherever this file's own isPastDue() previously decided a due
+// row's red styling for the row that also renders DueDateCell.
+import { isOverdueByDateTime } from "@/lib/time-format";
 import {
   stageColorForIndex,
   resolveStatusPillTint,
@@ -3106,7 +3110,10 @@ function GroupRows({
 
   /** One row — shared by both top-level tasks and sub-items, differing only in indentation/prefix/count-chip/context-menu contents. `topLevelIndex` is this row's position among ITS OWN sibling set (top-level tasks for a top-level row, or this parent's sub-items for a sub-item row) — used for the Move up/down disabled-at-ends check and drag-drop index, so a sub-item's reorder is scoped to its own sibling set exactly as BUILD-SPEC.md requires ("never across parents or up to top level"). */
   function renderRow(task: BoardTaskV3, siblingIndex: number, siblingCount: number, isSubItem: boolean) {
-    const pastDue = isPastDue(task.due_date);
+    // migration 041 — datetime-aware once due_time is set, else the
+    // original date-only rule (see isOverdueByDateTime's own doc
+    // comment for the full "why datetime, not date+Date-object" story).
+    const pastDue = isOverdueByDateTime(task.due_date, task.due_time);
     const isExpanded = expandedId === task.id;
     const column = columnById.get(task.column_id);
     const columnName = column?.name ?? "";
@@ -3412,8 +3419,9 @@ function GroupRows({
                 opening this input never also collapses the row. */}
             <DueDateCell
               value={task.due_date}
+              timeValue={task.due_time}
               pastDue={pastDue}
-              onCommit={(v) => onPatchTask(task, { due_date: v }, { due_date: v })}
+              onCommit={(next) => onPatchTask(task, next, next)}
             />
           </td>
           <td className="py-1 pr-3">

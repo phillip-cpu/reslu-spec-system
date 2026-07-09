@@ -1,5 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { NextRequest, NextResponse, after } from "next/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import { reportError } from "@/lib/report-error";
+import { cancelPendingSends } from "@/lib/visit-emails";
 import type { PatchClientEventInput } from "@/types/phase-12a-b";
 
 const EDITABLE_FIELDS = new Set(["title", "starts_at", "ends_at", "location", "notes"]);
@@ -118,6 +120,24 @@ export async function DELETE(
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  // Site-visit lifecycle emails: cancelling a client event before its
+  // queued visit-reminder (or a still-pending, outside-window
+  // confirmation) went out must not send it — same "If a visit is
+  // cancelled before the reminder fires, don't send it" rule as the
+  // leads PATCH route's site_visit_date-cleared branch (see that
+  // file's own doc comment). Fire-and-forget via after(), own
+  // service-role client, same pattern as every other after() call site
+  // in this codebase (see app/api/items/[id]/route.ts's doc comment on
+  // why a request-scoped client isn't reused here).
+  after(async () => {
+    const service = createServiceRoleClient();
+    try {
+      await cancelPendingSends(service, "client_event", id);
+    } catch (err) {
+      await reportError("visit-emails", err);
+    }
+  });
 
   return NextResponse.json({ ok: true });
 }

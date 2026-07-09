@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
+import { formatTime12h } from "@/lib/time-format";
 
 /**
  * Bug fix, 8 July 2026: was `toLocaleDateString("en-AU", { month:
@@ -37,58 +38,114 @@ function formatShort(dateStr: string): string {
  * WHEN the input is visible, never how the write happens. Esc cancels
  * and reverts to the display chip without committing.
  *
- * Overdue rendering: red text when `pastDue` is true (due date < today
- * AND task not done) — `pastDue` is computed by the caller (GroupRows
- * already has this exact isPastDue() check) and simply passed through
- * here as a boolean, so this component stays free of "what counts as
- * done" business logic.
+ * Overdue rendering: red text when `pastDue` is true — `pastDue` is
+ * computed by the caller (GroupRows already has this exact check,
+ * migration 041-updated to lib/time-format.ts's isOverdueByDateTime()
+ * so it turns red by full datetime once a due_time is set, else by
+ * date alone, per BUILD-SPEC.md "Small pair" item 2) and simply passed
+ * through here as a boolean, so this component stays free of "what
+ * counts as done"/"what counts as overdue" business logic.
+ *
+ * migration 041 ("Small pair" item 2): gains an optional TIME input
+ * alongside the date one, inside the same click-to-reveal popover —
+ * same two-field popover shape as this file's own WorksDateCell below
+ * (Start/End), just Date/Time instead. The time input is disabled
+ * whenever the date draft is empty (a time with no date is meaningless
+ * — clearing the date also clears any drafted time). Commits BOTH
+ * fields as a single `{ due_date, due_time }` pair via `onCommit` (not
+ * two separate PATCHes), mirroring WorksDateCell's own "commit once as
+ * a pair" discipline so the two values are never transiently
+ * inconsistent mid-edit.
  */
 export function DueDateCell({
   value,
+  timeValue,
   pastDue,
   onCommit,
 }: {
   value: string | null;
+  /** Optional wall-clock reminder time, "HH:MM" or "HH:MM:SS" (Postgres `time`) — null/undefined when unset. */
+  timeValue?: string | null;
   pastDue: boolean;
-  onCommit: (next: string | null) => void;
+  onCommit: (next: { due_date: string | null; due_time: string | null }) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value ?? "");
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [draftDate, setDraftDate] = useState(value ?? "");
+  const [draftTime, setDraftTime] = useState(timeValue ?? "");
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const dateInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (editing) setDraft(value ?? "");
-  }, [editing, value]);
+    if (editing) {
+      setDraftDate(value ?? "");
+      setDraftTime(timeValue ?? "");
+    }
+  }, [editing, value, timeValue]);
+
+  useEffect(() => {
+    if (!editing) return;
+    function onDocClick(e: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        commit();
+      }
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, draftDate, draftTime]);
 
   function commit() {
     setEditing(false);
-    const next = draft || null;
-    if (next !== value) onCommit(next);
+    const nextDate = draftDate || null;
+    const nextTime = nextDate ? draftTime || null : null;
+    if (nextDate !== value || nextTime !== (timeValue ?? null)) {
+      onCommit({ due_date: nextDate, due_time: nextTime });
+    }
   }
 
   function cancel() {
-    setDraft(value ?? "");
+    setDraftDate(value ?? "");
+    setDraftTime(timeValue ?? "");
     setEditing(false);
   }
 
   if (editing) {
     return (
-      <input
-        ref={inputRef}
-        autoFocus
-        type="date"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-          if (e.key === "Escape") cancel();
-        }}
-        className={clsx(
-          "border bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none",
-          pastDue ? "border-red-700/40 text-red-700" : "border-[#c9c2b4] text-charcoal/60"
-        )}
-      />
+      <div ref={wrapperRef} className="relative inline-block">
+        <div className="absolute left-0 top-full z-30 mt-1 flex items-center gap-1.5 border border-[#dcd6cc] bg-nearwhite p-2 shadow-sm">
+          <input
+            ref={dateInputRef}
+            autoFocus
+            type="date"
+            value={draftDate}
+            onChange={(e) => {
+              const v = e.target.value;
+              setDraftDate(v);
+              if (!v) setDraftTime(""); // no date -> a drafted time is meaningless, clear it too
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commit();
+              if (e.key === "Escape") cancel();
+            }}
+            className={clsx(
+              "w-32 border bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none",
+              pastDue ? "border-red-700/40 text-red-700" : "border-[#c9c2b4] text-charcoal/60"
+            )}
+          />
+          <input
+            type="time"
+            value={draftTime}
+            disabled={!draftDate}
+            onChange={(e) => setDraftTime(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commit();
+              if (e.key === "Escape") cancel();
+            }}
+            title={draftDate ? "Optional reminder time" : "Set a date first"}
+            className="w-24 border border-[#c9c2b4] bg-nearwhite px-1.5 py-1 text-caption text-charcoal/60 focus:border-nearblack focus:outline-none disabled:opacity-40"
+          />
+        </div>
+      </div>
     );
   }
 
@@ -96,10 +153,10 @@ export function DueDateCell({
     <button
       type="button"
       onClick={() => setEditing(true)}
-      title="Click to set due date"
+      title="Click to set due date/time"
       className={clsx("px-1 py-0.5 text-caption hover:opacity-70", pastDue ? "text-red-700" : "text-charcoal/60")}
     >
-      {value ? formatShort(value) : "—"}
+      {value ? `${formatShort(value)}${timeValue ? ` · ${formatTime12h(timeValue)}` : ""}` : "—"}
     </button>
   );
 }

@@ -415,6 +415,31 @@ const TOOLS = [
   // see docs/ARIA.md's own worked example.
   // ------------------------------------------------------------
   {
+    name: "update_lead",
+    description:
+      "Update a lead's fields (admin-gated — Aria's account qualifies). Whitelisted fields only: follow_up_date, site_visit_date, email, phone, location, construction_value, design_value. Stage changes use move_lead_stage; notes use add_lead_note. Added 8 Jul after Aria couldn't correct a follow-up date.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        lead_id: { type: "string" },
+        follow_up_date: { type: "string", description: "YYYY-MM-DD" },
+        site_visit_date: { type: "string", description: "YYYY-MM-DD" },
+        email: { type: "string" },
+        phone: { type: "string" },
+        location: { type: "string" },
+        construction_value: { type: "number" },
+        design_value: { type: "number" },
+      },
+      required: ["lead_id"],
+      additionalProperties: false,
+    },
+    handler: async ({ lead_id, ...fields } = {}) =>
+      apiFetch(`/api/leads/${lead_id}`, {
+        method: "PATCH",
+        body: JSON.stringify(fields),
+      }),
+  },
+  {
     name: "add_lead_note",
     description:
       "Add an attributed, timestamped note to a lead — e.g. logging the outcome of a call or email. Admin-only (leads are admin-only, financial-adjacent, same as every other leads route/tool). Distinct from move_lead_stage: this never changes the lead's stage, just appends to its notes feed.",
@@ -612,6 +637,7 @@ const TOOLS = [
         },
         contact_id: { type: "string", description: "Linked Address Book contact UUID, optional" },
         due_date: { type: "string", description: "ISO date, YYYY-MM-DD, optional" },
+        due_time: { type: "string", description: "migration 041 — optional wall-clock reminder time alongside due_date, 'HH:MM' (24h), e.g. '14:30'. Ignored if due_date is omitted." },
         phase_group_id: { type: "string", description: "Board v2 phase-group UUID, optional — see the project's board response for available groups" },
       },
       required: ["project_id", "column_id", "title"],
@@ -800,6 +826,7 @@ const TOOLS = [
         },
         description: { type: "string" },
         due_date: { type: "string", description: "ISO date, YYYY-MM-DD, optional" },
+        due_time: { type: "string", description: "migration 041 — optional wall-clock reminder time alongside due_date, 'HH:MM' (24h), e.g. '14:30'. Ignored if due_date is omitted." },
         assignee_email: {
           type: "string",
           description:
@@ -809,7 +836,7 @@ const TOOLS = [
       required: ["title", "group"],
       additionalProperties: false,
     },
-    handler: async ({ title, group, description, due_date, assignee_email }) => {
+    handler: async ({ title, group, description, due_date, due_time, assignee_email }) => {
       const board = await apiFetch("/api/office");
       const target = board.groups.find((g) => g.name.toLowerCase().includes(group.trim().toLowerCase()));
       if (!target) {
@@ -817,7 +844,7 @@ const TOOLS = [
         throw new Error(`No Office group matches "${group}". Valid groups: ${names}`);
       }
 
-      const body = { group_id: target.id, title, description, due_date };
+      const body = { group_id: target.id, title, description, due_date, due_time };
       if (assignee_email) {
         const member = board.team.find(
           (t) => t.email && t.email.toLowerCase() === assignee_email.trim().toLowerCase()
@@ -904,6 +931,7 @@ const TOOLS = [
         title: { type: "string" },
         description: { type: "string" },
         due_date: { type: "string", description: "ISO date, YYYY-MM-DD, optional" },
+        due_time: { type: "string", description: "migration 041 — optional wall-clock reminder time alongside due_date, 'HH:MM' (24h), e.g. '14:30'. Ignored if due_date is omitted." },
         assignee_email: {
           type: "string",
           description:
@@ -913,7 +941,7 @@ const TOOLS = [
       required: ["project_id", "phase", "title"],
       additionalProperties: false,
     },
-    handler: async ({ project_id, phase, title, description, due_date, assignee_email }) => {
+    handler: async ({ project_id, phase, title, description, due_date, due_time, assignee_email }) => {
       const design = await apiFetch(`/api/projects/${project_id}/design`);
       const target = design.phases.find((p) =>
         p.name.toLowerCase().includes(phase.trim().toLowerCase())
@@ -923,7 +951,7 @@ const TOOLS = [
         throw new Error(`No Design phase matches "${phase}" for this project. Valid phases: ${names}`);
       }
 
-      const body = { design_phase_id: target.id, title, description, due_date };
+      const body = { design_phase_id: target.id, title, description, due_date, due_time };
       if (assignee_email) {
         const member = design.team.find(
           (t) => t.email && t.email.toLowerCase() === assignee_email.trim().toLowerCase()
@@ -988,6 +1016,39 @@ const TOOLS = [
       additionalProperties: false,
     },
     handler: async ({ project_id }) => apiFetch(`/api/projects/${project_id}/attention`),
+  },
+  // ------------------------------------------------------------
+  // Daily Brief (Phillip, 8 July 2026, migration 041) —
+  // BUILD-SPEC.md §"Daily Brief": "Aria appends via MCP add_brief_item
+  // (title, source, link, project)." Thin fetch to POST
+  // /api/brief/items, same shape as every other create_* tool above —
+  // the actual dedupe/generation logic lives in
+  // lib/daily-brief-generate.ts (the morning cron path), never
+  // duplicated here; this tool is the OTHER way an item lands in the
+  // brief, for a non-urgent item Aria notices mid-conversation/mid-
+  // automation that doesn't need a same-minute WhatsApp ping. See
+  // docs/ARIA.md's "Daily Brief" section for the worked example of
+  // when to use this vs. WhatsApp.
+  // ------------------------------------------------------------
+  {
+    name: "add_brief_item",
+    description:
+      "Append an item to today's Daily Brief (the single shared team brief on the My Work page) — for something Phillip should see and acknowledge this morning, but that ISN'T urgent enough to interrupt him on WhatsApp right now. Always lands with source 'aria' (attributed, distinct from the generator's own system-sourced booking/ordering/lead/trade items) and status 'open'. Use link_href to point at the real record (a project page, a lead, etc.) so 'open ->' on the panel goes somewhere useful — a title with no link still shows up fine, just without a deep link.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short, scannable — this is a sticky-note line, not a task description." },
+        link_href: { type: "string", description: "Optional deep link — e.g. '/projects/{id}?tab=ffe', '/leads'. Omit if there's nothing to link to." },
+        project_id: { type: "string", description: "Optional — Project UUID, shown as a project chip on the brief row." },
+      },
+      required: ["title"],
+      additionalProperties: false,
+    },
+    handler: async ({ title, link_href, project_id }) =>
+      apiFetch("/api/brief/items", {
+        method: "POST",
+        body: JSON.stringify({ title, source: "aria", link_href, project_id }),
+      }),
   },
   // ------------------------------------------------------------
   // RESLU Second Brain, Step 2 (docs/RESLU-second-brain-build-brief.md).

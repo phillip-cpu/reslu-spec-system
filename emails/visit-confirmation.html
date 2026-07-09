@@ -1,0 +1,66 @@
+<!--
+  PLACEHOLDER — replace with reslu-site/emails/visit-confirmation.html
+  per docs/RESLU-Spec-Visit-Emails-Brief.md. See emails/README.md for
+  the exact install step. This file exists only so the send pipeline
+  (trigger -> guard -> window check -> Resend -> log) is testable
+  end to end before the real brand template lands.
+-->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Your site visit is booked — RESLU</title>
+  </head>
+  <body style="margin:0; padding:0; background-color:#f4f1ea;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f1ea;">
+      <tr>
+        <td align="center" style="padding:32px 16px;">
+          <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff; max-width:600px; width:100%;">
+            <tr>
+              <td style="padding:12px 32px; background-color:#fff3cd; border:1px solid #f0c36d; font-family:Arial, sans-serif; font-size:12px; color:#7a5c00;">
+                PLACEHOLDER TEMPLATE — replace with reslu-site/emails/visit-confirmation.html (see emails/README.md).
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0;">
+                <img src="https://www.reslu.com.au/email-packet.jpg" width="600" alt="RESLU" style="display:block; width:100%; height:auto; border:0;" />
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:32px; font-family:Arial, sans-serif; color:#1a1a1a;">
+                <p style="margin:0 0 16px 0; font-size:16px; line-height:1.5;">
+                  Hi {{first_name}} {{last_name}},
+                </p>
+                <p style="margin:0 0 16px 0; font-size:16px; line-height:1.5;">
+                  Your site visit with RESLU is confirmed.
+                </p>
+                <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 16px 0; width:100%;">
+                  <tr>
+                    <td style="padding:4px 0; font-size:16px; font-weight:bold;">Date</td>
+                    <td style="padding:4px 0; font-size:16px;">{{visit_date}}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:4px 0; font-size:16px; font-weight:bold;">Time</td>
+                    <td style="padding:4px 0; font-size:16px;">{{visit_time}}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:4px 0; font-size:16px; font-weight:bold;">Suburb</td>
+                    <td style="padding:4px 0; font-size:16px;">{{suburb}}</td>
+                  </tr>
+                </table>
+                <p style="margin:0 0 16px 0; font-size:16px; line-height:1.5;">
+                  If anything changes on your end, give Phillip a call on {{phillip_phone}}.
+                </p>
+                <p style="margin:0; font-size:16px; line-height:1.5;">
+                  Warm regards,<br />
+                  The RESLU team
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

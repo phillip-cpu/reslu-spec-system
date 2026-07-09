@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import clsx from "clsx";
 import type { MyWorkGroups, MyWorkItem, MyWorkResponse } from "@/types/phase-12a-b";
 import { NotesPanel } from "@/components/my-work/NotesPanel";
+import { DailyBrief } from "@/components/my-work/DailyBrief";
+import { formatTime12h } from "@/lib/time-format";
 
 const KIND_LABEL: Record<MyWorkItem["kind"], string> = {
   board_task: "Board task",
@@ -92,6 +94,13 @@ export function MyWorkWorkspace() {
   return (
     <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_320px]">
       <div className="space-y-8">
+        {/* Daily Brief (migration 041, Phillip 8 July 2026) — "My Work
+            page = Daily Brief panel FIRST, then the My Work groups" —
+            mounted above every SECTIONS group below, own independent
+            fetch (GET /api/brief), never blocks this page's own
+            GET /api/my-work load. */}
+        <DailyBrief />
+
         {error && (
           <p className="border border-red-700/40 bg-red-50 px-4 py-2 text-body text-red-700">{error}</p>
         )}
@@ -179,6 +188,8 @@ function ItemRow({ item, overdue }: { item: MyWorkItem; overdue: boolean }) {
         {item.due && (
           <span className={clsx("shrink-0 text-caption", overdue ? "text-red-700" : "text-charcoal/50")}>
             {formatDueShort(item.due)}
+            {/* migration 041 ("Small pair" item 2) — "2:30pm" alongside the date, only ever set for board_task/office_task/design_task sources. */}
+            {item.due_time ? ` ${formatTime12h(item.due_time)}` : ""}
           </span>
         )}
       </a>

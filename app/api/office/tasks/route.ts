@@ -76,6 +76,9 @@ export async function POST(request: NextRequest) {
       description: body.description?.trim() || null,
       kind,
       due_date: kind === "rule" ? null : body.due_date || null,
+      // migration 041 — same "rule cards never carry due-anything" rule
+      // as due_date immediately above.
+      due_time: kind === "rule" ? null : body.due_time || null,
       sort: nextSort,
       created_by: user.id,
     })

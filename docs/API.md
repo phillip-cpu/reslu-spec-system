@@ -5493,3 +5493,155 @@ office/design task types), `app/api/board-tasks/[id]/route.ts`,
 `components/projects/design/DesignPhaseSection.tsx`, `mcp/src/index.mjs`,
 `README.md` / `docs/API.md` / `docs/ARIA.md` (this round's
 documentation). No protected file touched.
+
+## Site-visit lifecycle emails (Phillip, 9 July 2026, migration 043)
+
+`docs/RESLU-Spec-Visit-Emails-Brief.md`: client-facing "your site visit
+is booked" / "your site visit is tomorrow" emails, for both lead site
+visits (`leads.site_visit_date`) and project client_events
+(`starts_at`) — "applies to lead site visits AND project client_events"
+per this round's BUILD-SPEC.md decision. Templates are placeholder
+files (`emails/visit-confirmation.html`, `emails/visit-reminder.html`)
+until CC copies the real, brand-approved versions from the website repo
+(`reslu-site/emails/`) — see `emails/README.md`'s INSTALL STEP and
+`README.md`'s "Site-visit lifecycle emails" section for the exact
+on-machine steps (also covers `RESEND_API_KEY` and the cron entry).
+
+### `email_sends` (migration 043_visit_emails.sql)
+
+Doubles as BOTH the send-guard (never send the same template twice for
+the same visit date/time) AND the 7am-7pm Adelaide sending-window
+queue. `record_type` ('lead' | 'client_event') + `record_id` is a
+polymorphic reference (no FK — two possible parent tables). `template`
+is free text ('visit-confirmation' | 'visit-reminder' today; a future
+milestone template per the brief's "Future milestones" section — brief
+accepted, design presented, construction start, handover — needs no
+migration, just a new `emails/<name>.html` file). `status` is
+'pending' | 'sent' | 'skipped'. `detail` jsonb snapshots the merge data
+used for that send/queue attempt, INCLUDING the visit datetime being
+confirmed/reminded (`detail.visit_datetime`) and the rendered subject
+line — this is what the guard compares against and what a queued
+row's later flush re-renders from. See the migration file's own header
+comment for the full design write-up.
+
+### `lib/visit-emails.ts` — the one shared module
+
+- `loadTemplate(name)` — reads `emails/<name>.html` off disk at
+  runtime (server-only; cached per warm instance). Missing/unreadable
+  file never crashes a trigger's primary action — logged as a
+  `'skipped'` `email_sends` row + `reportError('visit-emails', ...)`.
+- `merge(html, data)` — simple global `{{placeholder}}` replace,
+  blank-safe (`{{first_name}}` `{{last_name}}` `{{visit_date}}`
+  `{{visit_time}}` `{{suburb}}` `{{phillip_phone}}`, default
+  `+61 439 870 594`).
+- `suburbFrom(location)` — best-effort suburb heuristic off a free-text
+  address string (no geocoder). Comma-separated input: last segment
+  before any pure state/postcode segment, stripping a trailing
+  state/postcode off a mixed segment (e.g. "Norwood SA 5067" ->
+  "Norwood"). No commas: last one or two words before a trailing
+  state/postcode. Returns `''` when neither strategy yields anything —
+  callers must treat that as "omit gracefully in the merged copy", not
+  a bug (a free-text field can always defeat a heuristic).
+- `isWithinSendWindow(now)` / `nextAdelaide7am(now)` /
+  `adelaideDayRangeUtc(dateStr)` — Adelaide-anchored, DST-safe via
+  `Intl.DateTimeFormat` throughout (never a fixed UTC-offset constant),
+  same technique as `app/api/digest/flush`'s `DIGEST_HOURS` gate and
+  `lib/daily-brief-generate.ts`'s `adelaideToday()`.
+- `sendViaResend({ to, subject, html })` — plain `fetch` to
+  `POST https://api.resend.com/emails` (no SDK), `from: 'Phillip —
+  RESLU <visits@reslu.com.au>'`, `reply_to: 'phillip@reslu.com.au'`.
+  No-op `{ skipped: true, reason: 'no RESEND_API_KEY' }` when
+  unconfigured; a real send failure throws (callers must not mark a row
+  `'sent'` on a failed call).
+- `sendOrQueue(supabase, input)` — the one entry point every trigger
+  calls. GUARD: skips as `'duplicate'` if a `'sent'` row already exists
+  for this `(record_type, record_id, template)` whose logged
+  `detail.visit_datetime` equals the CURRENT visit datetime (brief:
+  "Send once ... re-send only if date/time changed, with the same
+  template") — a `'sent'` row logged against a DIFFERENT (rescheduled)
+  datetime does NOT block a fresh send. WINDOW: inside 7am-7pm Adelaide,
+  sends immediately via Resend and logs `'sent'`; outside the window,
+  logs `'pending'` with `scheduled_for` = next 7am Adelaide.
+- `flushPendingSends(supabase, now)` — sends every due (`'pending'`,
+  `scheduled_for <= now`) row, re-rendering HTML from the row's own
+  `detail` snapshot + the CURRENT template file on every flush (so a
+  template fixed after a row was queued is picked up automatically). A
+  no-op outside the send window.
+- `cancelPendingSends(supabase, recordType, recordId)` — marks every
+  still-`'pending'` row for a record `'skipped'` (rows already `'sent'`
+  are left alone — nothing to undo).
+
+### Trigger wiring
+
+- **`PATCH /api/leads/[id]`** — fires only when `site_visit_date`
+  actually CHANGES value. `LeadDetailPanel`'s single-save pattern sends
+  `site_visit_date` on every save (the whole draft, not just the field
+  touched), so the route reads the pre-update value first and compares
+  it to the post-update value — an unrelated field save (site visit
+  date unchanged) triggers nothing. On a real change: a non-null new
+  value (with `leads.email` on file) first cancels any still-pending
+  queued send left over from the PRIOR date/time, then sends/queues a
+  fresh `visit-confirmation`; a cleared (null) value just cancels any
+  still-pending queued sends for that lead. Fire-and-forget via
+  `next/server`'s `after()`, own service-role client (work queued via
+  `after()` can outlive the request/response cycle — same pattern as
+  `app/api/items/[id]/route.ts`'s Monday sync kickoff).
+- **`POST /api/leads`** — same confirmation trigger, for a lead created
+  with `site_visit_date` already set (e.g. backdating/importing a lead
+  that already had a booked visit).
+- **`POST /api/projects/[id]/client-events`** — sends/queues a
+  `visit-confirmation` to the project's `client_email` (+
+  `client_secondary_email` when present) whenever the project has a
+  `client_email` on file (`starts_at` is already a required field on
+  this route). A SEPARATE send from `lib/client-event-reminders.ts`'s
+  existing "day before" Gmail-based meeting nudge (generic content,
+  gated on `client_events.reminder_sent_at`) — this is the brand
+  `visit-confirmation.html` template via Resend, guarded/logged in its
+  own `email_sends` table, not that column.
+- **`DELETE /api/client-events/[id]`** — cancels any still-pending
+  queued sends for that event (brief: "If a visit is cancelled before
+  the reminder fires, don't send it").
+- **`GET/POST /api/visit-emails/run`** — cron entry point (also
+  admin-session-triggerable manually). Two passes: `flushPendingSends()`
+  first, then a reminder sweep finding every non-cancelled lead site
+  visit / client event happening TOMORROW (Adelaide-local calendar
+  date) and calling `sendOrQueue()` with `template: 'visit-reminder'`
+  for each — the same guard makes repeated daily cron runs idempotent
+  (a visit already reminded for its current date/time is a silent
+  no-op). Auth: `authorization: Bearer ${CRON_SECRET}` OR an
+  authenticated ADMIN session (stricter than the digest/trade-
+  reminders/client-events-remind cron routes' "any team session",
+  since this route reads admin-only `leads` data directly). See that
+  route file's own header comment for the exact `vercel.json` cron
+  line and its documented DST caveat.
+
+### `GET /api/visit-emails`
+
+`?record_type=lead|client_event&record_id=<uuid>` — any authenticated
+team member. Returns every logged `email_sends` row for the record,
+newest first. Powers `components/shared/VisitEmailStatusChips.tsx`,
+mounted on `LeadDetailPanel` (when `site_visit_date` is set) and each
+`ClientEventsPanel` row — renders a compact line like "Confirmation
+sent 8 Jul · Reminder pending" (nothing rendered until a visit email
+has actually fired for that record).
+
+**Files touched:** `supabase/migrations/043_visit_emails.sql` (new),
+`types/visit-emails.ts` (new), `lib/visit-emails.ts` (new),
+`emails/README.md` / `emails/visit-confirmation.html` /
+`emails/visit-reminder.html` (new, placeholders — see INSTALL STEP),
+`app/api/visit-emails/route.ts` (new), `app/api/visit-emails/run/route.ts`
+(new), `app/api/leads/[id]/route.ts` (PATCH gains the confirmation/
+cancel trigger), `app/api/leads/route.ts` (POST gains the confirmation
+trigger), `app/api/projects/[id]/client-events/route.ts` (POST gains
+the confirmation trigger), `app/api/client-events/[id]/route.ts`
+(DELETE gains the cancel trigger), `components/shared/
+VisitEmailStatusChips.tsx` (new), `components/leads/LeadDetailPanel.tsx`
+/ `components/client-area/ClientEventsPanel.tsx` (mount the chip),
+`next.config.ts` (`outputFileTracingIncludes` for `emails/**` on every
+route that can reach `loadTemplate()`), `.env.local.example`
+(`RESEND_API_KEY`), `README.md` / `docs/API.md` (this round's
+documentation). No protected file touched; `lib/client-event-
+reminders.ts` and `app/api/client-events/remind/route.ts` (the
+existing "day before" Gmail meeting reminder) were read for context
+but deliberately not modified — see the trigger-wiring note above on
+how the two systems relate.

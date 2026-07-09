@@ -3,7 +3,9 @@ import { createClient } from "@/lib/supabase/server";
 import { OFFICE_ARCHIVED_GROUP_NAME } from "@/types/phase-13";
 import type { PatchOfficeTaskInput } from "@/types/phase-13";
 
-const EDITABLE_FIELDS = new Set(["title", "description", "due_date", "sort", "group_id"]);
+// migration 041 — "due_time" added to parity with due_date (see
+// PatchOfficeTaskInput's own doc comment, types/phase-13.ts).
+const EDITABLE_FIELDS = new Set(["title", "description", "due_date", "due_time", "sort", "group_id"]);
 
 /**
  * PATCH /api/office/tasks/[id]

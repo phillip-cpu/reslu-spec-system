@@ -47,6 +47,14 @@
     {
       "path": "/api/second-brain/propose",
       "schedule": "12-59/15 * * * *"
+    },
+    {
+      "path": "/api/brief/generate?send=1",
+      "schedule": "30 21 * * *"
+    },
+    {
+      "path": "/api/visit-emails/run",
+      "schedule": "45 21 * * *"
     }
   ]
 }

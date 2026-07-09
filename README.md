@@ -763,6 +763,111 @@ The route already accepts both `GET` and `POST` and authenticates via
 `CRON_SECRET` exactly like the other two cron routes, so no other
 change is needed once the entry is added and deployed.
 
+## Daily Brief cron (migration 041)
+
+BUILD-SPEC.md §"Daily Brief" — a single shared team brief on the My
+Work page, generated each morning from the existing attention feeds
+(bookings_overdue, ordering_due, lead nurture/stale, trade
+proposed_change, expiring insurance) plus manual/Aria-appended items.
+
+**Migration file-number note**: this round's brief asked for
+`supabase/migrations/033_brief_and_due_times.sql`, assuming migrations
+001–032 were the full set. This working copy already had migrations up
+to 040 (the RESLU Second Brain rounds — `033_aria_queue.sql` through
+`040_change_proposals.sql`) by the time this round ran, so the actual
+new file is `supabase/migrations/041_brief_and_due_times.sql` — see
+that file's own header comment for the full explanation. Nothing else
+about the schema's substance changed from the brief (plus one
+additive, documented deviation — `converted_office_task_id` — see the
+same file's "SECOND DEVIATION NOTE").
+
+Two entries are needed in `vercel.json`'s `crons` array (that file is
+out of this round's boundary — CC adds these):
+
+```json
+{ "path": "/api/brief/generate?send=1", "schedule": "30 21 * * *" }
+```
+
+`21:30 UTC` = `07:00 ACST` (South Australia standard time, UTC+9:30) —
+i.e. correct for winter (the current season, per the "8 July 2026"
+dates throughout BUILD-SPEC.md). **DST caveat**: South Australia
+observes daylight saving (ACDT, UTC+10:30) roughly October–April. This
+single fixed cron line will fire at **08:00 ACDT** during that window,
+not 7:00am, since Vercel Cron always runs in UTC with no DST
+adjustment (the exact same limitation `/api/digest/flush`'s own doc
+comment already documents for its own multi-slot schedule — see that
+route's header). Two options if a genuinely-fixed 7am matters
+year-round: (a) accept the one-hour DST drift (simplest — a slightly-
+early or slightly-late brief once or twice a year is low-stakes for a
+"whenever Phillip gets to his desk" morning digest), or (b) add a
+SECOND cron entry at `"30 20 * * *"` (7:00am ACDT) and have the route
+itself gate on the Adelaide-local hour, mirroring `/api/digest/flush`'s
+own `DIGEST_HOURS` gate — not implemented here since option (a) matches
+this feature's own low-urgency framing ("sticky-note", not a
+time-critical send).
+
+The generator route (`POST`/`GET /api/brief/generate`) is idempotent —
+running it more than once in a day (the cron entry above, plus any
+manual "regenerate" trigger) never creates duplicate brief items; see
+`lib/daily-brief.ts`'s and `lib/daily-brief-generate.ts`'s own header
+comments for the exact dedupe rule. `?send=1` additionally sends the
+7am glance email (skips cleanly with zero admin recipients, zero open
+items, or no Gmail configured) — see `docs/API.md`'s "Daily Brief"
+section for the email's exact content.
+
+## Site-visit lifecycle emails (migration 043)
+
+`docs/RESLU-Spec-Visit-Emails-Brief.md`: client-facing "your site visit
+is booked" / "your site visit is tomorrow" emails, for both lead site
+visits (`leads.site_visit_date`) and project client_events
+(`starts_at`). Three on-machine steps before real client emails go out:
+
+1. **Set `RESEND_API_KEY`** (see `.env.local.example`) — a SECOND
+   Resend API key in the same account as the website's own, not a
+   reused key. Until this is set, every send/queue attempt no-ops
+   cleanly (logged `'skipped'`, `reportError('visit-emails', ...)`) —
+   nothing crashes, nothing is lost.
+2. **Copy the real templates** from the website repo —
+   `reslu-site/emails/visit-confirmation.html` and
+   `reslu-site/emails/visit-reminder.html` — into this repo's
+   `emails/` folder, overwriting the two placeholder files shipped
+   with this round. See `emails/README.md` for the exact paths; no
+   code change is needed, `lib/visit-emails.ts`'s `loadTemplate()`
+   reads them by filename at send time.
+3. **Add the reminder cron entry** to `vercel.json`'s `crons` array
+   (that file is out of this round's edit boundary — CC adds this,
+   same as the client-events-remind entry above):
+   ```json
+   { "path": "/api/visit-emails/run", "schedule": "45 21 * * *" }
+   ```
+   `21:45 UTC` = `07:15 ACST` (winter). **DST caveat** (same limitation
+   as every other fixed-UTC cron line in this codebase — see the Daily
+   Brief cron section above): this lands at `08:15 ACDT` during South
+   Australia's daylight-saving window (roughly October-April), not
+   7:15am — low-stakes here, since `GET/POST /api/visit-emails/run`
+   re-checks the Adelaide 7am-7pm sending window itself at send time
+   regardless of when the cron actually fires (see
+   `app/api/visit-emails/run/route.ts`'s own header comment for the
+   full write-up).
+
+Everything else is already wired up once those three steps are done:
+`PATCH /api/leads/[id]` and `POST /api/leads` send/queue a confirmation
+whenever `site_visit_date` is set (and cancel any still-pending queued
+send when it's cleared); `POST /api/projects/[id]/client-events` sends/
+queues a confirmation when the project has a `client_email`; `DELETE
+/api/client-events/[id]` cancels any still-pending queued send.
+`GET/POST /api/visit-emails/run` flushes due queued sends and sends the
+"day before" reminder sweep. See `docs/API.md`'s "Site-visit lifecycle
+emails" section for the full endpoint/guard/window write-up.
+
+Migration file-number note: this round's brief specifically named
+`supabase/migrations/043_visit_emails.sql` (assuming migrations
+001-042 were the full set) — this working copy's migrations already
+run through `042_lead_intake.sql` at the time this round ran, so
+`043` is in fact the correct next number with no renumbering needed
+(contrast with the Daily Brief round above, whose brief's assumed
+number was already taken).
+
 ## Monday.com and Gmail integrations
 
 Both are optional and dormant until configured — the app works fully

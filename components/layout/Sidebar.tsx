@@ -32,6 +32,14 @@ const NAV_ITEMS = [
   // non-admins regardless, this is belt-and-braces with the nav filter).
   { label: "Leads", href: "/leads", adminOnly: true, badgeKey: "leads_followups" as const },
   { label: "Settings", href: "/settings" },
+  // Phillip 8 Jul: external link to the RESLU journal/blog CMS (Sanity
+  // Studio). Renders as a plain <a target="_blank"> below — external
+  // items never match pathname-active logic and carry no badge.
+  {
+    label: "Blog",
+    href: "https://www.sanity.io/@owfkpTTv2/studio/ugc40fkuw499wo2h5ljfl4ir/default/structure/journal;F9yzAmOGUc9wBOLNgbeWAB",
+    external: true as const,
+  },
 ];
 
 type BadgeCounts = { leads_followups: number; my_work_due: number };
@@ -116,6 +124,20 @@ export function Sidebar({ isAdmin = false }: { isAdmin?: boolean }) {
           const active =
             item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
           const badgeCount = item.badgeKey ? badges[item.badgeKey] : 0;
+          if ("external" in item && item.external) {
+            return (
+              <a
+                key={item.href}
+                href={item.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 px-3 py-2.5 text-subhead text-white/70 transition-colors hover:text-white hover:bg-charcoal/60"
+              >
+                <span>{item.label}</span>
+                <span className="text-white/40">↗</span>
+              </a>
+            );
+          }
           return (
             <Link
               key={item.href}

@@ -11,6 +11,7 @@ import type { StandardItemIdsInput } from "@/types/round-d";
 import { LeadNotes } from "@/components/leads/LeadNotes";
 import { LeadAttachments } from "@/components/leads/LeadAttachments";
 import { StandardItemsChecklist } from "@/components/projects/StandardItemsChecklist";
+import { VisitEmailStatusChips } from "@/components/shared/VisitEmailStatusChips";
 
 interface Props {
   lead: Lead;
@@ -369,6 +370,15 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
                 className={inputClass}
               />
             </label>
+            {/* Site-visit lifecycle emails (docs/RESLU-Spec-Visit-Emails-
+                Brief.md) — last-sent status, e.g. "Confirmation sent 8
+                Jul · Reminder pending". Renders nothing until a
+                site-visit email has actually fired for this lead. */}
+            {draft.site_visit_date && (
+              <div className="sm:col-span-2">
+                <VisitEmailStatusChips recordType="lead" recordId={lead.id} />
+              </div>
+            )}
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">

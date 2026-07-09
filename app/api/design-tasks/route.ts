@@ -70,6 +70,8 @@ export async function POST(request: NextRequest) {
       title: body.title.trim(),
       description: body.description?.trim() || null,
       due_date: body.due_date || null,
+      // migration 041 — optional wall-clock reminder time alongside due_date.
+      due_time: body.due_time || null,
       sort: nextSort,
       created_by: user.id,
     })

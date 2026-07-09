@@ -410,6 +410,10 @@ export async function POST(
       assignee_id: assigneeIds[0] ?? null,
       contact_id: body.contact_id || null,
       due_date: body.due_date || null,
+      // migration 041 — optional wall-clock reminder time alongside
+      // due_date at creation time (CreateBoardTaskInputV2's own
+      // due_time field, types/phase-12a-b.ts).
+      due_time: body.due_time || null,
       phase_group_id: effectivePhaseGroupId || null,
       parent_task_id: body.parent_task_id || null,
       kind: body.kind || "task",

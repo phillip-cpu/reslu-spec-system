@@ -6,6 +6,7 @@ import type { ClientEvent, CreateClientEventInput } from "@/types/phase-12a-b";
 import type { InviteeOption } from "@/types/phase-small-round";
 import { googleCalendarUrl } from "@/lib/ics";
 import { AddToCalendarMenu } from "@/components/shared/AddToCalendarMenu";
+import { VisitEmailStatusChips } from "@/components/shared/VisitEmailStatusChips";
 
 /**
  * Team-side client meetings manager (BUILD-SPEC.md §"Portal —
@@ -233,6 +234,17 @@ function EventRow({
           {event.location ? ` · ${event.location}` : ""}
         </p>
         {event.notes && <p className="mt-1 text-caption text-charcoal/50">{event.notes}</p>}
+        {/* Site-visit lifecycle emails (docs/RESLU-Spec-Visit-Emails-
+            Brief.md) — last-sent status, e.g. "Confirmation sent 8 Jul
+            · Reminder pending". Renders nothing until a visit email
+            has actually fired for this event. Distinct from the
+            existing "day before" Gmail reminder this panel's own
+            helper copy already mentions above — see
+            lib/visit-emails.ts's header comment for how the two
+            reminder systems relate. */}
+        <div className="mt-1">
+          <VisitEmailStatusChips recordType="client_event" recordId={event.id} />
+        </div>
         {/* Add to calendar (BUILD-SPEC.md "Phillip's ideas list — 6 July
             2026" item 2) — offered on every row, past or upcoming
             (a past meeting can still be worth adding for record-keeping). */}

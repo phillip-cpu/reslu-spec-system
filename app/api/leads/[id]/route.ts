@@ -1,7 +1,16 @@
-import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { NextRequest, NextResponse, after } from "next/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { LEAD_STAGES, type Lead, type PatchLeadInput } from "@/types";
+import { reportError } from "@/lib/report-error";
+import {
+  cancelPendingSends,
+  formatVisitDate,
+  formatVisitTime,
+  leadLastName,
+  sendOrQueue,
+  suburbFrom,
+} from "@/lib/visit-emails";
 
 export const runtime = "nodejs";
 
@@ -133,6 +142,24 @@ export async function PATCH(
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
   }
 
+  // Site-visit lifecycle emails: LeadDetailPanel's single-save pattern
+  // sends `site_visit_date` on EVERY save (the whole-panel draft, not
+  // just the field the user actually touched), so `"site_visit_date"
+  // in update` alone can't tell a real reschedule apart from an
+  // unrelated field edit. Read the PRE-update value here (only when
+  // site_visit_date is actually part of this PATCH, to avoid an extra
+  // query on every unrelated save) so the trigger below can compare
+  // before vs. after and fire ONLY on an actual change.
+  let previousSiteVisitDate: string | null = null;
+  if ("site_visit_date" in update) {
+    const { data: before } = await supabase
+      .from("leads")
+      .select("site_visit_date")
+      .eq("id", id)
+      .maybeSingle();
+    previousSiteVisitDate = before?.site_visit_date ?? null;
+  }
+
   const { data: lead, error } = await supabase
     .from("leads")
     .update(update)
@@ -146,6 +173,63 @@ export async function PATCH(
   }
   if (!lead) {
     return NextResponse.json({ error: "Lead not found" }, { status: 404 });
+  }
+
+  // Site-visit lifecycle emails (docs/RESLU-Spec-Visit-Emails-Brief.md):
+  // fire ONLY when site_visit_date actually CHANGED value (see the
+  // previousSiteVisitDate read above — this is what makes "re-send only
+  // if date/time changed" hold even though the UI always resends the
+  // same field on every save). Fire-and-forget via next/server's
+  // after() (same pattern as the Monday sync kickoff in
+  // app/api/items/[id]/route.ts) so a slow/failed email send never
+  // blocks or fails the lead save; uses its own service-role client
+  // rather than the request-scoped cookie-bound one, since work queued
+  // via after() can outlive the request/response cycle (same reasoning
+  // as that file's own doc comment on this exact pattern).
+  //
+  // A cleared site_visit_date (null after this PATCH) cancels any
+  // still-pending queued sends for this lead (brief: "If a visit is
+  // cancelled before the reminder fires, don't send it"). A set/
+  // changed site_visit_date with an email on file first cancels any
+  // STILL-PENDING queued send left over from the PRIOR date/time (a
+  // confirmation queued outside the send window for the old date must
+  // never go out once the visit has been rescheduled to a new one),
+  // then sends/queues the fresh confirmation — sendOrQueue's own guard
+  // (see lib/visit-emails.ts) additionally makes this a silent no-op if
+  // a confirmation was already SENT for this exact date/time.
+  if ("site_visit_date" in update) {
+    const typedLead = lead as Lead;
+    if (typedLead.site_visit_date !== previousSiteVisitDate) {
+      after(async () => {
+        const service = createServiceRoleClient();
+        try {
+          if (!typedLead.site_visit_date) {
+            await cancelPendingSends(service, "lead", typedLead.id);
+            return;
+          }
+          await cancelPendingSends(service, "lead", typedLead.id);
+          if (!typedLead.email) return;
+          const visitDatetime = typedLead.site_visit_date;
+          await sendOrQueue(service, {
+            recordType: "lead",
+            recordId: typedLead.id,
+            template: "visit-confirmation",
+            to: [typedLead.email],
+            subject: `Your site visit — ${formatVisitDate(visitDatetime)}`,
+            mergeData: {
+              first_name: typedLead.first_name,
+              last_name: leadLastName(typedLead.surname_project),
+              visit_date: formatVisitDate(visitDatetime),
+              visit_time: formatVisitTime(visitDatetime),
+              suburb: suburbFrom(typedLead.site_visit_location || typedLead.location),
+            },
+            visitDatetime,
+          });
+        } catch (err) {
+          await reportError("visit-emails", err);
+        }
+      });
+    }
   }
 
   return NextResponse.json({ lead: lead as Lead });

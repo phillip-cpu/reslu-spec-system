@@ -9,6 +9,14 @@ const EDITABLE_FIELDS = new Set([
   "description",
   "contact_id",
   "due_date",
+  // migration 041 ("Small pair" item 2) — optional wall-clock reminder
+  // time alongside due_date. Plain PATCHable field, same "trim to
+  // null" string handling every other nullable text column in this
+  // route's generic update loop already gets — no extra validation
+  // beyond that (an invalid HH:MM string is rejected by Postgres'
+  // `time` column type itself, surfacing as a normal 500/23xxx error
+  // like any other malformed write to this route).
+  "due_time",
   "sort",
   "phase_group_id",
   // Board cockpit round (migration 029): milestone toggle.

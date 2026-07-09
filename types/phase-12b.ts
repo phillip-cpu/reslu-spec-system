@@ -86,6 +86,8 @@ export interface DesignTask {
   title: string;
   description: string | null;
   due_date: string | null;
+  /** migration 041 ("Small pair" item 2, design parity) — optional wall-clock reminder time alongside due_date, "HH:MM:SS" or null. */
+  due_time: string | null;
   sort: number;
   completed_at: string | null;
   created_by: string | null;
@@ -123,6 +125,8 @@ export interface CreateDesignTaskInput {
   title: string;
   description?: string | null;
   due_date?: string | null;
+  /** migration 041 — see DesignTask's own due_time doc comment. */
+  due_time?: string | null;
   /** Omit to auto-assign the creator (mirrors Board v2 / Office board's exact auto-assign-on-create rule); pass [] explicitly for "no assignees"; pass one or more profile ids to override. */
   assignee_ids?: string[];
 }
@@ -132,6 +136,8 @@ export interface PatchDesignTaskInput {
   title?: string;
   description?: string | null;
   due_date?: string | null;
+  /** migration 041 — see DesignTask's own due_time doc comment. */
+  due_time?: string | null;
   sort?: number;
   assignee_ids?: string[];
   /** true = mark complete (stamps completed_at); false = uncomplete (clears it). Omit to leave completion state untouched. */

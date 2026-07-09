@@ -301,21 +301,50 @@ export function SowPdf({
           const notes = section.lines.filter((l) => l.kind === "note");
 
           return (
-            <View key={section.id} wrap={false}>
-              <Text style={styles.sectionHeading}>{section.heading}</Text>
+            // Root cause of the overlapping-text bug: this section
+            // container was `wrap={false}` — an unbreakable block. A
+            // section's total content (heading + every inclusion/
+            // exclusion/note line) routinely exceeds one page's usable
+            // height (long room sections have a dozen-plus multi-line
+            // clauses; General Notes/Compliance clauses run several
+            // sentences each — see lib/sow-templates.ts). @react-pdf's
+            // layout engine cannot slice an unbreakable node across
+            // pages, so once a section's measured height passed the
+            // remaining/full page height it got compressed onto a
+            // single page with every line's box overlapping the next
+            // instead of flowing onto page 2, 3, etc. — exactly the
+            // "text stamped over text" symptom.
+            //
+            // Fix: let the section flow/paginate normally (no
+            // wrap={false} here — same as SchedulePdf.tsx's category
+            // groups, which are never force-unbroken either), and
+            // protect only the heading from being orphaned alone at
+            // the bottom of a page via minPresenceAhead — it demands
+            // ~1 body line's worth of following space be available on
+            // the same page, else the heading itself moves to the next
+            // page together with its content.
+            <View key={section.id}>
+              <Text style={styles.sectionHeading} minPresenceAhead={32}>
+                {section.heading}
+              </Text>
 
               {inclusions.map((line) => (
-                <View key={line.id} style={styles.lineRow}>
+                // wrap={false} on the row (not the section) — same
+                // granularity as SchedulePdf.tsx's per-card wrap={false}:
+                // keeps one bullet glued to its own (bounded-length)
+                // line so a page break can't separate the "—" from its
+                // text, without making the whole section unbreakable.
+                <View key={line.id} style={styles.lineRow} wrap={false}>
                   <Text style={styles.lineBullet}>—</Text>
                   <Text style={styles.lineText}>{line.text}</Text>
                 </View>
               ))}
 
               {exclusions.length > 0 && (
-                <View style={styles.exclusionsBlock}>
+                <View style={styles.exclusionsBlock} wrap={false}>
                   <Text style={styles.exclusionsLabel}>Exclusions</Text>
                   {exclusions.map((line) => (
-                    <View key={line.id} style={styles.lineRow}>
+                    <View key={line.id} style={styles.lineRow} wrap={false}>
                       <Text style={styles.lineBullet}>—</Text>
                       <Text style={styles.lineText}>{line.text}</Text>
                     </View>

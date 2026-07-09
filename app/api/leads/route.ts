@@ -1,8 +1,10 @@
-import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { NextRequest, NextResponse, after } from "next/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { buildDashboardSummary } from "@/lib/leads";
 import { LEAD_STAGES, type CreateLeadInput, type Lead, type LeadStage } from "@/types";
+import { reportError } from "@/lib/report-error";
+import { formatVisitDate, formatVisitTime, leadLastName, sendOrQueue, suburbFrom } from "@/lib/visit-emails";
 
 export const runtime = "nodejs";
 
@@ -216,6 +218,40 @@ export async function POST(request: NextRequest) {
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  // Site-visit lifecycle emails: a lead can be created with
+  // site_visit_date already set (an admin backdating/importing a lead
+  // that already had a booked visit) — same trigger as the PATCH route
+  // (see app/api/leads/[id]/route.ts's own doc comment on this exact
+  // pattern), just on the create path instead of the edit path. No
+  // cancellation branch needed here — a freshly-created lead has no
+  // prior email_sends rows to cancel.
+  const created = lead as Lead;
+  if (created.site_visit_date && created.email) {
+    after(async () => {
+      const service = createServiceRoleClient();
+      try {
+        const visitDatetime = created.site_visit_date as string;
+        await sendOrQueue(service, {
+          recordType: "lead",
+          recordId: created.id,
+          template: "visit-confirmation",
+          to: [created.email as string],
+          subject: `Your site visit — ${formatVisitDate(visitDatetime)}`,
+          mergeData: {
+            first_name: created.first_name,
+            last_name: leadLastName(created.surname_project),
+            visit_date: formatVisitDate(visitDatetime),
+            visit_time: formatVisitTime(visitDatetime),
+            suburb: suburbFrom(created.site_visit_location || created.location),
+          },
+          visitDatetime,
+        });
+      } catch (err) {
+        await reportError("visit-emails", err);
+      }
+    });
   }
 
   return NextResponse.json({ lead: lead as Lead }, { status: 201 });

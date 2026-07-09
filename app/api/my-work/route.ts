@@ -114,7 +114,8 @@ export async function GET() {
   if (myTaskIds.length > 0) {
     const { data: tasks } = await supabase
       .from("board_tasks")
-      .select("id,project_id,column_id,title,due_date,booking_date")
+      // migration 041 — due_time added alongside due_date (see source #1's push below).
+      .select("id,project_id,column_id,title,due_date,due_time,booking_date")
       .in("id", myTaskIds)
       .is("deleted_at", null);
 
@@ -149,6 +150,7 @@ export async function GET() {
         title: t.booking_date ? `${t.title} — works ${formatWorksDate(t.booking_date)}` : t.title,
         project: project ? { id: project.id, name: project.name, alias: project.alias } : null,
         due: t.due_date,
+        due_time: t.due_time,
         href: `/projects/${t.project_id}/board?focus=board_task-${t.id}`,
         meta: columnById.get(t.column_id)?.name ?? null,
       });
@@ -288,7 +290,8 @@ export async function GET() {
   if (myOfficeTaskIds.length > 0) {
     const { data: officeTasks } = await supabase
       .from("office_tasks")
-      .select("id,group_id,title,due_date,kind,completed_at")
+      // migration 041 — due_time added alongside due_date (see source #6's push below).
+      .select("id,group_id,title,due_date,due_time,kind,completed_at")
       .in("id", myOfficeTaskIds)
       .is("deleted_at", null)
       .eq("kind", "task")
@@ -308,6 +311,7 @@ export async function GET() {
         title: t.title,
         project: null,
         due: t.due_date,
+        due_time: t.due_time,
         href: `/office?focus=office_task-${t.id}`,
         meta: groupById.get(t.group_id)?.name ?? "Office",
       });
@@ -369,7 +373,8 @@ export async function GET() {
   if (myDesignTaskIds.length > 0) {
     const { data: designTasks } = await supabase
       .from("design_tasks")
-      .select("id,design_phase_id,title,due_date,completed_at")
+      // migration 041 — due_time added alongside due_date (see source #8's push below).
+      .select("id,design_phase_id,title,due_date,due_time,completed_at")
       .in("id", myDesignTaskIds)
       .is("deleted_at", null)
       .is("completed_at", null)
@@ -397,6 +402,7 @@ export async function GET() {
         title: t.title,
         project: project ? { id: project.id, name: project.name, alias: project.alias } : null,
         due: t.due_date,
+        due_time: t.due_time,
         href: project ? `/projects/${project.id}/design?focus=design_task-${t.id}` : "/",
         meta: "Design",
       });

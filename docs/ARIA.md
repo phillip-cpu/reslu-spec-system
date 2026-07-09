@@ -683,6 +683,46 @@ Distinct from `move_lead_stage`: this tool never changes the lead's
 stage, it only appends to the notes feed — the two are independent
 actions and neither implies the other.
 
+## Daily Brief — migration 041 (8 July 2026)
+
+`add_brief_item({ title, link_href?, project_id? })` appends one row
+to the single shared team brief on the My Work page — the SAME feed
+the morning generator cron populates from bookings/ordering/leads/
+trade/insurance. It always lands with `source: 'aria'` (attributed
+distinctly from the generator's own `source: 'system'` rows) and
+`status: 'open'`.
+
+**When to use this instead of ad-hoc WhatsApp**: for anything Phillip
+should see and acknowledge THIS MORNING, but that ISN'T urgent enough
+to interrupt him right now. The brief is a "tickable sticky note" — he
+reviews it once, over coffee, not mid-task. Genuinely urgent items
+(something blocking today's work, a trade that just cancelled,
+anything time-sensitive within the next few hours) still go straight
+to WhatsApp — the brief has no push/alert of its own beyond the 7am
+email, so anything that can't wait for "whenever he opens My Work
+this morning" doesn't belong here.
+
+Worked example — a non-urgent, next-morning-is-fine item Aria notices
+mid-conversation:
+
+> Aria's been asked to check a supplier's stock levels for an item due
+> to be ordered next week, finds the product page now shows
+> "discontinued", and calls
+> `add_brief_item({ title: "Sliding door frame (DR-04) discontinued at
+> Trend — needs a replacement spec before ordering", link_href:
+> "/projects/{id}?tab=ffe&focus=ordering_due-{itemId}", project_id:
+> "{id}" })` rather than pinging Phillip on WhatsApp immediately — it's
+> a real problem, but it doesn't need solving in the next five minutes,
+> and it'll be exactly where he expects it (the brief) the next time he
+> checks My Work.
+
+Ticking an item off in the brief NEVER completes the underlying
+record — `add_brief_item` never changes an item's status, a project's
+state, or anything else; it only ever appends a reminder line. Use the
+item's normal MCP tools (`update_item_status`, `move_lead_stage`,
+`create_board_task`, etc.) for the actual action; use `add_brief_item`
+for "and also make sure Phillip sees this."
+
 ## Reading RESLU plans — drawing conventions reference
 
 When analysing uploaded plan sets (plan-analysis loop), consult `docs/DRAWING-CONVENTIONS.pdf` — RESLU's drawing layout style guide. It documents: the drawing sequence (A000 cover → A100 plans → A200 elevations → A300 sections → A400 internal details → A500 window/door schedules → A600 joinery), text conventions (Gill Sans Light, all caps, sizes per label type), the item-code prefixes as used ON DRAWINGS, joinery labels (DRW drawers, HR hanging rail, FS fixed shelf, ADJ adjustable shelf), dimension conventions (blocked/uniform, benchtops one measurement per size with edge profiles via legend), and QA notes (shower grate locations, pop-up wastes must appear on plans). Use it to disambiguate codes and labels during extraction; note the FF&E register's category prefixes (not this guide's older list) are canonical when they conflict.

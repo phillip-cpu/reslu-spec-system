@@ -9,6 +9,7 @@ import type {
   OfficeTaskWithRefs,
 } from "@/types/phase-13";
 import { OFFICE_ARCHIVED_GROUP_NAME } from "@/types/phase-13";
+import { formatTime12h, isOverdueByDateTime } from "@/lib/time-format";
 
 interface Props {
   initialGroups: OfficeGroupWithTasks[];
@@ -22,22 +23,10 @@ function initials(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-/**
- * Bug fix, 8 July 2026: was `new Date(); today.setHours(0,0,0,0)` — that
- * truncates to midnight in the RUNTIME's own local timezone, which
- * differs between the server (Vercel, UTC) and the client (a browser in
- * Adelaide, UTC+9:30/+10:30) for roughly 9.5–10.5 hours of every day,
- * causing a genuine React hydration mismatch (error #418) — see
- * components/board/ProjectBoard.tsx's identical fix for the full
- * explanation. Explicitly computing "today" in Australia/Adelaide via
- * Intl.DateTimeFormat and comparing as plain strings sidesteps the
- * Date-object/local-timezone ambiguity entirely.
- */
-function isPastDue(dueDate: string | null): boolean {
-  if (!dueDate) return false;
-  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Australia/Adelaide" }).format(new Date());
-  return dueDate < today;
-}
+// migration 041 — the former local isPastDue() (date-only, Adelaide-
+// anchored) is superseded by lib/time-format.ts's isOverdueByDateTime()
+// (imported above), which falls back to the exact same date-only rule
+// when a task has no due_time — see that function's own doc comment.
 
 /**
  * Office board (Phase 13) — BUILD-SPEC.md §"13 Office" /
@@ -513,7 +502,9 @@ function TaskRow({
   const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
   const [assigneePickerOpen, setAssigneePickerOpen] = useState(false);
 
-  const pastDue = isPastDue(task.due_date);
+  // migration 041 — datetime-aware once due_time is set, else the
+  // original date-only rule (isOverdueByDateTime, lib/time-format.ts).
+  const pastDue = isOverdueByDateTime(task.due_date, task.due_time);
   const isDone = !!task.completed_at;
   const doneCount = task.subtasks.filter((s) => s.done).length;
 
@@ -559,6 +550,7 @@ function TaskRow({
             <span className={clsx("text-caption", pastDue && !isDone ? "text-red-700" : "text-charcoal/50")}>
               {pastDue && !isDone ? "⚠ " : ""}
               {new Date(task.due_date + "T00:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" })}
+              {task.due_time ? ` · ${formatTime12h(task.due_time)}` : ""}
             </span>
           )}
           <AssigneeStack assignees={task.assignees} />
@@ -584,9 +576,25 @@ function TaskRow({
               defaultValue={task.due_date ?? ""}
               onBlur={(e) => {
                 const v = e.target.value || null;
-                if (v !== task.due_date) onPatch({ due_date: v });
+                const patch: Record<string, unknown> = {};
+                if (v !== task.due_date) patch.due_date = v;
+                // migration 041 — clearing the date also clears any set time (a time with no date is meaningless).
+                if (!v && task.due_time) patch.due_time = null;
+                if (Object.keys(patch).length > 0) onPatch(patch);
               }}
               className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none"
+            />
+            {/* migration 041 ("Small pair" item 2) — optional reminder time alongside the due date, disabled until a date is set. */}
+            <input
+              type="time"
+              defaultValue={task.due_time ?? ""}
+              disabled={!task.due_date}
+              onBlur={(e) => {
+                const v = e.target.value || null;
+                if (v !== task.due_time) onPatch({ due_time: v });
+              }}
+              title={task.due_date ? "Optional reminder time" : "Set a date first"}
+              className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none disabled:opacity-40"
             />
             <button
               type="button"

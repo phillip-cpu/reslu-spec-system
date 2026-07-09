@@ -67,6 +67,18 @@ export interface BoardTaskWithAssignees extends BoardTask {
   assignees: AssigneeSummary[];
   contact: ContactSummary | null;
   phase_group_id: string | null;
+  /**
+   * migration 041 ("Small pair" item 2) — optional wall-clock reminder
+   * time alongside due_date, "HH:MM:SS" (Postgres `time`) or null.
+   * Added directly onto this shared row shape (rather than a further
+   * intersection layer in yet another round-owned file) since due_time
+   * is a plain new column every Board v2+ consumer's existing
+   * `select("*")` already returns — every downstream type extending
+   * this interface (BoardTaskCockpit, BoardTaskV3) inherits it for
+   * free. types/index.ts's own BoardTask is unaffected (protected,
+   * unedited) — this field lives only on the richer "with refs" shape.
+   */
+  due_time: string | null;
 }
 
 export interface BoardGroup {
@@ -130,6 +142,8 @@ export interface CreateBoardTaskInputV2 {
   assignee_ids?: string[];
   contact_id?: string | null;
   due_date?: string | null;
+  /** migration 041 — optional wall-clock reminder time alongside due_date, "HH:MM" or "HH:MM:SS". Ignored (never used to bucket/sort) when due_date itself is omitted. */
+  due_time?: string | null;
   phase_group_id?: string | null;
 }
 
@@ -141,6 +155,8 @@ export interface PatchBoardTaskInputV2 {
   assignee_ids?: string[];
   contact_id?: string | null;
   due_date?: string | null;
+  /** migration 041 — see CreateBoardTaskInputV2's own due_time doc comment. */
+  due_time?: string | null;
   sort?: number;
   phase_group_id?: string | null;
 }
@@ -238,6 +254,17 @@ export interface MyWorkItem {
   href: string;
   /** Short secondary label shown muted under the title, e.g. a column name, a lead stage, a trade company. */
   meta: string | null;
+  /**
+   * migration 041 ("Small pair" item 2) — optional wall-clock reminder
+   * time paired with `due` when `due` is a plain date (board_task/
+   * office_task/design_task sources only; every other source kind
+   * leaves this null/undefined). Drives the same-day "sort by time" +
+   * "2:30pm" display rule (lib/my-work.ts groupMyWorkItems, lib/time-format.ts)
+   * and the datetime-aware overdue check — see lib/time-format.ts's
+   * isOverdueByDateTime() doc comment for why this stays a plain
+   * "HH:MM[:SS]" string rather than a combined Date/timestamp.
+   */
+  due_time?: string | null;
 }
 
 export interface MyWorkGroups {

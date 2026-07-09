@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse, after } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { notifyAriaClientEventCreated } from "@/lib/aria-webhook";
 import { reportError } from "@/lib/report-error";
+import { formatVisitDate, formatVisitTime, sendOrQueue, suburbFrom } from "@/lib/visit-emails";
 import type { ClientEventsResponse, CreateClientEventInput } from "@/types/phase-12a-b";
 
 /**
@@ -67,7 +68,11 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { data: project } = await supabase.from("projects").select("id,name").eq("id", projectId).single();
+  const { data: project } = await supabase
+    .from("projects")
+    .select("id,name,client_name,client_email,client_secondary_email")
+    .eq("id", projectId)
+    .single();
   if (!project) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
@@ -127,6 +132,49 @@ export async function POST(
       await reportError("aria-client-event-webhook", err);
     }
   });
+
+  // Site-visit lifecycle emails (docs/RESLU-Spec-Visit-Emails-Brief.md
+  // + BUILD-SPEC.md §"Site-visit lifecycle emails": "applies to lead
+  // site visits AND project client_events"). starts_at is a required
+  // field on this route already (validated above), so the only gate
+  // here is whether the project has a client_email on file. Fire-and-
+  // forget via after(), own service-role client — same pattern as the
+  // Aria webhook push just above (see that block's own doc comment for
+  // why a request-scoped client isn't reused inside after()). This is
+  // a SEPARATE send from lib/client-event-reminders.ts's existing
+  // "day before" meeting nudge (Gmail-based, generic content) — this
+  // one is the brand visit-confirmation.html template via Resend, sent
+  // once at booking time, guarded/logged in its own email_sends table
+  // (migration 043), not client_events.reminder_sent_at.
+  if (project.client_email) {
+    after(async () => {
+      const service = createServiceRoleClient();
+      try {
+        const to = [project.client_email, project.client_secondary_email].filter(
+          (e): e is string => !!e
+        );
+        const [firstName, ...rest] = (project.client_name ?? "").split(" ");
+        const visitDatetime = event.starts_at as string;
+        await sendOrQueue(service, {
+          recordType: "client_event",
+          recordId: event.id,
+          template: "visit-confirmation",
+          to,
+          subject: `Your site visit — ${formatVisitDate(visitDatetime)}`,
+          mergeData: {
+            first_name: firstName || project.client_name,
+            last_name: rest.join(" "),
+            visit_date: formatVisitDate(visitDatetime),
+            visit_time: formatVisitTime(visitDatetime),
+            suburb: suburbFrom(event.location),
+          },
+          visitDatetime,
+        });
+      } catch (err) {
+        await reportError("visit-emails", err);
+      }
+    });
+  }
 
   return NextResponse.json({ event }, { status: 201 });
 }

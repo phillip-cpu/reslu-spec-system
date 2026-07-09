@@ -55,6 +55,8 @@ export interface OfficeTask {
   description: string | null;
   kind: OfficeTaskKind;
   due_date: string | null;
+  /** migration 041 ("Small pair" item 2, office parity) — optional wall-clock reminder time alongside due_date, "HH:MM:SS" or null. Never set for kind 'rule' (rule cards carry no due_date either). */
+  due_time: string | null;
   sort: number;
   prev_group_id: string | null;
   created_by: string | null;
@@ -87,6 +89,8 @@ export interface CreateOfficeTaskInput {
   description?: string | null;
   kind?: OfficeTaskKind;
   due_date?: string | null;
+  /** migration 041 — see OfficeTask's own due_time doc comment. */
+  due_time?: string | null;
   /** Omit to auto-assign the creator (mirrors Board v2's auto-assign-on-create); pass [] for none; pass profile ids to override. Ignored for kind 'rule' (rule cards carry no assignees). */
   assignee_ids?: string[];
 }
@@ -102,6 +106,8 @@ export interface PatchOfficeTaskInput {
   title?: string;
   description?: string | null;
   due_date?: string | null;
+  /** migration 041 — see OfficeTask's own due_time doc comment. */
+  due_time?: string | null;
   sort?: number;
   group_id?: string;
   assignee_ids?: string[];

@@ -4,6 +4,7 @@ import { useState } from "react";
 import clsx from "clsx";
 import { isTaskOverdue, phaseProgress } from "@/lib/design-framework";
 import type { DesignAssigneeSummary, DesignPhaseStatus, DesignPhaseWithTasks, DesignTaskWithAssignees } from "@/types/phase-12b";
+import { formatTime12h, isOverdueByDateTime } from "@/lib/time-format";
 
 const STATUS_LABEL: Record<DesignPhaseStatus, string> = {
   not_started: "Not started",
@@ -153,7 +154,10 @@ function DesignTaskRow({
   const [expanded, setExpanded] = useState(false);
   const [assigneePickerOpen, setAssigneePickerOpen] = useState(false);
   const isDone = !!task.completed_at;
-  const overdue = isTaskOverdue(task.due_date, task.completed_at);
+  // migration 041 — datetime-aware once due_time is set (falls back to
+  // isTaskOverdue's exact date-only rule otherwise, so behaviour for
+  // every task without a due_time is byte-for-byte unchanged).
+  const overdue = !isDone && (task.due_time ? isOverdueByDateTime(task.due_date, task.due_time) : isTaskOverdue(task.due_date, task.completed_at));
 
   function toggleAssignee(id: string) {
     const current = task.assignees.map((a) => a.id);
@@ -183,6 +187,7 @@ function DesignTaskRow({
             <span className={clsx("text-caption", overdue ? "text-red-700" : "text-charcoal/50")}>
               {overdue ? "⚠ " : ""}
               {new Date(task.due_date + "T00:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" })}
+              {task.due_time ? ` · ${formatTime12h(task.due_time)}` : ""}
             </span>
           )}
           <AssigneeStack assignees={task.assignees} />
@@ -207,9 +212,25 @@ function DesignTaskRow({
               defaultValue={task.due_date ?? ""}
               onBlur={(e) => {
                 const v = e.target.value || null;
-                if (v !== task.due_date) onPatch({ due_date: v });
+                const patch: Record<string, unknown> = {};
+                if (v !== task.due_date) patch.due_date = v;
+                // migration 041 — clearing the date also clears any set time.
+                if (!v && task.due_time) patch.due_time = null;
+                if (Object.keys(patch).length > 0) onPatch(patch);
               }}
               className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none"
+            />
+            {/* migration 041 ("Small pair" item 2) — optional reminder time alongside the due date, disabled until a date is set. */}
+            <input
+              type="time"
+              defaultValue={task.due_time ?? ""}
+              disabled={!task.due_date}
+              onBlur={(e) => {
+                const v = e.target.value || null;
+                if (v !== task.due_time) onPatch({ due_time: v });
+              }}
+              title={task.due_date ? "Optional reminder time" : "Set a date first"}
+              className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none disabled:opacity-40"
             />
             <button
               type="button"

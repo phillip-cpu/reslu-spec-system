@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import type { PatchDesignTaskInput } from "@/types/phase-12b";
 
-const EDITABLE_FIELDS = new Set(["title", "description", "due_date", "sort"]);
+// migration 041 — "due_time" added to parity with due_date (see
+// PatchDesignTaskInput's own doc comment, types/phase-12b.ts).
+const EDITABLE_FIELDS = new Set(["title", "description", "due_date", "due_time", "sort"]);
 
 /**
  * PATCH /api/design-tasks/[id]
