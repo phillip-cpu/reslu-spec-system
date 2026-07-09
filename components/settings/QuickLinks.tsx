@@ -25,6 +25,31 @@ const LINKS: { label: string; note: string; href: string }[] = [
     note: "Landing pages hosting",
     href: "https://app.netlify.com",
   },
+  {
+    label: "Resend",
+    note: "Sends every client-facing email — visit emails, invoices",
+    href: "https://resend.com/emails",
+  },
+  {
+    label: "Anthropic",
+    note: "Claude API — Second Brain (email triage/extraction), Aria's MCP tools",
+    href: "https://console.anthropic.com",
+  },
+  {
+    label: "Stripe",
+    note: "Client invoice payment links",
+    href: "https://dashboard.stripe.com",
+  },
+  {
+    label: "Google Cloud Console",
+    note: "Aria's Gmail ingest — OAuth credentials",
+    href: "https://console.cloud.google.com",
+  },
+  {
+    label: "Monday.com",
+    note: "Board task import",
+    href: "https://monday.com",
+  },
 ];
 
 export function QuickLinks() {
