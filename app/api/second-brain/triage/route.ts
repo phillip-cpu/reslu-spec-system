@@ -39,6 +39,11 @@ export async function GET(request: NextRequest) {
     .from("emails")
     .select("id,from_addr,subject,clean_text")
     .eq("status", "new")
+    // Outbound (Sent folder) mail is ingested for the historical
+    // record only (migration 045) — it never enters triage/
+    // extraction/matching/proposals, so it can't reach the
+    // write-approval gate at all.
+    .eq("direction", "inbound")
     .order("received_at", { ascending: true })
     .limit(BATCH_SIZE);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });

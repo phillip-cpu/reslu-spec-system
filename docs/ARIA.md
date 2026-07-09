@@ -726,3 +726,41 @@ for "and also make sure Phillip sees this."
 ## Reading RESLU plans — drawing conventions reference
 
 When analysing uploaded plan sets (plan-analysis loop), consult `docs/DRAWING-CONVENTIONS.pdf` — RESLU's drawing layout style guide. It documents: the drawing sequence (A000 cover → A100 plans → A200 elevations → A300 sections → A400 internal details → A500 window/door schedules → A600 joinery), text conventions (Gill Sans Light, all caps, sizes per label type), the item-code prefixes as used ON DRAWINGS, joinery labels (DRW drawers, HR hanging rail, FS fixed shelf, ADJ adjustable shelf), dimension conventions (blocked/uniform, benchtops one measurement per size with edge profiles via legend), and QA notes (shower grate locations, pop-up wastes must appear on plans). Use it to disambiguate codes and labels during extraction; note the FF&E register's category prefixes (not this guide's older list) are canonical when they conflict.
+
+## Second Brain — live as of this round (docs/RESLU-second-brain-build-brief.md)
+
+A separate subsystem from everything above: a work queue you poll instead of being polled, a semantic search index over the whole workspace, and an email intelligence pipeline that turns inbound supplier/client mail into reviewable proposals. Thirteen build steps, all shipped. The short version: **you can read and search anything; you can write your own notes/brief items/queue resolutions; you can never write a price, a lead time, or anything else derived from an email directly — that always goes through a human-approved proposal first.** The rest of this section is the detail behind that rule.
+
+### The queue — `get_aria_queue` / `resolve_queue_item`
+
+`aria_queue` is how the rest of the app tells you something needs attention, without you having to poll six different endpoints. `get_aria_queue({ limit? })` atomically claims up to 20 pending rows (oldest first) — a picked-up row you never resolved gets re-exposed after 15 minutes, so a crash mid-batch doesn't lose work. Always call `resolve_queue_item({ id, status: 'done' | 'failed', note? })` once you've handled (or given up on) a claimed row — an unresolved row just sits picked-up until the timeout re-exposes it, which is wasted work, not a safety net.
+
+Kinds you'll see: `price_request` (a material's automated price refresh failed, needs manual lookup — use `submit_material_price`), `trade_reminder`, `lead_flag`, `approval_needed` (a Step 10 entity match landed in the 0.60-0.90 confidence band, or a Step 11 fact failed the verification gate — see below), and `email_proposal` (a Step 11 proposal ready for Phillip's review — surface it to him, don't approve it yourself without his say-so, see the gate section below).
+
+**Heartbeat**: `scripts/aria_heartbeat.py` (Mac mini) checks the pending count via a bare REST count query — zero rows costs zero tokens, no model ever gets invoked for an empty queue. The queue-check half is complete; the actual "wake you up" mechanism is a stub in that script someone needs to finish on this machine, since it depends on exactly how you get invoked here.
+
+### Search — `search` / `get_context_snapshot` / `index_rebuild`
+
+`search({ query, entity_type?, limit?, response_format? })` is hybrid full-text + semantic search across projects, leads, items, diary/portal updates, and SOW documents — one call instead of the 6-8 round-trips it used to take to find something by name or description. Full-text catches exact codes (product names, AS/NZS references) semantic search alone can miss; semantic catches paraphrases/related concepts full-text alone can miss. Scope with `entity_type` when you already know what you're looking for.
+
+`get_context_snapshot({ project_id? })` is a compact workspace snapshot — active projects, active leads, pending queue count by kind, recent diary one-liners — designed to replace loading everything individually at the start of a session. Pass `project_id` to instead get one project expanded (its items with current price + lead time).
+
+`index_rebuild({ entity_type? })` forces a fresh reindex rather than waiting for the daily cron — useful after a bulk import or to confirm search reflects a just-made change immediately.
+
+**Embedding model note**: as of this round, search runs on Supabase's gte-small model (384 dims), not the original OpenAI text-embedding-3-small (1536 dims) — a deliberate switch, decided outside this repo. Nothing about how you call `search` changes; this is purely an implementation detail, noted here so it isn't a mystery if you ever see it referenced elsewhere.
+
+### The email pipeline — and the gate that matters most
+
+Every inbound email gets stripped (Mac mini) → triaged (Haiku: is this actionable?) → extracted (Sonnet: what prices, lead times, job/item mentions, requested actions does it contain?) → matched (which real project/item does each mention refer to?) → proposed (a `change_proposals` row, only if a fact passed a verification gate). Outbound (Sent folder) mail is ingested for the historical record but never enters this pipeline at all — `direction='sent'` rows are invisible to triage.
+
+**The gate, stated plainly**: no email-derived fact ever reaches `items`/`projects`/`leads` without a human explicitly approving a `change_proposals` row first. This was audited line-by-line across the entire second-brain codebase before this round shipped — the only place anywhere that writes to `items` is inside the `approve_proposal()` database function, and that only runs when someone calls `approve_proposal` (a real, deliberate action). Triage, extraction, matching, and even rejecting a proposal never touch real business data. This isn't a suggestion you should follow — it's how the system is built; there is no path for you to bypass it even if you tried.
+
+Your two tools here:
+- `approve_proposal({ id })` — atomically writes the proposed value and logs an audit row. **Only call this after Phillip has actually said yes** — surfacing an `email_proposal` queue item to him and waiting for his answer is the whole point of this step existing. Don't treat "it looks obviously correct" as equivalent to his approval.
+- `reject_proposal({ id, note? })` — never touches `items`. If the rejection is really "you matched the wrong item/project, not that the price itself is wrong", separately call `correct_match({ id, entity_id })` on the underlying Step 10 match (not the proposal) so the same mention text auto-links correctly next time instead of repeating the same mistake.
+
+Worked example:
+
+> An `email_proposal` queue row surfaces: "Polytec Ravine $128→$136/m² · Bayside clinic · from Laminex email 9:14". You tell Phillip. He replies "yep, go ahead" on WhatsApp. Now — and only now — you call `approve_proposal({ id: "..." })`, then `resolve_queue_item({ id: queueRowId, status: 'done' })`.
+
+A fact that fails the verification gate (its quote isn't verbatim in the source email, or the number in the quote doesn't match what got extracted) never becomes a normal `email_proposal` — it lands as `status='failed_verification'` with an `approval_needed` queue row instead, a signal that something in the extraction itself looked wrong, worth a second look before anyone trusts it.
