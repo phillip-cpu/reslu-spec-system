@@ -5,8 +5,10 @@ import { createServiceRoleClient } from "@/lib/supabase/server";
 import { rateLimit } from "@/lib/rate-limit";
 import { isVisitExpired } from "@/lib/trade-visits";
 import { latestIssuedSow } from "@/lib/trade-doc-pack";
+import { filterSectionsForTrade } from "@/lib/sow-trade-tags";
 import { SowPdf } from "@/components/pdf/SowPdf";
-import type { SowDocument, SowSectionWithLines } from "@/types";
+import type { SowDocument } from "@/types";
+import type { SowSectionWithTradedLines } from "@/types/sow-trade-tags";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,12 +36,25 @@ export const dynamic = "force-dynamic";
  * limited by token+IP, confirm_token must resolve to a real
  * non-deleted visit, isVisitExpired() re-checked independently,
  * document_pack.include_sow must be true.
+ *
+ * "Trade-scoped SOW extracts" round — doc-pack integration: optional
+ * `?trade=<preset name>`, passed by the trade page (see that page's
+ * own DOCUMENTS-section doc comment) whenever the visit's frozen
+ * `document_pack.include_sow_trade` names a trade that CURRENTLY has
+ * >=1 tagged line in the latest issued SOW — same "frozen choice, live
+ * revisions" re-resolution the page already does for plans/schedule.
+ * This route itself does no re-validation of that decision (the page
+ * already re-checked freshly before building this href) — it simply
+ * renders whichever extract (or full SOW, if `trade` is absent) the
+ * query asks for, via the SAME filterSectionsForTrade() the team-facing
+ * PDF route uses, so the two extracts can never drift on composition.
  */
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ token: string }> }
 ) {
   const { token } = await params;
+  const trade = request.nextUrl.searchParams.get("trade")?.trim() || null;
 
   const headerList = await headers();
   const forwardedFor = headerList.get("x-forwarded-for");
@@ -91,14 +106,19 @@ export async function GET(
     return NextResponse.json({ error: sectionsError.message }, { status: 500 });
   }
 
-  const sectionsWithLines: SowSectionWithLines[] = (sections ?? []).map((section) => {
+  const sectionsWithLines: SowSectionWithTradedLines[] = (sections ?? []).map((section) => {
     const lines = (
-      (section as unknown as { sow_lines: SowSectionWithLines["lines"] }).sow_lines ?? []
+      (section as unknown as { sow_lines: SowSectionWithTradedLines["lines"] }).sow_lines ?? []
     ).sort((a, b) => a.sort - b.sort);
     const { sow_lines: _omit, ...rest } = section as unknown as Record<string, unknown>;
     void _omit;
-    return { ...(rest as unknown as SowSectionWithLines), lines };
+    return { ...(rest as unknown as SowSectionWithTradedLines), lines };
   });
+
+  // "Trade-scoped SOW extracts" — same filter the team-facing PDF
+  // route uses, keyed off the query string this route's own doc
+  // comment above describes.
+  const renderedSections = trade ? filterSectionsForTrade(sectionsWithLines, trade) : sectionsWithLines;
 
   const generatedAt = new Date().toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" });
   const projectNo = project.job_number ?? (visit.project_id as string).slice(0, 8).toUpperCase();
@@ -108,12 +128,13 @@ export async function GET(
     buffer = await renderToBuffer(
       SowPdf({
         project,
-        sections: sectionsWithLines,
+        sections: renderedSections,
         revisionLabel: latest.revision_label,
         status: latest.status,
         issuedAt: latest.issued_at,
         projectNo,
         generatedAt,
+        extractTrade: trade,
       })
     );
   } catch (err) {
@@ -121,7 +142,9 @@ export async function GET(
     return NextResponse.json({ error: "Could not generate the scope of works. Please try again." }, { status: 500 });
   }
 
-  const filename = `${project.name.replace(/[^a-z0-9]+/gi, "-")}-SOW-${latest.revision_label}.pdf`;
+  const filename = trade
+    ? `${project.name.replace(/[^a-z0-9]+/gi, "-")}-SOW-${latest.revision_label}-${trade.replace(/[^a-z0-9]+/gi, "-")}.pdf`
+    : `${project.name.replace(/[^a-z0-9]+/gi, "-")}-SOW-${latest.revision_label}.pdf`;
 
   return new NextResponse(new Uint8Array(buffer), {
     headers: {

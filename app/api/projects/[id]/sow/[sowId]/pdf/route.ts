@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { createClient } from "@/lib/supabase/server";
 import { SowPdf } from "@/components/pdf/SowPdf";
-import type { SowDocument, SowSectionWithLines } from "@/types";
+import { filterSectionsForTrade } from "@/lib/sow-trade-tags";
+import type { SowDocument } from "@/types";
+import type { SowSectionWithTradedLines } from "@/types/sow-trade-tags";
 
 // react-pdf + font/logo file reads require the Node runtime — same as
 // GET /api/projects/[id]/pdf.
@@ -14,12 +16,31 @@ export const dynamic = "force-dynamic";
  * Renders the branded Scope of Works PDF for one revision (BUILD-SPEC.md
  * "Scope of Works builder": "rendered to branded PDF"). Team access —
  * a SOW is not financial data.
+ *
+ * "Trade-scoped SOW extracts" round: optional `?trade=<preset name>`
+ * query param renders a condensed EXTRACT instead of the full SOW —
+ * General Notes + Exclusions sections in full, every other section
+ * filtered to lines tagged with that exact trade (empty sections
+ * omitted), untagged lines dropped — see lib/sow-trade-tags.ts's
+ * filterSectionsForTrade() for the exact rule and its own rationale.
+ * The cover gains one subtitle line (SowPdf's `extractTrade` prop);
+ * nothing about body pagination changes — the filtered section array
+ * flows through the SAME render loop/wrap structure as the full SOW,
+ * unchanged since the pagination fix (see SowPdf.tsx's own doc
+ * comment on that `View key={section.id}` block for why `wrap={false}`
+ * must never be reintroduced there).
+ *
+ * CACHE-AWARE CHECK: this route sets `dynamic = "force-dynamic"` and
+ * `Cache-Control: no-store` — it already renders fresh on every
+ * request regardless of query string, so `?trade=` needs no extra
+ * cache-key handling.
  */
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string; sowId: string }> }
 ) {
   const { id: projectId, sowId } = await params;
+  const trade = request.nextUrl.searchParams.get("trade")?.trim() || null;
   const supabase = await createClient();
 
   const {
@@ -59,14 +80,20 @@ export async function GET(
     return NextResponse.json({ error: sectionsError.message }, { status: 500 });
   }
 
-  const sectionsWithLines: SowSectionWithLines[] = (sections ?? []).map((section) => {
+  const sectionsWithLines: SowSectionWithTradedLines[] = (sections ?? []).map((section) => {
     const lines = (
-      (section as unknown as { sow_lines: SowSectionWithLines["lines"] }).sow_lines ?? []
+      (section as unknown as { sow_lines: SowSectionWithTradedLines["lines"] }).sow_lines ?? []
     ).sort((a, b) => a.sort - b.sort);
     const { sow_lines: _omit, ...rest } = section as unknown as Record<string, unknown>;
     void _omit;
-    return { ...(rest as unknown as SowSectionWithLines), lines };
+    return { ...(rest as unknown as SowSectionWithTradedLines), lines };
   });
+
+  // "Trade-scoped SOW extracts" — when `?trade=` is present, filter
+  // down to that trade's extract (see lib/sow-trade-tags.ts's
+  // filterSectionsForTrade() for the exact composition rule); omitted
+  // entirely, renders the full SOW exactly as before this round.
+  const renderedSections = trade ? filterSectionsForTrade(sectionsWithLines, trade) : sectionsWithLines;
 
   const generatedAt = new Date().toLocaleDateString("en-AU", {
     day: "numeric",
@@ -87,16 +114,19 @@ export async function GET(
   const buffer = await renderToBuffer(
     SowPdf({
       project,
-      sections: sectionsWithLines,
+      sections: renderedSections,
       revisionLabel: typedSow.revision_label,
       status: typedSow.status,
       issuedAt: typedSow.issued_at,
       projectNo,
       generatedAt,
+      extractTrade: trade,
     })
   );
 
-  const filename = `${project.name.replace(/[^a-z0-9]+/gi, "-")}-SOW-${typedSow.revision_label}.pdf`;
+  const filename = trade
+    ? `${project.name.replace(/[^a-z0-9]+/gi, "-")}-SOW-${typedSow.revision_label}-${trade.replace(/[^a-z0-9]+/gi, "-")}.pdf`
+    : `${project.name.replace(/[^a-z0-9]+/gi, "-")}-SOW-${typedSow.revision_label}.pdf`;
 
   return new NextResponse(new Uint8Array(buffer), {
     headers: {

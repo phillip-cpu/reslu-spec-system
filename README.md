@@ -868,6 +868,40 @@ run through `042_lead_intake.sql` at the time this round ran, so
 (contrast with the Daily Brief round above, whose brief's assumed
 number was already taken).
 
+## Trade-scoped SOW extracts (migration 044)
+
+"Select all carpentry" -> a condensed PDF scope for just that trade.
+No on-machine steps — everything ships working once migration `044`
+is applied (Step 2 above covers this automatically for a fresh
+install; an existing environment just needs the one new file run).
+
+- **Tag lines with a trade** — each SOW line in the builder
+  (`components/sow/SowBuilder.tsx`) gets a small trade `<select>`
+  (renders as a sand chip once set). Trade names are your existing
+  **Trade mappings** list (Settings -> the same `app_settings
+  ('export_presets')` rows the FF&E schedule export and the Order-by
+  engine already use) — one vocabulary for "which trade" everywhere in
+  the app.
+- **Auto-suggest** — "Start from template" tags every room section's
+  lines automatically by clause label (e.g. a "WALL TILING — ..." line
+  becomes Tiler); the builder's **"Suggest trade tags"** button
+  re-runs the same heuristic against any currently-untagged lines on
+  an existing draft SOW and reports how many it tagged. See
+  `docs/API.md`'s "Trade-scoped SOW extracts" section for the full
+  keyword table.
+- **Download an extract** — the SOW area's download group now shows
+  "Full" plus one chip per trade that has at least one tagged line in
+  the current revision. An extract keeps General Notes and Exclusions
+  in full (site conditions/compliance/exclusions apply to everyone)
+  and filters every other section down to that trade's tagged lines
+  only, omitting anything left empty.
+- **Trade booking pack** — when a trade is booked with the Scope of
+  Works included, the booking page automatically prefers that trade's
+  own extract over the full document, IF the latest issued SOW
+  currently has any lines tagged for that trade (re-checked live, not
+  frozen at booking time) — otherwise it falls back to the full SOW,
+  same as before this round.
+
 ## Monday.com and Gmail integrations
 
 Both are optional and dormant until configured — the app works fully

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import type { PatchSowLineInput, SowDocument, SowLineKind } from "@/types";
+import type { SowDocument, SowLineKind } from "@/types";
+import type { PatchSowLineTradeInput } from "@/types/sow-trade-tags";
 
 const VALID_KIND = new Set<SowLineKind>(["inclusion", "exclusion", "note"]);
 
@@ -24,9 +25,17 @@ async function loadParentStatus(
 
 /**
  * PATCH /api/sow/lines/[lineId]
- * body: { text?, kind?, sort? } — single-save pattern, same as an
- * estimate line row's onPatch. Blocked once the parent SOW is issued.
- * Team access.
+ * body: { text?, kind?, sort?, trade? } — single-save pattern, same as
+ * an estimate line row's onPatch. Blocked once the parent SOW is
+ * issued. Team access.
+ *
+ * "Trade-scoped SOW extracts" round: `trade` joins the whitelist —
+ * free text (no validation against app_settings('export_presets') —
+ * see migration 044_sow_trade_tags.sql's own comment for why this
+ * column is deliberately not a constrained lookup), explicit `null`
+ * clears an existing tag, `undefined`/key-absent leaves it unchanged
+ * — same "only touch what's present in the body" discipline this
+ * route already uses for text/kind/sort.
  */
 export async function PATCH(
   request: NextRequest,
@@ -53,7 +62,7 @@ export async function PATCH(
     );
   }
 
-  let body: PatchSowLineInput;
+  let body: PatchSowLineTradeInput;
   try {
     body = await request.json();
   } catch {
@@ -75,6 +84,12 @@ export async function PATCH(
   }
   if (body.kind !== undefined) update.kind = body.kind;
   if (body.sort !== undefined && Number.isFinite(Number(body.sort))) update.sort = Number(body.sort);
+  if (body.trade !== undefined) {
+    if (body.trade !== null && typeof body.trade !== "string") {
+      return NextResponse.json({ error: "trade must be a string or null" }, { status: 400 });
+    }
+    update.trade = body.trade === null ? null : body.trade.trim() || null;
+  }
 
   if (Object.keys(update).length === 0) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });

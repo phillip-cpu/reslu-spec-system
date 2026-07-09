@@ -86,6 +86,18 @@ const styles = StyleSheet.create({
     marginTop: 10,
     lineHeight: 1.5,
   },
+  // "Trade-scoped SOW extracts" round — the one cover addition an
+  // extract gets (BUILD-SPEC.md: "cover marked '{Trade} scope —
+  // extract of {title} · Rev N' (subtitle line; cover otherwise
+  // unchanged)"). Sits directly under coverDescription, above the
+  // meta block — every other cover element (logo, eyebrow, title,
+  // address, meta rows) is untouched.
+  coverExtractSubtitle: {
+    fontSize: 11,
+    fontFamily: "Helvetica-Bold",
+    color: SAND,
+    marginTop: 10,
+  },
   coverMetaBlock: {
     borderTopWidth: 1,
     borderTopColor: NEARBLACK,
@@ -212,6 +224,17 @@ interface Props {
   issuedAt: string | null;
   projectNo: string;
   generatedAt: string; // formatted date, passed in (server)
+  /**
+   * "Trade-scoped SOW extracts" round — set when this render is a
+   * trade-filtered extract, not the full SOW. `sections` is already
+   * filtered by the caller (lib/sow-trade-tags.ts's
+   * filterSectionsForTrade()) before it ever reaches this component —
+   * this prop ONLY drives the cover subtitle text below, nothing about
+   * body rendering/pagination changes based on it. Omitted/null for
+   * the ordinary full-SOW render (behaviour identical to before this
+   * round).
+   */
+  extractTrade?: string | null;
 }
 
 /**
@@ -237,6 +260,7 @@ export function SowPdf({
   issuedAt,
   projectNo,
   generatedAt,
+  extractTrade,
 }: Props) {
   ensureFonts();
 
@@ -259,6 +283,11 @@ export function SowPdf({
           </Text>
           {project.address ? (
             <Text style={styles.coverDescription}>{project.address}</Text>
+          ) : null}
+          {extractTrade ? (
+            <Text style={styles.coverExtractSubtitle}>
+              {extractTrade} scope — extract of {project.name} · Rev {revisionLabel}
+            </Text>
           ) : null}
         </View>
 

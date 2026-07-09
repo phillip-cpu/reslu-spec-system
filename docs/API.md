@@ -5645,3 +5645,165 @@ reminders.ts` and `app/api/client-events/remind/route.ts` (the
 existing "day before" Gmail meeting reminder) were read for context
 but deliberately not modified — see the trigger-wiring note above on
 how the two systems relate.
+
+## Trade-scoped SOW extracts (8 July 2026)
+
+BUILD-SPEC.md "Trade-scoped SOW extracts": "'Select all carpentry' ->
+condensed scope per trade." Migration `044_sow_trade_tags.sql` adds
+`sow_lines.trade text null` — single tag, free text (not a foreign
+key — see the migration's own comment), matching an
+`app_settings('export_presets')` preset **name** exactly (one
+vocabulary everywhere: "trade-mapping presets," per the Order-by
+engine section above's renamed Settings label).
+
+### Auto-suggest heuristic — `lib/sow-trade-tags.ts`
+
+`suggestTradeTag(lineText, presetNames)` — a line's leading CLAUSE
+LABEL (`extractClauseLabel()`: the short all-caps run before an
+em-dash/hyphen/colon, e.g. `"WALL TILING — {{...}}"` -> `"WALL
+TILING"`) is matched against a fixed keyword table, then resolved
+against the studio's CURRENT preset names (case-insensitive; only
+suggests a preset that actually exists):
+
+| Clause-label keyword(s) | Suggested trade |
+|---|---|
+| WALL TILING, FLOOR FINISHES, WATERPROOFING | Tiler |
+| JOINERY | Carpenter |
+| SANITARYWARE, TAPWARE | Plumber |
+| ELECTRICAL, LIGHTING | Electrician |
+| PAINTING | Painter |
+| PARTITIONS, PLASTER | Plasterer |
+| DEMOLISH | Demolition |
+| SHOWER SCREEN | Glazier |
+| STONE | Stonemason |
+
+Deliberately a PREFIX match (the line's own leading clause label), not
+"keyword anywhere in the text" — a General Notes clause like
+"Waterproofing to all wet areas per AS 3740-2010..." contains the word
+"Waterproofing" too, but isn't a `"WATERPROOFING — ..."` labelled
+clause; a naive substring-anywhere scan would mis-tag it as Tiler. A
+line with no clause label, or whose canonical suggestion has no
+matching current preset, is left untagged (`trade: null`) — never
+guessed in, per BUILD-SPEC's own wording.
+
+**Applied automatically** by `POST .../sow/[sowId]/from-template` —
+every ROOM section's lines (not the Project Overview / General Notes /
+Site Management / Exclusions library groups, which have no clause
+label to match and would risk the false-positive above) are tagged at
+insert time. **One-click "Suggest trade tags"** —
+`POST /api/projects/[id]/sow/[sowId]/suggest-trade-tags` — re-runs the
+same heuristic against every currently-UNTAGGED line in an existing
+draft SOW (any section), for content that predates auto-suggest or a
+hand-built SOW. Response `{ lines, tagged_count }`; only fills gaps,
+never overwrites a deliberate tag/retag. 400 if the SOW is issued
+(read-only, same rule every other SOW mutation route enforces).
+
+### Tagging in the builder
+
+`components/sow/SowBuilder.tsx`: every editable line row gains a
+compact trade `<select>` (options: current preset names + a blank
+"— trade —" that clears the tag) between the kind select and the text
+input — renders as a small solid sand chip once a value is set, a
+muted outline while blank. Read-only (issued) rows show the tag as the
+same sand chip, no select. `PATCH /api/sow/lines/[lineId]`'s body gains
+`trade?: string | null` (explicit `null` clears, `undefined`/absent
+leaves unchanged — same convention as `text`/`kind`/`sort`); free text,
+no validation against the current preset list (a line tagged with a
+since-renamed/deleted preset name keeps its value, shown with a "(no
+longer a preset)" suffix in the select rather than silently vanishing).
+
+### Extract composition — `filterSectionsForTrade()`
+
+Shared by both PDF routes below, so team-facing and trade-facing
+extracts can never drift:
+
+- **General Notes sections** (`isGeneralNotesHeading`: heading starts
+  with "General Notes", case-insensitive — matches
+  `lib/sow-templates.ts`'s three template headings) -> **included in
+  full**, untouched, regardless of any line's tag.
+- **The Exclusions section** (`isExclusionsHeading`: heading trims to
+  exactly "Exclusions", case-insensitive) -> **included in full**,
+  untouched.
+- **Every other section** (Project Overview, Site Management &
+  Handover, every room section, any custom section) -> filtered to
+  only the lines whose `trade` exactly equals the requested trade;
+  untagged lines and lines tagged for a different trade are dropped. A
+  section left with zero lines after filtering is **omitted entirely**
+  (never rendered as an empty heading).
+
+CHOSEN OVER a `sort < first-room-section-sort` positional rule (the
+brief's own alternative) because heading text survives section
+reordering and a hand-built SOW with no room sections to compare
+against — see `lib/sow-trade-tags.ts`'s own doc comment for the full
+rationale.
+
+### `GET /api/projects/[id]/sow/[sowId]/pdf?trade=<preset name>`
+
+Extends the existing route (unchanged when `trade` is absent). Renders
+`components/pdf/SowPdf.tsx` with the filtered section set and its new
+`extractTrade` prop, which adds ONE cover subtitle line — `"{Trade}
+scope — extract of {project name} · Rev {revisionLabel}"` — directly
+under the address/description text; every other cover element and the
+ENTIRE body pagination/wrap structure (the `View key={section.id}` /
+per-line `wrap={false}` shape from the earlier pagination-fix round) is
+byte-for-byte unchanged. Filename gains a trade slug. **Cache-aware
+check performed:** this route is `dynamic = "force-dynamic"` with
+`Cache-Control: no-store` already — no caching layer exists to key on
+the new query param.
+
+### Doc-pack integration — trade booking pack
+
+`types/trade-doc-pack.ts`'s `DocumentPackChoices` gains
+`include_sow_trade: string | null` (always present, plain nullable —
+no third state to encode, unlike `schedule_categories`) — the booked
+CONTACT's matched trade preset name, frozen at booking time by
+`components/board/BookVisitPanel.tsx` via the SAME
+`pickPresetForContactCategory()` resolution the Schedule auto-pick
+already uses (its own independent `useMemo`, not a re-read of the
+Schedule row's own state — a staff member's Schedule "Change" pick
+must never silently redirect the SOW trade preference). Checkbox copy
+shows the resolved preview: `"Scope of Works — {Trade} extract
+({label})"` when a trade is resolved, else unchanged.
+
+**Resolution is re-checked fresh, not frozen** (same "frozen choices,
+live revisions" split every other `document_pack` field already
+follows): `app/trade/[token]/page.tsx`'s DOCUMENTS section, on every
+render, checks whether the pack's `include_sow_trade` CURRENTLY has
+>=1 tagged line in the latest issued SOW (`sow_sections` filtered via
+an embedded `sow_lines!inner(trade)` + `.eq("sow_lines.trade", ...)`,
+same embedded-filter pattern `app/api/projects/[id]/handover/route.ts`
+already uses) — if yes, the row's href gains `?trade=<name>` and the
+label reads `"Scope of Works — {Trade} extract ({revisionLabel})"`; if
+no (nothing tagged for that trade yet, or no trade preference at all),
+it falls back to the full-document href/label, unchanged from before
+this round. `GET /api/trade/[token]/documents/sow` itself also gains
+the same optional `?trade=` param, applying the identical
+`filterSectionsForTrade()` — this route does no independent
+re-validation of the page's decision (low risk: an extract is a subset
+of information the trade could already see in the full document if
+`include_sow` was ticked).
+
+**Files touched:** `supabase/migrations/044_sow_trade_tags.sql` (new),
+`types/sow-trade-tags.ts` (new), `lib/sow-trade-tags.ts` (new —
+`TRADE_KEYWORD_TABLE`, `extractClauseLabel`, `suggestCanonicalTrade`,
+`resolveAgainstPresets`, `suggestTradeTag`, `isGeneralNotesHeading`,
+`isExclusionsHeading`, `filterSectionsForTrade`, `distinctTaggedTrades`,
+`isUntagged`), `app/api/sow/lines/[lineId]/route.ts` (PATCH whitelist
+gains `trade`), `app/api/projects/[id]/sow/[sowId]/from-template/route.ts`
+(room-section auto-tag at insert), `app/api/projects/[id]/sow/[sowId]/
+suggest-trade-tags/route.ts` (new), `components/sow/SowBuilder.tsx`
+(trade select/chip, "Suggest trade tags" action, trade-chip download
+group), `components/pdf/SowPdf.tsx` (`extractTrade` prop + one cover
+subtitle line — pagination/wrap structure untouched), `app/api/projects/
+[id]/sow/[sowId]/pdf/route.ts` (`?trade=` param), `types/trade-doc-
+pack.ts` (`DocumentPackChoices.include_sow_trade`), `components/board/
+BookVisitPanel.tsx` (`bookedTradeName` resolution, `include_sow_trade`
+on the frozen pack, checkbox copy), `app/trade/[token]/page.tsx`
+(fresh tagged-line re-check, extract vs. full SOW row resolution),
+`app/api/trade/[token]/documents/sow/route.ts` (`?trade=` param),
+`docs/API.md` / `README.md` (this round's documentation). Single
+migration (044); no protected file touched — `types/index.ts` in
+particular was deliberately left untouched, with every SOW-line-plus-
+trade shape declared locally in `types/sow-trade-tags.ts` instead (same
+per-round-own-file convention every other additive round in this
+directory already follows).

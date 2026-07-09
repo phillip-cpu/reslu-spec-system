@@ -62,6 +62,36 @@ export interface DocumentPackChoices {
   schedule_categories?: string[] | null;
   /** Whether the trade's booking page offers the latest issued Scope of Works. */
   include_sow: boolean;
+  /**
+   * "Trade-scoped SOW extracts" round — the booked trade's preset
+   * NAME (e.g. "Carpenter"), frozen at booking time from the booked
+   * contact's category (BookVisitPanel.tsx's own `pickPresetForContactCategory`
+   * resolution — the SAME "which trade is this contact" match already
+   * used for the Schedule auto-pick, just captured independently here
+   * so a staff member's own Schedule "Change" edit never silently
+   * drags this field along with it). `null` when the booked contact
+   * has no category match against any current preset, or no contact
+   * is linked at all — the ordinary, common case, meaning "no trade
+   * preference; if SOW is included, always the full document."
+   *
+   * ALWAYS PRESENT (unlike schedule_categories's key-presence
+   * encoding) — a plain nullable field, same shape discipline as
+   * include_plans/include_sow, since there's no third "ticked or not"
+   * state to encode here: this field only ever MODIFIES what
+   * `include_sow: true` resolves to, it has no independent on/off
+   * state of its own.
+   *
+   * RESOLUTION IS RE-CHECKED FRESH, NOT FROZEN: this field freezes
+   * only the DECISION "prefer this trade's extract" — whether that
+   * trade CURRENTLY has any tagged lines in the CURRENT latest issued
+   * SOW is re-resolved on every render/request (see
+   * app/trade/[token]/page.tsx's own doc comment), same "frozen
+   * choices, live revisions" split every other document_pack field
+   * already follows. A trade tagged with zero lines today might gain
+   * some tomorrow (or vice versa, if lines are re-tagged) — the
+   * trade page picks that up automatically, no re-booking needed.
+   */
+  include_sow_trade: string | null;
 }
 
 // ------------------------------------------------------------

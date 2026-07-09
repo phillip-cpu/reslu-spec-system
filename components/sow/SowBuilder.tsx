@@ -1,8 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
-import type { SowDocument, SowLine, SowLineKind, SowSectionWithLines } from "@/types";
+import type { SowDocument, SowLineKind } from "@/types";
+import type { SowLineWithTrade, SowSectionWithTradedLines, SuggestTradeTagsResponse } from "@/types/sow-trade-tags";
+import type { ExportPresetRow } from "@/types/round-export-batch";
+import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
+import { distinctTaggedTrades } from "@/lib/sow-trade-tags";
 
 interface Props {
   projectId: string;
@@ -33,11 +37,17 @@ export function SowBuilder({ projectId }: Props) {
   const [revisions, setRevisions] = useState<SowDocument[]>([]);
   const [activeSowId, setActiveSowId] = useState<string | null>(null);
   const [sow, setSow] = useState<SowDocument | null>(null);
-  const [sections, setSections] = useState<SowSectionWithLines[]>([]);
+  const [sections, setSections] = useState<SowSectionWithTradedLines[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [applyingTemplate, setApplyingTemplate] = useState(false);
+  // "Trade-scoped SOW extracts" round — trade preset names (the trade
+  // select's option list + the "Suggest trade tags" action's own
+  // resolution list) and this action's own busy/result state.
+  const [presets, setPresets] = useState<ExportPresetRow[]>([]);
+  const [suggestingTags, setSuggestingTags] = useState(false);
+  const [suggestMessage, setSuggestMessage] = useState<string | null>(null);
   // Fix round B — BUILD-SPEC.md §"SOW sticky outline" (improvements
   // backlog): sticky section outline sidebar, current section
   // highlighted via IntersectionObserver.
@@ -57,8 +67,25 @@ export function SowBuilder({ projectId }: Props) {
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error ?? "Could not load this Scope of Works revision.");
     setSow(body.sow as SowDocument);
-    setSections(body.sections as SowSectionWithLines[]);
+    setSections(body.sections as SowSectionWithTradedLines[]);
   }, [projectId]);
+
+  // "Trade-scoped SOW extracts" round — trade preset names, fetched
+  // once (same team-visible route ExportDialog/BookVisitPanel already
+  // use), independent of the revision-switching loadAll/loadSow cycle
+  // above — presets are studio-wide config, not per-SOW data.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/settings/export-presets")
+      .then((r) => (r.ok ? r.json() : { presets: FALLBACK_EXPORT_PRESETS }))
+      .then((body) => {
+        if (!cancelled) setPresets(body.presets ?? FALLBACK_EXPORT_PRESETS);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -211,11 +238,53 @@ export function SowBuilder({ projectId }: Props) {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Could not apply the template.");
-      setSections((cur) => [...cur, ...((body.sections ?? []) as SowSectionWithLines[])]);
+      setSections((cur) => [...cur, ...((body.sections ?? []) as SowSectionWithTradedLines[])]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not apply the template.");
     } finally {
       setApplyingTemplate(false);
+    }
+  }
+
+  /**
+   * "Trade-scoped SOW extracts" round — the builder's one-click
+   * "Suggest trade tags" action (BUILD-SPEC.md: "fills only untagged
+   * lines, reports count"). POST .../suggest-trade-tags does the
+   * actual matching/writing server-side (lib/sow-trade-tags.ts's
+   * suggestTradeTag(), same heuristic "Start from template" already
+   * applies at line-creation time) — this handler just merges the
+   * returned updated lines into local state (same "merge by id"
+   * pattern patchLine already uses for a single line, extended across
+   * every section here since a run can touch lines in several
+   * sections at once) and surfaces the count.
+   */
+  async function suggestTradeTags() {
+    if (!sow) return;
+    setSuggestingTags(true);
+    setError(null);
+    setSuggestMessage(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/sow/${sow.id}/suggest-trade-tags`, {
+        method: "POST",
+      });
+      const body: SuggestTradeTagsResponse = await res.json().catch(() => ({ lines: [], tagged_count: 0 }));
+      if (!res.ok) throw new Error((body as unknown as { error?: string }).error ?? "Could not suggest trade tags.");
+      const updated = body.lines ?? [];
+      if (updated.length > 0) {
+        const byId = new Map(updated.map((l) => [l.id, l]));
+        setSections((cur) =>
+          cur.map((s) => ({ ...s, lines: s.lines.map((l) => byId.get(l.id) ?? l) }))
+        );
+      }
+      setSuggestMessage(
+        updated.length > 0
+          ? `Tagged ${updated.length} line${updated.length === 1 ? "" : "s"}.`
+          : "No new tags suggested — nothing untagged matched a current trade preset."
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not suggest trade tags.");
+    } finally {
+      setSuggestingTags(false);
     }
   }
 
@@ -228,7 +297,7 @@ export function SowBuilder({ projectId }: Props) {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error ?? "Could not add section.");
-    setSections((cur) => [...cur, body.section as SowSectionWithLines]);
+    setSections((cur) => [...cur, body.section as SowSectionWithTradedLines]);
   }
 
   async function renameSection(sectionId: string, heading: string) {
@@ -267,13 +336,13 @@ export function SowBuilder({ projectId }: Props) {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error ?? "Could not add line.");
-    const line = body.line as SowLine;
+    const line = body.line as SowLineWithTrade;
     setSections((cur) =>
       cur.map((s) => (s.id === sectionId ? { ...s, lines: [...s.lines, line] } : s))
     );
   }
 
-  async function patchLine(line: SowLine, patch: Partial<SowLine>): Promise<SowLine> {
+  async function patchLine(line: SowLineWithTrade, patch: Partial<SowLineWithTrade>): Promise<SowLineWithTrade> {
     const res = await fetch(`/api/sow/lines/${line.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -281,7 +350,7 @@ export function SowBuilder({ projectId }: Props) {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error ?? "Could not update line.");
-    const updated = body.line as SowLine;
+    const updated = body.line as SowLineWithTrade;
     setSections((cur) =>
       cur.map((s) =>
         s.id === line.section_id
@@ -292,7 +361,7 @@ export function SowBuilder({ projectId }: Props) {
     return updated;
   }
 
-  async function deleteLine(line: SowLine) {
+  async function deleteLine(line: SowLineWithTrade) {
     setError(null);
     try {
       const res = await fetch(`/api/sow/lines/${line.id}`, { method: "DELETE" });
@@ -309,6 +378,17 @@ export function SowBuilder({ projectId }: Props) {
       setError(err instanceof Error ? err.message : "Could not remove line.");
     }
   }
+
+  // "Trade-scoped SOW extracts" round — which trade chips to offer
+  // alongside "Full" in the download group below: presets with >=1
+  // tagged line anywhere in the CURRENT revision (BUILD-SPEC.md's own
+  // wording). Computed as hooks (before the early returns below) so
+  // this component's hook order never changes across renders.
+  const taggedTrades = useMemo(() => distinctTaggedTrades(sections), [sections]);
+  const extractPresets = useMemo(
+    () => presets.filter((p) => taggedTrades.includes(p.name)),
+    [presets, taggedTrades]
+  );
 
   if (loading) {
     return <p className="text-body text-charcoal/50">Loading Scope of Works…</p>;
@@ -342,6 +422,11 @@ export function SowBuilder({ projectId }: Props) {
       {error && (
         <p className="border border-red-700/40 bg-red-50 px-4 py-2 text-body text-red-700">
           {error}
+        </p>
+      )}
+      {suggestMessage && (
+        <p className="border border-[#dcd6cc] bg-cream px-4 py-2 text-caption text-charcoal/70">
+          {suggestMessage}
         </p>
       )}
 
@@ -383,15 +468,46 @@ export function SowBuilder({ projectId }: Props) {
               {applyingTemplate ? "Applying…" : "Start from template"}
             </button>
           )}
-          {sow && (
-            <a
-              href={`/api/projects/${projectId}/sow/${sow.id}/pdf`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
+          {sow && isDraft && (
+            <button
+              type="button"
+              onClick={suggestTradeTags}
+              disabled={suggestingTags}
+              className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white disabled:opacity-60"
+              title="Auto-tag untagged room-section lines by clause label (e.g. 'WALL TILING —' -> Tiler)"
             >
-              Download PDF
-            </a>
+              {suggestingTags ? "Tagging…" : "Suggest trade tags"}
+            </button>
+          )}
+          {sow && (
+            <div className="flex items-center gap-1.5">
+              <a
+                href={`/api/projects/${projectId}/sow/${sow.id}/pdf`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
+                title={extractPresets.length > 0 ? "Download the full Scope of Works" : "Download PDF"}
+              >
+                {extractPresets.length > 0 ? "Full" : "Download PDF"}
+              </a>
+              {/* "Trade-scoped SOW extracts" round — one chip per preset
+                  with >=1 tagged line in this revision, each a condensed
+                  extract PDF (General Notes + Exclusions in full, every
+                  other section filtered to that trade's tagged lines —
+                  see lib/sow-trade-tags.ts's filterSectionsForTrade()). */}
+              {extractPresets.map((preset) => (
+                <a
+                  key={preset.name}
+                  href={`/api/projects/${projectId}/sow/${sow.id}/pdf?trade=${encodeURIComponent(preset.name)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="border border-sand bg-sand/15 px-3 py-2 text-caption text-charcoal transition-colors hover:bg-sand hover:text-white"
+                  title={`Download the ${preset.name} scope extract`}
+                >
+                  {preset.name}
+                </a>
+              ))}
+            </div>
           )}
           {isDraft ? (
             <button
@@ -436,6 +552,7 @@ export function SowBuilder({ projectId }: Props) {
                   <SectionBlock
                     section={section}
                     readOnly={!isDraft}
+                    presetNames={presets.map((p) => p.name)}
                     onRename={(heading) => renameSection(section.id, heading)}
                     onDelete={() => deleteSection(section.id, section.heading)}
                     onAddLine={(text, kind) => addLine(section.id, text, kind)}
@@ -480,7 +597,7 @@ function SowOutline({
   activeSectionId,
   onSelect,
 }: {
-  sections: SowSectionWithLines[];
+  sections: SowSectionWithTradedLines[];
   activeSectionId: string | null;
   onSelect: (sectionId: string) => void;
 }) {
@@ -605,19 +722,22 @@ function AddSectionForm({ onAdd }: { onAdd: (heading: string) => Promise<void> }
 function SectionBlock({
   section,
   readOnly,
+  presetNames,
   onRename,
   onDelete,
   onAddLine,
   onPatchLine,
   onDeleteLine,
 }: {
-  section: SowSectionWithLines;
+  section: SowSectionWithTradedLines;
   readOnly: boolean;
+  /** "Trade-scoped SOW extracts" round — the trade `<select>`'s option list, threaded down to every LineRow. */
+  presetNames: string[];
   onRename: (heading: string) => Promise<void>;
   onDelete: () => void;
   onAddLine: (text: string, kind: SowLineKind) => Promise<void>;
-  onPatchLine: (line: SowLine, patch: Partial<SowLine>) => Promise<SowLine>;
-  onDeleteLine: (line: SowLine) => void;
+  onPatchLine: (line: SowLineWithTrade, patch: Partial<SowLineWithTrade>) => Promise<SowLineWithTrade>;
+  onDeleteLine: (line: SowLineWithTrade) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
 
@@ -662,6 +782,7 @@ function SectionBlock({
               key={line.id}
               line={line}
               readOnly={readOnly}
+              presetNames={presetNames}
               onPatch={(patch) => onPatchLine(line, patch)}
               onDelete={() => onDeleteLine(line)}
             />
@@ -725,19 +846,23 @@ function SectionHeadingEditor({
 /**
  * A single SOW line — same accumulate-locally / single-save-on-blur
  * pattern as components/estimate/EstimateView.tsx's LineRow, cut down
- * to the two fields a SOW line has (text, kind). Kind toggle acts
- * immediately (a single discrete click, not accumulated typing),
- * exactly like EstimateView's item/measurement link buttons.
+ * to the fields a SOW line has (text, kind, and — "Trade-scoped SOW
+ * extracts" round — trade). Kind/trade toggles act immediately (a
+ * single discrete click/select, not accumulated typing), exactly like
+ * EstimateView's item/measurement link buttons.
  */
 function LineRow({
   line,
   readOnly,
+  presetNames,
   onPatch,
   onDelete,
 }: {
-  line: SowLine;
+  line: SowLineWithTrade;
   readOnly: boolean;
-  onPatch: (patch: Partial<SowLine>) => Promise<SowLine>;
+  /** "Trade-scoped SOW extracts" round — the trade select's option list (current preset names) + blank ("— trade —", clears the tag). */
+  presetNames: string[];
+  onPatch: (patch: Partial<SowLineWithTrade>) => Promise<SowLineWithTrade>;
   onDelete: () => void;
 }) {
   const [draft, setDraft] = useState(line.text);
@@ -768,6 +893,16 @@ function LineRow({
     }
   }
 
+  /** "Trade-scoped SOW extracts" round — the compact trade select's onChange; an empty option value clears the tag (`trade: null`), same "explicit null clears" convention PATCH /api/sow/lines/[lineId] uses. */
+  async function setTrade(trade: string) {
+    setRowError(null);
+    try {
+      await onPatch({ trade: trade || null });
+    } catch (err) {
+      setRowError(err instanceof Error ? err.message : "Could not update this line's trade tag.");
+    }
+  }
+
   if (readOnly) {
     return (
       <div className="flex items-start gap-3 px-4 py-2">
@@ -780,9 +915,13 @@ function LineRow({
         >
           {KIND_LABEL[line.kind]}
         </span>
-        <p className={clsx("text-body text-charcoal", line.kind === "note" && "italic")}>
+        <p className={clsx("flex-1 text-body text-charcoal", line.kind === "note" && "italic")}>
           {line.text}
         </p>
+        {/* "Trade-scoped SOW extracts" round — small sand chip, read-only display only (no select once the SOW is issued). */}
+        {line.trade && (
+          <span className="mt-0.5 shrink-0 bg-sand px-2 py-0.5 text-caption text-white">{line.trade}</span>
+        )}
       </div>
     );
   }
@@ -801,6 +940,37 @@ function LineRow({
         <option value="inclusion">Inclusion</option>
         <option value="exclusion">Exclusion</option>
         <option value="note">Note</option>
+      </select>
+      {/* "Trade-scoped SOW extracts" round — compact trade select;
+          renders as a small sand chip once a value is set (BUILD-
+          SPEC's own "display as small sand chip when set"), a plain
+          muted outline while blank. */}
+      <select
+        value={line.trade ?? ""}
+        onChange={(e) => setTrade(e.target.value)}
+        title="Trade tag — drives which extract PDF this line appears in"
+        className={clsx(
+          "label-caps mt-1 w-28 shrink-0 border px-1.5 py-0.5 text-caption focus:outline-none",
+          line.trade
+            ? "border-sand bg-sand text-white"
+            : "border-[#c9c2b4] bg-transparent text-charcoal/40"
+        )}
+      >
+        <option value="">— trade —</option>
+        {/* A line tagged with a preset name that no longer exists
+            (renamed/deleted since tagging) still shows its actual
+            value here rather than silently rendering blank — the tag
+            itself is untouched either way (see migration
+            044_sow_trade_tags.sql's own comment for why `trade` isn't
+            a constrained lookup). */}
+        {line.trade && !presetNames.includes(line.trade) && (
+          <option value={line.trade}>{line.trade} (no longer a preset)</option>
+        )}
+        {presetNames.map((name) => (
+          <option key={name} value={name}>
+            {name}
+          </option>
+        ))}
       </select>
       <div className="flex-1">
         <input

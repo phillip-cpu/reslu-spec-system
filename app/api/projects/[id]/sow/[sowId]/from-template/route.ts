@@ -7,8 +7,11 @@ import {
   TRAILING_TEMPLATE_GROUPS,
   roomSectionTemplate,
 } from "@/lib/sow-templates";
+import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
+import { suggestTradeTag } from "@/lib/sow-trade-tags";
 import type { SowDocument, SowSectionWithLines } from "@/types";
 import type { ApplyTemplateInput, ApplyTemplateResponse } from "@/types/phase-12a-a";
+import type { ExportPresetRow } from "@/types/round-export-batch";
 
 /**
  * POST /api/projects/[id]/sow/[sowId]/from-template
@@ -32,6 +35,24 @@ import type { ApplyTemplateInput, ApplyTemplateResponse } from "@/types/phase-12
  * named clause groups (still followed by room sections unless
  * include_rooms is explicitly false) — lets a team member top up just
  * "Exclusions" on an existing SOW without re-adding everything else.
+ *
+ * "Trade-scoped SOW extracts" round: every ROOM section's lines are
+ * auto-tagged with a trade at insert time, via
+ * lib/sow-trade-tags.ts's suggestTradeTag() matched against the clause
+ * label each roomSectionTemplate() line already carries ("WALL TILING
+ * — ..." etc.) — see that function's own doc comment for the full
+ * heuristic. Deliberately scoped to ROOM sections only (not the
+ * Project Overview / General Notes / Site Management / Exclusions
+ * library groups above/below) — those are prose/boilerplate clauses,
+ * not per-trade line items, and have no clause-label prefix for the
+ * heuristic to match against anyway (see extractClauseLabel()'s own
+ * doc comment for why a naive whole-line keyword scan would risk
+ * false positives against e.g. General Notes — Compliance's
+ * "Waterproofing to all wet areas..." sentence). A line whose clause
+ * label doesn't match any keyword, or matches a trade with no
+ * currently-configured preset of that name, is inserted untagged
+ * (`trade: null`) — same as any other untagged line, filled later by
+ * the builder's "Suggest trade tags" action or hand-tagged directly.
  *
  * Team access (not admin-gated — a SOW isn't financial data, same as
  * every other SOW route).
@@ -107,6 +128,24 @@ export async function POST(
     roomNames = roomSectionHeadings((rooms ?? []).map((r) => r.name as string));
   }
 
+  // "Trade-scoped SOW extracts" round — current preset names, fetched
+  // once up-front (not per line) since every room section's lines are
+  // matched against the SAME list. Falls back to
+  // FALLBACK_EXPORT_PRESETS (same code-fallback GET
+  // /api/settings/export-presets itself uses) when the studio has
+  // never written an export_presets row — a fresh environment still
+  // gets Tiler/Plumber/Electrician-style auto-tagging on its very
+  // first "Start from template" run rather than silently tagging
+  // nothing.
+  const { data: presetsRow } = await supabase
+    .from("app_settings")
+    .select("value")
+    .eq("key", "export_presets")
+    .maybeSingle();
+  const presetNames = (
+    (presetsRow?.value as ExportPresetRow[] | undefined) ?? FALLBACK_EXPORT_PRESETS
+  ).map((p) => p.name);
+
   // Existing sections' max sort, so appended template sections land
   // after anything already there rather than colliding sort values.
   const { data: maxSortRow } = await supabase
@@ -118,10 +157,12 @@ export async function POST(
     .maybeSingle();
   let nextSort = (maxSortRow?.sort ?? 0) + 1;
 
+  // `isRoomSection` drives the auto-tag step below — see this route's
+  // own doc comment for why only room sections are auto-tagged.
   const templateSections = [
-    ...leadGroups.map((g) => SOW_TEMPLATE_LIBRARY[g]).filter(Boolean),
-    ...roomNames.map((name) => roomSectionTemplate(name)),
-    ...trailingGroups.map((g) => SOW_TEMPLATE_LIBRARY[g]).filter(Boolean),
+    ...leadGroups.map((g) => SOW_TEMPLATE_LIBRARY[g]).filter(Boolean).map((t) => ({ ...t, isRoomSection: false })),
+    ...roomNames.map((name) => ({ ...roomSectionTemplate(name), isRoomSection: true })),
+    ...trailingGroups.map((g) => SOW_TEMPLATE_LIBRARY[g]).filter(Boolean).map((t) => ({ ...t, isRoomSection: false })),
   ];
 
   if (templateSections.length === 0) {
@@ -149,6 +190,7 @@ export async function POST(
       text: line.text,
       kind: line.kind,
       sort: i + 1,
+      trade: template.isRoomSection ? suggestTradeTag(line.text, presetNames) : null,
     }));
     const { data: lines, error: linesError } = await supabase
       .from("sow_lines")

@@ -166,6 +166,15 @@ export default async function TradePage({
     // three-state encoding this cast mirrors.
     schedule_categories?: string[] | null;
     include_sow: boolean;
+    // "Trade-scoped SOW extracts" round — optional on this cast (not
+    // required) purely so this page still renders correctly against
+    // pre-round rows written before this field existed (column value
+    // simply undefined on old jsonb, same as any other new key added
+    // to a jsonb blob after rows already exist) — types/trade-doc-
+    // pack.ts's own DocumentPackChoices interface still declares it as
+    // always-present for every NEW pack, this cast is just defensive
+    // about OLD ones.
+    include_sow_trade?: string | null;
   } | null;
 
   const documentRows: TradeDocumentRow[] = [];
@@ -245,11 +254,31 @@ export default async function TradePage({
     if (pack.include_sow) {
       const latestSow = latestIssuedSow((sowRows ?? []) as SowDocument[]);
       if (latestSow) {
-        documentRows.push({
-          kind: "sow",
-          label: `Scope of Works (${latestSow.revision_label})`,
-          href: `/api/trade/${token}/documents/sow`,
-        });
+        // "Trade-scoped SOW extracts" round — prefer the booked
+        // trade's extract over the full document, but ONLY when that
+        // trade CURRENTLY has at least one tagged line in THIS latest
+        // issued revision (re-checked fresh here, every render — the
+        // pack only froze the DECISION "prefer this trade," never
+        // whether it has anything tagged; see
+        // types/trade-doc-pack.ts's `include_sow_trade` doc comment).
+        // No tagged lines (or no trade preference at all) falls back
+        // to the full SOW, unchanged from this round's starting
+        // behaviour.
+        let sowLabel = `Scope of Works (${latestSow.revision_label})`;
+        let sowHref = `/api/trade/${token}/documents/sow`;
+        if (pack.include_sow_trade) {
+          const { data: taggedSections } = await supabase
+            .from("sow_sections")
+            .select("id, sow_lines!inner(trade)")
+            .eq("sow_id", latestSow.id)
+            .eq("sow_lines.trade", pack.include_sow_trade)
+            .limit(1);
+          if ((taggedSections ?? []).length > 0) {
+            sowLabel = `Scope of Works — ${pack.include_sow_trade} extract (${latestSow.revision_label})`;
+            sowHref = `/api/trade/${token}/documents/sow?trade=${encodeURIComponent(pack.include_sow_trade)}`;
+          }
+        }
+        documentRows.push({ kind: "sow", label: sowLabel, href: sowHref });
       }
     }
   }

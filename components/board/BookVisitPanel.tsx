@@ -297,6 +297,25 @@ export function BookVisitPanel({
     [presets]
   );
 
+  /**
+   * "Trade-scoped SOW extracts" round — the currently-selected
+   * contact's matched trade preset NAME, via the SAME
+   * `pickPresetForContactCategory()` resolution the Schedule auto-pick
+   * effect already uses (lib/export-presets.ts). Deliberately its OWN
+   * memo, not a re-read of `schedulePresetName` state — that state can
+   * drift away from "the contact's actual trade" the moment a staff
+   * member uses the Schedule row's own "Change" affordance to pick a
+   * different preset/full-schedule for the SCHEDULE specifically
+   * (BUILD-SPEC.md's `include_sow_trade` is about the booked trade
+   * itself, not whatever the Schedule checkbox currently shows) — so
+   * this recomputes independently, live, from `contactId` alone,
+   * every render.
+   */
+  const bookedTradeName = useMemo(() => {
+    const contactCategory = contactId ? contactCategories.find((c) => c.id === contactId)?.category ?? null : null;
+    return pickPresetForContactCategory(presets, contactCategory)?.name ?? null;
+  }, [contactId, contactCategories, presets]);
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!phaseId || !startDate || !endDate) {
@@ -338,6 +357,14 @@ export function BookVisitPanel({
             include_plans: includePlans,
             ...(includeSchedule ? { schedule_categories: scheduleCategories } : {}),
             include_sow: includeSow,
+            // "Trade-scoped SOW extracts" round — freezes WHICH trade's
+            // extract to prefer, not whether it currently has any
+            // tagged lines (re-checked fresh at render time — see
+            // types/trade-doc-pack.ts's own doc comment on this field).
+            // Only meaningful when SOW itself is included; still always
+            // present (never key-absent) per this field's plain-nullable
+            // shape, same as include_plans/include_sow.
+            include_sow_trade: includeSow ? bookedTradeName : null,
           }
         : undefined;
       const result = await onBook({
@@ -562,7 +589,18 @@ export function BookVisitPanel({
                       className="h-3.5 w-3.5"
                     />
                     <span>
-                      Scope of Works
+                      {/* "Trade-scoped SOW extracts" round — shows which
+                          document the trade will actually end up seeing
+                          (BUILD-SPEC.md's own example: "Scope of works —
+                          Carpentry extract"). This is a best-effort
+                          preview only — whether that trade actually HAS
+                          any tagged lines in the latest issued SOW (and
+                          therefore whether an extract or the full
+                          document is what's ultimately served) is
+                          re-checked fresh on the trade's own booking page,
+                          not here — see types/trade-doc-pack.ts's
+                          `include_sow_trade` doc comment. */}
+                      {bookedTradeName ? `Scope of Works — ${bookedTradeName} extract` : "Scope of Works"}
                       {sowAvailability.hasIssuedSow ? (
                         ` (${sowAvailability.latestLabel})`
                       ) : (

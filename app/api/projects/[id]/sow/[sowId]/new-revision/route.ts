@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { nextRevisionLabel } from "@/lib/sow";
-import type { SowDocument, SowLine, SowSection } from "@/types";
+import type { SowDocument, SowSection } from "@/types";
+import type { SowLineWithTrade } from "@/types/sow-trade-tags";
 
 /**
  * POST /api/projects/[id]/sow/[sowId]/new-revision
@@ -92,7 +93,7 @@ export async function POST(
     );
   }
 
-  for (const section of (sourceSections ?? []) as (SowSection & { sow_lines: SowLine[] })[]) {
+  for (const section of (sourceSections ?? []) as (SowSection & { sow_lines: SowLineWithTrade[] })[]) {
     const { data: newSection, error: newSectionError } = await supabase
       .from("sow_sections")
       .insert({ sow_id: newSow.id, heading: section.heading, sort: section.sort })
@@ -114,6 +115,15 @@ export async function POST(
           text: l.text,
           kind: l.kind,
           sort: l.sort,
+          // "Trade-scoped SOW extracts" round — carry the trade tag
+          // forward into the new revision. Without this, every "New
+          // revision" would silently strip every trade tag the team
+          // had built up (via auto-suggest or hand-tagging) on the
+          // issued source SOW, defeating the whole point of tagging —
+          // a SOW is revised repeatedly over a project's life, and tags
+          // are exactly the kind of per-line metadata that should
+          // survive a clone the same way `text`/`kind`/`sort` already do.
+          trade: l.trade ?? null,
         }))
       );
       if (linesError) {
