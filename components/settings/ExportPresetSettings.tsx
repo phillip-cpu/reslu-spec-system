@@ -90,7 +90,12 @@ export function ExportPresetSettings({ initialPresets, categories, canEdit }: Pr
 
   function add(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim() || prefixes.length === 0) return;
+    // Categories are OPTIONAL — a preset with none is still a valid,
+    // fully-usable trade TAG (SOW line tagging, lib/sow-trade-tags.ts)
+    // even though it drives nothing in the export/order-by features
+    // below, which are the only two consumers that actually care about
+    // `.prefixes`.
+    if (!name.trim()) return;
     const cleanedCategories = parseContactCategories(contactCategories);
     save([
       ...rows,
@@ -133,11 +138,9 @@ export function ExportPresetSettings({ initialPresets, categories, canEdit }: Pr
   function togglePrefixOnRow(index: number, prefix: string) {
     const row = rows[index];
     const has = row.prefixes.includes(prefix);
+    // Unchecking down to zero categories is allowed — that just turns
+    // this preset into a pure trade tag (see cleanPresetRow's comment).
     const nextPrefixes = has ? row.prefixes.filter((p) => p !== prefix) : [...row.prefixes, prefix];
-    if (nextPrefixes.length === 0) {
-      setError("A preset needs at least one category.");
-      return;
-    }
     save(rows.map((r, i) => (i === index ? { ...r, prefixes: nextPrefixes } : r)));
   }
 
@@ -234,14 +237,16 @@ export function ExportPresetSettings({ initialPresets, categories, canEdit }: Pr
             </label>
             <button
               type="submit"
-              disabled={saving || !name.trim() || prefixes.length === 0}
+              disabled={saving || !name.trim()}
               className="bg-nearblack px-5 py-2 text-subhead text-white hover:bg-charcoal disabled:opacity-60"
             >
               {saving ? "Adding…" : "Add preset"}
             </button>
           </div>
           <div>
-            <span className="label-caps mb-1 block">Categories</span>
+            <span className="label-caps mb-1 block">
+              Categories <span className="normal-case text-charcoal/40">(optional — leave blank for a trade tag with no export/order-by mapping)</span>
+            </span>
             <div className="flex flex-wrap gap-2">
               {categories.map((c) => {
                 const checked = prefixes.includes(c.prefix);

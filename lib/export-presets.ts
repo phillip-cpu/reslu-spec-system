@@ -46,7 +46,15 @@ export function cleanPresetRow(row: {
   const prefixes = row.prefixes
     .filter((p): p is string => typeof p === "string" && p.trim() !== "")
     .map((p) => p.trim().toUpperCase());
-  if (prefixes.length === 0) return null;
+  // Zero prefixes is a valid preset now (not just an in-progress add) —
+  // a preset used ONLY as a trade tag for SOW line tagging (lib/
+  // sow-trade-tags.ts) has no reason to also carry an item-category
+  // mapping meant for the unrelated export/order-by features. Every
+  // consumer of `.prefixes` elsewhere (ExportDialog's applicablePresets
+  // filter, lib/order-by.ts's category lookup) already degrades safely
+  // on an empty array — `.some()`/`.includes()` on `[]` is just always
+  // false, so a tag-only preset simply never surfaces as an export/
+  // order-by chip, which is the correct behaviour, not a bug.
 
   // contact_categories is OPTIONAL — absent/not-an-array simply means
   // "this preset doesn't declare an applies-to category," not a

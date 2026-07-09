@@ -44,10 +44,11 @@ export async function GET() {
  * gating — studio-wide configuration, not per-project data). Body:
  * PutExportPresetsInput — { presets: [{ name, prefixes[] }] } — full
  * replace (upsert onto the single app_settings row). Every row needs
- * a non-empty trimmed name and at least one prefix; prefixes are
- * upper-cased and de-duped (lib/export-presets.ts's cleanPresetRow) so
- * "tw" and "TW" in the editor never produce two silently-different
- * category filters.
+ * a non-empty trimmed name; prefixes are optional (an empty array is a
+ * pure trade tag with no export/order-by mapping — see
+ * lib/export-presets.ts's cleanPresetRow comment), upper-cased and
+ * de-duped when present so "tw" and "TW" in the editor never produce
+ * two silently-different category filters.
  */
 export async function PUT(request: NextRequest) {
   const supabase = await createClient();
@@ -76,7 +77,7 @@ export async function PUT(request: NextRequest) {
     const clean = cleanPresetRow(row);
     if (!clean) {
       return NextResponse.json(
-        { error: "Every preset needs a name and at least one category" },
+        { error: "Every preset needs a name" },
         { status: 400 }
       );
     }
