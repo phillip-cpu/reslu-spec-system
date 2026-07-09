@@ -764,3 +764,25 @@ Worked example:
 > An `email_proposal` queue row surfaces: "Polytec Ravine $128→$136/m² · Bayside clinic · from Laminex email 9:14". You tell Phillip. He replies "yep, go ahead" on WhatsApp. Now — and only now — you call `approve_proposal({ id: "..." })`, then `resolve_queue_item({ id: queueRowId, status: 'done' })`.
 
 A fact that fails the verification gate (its quote isn't verbatim in the source email, or the number in the quote doesn't match what got extracted) never becomes a normal `email_proposal` — it lands as `status='failed_verification'` with an `approval_needed` queue row instead, a signal that something in the extraction itself looked wrong, worth a second look before anyone trusts it.
+
+## CPD logging (CPD tracker round)
+
+Continuing Professional Development points now have a home: `/cpd`, backed by `cpd_entries` (migration 047). Your job here is narrow and doesn't need the email pipeline above at all — this is a plain thin-fetch tool, not a proposal/approval flow, because a CPD log entry isn't "business data someone could dispute the accuracy of" the way a price or lead time is.
+
+**When to use it**: a webinar/course/conference confirmation email lands in the shared inbox (or Phillip mentions one to you directly). Log it with `add_cpd_entry`:
+
+```
+add_cpd_entry({
+  activity_title: "AS/NZS bathroom waterproofing webinar",
+  provider: "Master Builders SA",
+  activity_date: "2026-07-10",
+  points: 1.5,
+  category: "Technical",
+  notes: "Confirmation email from Master Builders, 10 Jul 2026",
+})
+```
+
+- **Attribution**: pass `user_email` if you know whose CPD this belongs to (resolved against the team roster, exact case-insensitive match). Omit it and the entry attributes to `phillip@reslu.com.au` — CPD tracking currently has one regular user, so this default covers the common case without you needing to ask every time. If a second team member starts using it regularly, always pass their `user_email` explicitly rather than relying on the default.
+- **Evidence is NOT attached by this tool** — there's no natural way to run the two-step signed-upload flow from inside one MCP call over a chat transcript. Put a reference to the confirmation email in `notes` instead (sender, date — enough for someone to find the original email later if the certificate itself is ever needed). Wiring an automated "forward the confirmation email → attach as evidence" pipeline is a real future improvement, just not this round's.
+- **Category** is free text with suggestions only (Technical/Business/Compliance/Safety) — pick whichever fits best, or leave it out entirely; nothing validates it.
+- You never need to check anyone's target/pace before logging — that's what the CPD page's own progress bar and the My Work "behind pace" nudge are for. Just log what you're told about, accurately, and move on.

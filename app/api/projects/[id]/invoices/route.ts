@@ -266,5 +266,13 @@ export async function POST(
 }
 
 function roundToCents(value: number): number {
-  return Math.round((value + Number.EPSILON) * 100) / 100;
+  // Same fix as lib/client-invoices.ts's roundHalfUpCents() — a fixed
+  // Number.EPSILON nudge doesn't correct the float representation
+  // error introduced BY the *100 multiplication itself (e.g. 40.15*100
+  // can land on 4014.999999999999). .toFixed(8) resolves that noise
+  // via a correctly-rounded decimal conversion before the real
+  // half-up rounding. Found via review of the client-invoices round,
+  // which copied this function verbatim — same bug existed here too.
+  const cents = Number((value * 100).toFixed(8));
+  return Math.round(cents) / 100;
 }

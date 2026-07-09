@@ -1,66 +1,85 @@
-<!--
-  PLACEHOLDER — replace with reslu-site/emails/visit-confirmation.html
-  per docs/RESLU-Spec-Visit-Emails-Brief.md. See emails/README.md for
-  the exact install step. This file exists only so the send pipeline
-  (trigger -> guard -> window check -> Resend -> log) is testable
-  end to end before the real brand template lands.
--->
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Your site visit is booked — RESLU</title>
-  </head>
-  <body style="margin:0; padding:0; background-color:#f4f1ea;">
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f1ea;">
-      <tr>
-        <td align="center" style="padding:32px 16px;">
-          <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff; max-width:600px; width:100%;">
-            <tr>
-              <td style="padding:12px 32px; background-color:#fff3cd; border:1px solid #f0c36d; font-family:Arial, sans-serif; font-size:12px; color:#7a5c00;">
-                PLACEHOLDER TEMPLATE — replace with reslu-site/emails/visit-confirmation.html (see emails/README.md).
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:0;">
-                <img src="https://www.reslu.com.au/email-packet.jpg" width="600" alt="RESLU" style="display:block; width:100%; height:auto; border:0;" />
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:32px; font-family:Arial, sans-serif; color:#1a1a1a;">
-                <p style="margin:0 0 16px 0; font-size:16px; line-height:1.5;">
-                  Hi {{first_name}} {{last_name}},
-                </p>
-                <p style="margin:0 0 16px 0; font-size:16px; line-height:1.5;">
-                  Your site visit with RESLU is confirmed.
-                </p>
-                <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 16px 0; width:100%;">
-                  <tr>
-                    <td style="padding:4px 0; font-size:16px; font-weight:bold;">Date</td>
-                    <td style="padding:4px 0; font-size:16px;">{{visit_date}}</td>
-                  </tr>
-                  <tr>
-                    <td style="padding:4px 0; font-size:16px; font-weight:bold;">Time</td>
-                    <td style="padding:4px 0; font-size:16px;">{{visit_time}}</td>
-                  </tr>
-                  <tr>
-                    <td style="padding:4px 0; font-size:16px; font-weight:bold;">Suburb</td>
-                    <td style="padding:4px 0; font-size:16px;">{{suburb}}</td>
-                  </tr>
-                </table>
-                <p style="margin:0 0 16px 0; font-size:16px; line-height:1.5;">
-                  If anything changes on your end, give Phillip a call on {{phillip_phone}}.
-                </p>
-                <p style="margin:0; font-size:16px; line-height:1.5;">
-                  Warm regards,<br />
-                  The RESLU team
-                </p>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  </body>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="x-apple-disable-message-reformatting">
+<title>Your visit is confirmed</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&display=swap" rel="stylesheet">
+</head>
+<body style="margin:0; padding:0; background-color:#EDE8DE;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#EDE8DE;">
+<tr>
+<td align="center" style="padding:40px 16px 48px;">
+<table role="presentation" width="560" cellpadding="0" cellspacing="0" border="0" style="max-width:560px; width:100%;">
+
+<tr>
+<td align="center" style="padding:0 0 18px;">
+<img src="https://www.reslu.com.au/reslu-logo.png" width="96" alt="RESLU" style="display:block; width:96px; height:auto; border:0;">
+</td>
+</tr>
+
+<tr>
+<td style="background-color:#faf6ec; border:1px solid #e6dfcf; border-radius:1px; padding:44px;">
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td style="border-bottom:1px solid #1A1A1A; padding:0 0 10px; font-family:'Cormorant Garamond', Georgia, 'Times New Roman', serif; font-weight:300; font-size:20px; color:#1A1A1A;">Studio Visit</td>
+<td align="right" style="border-bottom:1px solid #1A1A1A; padding:0 0 10px; font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight:300; font-size:10px; letter-spacing:3px; color:#313131;">RESLU &middot; ADELAIDE</td>
+</tr>
+</table>
+
+<div style="font-family:'Cormorant Garamond', Georgia, 'Times New Roman', serif; font-weight:300; font-size:25px; line-height:1.4; color:#1A1A1A; padding:24px 0 8px;">{{first_name}}, your visit is <em>confirmed</em>.</div>
+
+<div style="font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight:300; font-size:14px; line-height:1.7; color:#313131; padding:0 0 22px;">It was good to talk. We have set time aside at the studio to sit down properly and talk through what you are hoping to build. A short questionnaire will reach you a couple of days before your visit; your answers will be printed and on the table when you arrive.</div>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #e6dfcf;">
+<tr>
+<td width="80" style="width:80px; padding:12px 0; border-bottom:1px solid #e6dfcf; font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight:300; font-size:10px; letter-spacing:3px; color:#313131;">WHEN</td>
+<td style="padding:12px 0; border-bottom:1px solid #e6dfcf; font-family:'Caveat', 'Segoe Script', 'Bradley Hand', cursive; font-weight:600; font-size:23px; line-height:1.2; color:#274690;">{{visit_date}} &middot; {{visit_time}}</td>
+</tr>
+<tr>
+<td width="80" style="width:80px; padding:12px 0; border-bottom:1px solid #e6dfcf; font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight:300; font-size:10px; letter-spacing:3px; color:#313131;">WHERE</td>
+<td style="padding:12px 0; border-bottom:1px solid #e6dfcf; font-family:'Caveat', 'Segoe Script', 'Bradley Hand', cursive; font-weight:600; font-size:23px; line-height:1.2; color:#274690;">The Studio · 219 Sturt Street</td>
+</tr>
+<tr>
+<td width="80" style="width:80px; padding:12px 0; border-bottom:1px solid #e6dfcf; font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight:300; font-size:10px; letter-spacing:3px; color:#313131;">WITH</td>
+<td style="padding:12px 0; border-bottom:1px solid #e6dfcf; font-family:'Caveat', 'Segoe Script', 'Bradley Hand', cursive; font-weight:600; font-size:23px; line-height:1.2; color:#274690;">Phillip</td>
+</tr>
+</table>
+
+<div style="padding:18px 0 0;">
+<a href="{{calendar_link}}" style="font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight:300; font-size:10px; letter-spacing:3px; color:#1A1A1A; text-decoration:underline; text-underline-offset:3px;">ADD TO CALENDAR</a>
+</div>
+
+<div style="font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight:300; font-size:13px; line-height:1.7; color:#313131; padding:20px 0 4px;">Need to move it? Reply to this email or call {{phillip_phone}}.</div>
+
+<div style="font-family:'Caveat', 'Segoe Script', 'Bradley Hand', cursive; font-weight:500; font-size:29px; line-height:1.2; color:#274690; padding:14px 0 0;">Phillip &mdash; RESLU</div>
+
+</td>
+</tr>
+
+<tr>
+<td align="center" style="padding:30px 0 0;">
+<img src="https://www.reslu.com.au/email-packet.jpg" width="300" alt="Your folded project brief, embossed with the RESLU mark" style="display:block; width:300px; max-width:100%; height:auto; border:0;">
+</td>
+</tr>
+<tr>
+<td align="center" style="padding:12px 0 0; font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight:300; font-size:10px; letter-spacing:3px; color:#313131;">YOUR BRIEF, ON FILE</td>
+</tr>
+
+<tr>
+<td align="center" style="padding:34px 0 0; font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight:300; font-size:11px; letter-spacing:1px; line-height:1.9; color:#313131;">
+RESLU &middot; Design &amp; Build Studio<br>
+219 Sturt Street, Adelaide SA 5000 &middot; BLD 299219<br>
+One project. One team. One standard.
+</td>
+</tr>
+
+</table>
+</td>
+</tr>
+</table>
+</body>
 </html>

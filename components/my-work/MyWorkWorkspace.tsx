@@ -34,7 +34,17 @@ const KIND_LABEL: Record<MyWorkItem["kind"], string> = {
   // round's own designated file list, which is exactly why it was
   // missed.
   ordering_due: "Order by",
+  // CPD tracker round — pro-rata pace nudge (GET /api/my-work source
+  // #10). Additive entry, same shape as every other kind here.
+  cpd_nudge: "CPD",
 };
+
+/** project is null for leads (pre-project), Office tasks (global board), AND the CPD nudge (no project concept at all) — this small lookup picks the right fallback chip label for each, replacing what used to be a two-way ternary before cpd_nudge existed. */
+function projectlessChipLabel(kind: MyWorkItem["kind"]): string {
+  if (kind === "office_task") return "Office";
+  if (kind === "cpd_nudge") return "CPD";
+  return "Lead";
+}
 
 /**
  * Bug fix, 8 July 2026: was `toLocaleDateString("en-AU", { day:
@@ -171,13 +181,13 @@ function ItemRow({ item, overdue }: { item: MyWorkItem; overdue: boolean }) {
                 {item.project.alias && <span className="text-charcoal/35"> · {item.project.alias}</span>}
               </span>
             )}
-            {/* project is null for both leads (pre-project) and Phase 13
-                Office tasks (global board, no project at all) — the
-                fallback chip distinguishes the two rather than always
-                saying "Lead". */}
+            {/* project is null for leads (pre-project), Phase 13 Office
+                tasks (global board), and the CPD nudge (no project
+                concept) — projectlessChipLabel() picks the right
+                fallback chip rather than always saying "Lead". */}
             {!item.project && (
               <span className="label-caps shrink-0 border border-[#c9c2b4] px-1.5 py-0.5 !text-charcoal/50">
-                {item.kind === "office_task" ? "Office" : "Lead"}
+                {projectlessChipLabel(item.kind)}
               </span>
             )}
             <span className="label-caps shrink-0 !text-sand">{KIND_LABEL[item.kind]}</span>

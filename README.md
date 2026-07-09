@@ -902,6 +902,220 @@ install; an existing environment just needs the one new file run).
   frozen at booking time) — otherwise it falls back to the full SOW,
   same as before this round.
 
+## Client invoicing — phase 1: design fees (migration 046)
+
+BUILD-SPEC.md "Phillip's ideas list — 6 July 2026" item 5: branded tax
+invoice PDFs, numbered, GST-compliant, emailed with the PDF attached.
+Money IN (RESLU billing its own client) — deliberately separate from
+the pre-existing supplier **Invoices** queue (money OUT, trade bills),
+which is untouched by this round. Table `client_invoices` (migration
+`046_client_invoices.sql`) — Step 2 above covers applying it
+automatically for a fresh install; an existing environment just needs
+the one new migration file run.
+
+**On-machine setup steps (in order):**
+
+1. **Run migration 046** (via the Supabase SQL editor, or your usual
+   migration runner — see Step 2 above). This also widens
+   `email_sends.record_type`'s check constraint to accept
+   `'client_invoice'` (a small, additive change — nothing about the
+   existing site-visit email rows changes).
+2. **Enter real bank details** — Settings -> **"Client invoicing — bank
+   details"** (admin only). Account name, BSB, account number. This is
+   **not pre-filled with anything** — until you save real values here,
+   every invoice PDF prints "Bank details not configured" instead of a
+   payment panel. Nothing in this codebase ever invents/guesses a bank
+   account number.
+3. **`RESEND_API_KEY`** — reused from the site-visit lifecycle emails
+   feature (see below); invoice sends use the same key with a different
+   from-address (`RESLU <accounts@reslu.com.au>`). If you haven't set
+   this up yet, invoice "Send" will 503 with a clear message until you
+   do — the invoice itself still gets created/PDF-previewed fine.
+4. **`STRIPE_SECRET_KEY`** (optional) — only needed if you want the
+   per-invoice "Create payment link" button. Creating the Stripe
+   account and generating this key is entirely your own task (never
+   automated by Claude/Aria — it's a financial account). See
+   `.env.local.example`'s own comment block for the exact env var and
+   what it unlocks. Bank transfer remains the standard payment method
+   either way; Stripe is an optional add-on for small (design-fee-sized)
+   invoices only.
+
+**How it works day-to-day:**
+
+- On a project's **Invoices** tab, the new **"Client invoices — money
+  in"** section sits above the existing **"Supplier invoices — money
+  out"** section (same page, clearly separated headings so the two
+  directions of money are never confused).
+- **New invoice**: pick design fee/other, line items (description +
+  amount ex GST, add/remove rows), due days. Client name/email/address
+  prefill from the project but are stored as the invoice's OWN
+  snapshot — editing the project's client details later never rewrites
+  an already-created invoice. GST/subtotal/total are always computed
+  server-side (`lib/client-invoices.ts`), never trusted from the
+  browser.
+- **Numbering**: `{job_number}-{seq}` (e.g. `026-01`) for a project with
+  a job number (see migration `028_job_numbers.sql`), or `GEN-{seq}` for
+  a project without one / no project at all. A voided invoice's number
+  is never reissued.
+- **Preview PDF** works on a draft (no send required) — useful for a
+  final check before emailing.
+- **Send** emails the branded PDF (attached directly, not linked) via
+  Resend and flips the invoice to `sent`. Unlike the site-visit
+  lifecycle emails, invoice sends are **not** restricted to the 7am-7pm
+  Adelaide window — an admin-triggered send goes out immediately.
+- **Mark paid** / **Void** are manual, explicit actions — MYOB stays the
+  ledger of record (manual entry, no API sync in phase 1, per BUILD-
+  SPEC.md DECISIONS).
+- **Create payment link** (only shown when `STRIPE_SECRET_KEY` is set)
+  creates a Stripe Payment Link for the invoice's exact total and turns
+  on the PDF/email's "Pay online" button. Never created automatically.
+
+**Deliberately out of scope for phase 1** (documented, not forgotten):
+a global cross-project `/invoices` list (project-scoped only for now),
+progress-claim/estimate-driven line item generation (manual entry
+only), and MYOB API sync (manual entry stays the process).
+
+## CPD tracker (migration 047)
+
+BUILD-SPEC.md "CPD point tracker" — tracks Continuing Professional
+Development points per team member, per licence year. That section's
+own placeholders (exact annual target, licence-year start month, CBS
+category split) were never resolved to real regulatory numbers, so
+this ships with sensible, **admin-editable** defaults instead of a
+guess: **12 points/year, licence year starting July**. Table
+`cpd_entries` (migration `047_cpd.sql`) — Step 2 above covers applying
+it automatically for a fresh install; an existing environment just
+needs the one new migration file run.
+
+**On-machine setup steps:**
+
+1. **Run migration 047** (Supabase SQL editor, or your usual migration
+   runner). Nothing else is required — unlike the client invoicing
+   round's bank details, CPD ships with working defaults straight away
+   (12 points/July start), so there's no "not configured yet" state to
+   fill in before the page is useful.
+2. **Adjust the defaults if they're wrong** — Settings -> **"CPD"**
+   (admin only): annual target (points) and licence year start month.
+   Applies studio-wide; there is no per-person target in this version
+   (see `lib/cpd.ts`'s own doc comment for the extension point a future
+   round would need).
+
+**How it works day-to-day:**
+
+- **`/cpd`** (sidebar, between Library and Address Book) — every team
+  member tracks their own entries: date, activity, provider, points,
+  category (free text, with suggestions), optional evidence upload
+  (certificate/confirmation email/screenshot — private `assets` bucket,
+  signed URLs), optional notes. One combined add/edit form (mobile-
+  friendly), edit/delete your own entries.
+- **Header progress**: "`{points-to-date} / {target} points · Licence
+  year ends {date}`", a sand progress bar that fills fully (and shows
+  "Target reached") once you're at or over target for the current
+  licence year.
+- **Admin "All team" toggle**: switches the entries list to every team
+  member's entries, grouped by person with their own mini progress bar
+  each — the admin-only view for checking the whole studio's compliance
+  at a glance.
+- **Download CSV**: builds a CSV **client-side** from whatever's
+  currently loaded (your own entries, or the whole team if the toggle
+  is on) — audit-friendly columns (date, activity, provider, category,
+  points, notes, logged by, evidence on file). **PDF export is
+  deliberately deferred** to a future round.
+- **My Work nudge**: if your CPD points-to-date fall behind a
+  straight-line pro-rata pace toward the annual target (only checked
+  once you're 2+ months into the licence year, so a fresh year never
+  nags early), one gentle line appears on `/my-work` — "CPD: 4 / 12
+  points — behind pace" — linking straight to `/cpd`. Per-user, not
+  admin-gated.
+- **Aria**: logs CPD entries from webinar/course confirmation emails via
+  the `add_cpd_entry` MCP tool — see `docs/ARIA.md`'s "CPD logging"
+  section. Evidence attachment via that path is deferred (no automated
+  "forward confirmation email → attach evidence" pipeline yet); Aria
+  notes the confirmation email's existence in the entry's `notes`
+  field instead.
+
+**Monday.com CPD board (seed note):** RESLU previously tracked CPD on a
+Monday.com board (board id `5028780272`). A one-off import script to
+pull that board's history into `cpd_entries` is **deferred** — at the
+current volume (a handful of entries per person per year), re-entering
+the recent history by hand into `/cpd` (or asking Aria to log the
+handful of confirmation emails still in the inbox via `add_cpd_entry`)
+is faster than writing and testing a one-off Monday API import script.
+Revisit this if/when CPD tracking is rolled out to more team members
+and the backlog grows large enough to make manual entry impractical.
+
+**Deliberately out of scope for v1** (documented, not forgotten):
+per-user annual target override (one studio-wide target for everyone),
+a fixed CBS category list (free text with suggestions instead), PDF
+export, the Monday board import script above, and browsing PAST
+licence years — `/cpd` always shows the CURRENT window only (computed
+fresh from today's date + the licence-year start month); there is no
+year picker yet. A past year's entries still exist in `cpd_entries`
+(nothing is deleted), they're just not surfaced in the UI until a
+future round adds that view.
+
+## Lead flow (migration 048)
+
+`docs/RESLU-lead-flow-brief.md` + `docs/DESIGNER-NOTES.md`: wires the
+designer-built "paper card" client journey into the Site-visit
+lifecycle emails machinery above — real, brand-approved
+`visit-confirmation.html`/`visit-reminder.html` templates (superseding
+the r15 placeholders that shipped with that round) and a new
+interactive `project-brief.html` pre-visit questionnaire, all staged
+in `emails/`. See `docs/API.md`'s "Lead flow" section for the full
+endpoint/mechanics write-up; this section covers on-machine steps only.
+
+**BUILD-SPEC.md note:** this round's task brief also names "BUILD-
+SPEC.md section 'Lead flow package'" as a source. No file named
+`BUILD-SPEC.md` exists in this working copy — checked before writing
+this. `docs/RESLU-lead-flow-brief.md` + `docs/DESIGNER-NOTES.md`'s own
+CORRECTIONS section were followed as the sole authoritative brief
+instead, flagged here rather than silently deviating.
+
+**On-machine steps:**
+
+1. **Run migration 048** (Step 2 above covers this for a fresh
+   install; an existing environment just needs the one new file run).
+2. **Add the middleware allowlist line** — `lib/supabase/middleware.ts`
+   is protected/out of this round's edit boundary. Without this one
+   addition, `/brief/[token]` and `/api/brief-submit/[token]` are
+   redirected to `/login` before they ever run (both routes are fully
+   built and correct otherwise). Add, alongside the existing
+   `/trade`/`/api/trade` lines in `isPublicPath`:
+   ```ts
+   pathname.startsWith("/brief") ||
+   pathname.startsWith("/api/brief-submit") ||
+   ```
+3. **Nothing else changes for `RESEND_API_KEY`** — same key, same
+   verified domain as the existing Site-visit lifecycle emails setup
+   above. The one change is the FROM address itself: lead-visit emails
+   (both templates, for BOTH lead site visits and project
+   client_events) now send as `Aria — RESLU <aria@reslu.com.au>`
+   (previously `Phillip — RESLU <visits@reslu.com.au>`) — see
+   `.env.local.example`'s Resend section for the full note. Reply-To is
+   unchanged (`phillip@reslu.com.au`).
+
+**Reminder cron window:** the existing `vercel.json` cron line for
+`/api/visit-emails/run` (see the Site-visit lifecycle emails section
+above — unchanged, no edit needed) now drives TWO different reminder
+windows inside that one route: LEAD site visits fire ~2 days out
+("the Adelaide day two days from today" — the closest whole-day
+approximation a once-daily cron can give to the brief's "48 hours
+before the visit"), while project client_events keep firing the day
+before, exactly as before this round. See `app/api/visit-emails/run/
+route.ts`'s own header comment for the full reasoning.
+
+**Everything else is already wired up** once the migration is run and
+the middleware line lands: `PATCH /api/leads/[id]` / `POST /api/leads`
+attach `invite.ics` + `{{calendar_link}}` to every confirmation send
+and bump `visit_ics_sequence` on a genuine reschedule; the reminder
+sweep mints each lead's `/brief/[token]` link on first need and
+attaches its own `invite.ics`; `POST /api/brief-submit/[token]` stores
+the client's answers straight onto the lead record and surfaces a
+"Brief submitted — {lead}" item on the Daily Brief; `LeadDetailPanel`
+renders the submitted answers read-only; moving a lead to "Lead Lost"
+clears its follow-up date and cancels any still-pending reminder.
+
 ## Monday.com and Gmail integrations
 
 Both are optional and dormant until configured — the app works fully

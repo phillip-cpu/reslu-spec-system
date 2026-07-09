@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { LEAD_STAGES, type Lead, type MoveLeadStageInput } from "@/types";
+import { cancelPendingSends } from "@/lib/visit-emails";
 
 export const runtime = "nodejs";
 
@@ -21,6 +22,18 @@ export const runtime = "nodejs";
  * is also independently fetchable via GET /api/leads/[id]/history
  * (used by the detail panel on open/refresh, when a fresh stage move
  * hasn't just happened).
+ *
+ * Lead flow round (048) — docs/RESLU-lead-flow-brief.md "Rules":
+ * "When a lead is set to Lost: clear its follow-up date, and cancel
+ * any pending reminder for it." Moving TO 'Lead Lost' specifically
+ * (any other stage move is unaffected) clears `follow_up_date` in the
+ * same update as the stage change, and cancels any still-'pending'
+ * queued email_sends rows for this lead (lib/visit-emails.ts's
+ * cancelPendingSends() — same call the site-visit cancellation path
+ * already uses; rows already 'sent' are left untouched, nothing to
+ * undo). Moving a lead OUT of 'Lead Lost' later does not restore the
+ * cleared follow-up date — that would require guessing a new one,
+ * which is a human decision, not this route's to make.
  */
 export async function POST(
   request: NextRequest,
@@ -61,15 +74,28 @@ export async function POST(
     return NextResponse.json({ error: "Lead not found" }, { status: 404 });
   }
 
+  // Lead flow round (048) — see this route's own doc comment above.
+  const update: Record<string, unknown> = { stage: body.stage };
+  if (body.stage === "Lead Lost") {
+    update.follow_up_date = null;
+  }
+
   const { data: lead, error } = await supabase
     .from("leads")
-    .update({ stage: body.stage })
+    .update(update)
     .eq("id", id)
     .select()
     .single();
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  if (body.stage === "Lead Lost") {
+    // Service-role client, not the request-scoped `supabase` above —
+    // same convention as every other cancelPendingSends() call site in
+    // this codebase (e.g. DELETE /api/client-events/[id]).
+    await cancelPendingSends(createServiceRoleClient(), "lead", id);
   }
 
   const { data: events } = await supabase

@@ -12,6 +12,7 @@ import { LeadNotes } from "@/components/leads/LeadNotes";
 import { LeadAttachments } from "@/components/leads/LeadAttachments";
 import { StandardItemsChecklist } from "@/components/projects/StandardItemsChecklist";
 import { VisitEmailStatusChips } from "@/components/shared/VisitEmailStatusChips";
+import { BRIEF_ANSWER_FIELDS, type LeadWithBriefFields } from "@/types/round-lead-flow";
 
 interface Props {
   lead: Lead;
@@ -224,6 +225,11 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
   const inputClass =
     "w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none";
   const labelClass = "label-caps mb-1 block !text-charcoal/50";
+
+  // Lead flow round (048) — `draft` is typed `Lead` (types/index.ts,
+  // protected); this widening cast is type-only, see
+  // types/round-lead-flow.ts's LeadWithBriefFields doc comment.
+  const briefLead = draft as LeadWithBriefFields;
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-nearblack/30" onClick={onClose}>
@@ -459,6 +465,43 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
             )}
             <LeadNotes leadId={lead.id} onError={setNotesError} />
           </div>
+
+          {/* Lead flow round (048) — read-only render of the client's
+              submitted pre-visit questionnaire (emails/brief/project-
+              brief.html, POST /api/brief-submit/[token]). Renders
+              nothing until brief_submitted_at is set; blank answers are
+              simply skipped (the form itself allows leaving any field
+              blank — "Stuck on a question? Leave it blank"). Pen-blue
+              (#274690) on the answer text is the one brand accent this
+              round borrows from the card design (docs/RESLU-lead-flow-
+              brief.md: "pen-blue accents optional but keep brand"). */}
+          {briefLead.brief_submitted_at && (
+            <div className="border-t border-[#dcd6cc] pt-4">
+              <p className="label-caps mb-1 !text-charcoal/50">Project brief</p>
+              <p className="mb-3 text-caption text-charcoal/40">
+                Submitted{" "}
+                {new Date(briefLead.brief_submitted_at).toLocaleDateString("en-AU", {
+                  day: "numeric",
+                  month: "short",
+                  year: "numeric",
+                })}
+              </p>
+              <dl className="space-y-2.5">
+                {BRIEF_ANSWER_FIELDS.map(({ key, label }) => {
+                  const value = briefLead.brief_answers?.[key];
+                  if (!value) return null;
+                  return (
+                    <div key={key}>
+                      <dt className="label-caps !text-charcoal/40">{label}</dt>
+                      <dd className="text-body" style={{ color: "#274690" }}>
+                        {value}
+                      </dd>
+                    </div>
+                  );
+                })}
+              </dl>
+            </div>
+          )}
 
           <div className="flex flex-wrap items-center gap-2">
             {dirty && (

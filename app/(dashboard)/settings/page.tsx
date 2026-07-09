@@ -11,14 +11,20 @@ import { PhaseTemplateSettings } from "@/components/settings/PhaseTemplateSettin
 import { PhaseTaskTemplateSettings } from "@/components/settings/PhaseTaskTemplateSettings";
 import { DesignTaskTemplateSettings } from "@/components/settings/DesignTaskTemplateSettings";
 import { ExportPresetSettings } from "@/components/settings/ExportPresetSettings";
+import { BankDetailsSettings } from "@/components/settings/BankDetailsSettings";
+import { CpdDefaultsSettings } from "@/components/settings/CpdDefaultsSettings";
 import { FALLBACK_PHASE_TEMPLATE, FALLBACK_PHASE_TASK_TEMPLATES } from "@/lib/phase-template";
 import { FALLBACK_DESIGN_TASK_TEMPLATES } from "@/lib/design-task-templates";
 import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
+import { BANK_DETAILS_SETTINGS_KEY } from "@/lib/bank-details";
+import { FALLBACK_CPD_DEFAULTS } from "@/lib/cpd";
 import { DESIGN_PHASE_TEMPLATE } from "@/types/phase-12b";
 import type { AppSettingsPhaseTemplateRow } from "@/types/phase-fix-a";
 import type { PhaseTaskTemplatesMap } from "@/types/board-cockpit";
 import type { DesignTaskTemplatesMap } from "@/types/round-c";
 import type { ExportPresetRow } from "@/types/round-export-batch";
+import type { InvoiceBankDetails } from "@/types/client-invoices";
+import type { CpdDefaults } from "@/types/cpd";
 
 /**
  * Settings — category management, team roster + role editing (both
@@ -103,6 +109,42 @@ export default async function SettingsPage() {
     .eq("key", "export_presets")
     .maybeSingle();
   const exportPresets = (exportPresetsRow?.value as ExportPresetRow[] | undefined) ?? FALLBACK_EXPORT_PRESETS;
+
+  // Client invoicing round (BUILD-SPEC.md "Phillip's ideas list — 6
+  // July 2026" item 5) — bank transfer details shown on every client
+  // invoice PDF/email (app_settings 'invoice_bank_details'), read
+  // directly here same as every other app_settings-backed editor
+  // above. Deliberately NO fallback constant — see
+  // lib/bank-details.ts's header comment for why a bank account number
+  // must never be invented; this section is admin-only (isAdmin gates
+  // the whole section below, not just editability), unlike the
+  // team-visible sections above it, since bank details are financial
+  // data (this round's brief: "admin-gate all routes (financial)").
+  let bankDetails: InvoiceBankDetails | null = null;
+  if (isAdmin) {
+    const { data: bankDetailsRow } = await supabase
+      .from("app_settings")
+      .select("value")
+      .eq("key", BANK_DETAILS_SETTINGS_KEY)
+      .maybeSingle();
+    bankDetails = (bankDetailsRow?.value as InvoiceBankDetails | undefined) ?? null;
+  }
+  const stripeConfigured = Boolean(process.env.STRIPE_SECRET_KEY);
+
+  // CPD tracker round — annual target + licence-year start month
+  // (app_settings 'cpd_defaults'), read directly here same as every
+  // other app_settings-backed editor above. Team-visible READ (every
+  // team member's /cpd page needs these), admin-only EDIT — this
+  // section itself is NOT gated behind `isAdmin` the way bank details
+  // is (CPD targets aren't financial data), only the form's Save button
+  // is (canEdit={isAdmin}, same disabled-inputs shape as every other
+  // team-visible-read/admin-write section on this page).
+  const { data: cpdDefaultsRow } = await supabase
+    .from("app_settings")
+    .select("value")
+    .eq("key", "cpd_defaults")
+    .maybeSingle();
+  const cpdDefaults = (cpdDefaultsRow?.value as CpdDefaults | undefined) ?? FALLBACK_CPD_DEFAULTS;
 
   const mondayConfigured = Boolean(process.env.MONDAY_API_TOKEN);
   const gmailConfigured = Boolean(
@@ -221,6 +263,51 @@ export default async function SettingsPage() {
           </p>
           <ExportPresetSettings initialPresets={exportPresets} categories={categories} canEdit={isAdmin} />
         </section>
+
+        <section>
+          {/* CPD tracker round — BUILD-SPEC.md "CPD point tracker".
+              Studio-wide annual target + licence-year start month;
+              per-user override is explicitly out of scope for v1 (see
+              lib/cpd.ts's FALLBACK_CPD_DEFAULTS doc comment). */}
+          <h2 className="mb-1 text-subhead text-nearblack">CPD</h2>
+          <p className="mb-4 text-body text-charcoal/60">
+            Studio-wide annual CPD point target and licence-year start month, used by every
+            team member&apos;s <a href="/cpd" className="underline hover:text-nearblack">CPD tracker</a> page
+            and the My Work pace nudge. Applies to everyone — there is no per-person target in
+            this version.
+            {!isAdmin && " Only admins can make changes."}
+          </p>
+          <CpdDefaultsSettings initialDefaults={cpdDefaults} canEdit={isAdmin} />
+        </section>
+
+        {/* Client invoicing round (BUILD-SPEC.md "Phillip's ideas list
+            — 6 July 2026" item 5) — admin-only section (the whole
+            section, not just the form, is gated: a non-admin sees
+            neither the current values nor a blank form, since even
+            "is a bank account configured yet" is financial information
+            this codebase doesn't surface to non-admins elsewhere
+            either). Stripe row is read-only status (same pattern as
+            Integrations below) — the payment link itself is created
+            per-invoice from the Client invoices composer, never here. */}
+        {isAdmin && (
+          <section>
+            <h2 className="mb-1 text-subhead text-nearblack">Client invoicing — bank details</h2>
+            <p className="mb-4 text-body text-charcoal/60">
+              Shown on every client tax invoice PDF/email as the standard direct-transfer
+              payment method. MYOB stays the ledger of record — invoices raised here are
+              entered into MYOB manually (no API sync in phase 1).
+            </p>
+            <BankDetailsSettings initialBankDetails={bankDetails} canEdit={isAdmin} />
+            <p className="mt-3 text-caption text-charcoal/50">
+              Stripe payment links:{" "}
+              <span className={stripeConfigured ? "text-charcoal" : "text-charcoal/40"}>
+                {stripeConfigured
+                  ? "configured — “Create payment link” is available per invoice."
+                  : "not configured — set STRIPE_SECRET_KEY to enable the optional “Create payment link” action (small invoices only; bank transfer remains the standard method)."}
+              </span>
+            </p>
+          </section>
+        )}
 
         <section>
           <h2 className="mb-1 text-subhead text-nearblack">Team</h2>

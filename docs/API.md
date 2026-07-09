@@ -696,6 +696,101 @@ supplier+number can be resubmitted cleanly. **Aria-relevant.**
 
 ---
 
+## Client invoices (admin-only, financial) — Client invoicing phase 1
+
+BUILD-SPEC.md "Phillip's ideas list — 6 July 2026" item 5: branded tax
+invoices RESLU raises against ITS OWN client — money IN, the opposite
+direction of the "Invoices" section above (supplier bills, money OUT).
+Table `client_invoices` (migration `046_client_invoices.sql`) — do not
+confuse with the `invoices` table above. Phase 1 = design fees, manual
+line items only, no progress-claim generation yet. Every route below is
+admin-gated. Project-scoped only — there is no global `/invoices` list
+in v1 (documented decision, not an oversight).
+
+### GET /api/projects/[id]/client-invoices
+Auth: admin. Body: none. Response: `{ invoices: ClientInvoice[] }`,
+newest first, excluding soft-deleted rows.
+
+### POST /api/projects/[id]/client-invoices
+Auth: admin. Body: `{ kind? ('design_fee'|'other', default
+'design_fee'), client_name, client_email?, address?, line_items:
+[{description, amount_ex_gst}], due_days? (default 14), notes? }`.
+`invoice_number` and `subtotal_ex_gst`/`gst`/`total_inc_gst` are ALWAYS
+server-computed (`lib/client-invoices.ts` `nextInvoiceNumber()` +
+`computeTotals()`) — never accepted from the client. Numbering:
+`{job_number}-{seq}` (2-digit, per-project, counts void invoices) when
+the project has a `job_number`, else `GEN-{seq}` (global sequence).
+Rounding: subtotal and GST are each rounded half-up to whole cents
+independently, then summed for the total (not `subtotal * 1.1` rounded
+once — see that lib's own header comment for why). Starts at
+`status: 'draft'`. Response: `{ invoice }` (201), 409 on the rare
+invoice_number race (one retry already covers the common case).
+
+### GET /api/client-invoices/[id]
+Auth: admin. Body: none. Response: `{ invoice }`.
+
+### PATCH /api/client-invoices/[id]
+Auth: admin. Body: any of `{ kind?, client_name?, client_email?,
+address?, line_items?, due_days?, notes? }`. Only permitted while
+`status = 'draft'` (400 otherwise — a sent/paid tax invoice's figures
+are frozen; void it and raise a new one instead of editing in place).
+Recomputes totals server-side whenever `line_items` is present.
+Response: `{ invoice }`.
+
+### GET /api/client-invoices/[id]/pdf
+Auth: admin. Body: none. Renders the branded tax invoice PDF
+(`components/pdf/InvoicePdf.tsx`) — works in any status, so this also
+backs the composer's "Preview PDF" action on a still-draft invoice.
+Response: `application/pdf`, `Cache-Control: no-store`.
+
+### POST /api/client-invoices/[id]/send
+Auth: admin. Body: none. Renders the same PDF, emails it via Resend
+(`lib/resend.ts`, from `RESLU <accounts@reslu.com.au>`, reply-to
+`phillip@reslu.com.au`) with the PDF attached as base64 (falls back to
+a text-only note if the rendered PDF exceeds 5MB — should never happen
+for a real design-fee invoice). Logs to `email_sends`
+(`record_type: 'client_invoice'`, `template: 'client-invoice'`). On a
+real (non-skipped) send: `status → 'sent'`, `issued_at` set (first-send
+timestamp, preserved across any later resend). **Divergence from
+`lib/visit-emails.ts`: the 7am-7pm Adelaide send-window rule is NOT
+applied here** — an admin-triggered invoice send is a deliberate
+business action, not an unsolicited lifecycle notification; it goes out
+immediately or fails immediately, never queued to `email_sends`
+'pending'. 400 if the invoice has no `client_email` or is `void`. 503
+if `RESEND_API_KEY` isn't configured.
+
+### POST /api/client-invoices/[id]/mark-paid
+Auth: admin. Body: none. Sets `status: 'paid'`, `paid_at`. Manual
+reconciliation marker only — MYOB stays the ledger of record (BUILD-
+SPEC.md DECISIONS: "MYOB stays, manual entry"), no API sync in phase 1.
+Rejected (400) if already `paid`/`void`.
+
+### POST /api/client-invoices/[id]/void
+Auth: admin. Body: none. Sets `status: 'void'` — terminal, and the
+invoice_number is never reissued (`nextInvoiceNumber()` counts void
+rows in its sequence). Rejected (400) if already `paid`/`void`.
+
+### POST /api/client-invoices/[id]/stripe-link
+Auth: admin. Body: none. Explicit-only action (never auto-triggered).
+503 if `STRIPE_SECRET_KEY` isn't set. Plain fetch (no SDK) to Stripe's
+`POST /v1/payment_links`, one ad-hoc price_data line item for
+`total_inc_gst` in cents. On success, stores the returned `url` on
+`stripe_payment_url`, which is what turns on the PDF/email's "Pay
+online" button. Intended for small (design-fee-sized) invoices — bank
+transfer remains the standard method. 400 if the invoice is
+`paid`/`void`.
+
+### GET / PUT /api/settings/bank-details
+Auth: admin (both methods — unlike most `app_settings`-backed Settings
+editors in this codebase, bank details are financial). `app_settings`
+key `invoice_bank_details`, `{ account_name, bsb, account_number }`, all
+three required together. GET response: `{ bank_details: {...} | null }`
+— `null` until an admin saves real values (no invented fallback — see
+`lib/bank-details.ts`); every invoice PDF shows "Bank details not
+configured" until then. PUT response: `{ bank_details }`.
+
+---
+
 ## Project documents — Week 6
 
 Team-visible (**not** admin-gated — documents aren't financial, per
@@ -5547,10 +5642,14 @@ comment for the full design write-up.
   `Intl.DateTimeFormat` throughout (never a fixed UTC-offset constant),
   same technique as `app/api/digest/flush`'s `DIGEST_HOURS` gate and
   `lib/daily-brief-generate.ts`'s `adelaideToday()`.
-- `sendViaResend({ to, subject, html })` — plain `fetch` to
-  `POST https://api.resend.com/emails` (no SDK), `from: 'Phillip —
-  RESLU <visits@reslu.com.au>'`, `reply_to: 'phillip@reslu.com.au'`.
-  No-op `{ skipped: true, reason: 'no RESEND_API_KEY' }` when
+- `sendViaResend({ to, subject, html, attachments? })` — plain `fetch`
+  to `POST https://api.resend.com/emails` (no SDK), `reply_to:
+  'phillip@reslu.com.au'`. **`from` — SUPERSEDED by the lead flow round
+  (migration 048):** now `'Aria — RESLU <aria@reslu.com.au>'` (was
+  `'Phillip — RESLU <visits@reslu.com.au>'` when this round originally
+  shipped) — see this file's own "Lead flow" section below for the
+  full write-up. `attachments` is also new as of that round (optional,
+  additive). No-op `{ skipped: true, reason: 'no RESEND_API_KEY' }` when
   unconfigured; a real send failure throws (callers must not mark a row
   `'sent'` on a failed call).
 - `sendOrQueue(supabase, input)` — the one entry point every trigger
@@ -5807,3 +5906,438 @@ particular was deliberately left untouched, with every SOW-line-plus-
 trade shape declared locally in `types/sow-trade-tags.ts` instead (same
 per-round-own-file convention every other additive round in this
 directory already follows).
+
+## CPD point tracker (migration 047)
+
+BUILD-SPEC.md "CPD point tracker" — the section's own placeholders
+(exact annual target, licence-year start month, CBS category split)
+were never resolved to real regulatory numbers, so this round ships
+sensible, ADMIN-EDITABLE defaults instead of guessing: **12 points/year,
+licence year starting July**, both editable at Settings -> "CPD"
+(`app_settings` key `cpd_defaults`, `lib/cpd.ts`
+`FALLBACK_CPD_DEFAULTS`). Category is free text with a `<datalist>` of
+suggestions (Technical/Business/Compliance/Safety) — no CHECK
+constraint, since the real CBS split was never specified. **Per-user
+override is explicitly SKIPPED in v1** — one studio-wide target/
+year-start applies to every team member; see `lib/cpd.ts`'s
+`FALLBACK_CPD_DEFAULTS` doc comment for the extension point a future
+round would need (a nullable per-profile override column).
+
+### `cpd_entries` (migration `047_cpd.sql`)
+
+One row per logged CPD activity: `user_id` (not null, references
+`profiles`), `activity_title`, `provider`, `activity_date` (date, not
+null), `points` (`numeric(5,2)`, check `> 0`), `category` (free text),
+`evidence_path`/`evidence_filename` (private `assets` bucket, see
+below), `notes`, soft-delete via `deleted_at`. Index on
+`(user_id, activity_date)` for the two hot query shapes (the CPD page's
+own list, and the My Work nudge's points-to-date sum).
+
+RLS is the house-standard permissive `team_all` (single policy, `using
+(true) with check (true)`) — **the API layer is the real gate**, same
+shape as every other Phase 1 table: every route scopes WRITES
+(POST/PATCH/DELETE) to the caller's own `user_id` unless the caller is
+admin, who may act on any user's row. Admins may also **view** every
+team member's entries (`GET ?all=1`) — CPD records are not financial
+data, so this is a lighter gate than `client_invoices`'s admin-only-
+everything shape.
+
+### `lib/cpd.ts` — the one shared module
+
+Pure, dependency-free (no Supabase/Next imports) — mirrors
+`lib/my-work.ts` / `lib/export-presets.ts`'s exact shape, consumed by
+BOTH the API routes and the client UI so the year-window math and pace
+check can never drift:
+
+- `computeCpdYearWindow(now, yearStartMonth)` — the current licence-
+  year window containing `now`, INCLUSIVE end date (e.g.
+  `yearStartMonth=7`, any date in Jul 2026-Jun 2027 ->
+  `{ start: '2026-07-01', end: '2027-06-30' }`).
+- `elapsedFraction(now, window)` — 0..1, how far through the window
+  `now` sits.
+- `monthsElapsedSinceStart(now, window)` — whole calendar months since
+  `window.start`.
+- `isBehindPace(pointsToDate, annualTarget, now, window)` — the My Work
+  nudge's exact rule: `pointsToDate < annualTarget * elapsedFraction`,
+  but only once `monthsElapsedSinceStart >= 2` (a fresh licence year's
+  first ~2 months never nudges — a pro-rata target of ~1 point is
+  noise that early).
+- `cleanCpdEntryFields()` / `cleanCpdDefaults()` — shared create/edit
+  validation, same "small pure validator, reused by both routes" shape
+  as `lib/bank-details.ts` `cleanBankDetails()`.
+- `cpdEntriesToCsv(entries, personLabel)` — the CSV export builder (see
+  below).
+
+### `GET /api/cpd` / `POST /api/cpd`
+
+Auth: session. `GET` defaults to the signed-in user's own, non-deleted
+entries for the CURRENT licence-year window, alongside `defaults` and
+the resolved `window` (so the page never needs a second Settings
+round-trip to render its header). `?all=1` (**admin only** — silently
+ignored, not 403'd, for a non-admin, same "UI toggle hint, not a
+security boundary" shape as other optional query params in this
+codebase) returns every team member's entries for the same window, each
+carrying a `profile: { id, full_name }` projection so the "All team"
+view can group by person client-side without a second round-trip.
+
+`POST` always writes with the caller's own `user_id` **UNLESS the
+caller is admin and passes `user_id` explicitly** — the one deliberate
+escape hatch, used exclusively by the `add_cpd_entry` MCP tool (Aria's
+account is admin) to attribute an entry to a team member resolved from
+an email address. A non-admin's `user_id` field, if present, is
+silently ignored (forced to their own id). `evidence_path`/
+`evidence_filename` come from the two-step signed-upload flow below,
+already-uploaded by the time this POST fires.
+
+### `PATCH /api/cpd/[id]` / `DELETE /api/cpd/[id]`
+
+Auth: session, **own entry only, unless admin** (may act on any row) —
+the ownership check is the real gate (a forged id belonging to another
+user's entry 404s for a non-admin), same enforcement shape as `PATCH
+/api/my-work/notes/[id]`. `PATCH` accepts a partial body; passing
+`evidence_path: null` clears any existing evidence AND removes the
+Storage object; passing a new `evidence_path` replaces it, removing the
+old object once the row update succeeds. `DELETE` soft-deletes the row
+(`deleted_at`) and immediately removes any evidence Storage object —
+same "soft-delete the row, hard-delete the file" shape as `DELETE
+/api/contact-documents/[id]`.
+
+### `POST /api/cpd/evidence/upload-url`
+
+Mints a signed upload URL for a CPD evidence file (certificate,
+confirmation email PDF, screenshot), same two-step flow as
+`ContactDocumentsPanel.tsx` / `POST /api/contacts/[id]/documents/
+upload-url`. Keyed by the caller's OWN `user_id`
+(`cpd/{user_id}/{timestamp}-{slug}`), **not** by a `cpd_entries` row id
+— unlike `contact_documents`, a CPD entry doesn't exist yet at upload
+time (the add form uploads evidence BEFORE the entry is created, then
+includes the resulting `path` directly in the `POST /api/cpd` body).
+Private `assets` bucket (migration 009) — every read mints a fresh
+short-TTL signed URL server-side, never a stored/cached one.
+
+### `GET` / `PUT /api/settings/cpd-defaults`
+
+`GET`: session (team-visible read — every team member's `/cpd` page
+needs these). `PUT`: admin only. Body `{ annual_target, year_start_month
+}`, upserts `app_settings('cpd_defaults')` — same generic key/value
+store every other Settings editor in this codebase already uses.
+
+### `/cpd` page
+
+Header progress: `"{points-to-date} / {target} points · Licence year
+ends {date}"`, a sand progress bar (full width + "Target reached" label
+once at/over target). Entries list: date, title, provider, points,
+category chip, evidence link (freshly-signed URL), edit/delete own (or
+any, if admin). Single-save add/edit form (mobile-friendly grid,
+collapses to one column) — title, provider, date (defaults to today),
+points, category (`<datalist>` suggestions, free text underneath),
+evidence file (optional), notes. Admin-only "All team" checkbox toggles
+a second fetch (`?all=1`) that replaces the flat list with entries
+grouped by person, each with their own mini progress bar. "Download
+CSV" builds a CSV **client-side** from whatever's currently loaded
+(own or all-team) via `lib/cpd.ts` `cpdEntriesToCsv()` — audit-friendly
+columns (Date, Activity, Provider, Category, Points, Notes, Logged by,
+Evidence on file). **No CSV-export precedent existed elsewhere in this
+codebase to reuse** (`lib/csv.ts` is the project-IMPORT parser, a
+different direction entirely, and is out of this round's edit
+boundary) — this is a small from-scratch builder. **PDF export is
+explicitly deferred** to a future round (noted in the page itself).
+
+### My Work — "cpd_nudge" additive source
+
+`GET /api/my-work` gains source #10 (see that route's own doc comment):
+when the signed-in user's CPD points-to-date are behind pro-rata pace
+(`lib/cpd.ts` `isBehindPace()`), one `MyWorkItem` of kind `cpd_nudge`
+is appended — `due: null` (lands in the "No date" bucket — there's no
+natural due date for a pace check), title `"CPD: {points} / {target}
+points — behind pace"`, linking `/cpd`. Per-user, **not** admin-gated
+(unlike `lead_follow_up`/`ordering_due`) — every team member sees their
+own pace. At most one item of this kind per response, unlike every
+other source. `types/phase-12a-b.ts`'s `MyWorkItemKind` gains
+`"cpd_nudge"`; `components/my-work/MyWorkWorkspace.tsx` gains a
+`KIND_LABEL` entry and a small `projectlessChipLabel()` helper
+(replacing what used to be a two-way `office_task`/`Lead` ternary, now
+three-way).
+
+### MCP — `add_cpd_entry`
+
+Per `docs/ARIA.md`'s "CPD logging" section: when a webinar/course
+confirmation email lands in the shared inbox, Aria logs it via this
+tool rather than leaving it for manual entry. Thin fetch to `POST
+/api/cpd` — resolves `user_email` (defaults to `phillip@reslu.com.au`
+when omitted) against `GET /api/profiles`, then passes the matched
+profile id as the admin-only `user_id` field. **Evidence attachment is
+deferred** — the tool never sets `evidence_path` (no natural fit for a
+two-step signed-upload inside one MCP call); mention the confirmation
+email's existence in `notes` instead. Wiring an automated
+"forward confirmation email -> attach as CPD evidence" pipeline is a
+future round, not this one.
+
+**Files touched:** `supabase/migrations/047_cpd.sql` (new),
+`types/cpd.ts` (new), `lib/cpd.ts` (new), `app/api/cpd/route.ts` (new —
+GET/POST), `app/api/cpd/[id]/route.ts` (new — PATCH/DELETE),
+`app/api/cpd/evidence/upload-url/route.ts` (new),
+`app/api/settings/cpd-defaults/route.ts` (new — GET/PUT),
+`app/(dashboard)/cpd/page.tsx` (new), `components/cpd/CpdWorkspace.tsx`
+(new), `components/settings/CpdDefaultsSettings.tsx` (new),
+`app/(dashboard)/settings/page.tsx` (new "CPD" section, reads
+`cpd_defaults` server-side same as every other app_settings editor),
+`components/layout/Sidebar.tsx` (new "CPD" nav item, between Library
+and Address Book), `app/api/my-work/route.ts` (additive source #10),
+`types/phase-12a-b.ts` (`MyWorkItemKind` gains `cpd_nudge`),
+`components/my-work/MyWorkWorkspace.tsx` (`KIND_LABEL` entry +
+`projectlessChipLabel()`), `mcp/src/index.mjs` (`add_cpd_entry` tool),
+`docs/API.md` / `docs/ARIA.md` / `README.md` (this round's
+documentation). Single migration (047); no protected file touched —
+`types/index.ts` in particular was deliberately left untouched, with
+every CPD shape declared locally in `types/cpd.ts` instead (same
+per-round-own-file convention every other additive round in this
+directory already follows). The client-invoicing round's own files
+(migration 046, `lib/client-invoices.ts`, `lib/bank-details.ts`,
+`lib/resend.ts`, `components/pdf/InvoicePdf.tsx`,
+`components/invoices/ClientInvoiceQueue.tsx`, `app/api/client-invoices/
+**`, the bank-details Settings section) were also untouched — this
+round shares Settings' page shell (additively, a new section) but
+nothing else.
+
+## Lead flow (10 July 2026, migration 048)
+
+`docs/RESLU-lead-flow-brief.md` + `docs/DESIGNER-NOTES.md`: wires the
+designer-built "paper card" client journey into the r15 "Site-visit
+lifecycle emails" machinery above — real `visit-confirmation.html` /
+`visit-reminder.html` templates (superseding the r15 placeholders) and
+a new interactive `project-brief.html` pre-visit questionnaire, all
+staged in `emails/`.
+
+**BUILD-SPEC.md NOTE:** this round's task brief also cites
+"BUILD-SPEC.md section 'Lead flow package'" as a reconciliation source.
+No file named `BUILD-SPEC.md` exists anywhere in this working copy
+(`find . -iname "*build*spec*"` returns nothing, checked before writing
+this section) — `docs/RESLU-lead-flow-brief.md` and
+`docs/DESIGNER-NOTES.md`'s own CORRECTIONS section are the sole
+authoritative brief this round follows, same "flag it, don't invent
+content" convention as migration 041's own file-number note.
+
+### Migration `048_lead_brief.sql`
+
+`leads` gains: `brief_token text unique` (nullable — minted lazily, see
+below), `brief_answers jsonb`, `brief_submitted_at timestamptz`,
+`visit_ics_sequence int not null default 0`. No RLS change — the
+public `/brief/[token]` page and its submit route use the
+service-role client (same trust model as `/trade/[token]`/
+`/portal/[token]`).
+
+**Visit TIME finding:** `leads.site_visit_date` is already a
+`timestamptz` (migration 014) carrying the full date AND time of day,
+not a date-only column — r15's `formatVisitTime()` already derives
+`{{visit_time}}` ("10:00am") straight from it. **No new time column
+was needed** for this round; the brief's "if no time field exists add
+`site_visit_time`" branch does not apply. (Also avoids ever needing to
+touch `types/index.ts`'s `Lead` interface for a new field — that file
+is protected for this round.)
+
+### `GET /brief/[token]`
+
+Public, unauthenticated, token-gated (`leads.brief_token`), rate-
+limited, `X-Robots-Tag: noindex, nofollow`, service-role client — same
+trust model as `/trade/[token]`. Serves `emails/brief/project-brief
+.html` **verbatim** (`lib/brief-page.ts`'s `loadBriefPageHtml()` — read
+once off disk, cached): the page has no `{{placeholder}}` tokens at
+all (it fills itself in client-side as the client types), so one cached
+HTML string is correct for every lead's token. The ONE edit made to
+the shipped file itself was rewiring its submit handler (previously a
+commented-out `fetch` example, ~line 439) to
+`POST /api/brief-submit/[token]`, reading the token from
+`location.pathname` client-side. 404 on an unknown/deleted-lead token.
+
+**MIDDLEWARE GAP (documented, not worked around):**
+`lib/supabase/middleware.ts` (protected) does not yet allowlist
+`/brief` or `/api/brief-submit` in its `isPublicPath` check, so an
+unauthenticated request to either route is currently redirected to
+`/login` before reaching the handler. Both routes are fully built and
+correct; they just need this one addition, alongside the existing
+`/trade`/`/api/trade` lines:
+
+```ts
+pathname.startsWith("/brief") ||
+pathname.startsWith("/api/brief-submit") ||
+```
+
+### `POST /api/brief-submit/[token]`
+
+Public, unauthenticated, token-gated, rate-limited tighter (10/min)
+than the page GET. Deliberately **not** under `/api/brief/**` — that
+prefix already belongs to the unrelated "Daily Brief" attention-items
+feature (`app/api/brief/route.ts` + `app/api/brief/items/**`, migration
+041) — this round's own instructions name the route
+`/api/brief-submit/[token]` specifically to avoid that collision. Body:
+`FormData` (the page posts `new FormData(form)`, not JSON) with the 10
+fields `first_name, last_name, hoping, favourite_spaces, materials,
+feel, must_1, must_2, must_3, bringing` — stored verbatim into
+`leads.brief_answers`, `brief_submitted_at` set to now. **Idempotent
+re-submit:** a second POST against the same token fully overwrites
+`brief_answers`, keeping the PRIOR submission's timestamp as a
+`_previous_submitted_at` note inside the new blob. Also inserts one
+`daily_brief_items` row (`source: 'lead'` — already an allowed value
+per migration 041's CHECK constraint; direct insert, not routed
+through the generator) titled `Brief submitted — {surname_project}`,
+`link_href: /leads?lead={id}` (same link shape as `lib/daily-
+brief.ts`'s existing `buildLeadCandidates()`), guarded against a
+duplicate still-OPEN row for the same source+link_href+title.
+
+### `lib/lead-brief.ts`
+
+- `briefUrlFor(token)` — `NEXT_PUBLIC_APP_URL`/`VERCEL_URL`-aware URL
+  builder, same shape as `lib/portal-link.ts`'s `portalUrlFor()`.
+- `ensureBriefToken(supabase, leadId, currentToken)` — returns the
+  existing token, or mints (`crypto.randomBytes(32).toString("hex")` —
+  same shape as `lib/projects.ts`'s `client_token` regeneration) +
+  stores a fresh one. Called from `GET/POST /api/visit-emails/run`'s
+  lead reminder sweep, the FIRST time a given lead's reminder needs to
+  build `{{brief_link}}` — per this round's own build instructions:
+  "Token: generated lazily when the reminder email builds
+  `{{brief_link}}`."
+- `buildLeadVisitCalendarAssets(leadId, visitDatetime, sequence, phone)`
+  — the `{{calendar_link}}` + `invite.ics` Resend-attachment pair for
+  one lead-visit send. Centralised here since all three trigger sites
+  (`PATCH /api/leads/[id]`, `POST /api/leads`, the reminder sweep) need
+  exactly this pair.
+
+### `lib/ics.ts` additions — `generateVisitIcs()` / `leadVisitGoogleCalendarUrl()`
+
+Distinct from the existing `generateIcs()`/`googleCalendarUrl()`
+(untouched — still power `GET /api/leads/[id]/calendar.ics` and
+`LeadDetailPanel`'s own "Add to calendar" menu):
+
+- **`generateVisitIcs({ leadId, start, end?, sequence, phone? })`** —
+  `METHOD:PUBLISH`, a real `VTIMEZONE` block for `Australia/Adelaide`
+  (DST-correct since the 2008 rule change), `DTSTART`/`DTEND` in
+  Adelaide LOCAL wall-clock time with `;TZID=Australia/Adelaide`
+  (rather than `generateIcs()`'s deliberate bare-UTC-`Z` choice — see
+  that function's own header comment for why THAT approach suits its
+  callers), `SUMMARY:Site Visit · RESLU`, `LOCATION:219 Sturt Street,
+  Adelaide SA 5000`, `ORGANIZER` `aria@reslu.com.au`, stable
+  `UID:lead-visit-{leadId}@reslu.com.au`, `SEQUENCE` per input.
+- **`leadVisitGoogleCalendarUrl(start, end?, phone?)`** — the
+  `{{calendar_link}}` merge value, built to match
+  `docs/RESLU-lead-flow-brief.md`'s literal worked example
+  character-for-character via a hand-rolled encoder (`gcalValueEncode`)
+  rather than `URLSearchParams`/`encodeURIComponent` — both of THOSE
+  percent-encode `/` and `,` (confirmed before writing this), which the
+  brief's own example leaves raw in `dates=<start>/<end>`,
+  `ctz=Australia/Adelaide`, and the location. Fixed 1-hour default
+  duration, `ctz=Australia/Adelaide`, location + details (with phone)
+  exactly as specified.
+
+**SEQUENCE mechanics (RFC 5545 §3.8.7.4):** `leads.visit_ics_sequence`
+starts at 0. `PATCH /api/leads/[id]`'s existing site-visit-change
+handler increments it by 1 (persisted immediately, then read into the
+new invite) whenever `site_visit_date` changes to a new non-null value
+on an ALREADY-booked visit (i.e. `previousSiteVisitDate` was non-null —
+a genuine reschedule, not the first booking). NOT incremented on a
+first booking or a cancellation. The reminder sweep re-sends the SAME
+current sequence (no change happens there). Net effect: a reschedule's
+re-sent `invite.ics` shares the SAME `UID` with a higher `SEQUENCE`, so
+Apple Mail/Outlook/Google Calendar update the existing calendar entry
+in place instead of duplicating it.
+
+### `lib/visit-emails.ts` deltas
+
+- **Sender identity SWAP:** `RESEND_FROM` is now
+  `'Aria — RESLU <aria@reslu.com.au>'` (was `'Phillip — RESLU
+  <visits@reslu.com.au>'`), per `docs/RESLU-lead-flow-brief.md`'s
+  "Sending" section — both templates are now the real, brand-approved
+  ones, and the designer's journey guide specifies this identity.
+  `RESEND_REPLY_TO` is unchanged (`phillip@reslu.com.au`). This is a
+  SHARED constant — it also changes the FROM address on the
+  client_events reminder path (r15), since both record types render
+  the exact same two template files and no separate identity was ever
+  specified for client_events in this round's brief.
+- **`merge()`/`VisitEmailMergeData`** gain `calendar_link` and
+  `brief_link` (both blank-safe, same contract as every existing key).
+- **`sendViaResend()`/`sendOrQueue()`** gain an optional `attachments`
+  parameter (`ResendAttachment[]`, from `lib/resend.ts`) — used for
+  `invite.ics`. Stored inside the `email_sends.detail` jsonb snapshot
+  (see `types/visit-emails.ts`'s `VisitEmailDetail.attachments`) so a
+  QUEUED send (outside the 7am-7pm window) still carries its attachment
+  through to `flushPendingSends()`'s later, separate send attempt.
+- **`DEFAULT_PHILLIP_PHONE`** is now exported (was module-private) —
+  reused by the three lead-visit-email trigger sites when building
+  calendar assets.
+
+### Reminder cron window — `GET/POST /api/visit-emails/run`
+
+**LEAD site visits only:** window changed from "tomorrow" (`+1` day)
+to **"the Adelaide calendar day two days from today"** (`+2` days).
+Honest caveat (documented in the route's own header comment): this is
+a once-daily cron, so an exact 48-hours-out sweep is impossible — "the
+Adelaide day two days from now" is the closest whole-day approximation
+to the brief's "48 hours before the visit," landing anywhere from ~36h
+to ~60h out depending what time of day the visit itself is booked for.
+Now also builds `{{brief_link}}` (minting the lead's `brief_token` via
+`ensureBriefToken()` on first need) and `{{calendar_link}}` +
+`invite.ics` for each lead reminder send; subject line dropped the word
+"tomorrow" (no longer accurate for this ~2-day window).
+
+**CLIENT EVENTS: UNCHANGED** — still "tomorrow" (`+1` day), per that
+feature's own separate brief (`docs/RESLU-Spec-Visit-Emails-Brief.md`,
+"the day before"); this round's brief never discusses client_events, so
+its window was deliberately left alone. Both windows are computed from
+the same `now` inside one `handle()` call — no `vercel.json` change
+needed, the existing single daily cron line covers both.
+
+### `POST /api/leads/[id]/stage` — "Lead Lost" cleanup
+
+`docs/RESLU-lead-flow-brief.md`'s Rules section: "When a lead is set
+to Lost: clear its follow-up date, and cancel any pending reminder for
+it." Moving a lead's stage TO `'Lead Lost'` (any other stage move is
+unaffected) now also sets `follow_up_date = null` in the same update,
+and calls `lib/visit-emails.ts`'s `cancelPendingSends()` for that lead
+(rows already `'sent'` are left untouched).
+
+### `components/leads/LeadDetailPanel.tsx` — "Project brief" section
+
+Read-only render of `leads.brief_answers`, shown once
+`brief_submitted_at` is set. Each answered field (blank ones are
+skipped) renders with pen-blue (`#274690`) text — the one brand accent
+borrowed from the card design, per this round's own "pen-blue accents
+optional but keep brand" instruction. `draft` (typed `Lead`, protected)
+is cast to `LeadWithBriefFields` (`types/round-lead-flow.ts`) for this
+section only — a type-only widening, not a runtime shape change.
+
+### Merge audit (this round's own verification pass)
+
+Every `{{placeholder}}` actually present in the three staged files,
+grepped before writing this section:
+- `visit-confirmation.html`: `{{first_name}}` `{{visit_date}}`
+  `{{visit_time}}` `{{calendar_link}}` `{{phillip_phone}}` — all merged.
+- `visit-reminder.html`: same five, plus `{{brief_link}}` — all merged.
+- `project-brief.html`: none (confirmed by grep) — see the `GET
+  /brief/[token]` section above for why that's correct, not a gap.
+
+**Files touched:** `supabase/migrations/048_lead_brief.sql` (new),
+`types/round-lead-flow.ts` (new), `lib/lead-brief.ts` (new),
+`lib/brief-page.ts` (new), `lib/ics.ts` (additive —
+`generateVisitIcs`/`leadVisitGoogleCalendarUrl`, `generateIcs`/
+`googleCalendarUrl` untouched), `lib/visit-emails.ts` (sender swap,
+`merge()`/`VisitEmailMergeData`/`sendOrQueue`/`sendViaResend`/
+`flushPendingSends` additions, `DEFAULT_PHILLIP_PHONE` exported),
+`types/visit-emails.ts` (`VisitEmailDetail` gains `calendar_link`,
+`brief_link`, `attachments`), `app/brief/[token]/route.ts` (new),
+`app/api/brief-submit/[token]/route.ts` (new),
+`app/api/leads/[id]/route.ts` (PATCH gains SEQUENCE increment +
+calendar assets), `app/api/leads/route.ts` (POST gains calendar
+assets), `app/api/leads/[id]/stage/route.ts` ("Lead Lost" cleanup),
+`app/api/visit-emails/run/route.ts` (split reminder windows + calendar
+assets for leads), `components/leads/LeadDetailPanel.tsx` ("Project
+brief" section), `next.config.ts` (`outputFileTracingIncludes` gains
+`/brief/[token]`), `.env.local.example` (Resend from-address note),
+`emails/brief/project-brief.html` (submit handler wired — the only
+edit to the shipped card HTML, per the brief's own "beyond inserting
+the endpoint URL" allowance), `emails/README.md` (rewritten —
+placeholders no longer placeholders), `README.md` / `docs/API.md` (this
+round's documentation). Single migration (048); no protected file
+touched — `types/index.ts`, `lib/supabase/middleware.ts`, `vercel.json`,
+and every other file on this round's protected list were read for
+context but never edited. The middleware gap is documented above and
+in `README.md`'s "Lead flow" section, not silently worked around.

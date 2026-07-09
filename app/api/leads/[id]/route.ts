@@ -5,12 +5,15 @@ import { LEAD_STAGES, type Lead, type PatchLeadInput } from "@/types";
 import { reportError } from "@/lib/report-error";
 import {
   cancelPendingSends,
+  DEFAULT_PHILLIP_PHONE,
   formatVisitDate,
   formatVisitTime,
   leadLastName,
   sendOrQueue,
   suburbFrom,
 } from "@/lib/visit-emails";
+import { buildLeadVisitCalendarAssets } from "@/lib/lead-brief";
+import type { LeadWithBriefFields } from "@/types/round-lead-flow";
 
 export const runtime = "nodejs";
 
@@ -198,7 +201,7 @@ export async function PATCH(
   // (see lib/visit-emails.ts) additionally makes this a silent no-op if
   // a confirmation was already SENT for this exact date/time.
   if ("site_visit_date" in update) {
-    const typedLead = lead as Lead;
+    const typedLead = lead as LeadWithBriefFields;
     if (typedLead.site_visit_date !== previousSiteVisitDate) {
       after(async () => {
         const service = createServiceRoleClient();
@@ -210,6 +213,41 @@ export async function PATCH(
           await cancelPendingSends(service, "lead", typedLead.id);
           if (!typedLead.email) return;
           const visitDatetime = typedLead.site_visit_date;
+
+          // Lead flow round (048) — RFC 5545 SEQUENCE bookkeeping.
+          // `previousSiteVisitDate` non-null means this is a RESCHEDULE
+          // of an already-booked visit (not the first booking, which
+          // has previousSiteVisitDate === null) — increment so the
+          // invite.ics re-send carries a higher SEQUENCE than the one
+          // already sitting in the recipient's calendar app, per
+          // leads.visit_ics_sequence's migration 048 comment.
+          // increment_visit_ics_sequence() does the read-modify-write
+          // as a single atomic UPDATE ... RETURNING (see its own
+          // comment) rather than a select-then-update here, since two
+          // near-simultaneous reschedules of the same lead would
+          // otherwise both read the same starting value and collide on
+          // the same SEQUENCE number.
+          let sequence = typedLead.visit_ics_sequence ?? 0;
+          if (previousSiteVisitDate) {
+            const { data: incremented, error: incrementError } = await service.rpc(
+              "increment_visit_ics_sequence",
+              { p_lead_id: typedLead.id }
+            );
+            if (incrementError || incremented == null) {
+              throw new Error(
+                `Could not increment visit_ics_sequence: ${incrementError?.message ?? "no value returned"}`
+              );
+            }
+            sequence = incremented;
+          }
+
+          const { calendarLink, icsAttachment } = buildLeadVisitCalendarAssets(
+            typedLead.id,
+            visitDatetime,
+            sequence,
+            DEFAULT_PHILLIP_PHONE
+          );
+
           await sendOrQueue(service, {
             recordType: "lead",
             recordId: typedLead.id,
@@ -222,8 +260,10 @@ export async function PATCH(
               visit_date: formatVisitDate(visitDatetime),
               visit_time: formatVisitTime(visitDatetime),
               suburb: suburbFrom(typedLead.site_visit_location || typedLead.location),
+              calendar_link: calendarLink,
             },
             visitDatetime,
+            attachments: [icsAttachment],
           });
         } catch (err) {
           await reportError("visit-emails", err);

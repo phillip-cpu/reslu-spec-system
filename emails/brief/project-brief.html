@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project Brief · RESLU</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: #EDE8DE;
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-weight: 300;
+    color: #313131;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .wrap { max-width: 620px; margin: 0 auto; padding: 44px 20px 56px; }
+
+  .logo {
+    width: 96px; height: 40px; margin: 0 auto 20px;
+    -webkit-mask: url('https://www.reslu.com.au/reslu-logo.png') center/contain no-repeat;
+    mask: url('https://www.reslu.com.au/reslu-logo.png') center/contain no-repeat;
+    background: #e2dac5;
+    filter: drop-shadow(0 -2px 1px rgba(255,255,255,.9))
+            drop-shadow(0 2px 2px rgba(60,50,30,.55))
+            drop-shadow(0 5px 8px rgba(60,50,30,.22));
+  }
+
+  .card {
+    position: relative;
+    background: #faf6ec;
+    border: 1px solid #e6dfcf;
+    border-radius: 1px;
+    padding: 44px;
+    box-shadow: 0 1px 2px rgba(60,50,30,.08), 0 12px 40px rgba(60,50,30,.13);
+  }
+  .card::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .05;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0.42 0 0 0 0 0.38 0 0 0 0 0.30 0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  .card > * { position: relative; z-index: 1; }
+
+  .letterhead {
+    display: flex; justify-content: space-between; align-items: baseline;
+    border-bottom: 1px solid #1A1A1A; padding-bottom: 10px;
+  }
+  .letterhead h1 {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-weight: 300; font-size: 21px; color: #1A1A1A; margin: 0;
+  }
+  .label, .letterhead .meta {
+    font-size: 10px; letter-spacing: 3px; text-transform: uppercase; color: #313131;
+  }
+  .penstamp {
+    font-family: 'Caveat', 'Segoe Script', 'Bradley Hand', cursive;
+    font-weight: 500; font-size: 22px; color: #274690;
+    text-align: right; margin: 8px 0 0; transform: rotate(-1deg);
+  }
+
+  .headline {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-weight: 300; font-size: 25px; line-height: 1.4; color: #1A1A1A;
+    margin: 18px 0 8px;
+  }
+  .intro { font-size: 14px; line-height: 1.7; margin: 0 0 30px; }
+
+  .field { margin-bottom: 26px; }
+  .field .label { display: block; margin-bottom: 2px; }
+
+  input[type="text"], input[type="email"], input[type="tel"], textarea {
+    width: 100%;
+    border: none; border-bottom: 1px solid #e6dfcf; border-radius: 0;
+    background: transparent;
+    font-family: 'Caveat', 'Segoe Script', 'Bradley Hand', cursive;
+    font-weight: 500; font-size: 23px; line-height: 1.35; color: #274690;
+    padding: 4px 2px 6px;
+    transform: rotate(-0.5deg);
+    outline: none; resize: none; overflow: hidden;
+  }
+  input:focus, textarea:focus { border-bottom-color: #A08C72; }
+  ::placeholder {
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-weight: 300; font-size: 13px; color: #b8b0a0;
+    letter-spacing: 0; transform: none;
+  }
+  textarea { min-height: 64px; }
+
+  .pair { display: flex; gap: 24px; }
+  .pair .field { flex: 1; }
+
+  .choices { display: flex; flex-wrap: wrap; gap: 8px 22px; padding-top: 6px; }
+  .choices input[type="radio"] { position: absolute; opacity: 0; width: 0; height: 0; }
+  .choices label {
+    cursor: pointer;
+    font-size: 12px; letter-spacing: 1px; color: #8d8574;
+    padding: 3px 1px; border-bottom: 1px solid transparent;
+  }
+  .choices input[type="radio"]:checked + label {
+    font-family: 'Caveat', 'Segoe Script', 'Bradley Hand', cursive;
+    font-weight: 600; font-size: 21px; letter-spacing: 0; color: #274690;
+    border-bottom: 1px solid #274690;
+    transform: rotate(-1deg); display: inline-block;
+  }
+  .choices input[type="radio"]:focus-visible + label { outline: 1px dotted #A08C72; outline-offset: 3px; }
+
+  .musts { counter-reset: must; }
+  .musts .mustrow { display: flex; align-items: baseline; gap: 10px; }
+  .musts .mustrow::before {
+    counter-increment: must; content: counter(must) ".";
+    font-family: 'Cormorant Garamond', Georgia, serif; font-size: 16px; color: #A08C72;
+    width: 16px; flex: none;
+  }
+
+  .ink { font-family: 'Caveat', cursive; font-weight: 600; font-size: 22px; color: #274690;
+    transform: rotate(-.5deg); transform-origin: left bottom; }
+  .ink .caret { display: inline-block; width: 2px; height: .85em; background: #274690;
+    vertical-align: -2px; margin-left: 1px; animation: blink .7s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  @keyframes settle { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  .appearing { animation: settle .45s ease; }
+
+  .footnote { font-size: 13px; line-height: 1.7; margin: 30px 0 0; }
+  .sign {
+    font-family: 'Caveat', 'Segoe Script', 'Bradley Hand', cursive;
+    font-weight: 500; font-size: 29px; color: #274690;
+    margin: 14px 0 0; transform: rotate(-1deg); display: inline-block;
+  }
+
+  .actions { display: flex; gap: 14px; justify-content: center; margin-top: 30px; }
+  .actions button {
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-weight: 300; font-size: 11px; letter-spacing: 3px; text-transform: uppercase;
+    color: #313131; background: #faf6ec; border: 1px solid #d8d2c6; border-radius: 1px;
+    padding: 13px 26px; cursor: pointer;
+  }
+  .actions button:hover { border-color: #A08C72; }
+  .actions button.primary { background: #1A1A1A; color: #faf6ec; border-color: #1A1A1A; }
+
+  footer {
+    text-align: center; font-size: 11px; letter-spacing: 1px; line-height: 1.9;
+    color: #313131; margin-top: 36px;
+  }
+
+  @media print {
+    body { background: #faf6ec; }
+    .wrap { max-width: none; padding: 0; }
+    .card { border: none; box-shadow: none; padding: 24px 8px; }
+    .no-print { display: none !important; }
+    .logo { filter: none; }
+    @page { margin: 18mm; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="logo" role="img" aria-label="RESLU"></div>
+
+  <form class="card" method="post" action="#" id="brief">
+
+    <div class="letterhead">
+      <h1>Project Brief</h1>
+      <span class="meta" id="residence">RESLU · ADELAIDE</span>
+    </div>
+    <div class="penstamp" id="datestamp"></div>
+
+    <p class="headline">Before you visit, tell us <em>a little</em>.</p>
+    <p class="intro">Ten minutes, nothing formal. Your answers are printed and waiting on the table when you arrive.</p>
+
+    <div class="pair">
+      <div class="field">
+        <label class="label" for="first">First name</label>
+        <input type="text" id="first" name="first_name" autocomplete="given-name">
+      </div>
+      <div class="field">
+        <label class="label" for="last">Last name</label>
+        <input type="text" id="last" name="last_name" autocomplete="family-name">
+      </div>
+    </div>
+
+    <div class="field">
+      <label class="label" for="hoping">What are you hoping to build?</label>
+      <textarea id="hoping" name="hoping" rows="2" placeholder="In your own words"></textarea>
+    </div>
+
+    <div class="field">
+      <label class="label" for="spaces">A space you love being in</label>
+      <textarea id="spaces" name="favourite_spaces" rows="2" placeholder="A house, a cafe, a room from years ago · and what it is about it"></textarea>
+    </div>
+
+    <div class="field">
+      <label class="label" for="materials">Materials you are drawn to</label>
+      <input type="text" id="materials" name="materials" placeholder="Timber, stone, brick, linen · whatever comes to mind">
+    </div>
+
+    <div class="field">
+      <label class="label" for="feel">What should the home feel like?</label>
+      <input type="text" id="feel" name="feel" placeholder="The first words that come to mind">
+    </div>
+
+    <div class="field musts">
+      <span class="label">Three things the home must have</span>
+      <div class="mustrow"><input type="text" name="must_1" aria-label="Must have one"></div>
+      <div class="mustrow"><input type="text" name="must_2" aria-label="Must have two"></div>
+      <div class="mustrow"><input type="text" name="must_3" aria-label="Must have three"></div>
+    </div>
+
+    <div class="field">
+      <label class="label" for="bringing">Anything you are bringing along?</label>
+      <textarea id="bringing" name="bringing" rows="2" placeholder="Photos, plans, a folder of ideas"></textarea>
+    </div>
+
+    <p class="footnote">Stuck on a question? Leave it blank. That is what the visit is for.</p>
+    <p class="sign">Phillip — RESLU</p>
+
+    <div class="actions no-print">
+      <button type="submit" class="primary">Send your brief</button>
+      <button type="button" onclick="window.print()">Print</button>
+    </div>
+
+  </form>
+
+  <footer>
+    RESLU · Design &amp; Build Studio<br>
+    219 Sturt Street, Adelaide SA 5000 · BLD 299219<br>
+    One project. One team. One standard.
+  </footer>
+
+</div>
+
+<script>
+  var d = new Date();
+  document.getElementById('datestamp').textContent = d.getDate() + '.' + (d.getMonth() + 1) + '.' + String(d.getFullYear()).slice(-2);
+
+  var last = document.getElementById('last');
+  var residence = document.getElementById('residence');
+  last.addEventListener('input', function () {
+    var v = last.value.trim();
+    residence.textContent = v
+      ? 'THE ' + (v.charAt(0).toUpperCase() + v.slice(1)).toUpperCase() + ' RESIDENCE'
+      : 'RESLU · ADELAIDE';
+  });
+
+  document.querySelectorAll('textarea').forEach(function (t) {
+    t.addEventListener('input', function () {
+      t.style.height = 'auto';
+      t.style.height = t.scrollHeight + 'px';
+    });
+  });
+
+  /* ============================================================
+     The fold — production sequence per RESLU-Paper-Animation-Brief.
+     A film of real paper (begin-fold.mp4) plays over the sheet;
+     the emboss and pen lines are added once the paper is at rest.
+     CSS fold is the fallback (video not buffered / reduced motion).
+     ============================================================ */
+
+  var FV = { sx0:.332, sx1:.670, sy0:.108, sy1:.886,
+             px0:.319, px1:.684, py0:.351, py1:.789 };
+  var VIDEO_SRC = 'https://www.reslu.com.au/begin-fold.mp4';
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var foldVideo = null;
+  function preloadFold() {
+    if (foldVideo || reduced) return;
+    foldVideo = document.createElement('video');
+    foldVideo.muted = true;
+    foldVideo.playsInline = true;
+    foldVideo.setAttribute('playsinline', '');
+    foldVideo.preload = 'auto';
+    foldVideo.src = VIDEO_SRC;
+    foldVideo.load();
+  }
+  /* Preload on first interaction so it's buffered before it's needed */
+  document.querySelectorAll('input, textarea').forEach(function (el) {
+    el.addEventListener('focus', preloadFold, { once: true });
+  });
+
+  /* №1 — the pen (production code) */
+  function write(el, text, done) {
+    if (reduced) { el.textContent = text; done && done(); return; }
+    el.innerHTML = '';
+    var caret = document.createElement('span');
+    caret.className = 'caret';
+    el.append(caret);
+    var i = 0;
+    var t = setInterval(function () {
+      if (i < text.length) {
+        caret.insertAdjacentText('beforebegin', text[i++]);
+      } else {
+        clearInterval(t);
+        setTimeout(function () { caret.remove(); done && done(); }, 350);
+      }
+    }, 36);
+  }
+
+  var form = document.getElementById('brief');
+  var sent = false;
+
+  function residenceName() {
+    var v = last.value.trim();
+    return v ? 'The ' + v.charAt(0).toUpperCase() + v.slice(1) + ' Residence' : 'Your brief';
+  }
+
+  function embossEl(w, h, mt) {
+    var e = document.createElement('div');
+    e.className = 'appearing';
+    e.style.cssText = 'width:' + w + 'px;height:' + h + 'px;margin:' + mt + 'px auto 8px;' +
+      "-webkit-mask:url('https://www.reslu.com.au/reslu-logo.png') center/contain no-repeat;" +
+      "mask:url('https://www.reslu.com.au/reslu-logo.png') center/contain no-repeat;" +
+      'background:#e2dac5;' +
+      'filter:drop-shadow(0 -2px 1px rgba(255,255,255,.9)) drop-shadow(0 2px 2px rgba(60,50,30,.55)) drop-shadow(0 5px 8px rgba(60,50,30,.22));';
+    return e;
+  }
+
+  /* Emboss + pen lines over the resting packet, then the thank-you below */
+  function finish(zone, px, py, pw, ph) {
+    var ov = document.createElement('div');
+    ov.style.cssText = 'position:absolute;left:' + px + 'px;top:' + py + 'px;width:' + pw + 'px;height:' + ph +
+      'px;z-index:3;transform:translateZ(0);text-align:center;' +
+      'display:flex;flex-direction:column;align-items:center;justify-content:center;';
+    ov.appendChild(embossEl(84, 34, 0));
+    var l1 = document.createElement('div');
+    l1.className = 'ink';
+    l1.style.cssText = 'font-size:24px;display:inline-block;';
+    var l2 = document.createElement('div');
+    l2.className = 'ink';
+    l2.style.cssText = 'font-size:18px;display:block;';
+    ov.appendChild(l1);
+    ov.appendChild(l2);
+    zone.appendChild(ov);
+
+    var stamp = document.getElementById('datestamp').textContent;
+    write(l1, residenceName(), function () {
+      write(l2, 'on file · ' + stamp, function () {
+        var first = (form.first_name && form.first_name.value.trim()) ? ', ' + form.first_name.value.trim() : '';
+        var t = document.createElement('div');
+        t.className = 'appearing';
+        t.style.cssText = 'text-align:center;margin-top:20px;';
+        t.innerHTML =
+          '<p style="font-family:\'Helvetica Neue\',Helvetica,Arial,sans-serif;font-size:10px;letter-spacing:3px;color:#313131;margin:0;">YOUR BRIEF, ON FILE</p>' +
+          '<p style="font-family:\'Helvetica Neue\',Helvetica,Arial,sans-serif;font-weight:300;font-size:14px;line-height:1.7;color:#313131;margin:14px auto 0;max-width:380px;">Thank you' + first + '. Your answers will be printed and on the table when you arrive.</p>' +
+          '<p class="ink" style="font-size:29px;transform:rotate(-2deg);display:inline-block;margin:10px 0 0;">Phillip — RESLU</p>';
+        zone.parentNode.insertBefore(t, zone.nextSibling);
+      });
+    });
+  }
+
+  /* №3 — the video fold */
+  function videoFold() {
+    var W = form.offsetWidth, H = form.offsetHeight;
+    var vw = W / (FV.sx1 - FV.sx0), vh = H / (FV.sy1 - FV.sy0);
+    var M = 48; /* visible margin around the sheet, feathered into the page */
+
+    var zone = document.createElement('div');
+    zone.style.cssText = 'position:relative;width:' + W + 'px;height:' + H + 'px;margin:0 auto;';
+
+    var v = foldVideo;
+    v.style.cssText = 'position:absolute;width:' + vw + 'px;height:' + vh + 'px;left:' + (-FV.sx0 * vw) +
+      'px;top:' + (-FV.sy0 * vh) + 'px;z-index:1;';
+    /* Safari: clip on the video element itself, in px against its own box */
+    var clip = 'inset(' + Math.max(0, FV.sy0 * vh - M) + 'px ' + Math.max(0, (1 - FV.sx1) * vw - M) + 'px ' +
+      Math.max(0, (1 - FV.sy1) * vh - M) + 'px ' + Math.max(0, FV.sx0 * vw - M) + 'px)';
+    v.style.clipPath = clip;
+    v.style.webkitClipPath = clip;
+    zone.appendChild(v);
+
+    /* Feather the video edges into the bone page */
+    ['top', 'bottom', 'left', 'right'].forEach(function (side) {
+      var f = document.createElement('div');
+      var base = 'position:absolute;z-index:2;pointer-events:none;transform:translateZ(0);';
+      if (side === 'top' || side === 'bottom') {
+        f.style.cssText = base + 'left:' + (-M) + 'px;right:' + (-M) + 'px;height:' + M + 'px;' + side + ':' + (-M) +
+          'px;background:linear-gradient(to ' + (side === 'top' ? 'bottom' : 'top') + ',#EDE8DE,rgba(237,232,222,0));';
+      } else {
+        f.style.cssText = base + 'top:' + (-M) + 'px;bottom:' + (-M) + 'px;width:' + M + 'px;' + side + ':' + (-M) +
+          'px;background:linear-gradient(to ' + (side === 'left' ? 'right' : 'left') + ',#EDE8DE,rgba(237,232,222,0));';
+      }
+      zone.appendChild(f);
+    });
+
+    form.style.display = 'none';
+    form.parentNode.insertBefore(zone, form);
+
+    var finished = false;
+    v.addEventListener('timeupdate', function () {
+      if (!finished && v.duration && v.currentTime > v.duration - 0.55) {
+        finished = true;
+        finish(zone,
+          (FV.px0 - FV.sx0) * vw, (FV.py0 - FV.sy0) * vh,
+          (FV.px1 - FV.px0) * vw, (FV.py1 - FV.py0) * vh);
+      }
+    });
+    v.play().catch(function () { zone.remove(); form.style.display = ''; cssFold(); });
+  }
+
+  /* Fallback fold — pure CSS letter-fold, or instant under reduced motion */
+  function cssFold() {
+    var W = form.offsetWidth, H = form.offsetHeight, ph = Math.round(H / 3);
+    var stage = document.createElement('div');
+    stage.style.cssText = 'perspective:1600px;position:relative;width:' + W + 'px;margin:0 auto;';
+    form.style.display = 'none';
+    form.parentNode.insertBefore(stage, form);
+
+    function sheet() {
+      var s = document.createElement('div');
+      s.className = 'sheetpanel';
+      s.style.cssText = 'height:' + ph + 'px;background:#faf6ec;border:1px solid #e6dfcf;box-sizing:border-box;' +
+        'position:relative;box-shadow:0 1px 2px rgba(60,50,30,.08),0 12px 40px rgba(60,50,30,.13);';
+      return s;
+    }
+    function rest() {
+      stage.innerHTML = '';
+      var s = sheet();
+      stage.appendChild(s);
+      stage.style.height = ph + 'px';
+      finish(stage, 0, 0, W, ph);
+    }
+    if (reduced) { rest(); return; }
+
+    var top = sheet(), mid = sheet(), bot = sheet();
+    top.style.transformOrigin = 'center bottom'; top.style.zIndex = 3;
+    bot.style.transformOrigin = 'center top'; bot.style.zIndex = 2;
+    [top, bot].forEach(function (p) { p.style.transition = 'transform .9s cubic-bezier(.65,.05,.35,1)'; });
+    stage.appendChild(top); stage.appendChild(mid); stage.appendChild(bot);
+
+    setTimeout(function () { top.style.transform = 'rotateX(-179deg)'; }, 80);
+    setTimeout(function () { bot.style.transform = 'rotateX(179deg)'; }, 1050);
+    setTimeout(rest, 2100);
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (sent) return;
+    sent = true;
+    /* Wired to POST /api/brief-submit/[token] (Spec's own lead-flow
+       round). Token is read from the URL itself (/brief/<token>) so
+       this file stays identical for every lead — no server-side
+       templating needed for the endpoint. Fire-and-forget: a failed
+       POST never blocks the fold animation below, since the animation
+       is the client's only visible confirmation and must always play. */
+    var __briefToken = location.pathname.split('/').filter(Boolean).pop();
+    fetch('/api/brief-submit/' + encodeURIComponent(__briefToken), { method: 'POST', body: new FormData(form) }).catch(function () {});
+
+    if (reduced) { cssFold(); return; }
+    preloadFold();
+    var started = false;
+    function startVideo() {
+      if (started) return;
+      started = true;
+      clearTimeout(fallbackTimer);
+      videoFold();
+    }
+    var fallbackTimer = setTimeout(function () {
+      if (!started) { started = true; cssFold(); }
+    }, 1400);
+    if (foldVideo.readyState >= 3) startVideo();
+    else {
+      foldVideo.addEventListener('canplaythrough', startVideo);
+      foldVideo.addEventListener('canplay', startVideo);
+    }
+  });
+</script>
+</body>
+</html>

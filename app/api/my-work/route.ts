@@ -5,7 +5,9 @@ import { groupMyWorkItems } from "@/lib/my-work";
 import { computeInsuranceStatus } from "@/lib/insurance";
 import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
 import { deriveOrderBy, formatOrderByWorksDate, type OrderByContactInput, type OrderByItemInput, type WorksDateSource } from "@/lib/order-by";
+import { FALLBACK_CPD_DEFAULTS, computeCpdYearWindow, formatPoints, isBehindPace, sumPoints } from "@/lib/cpd";
 import type { ExportPresetRow } from "@/types/round-export-batch";
+import type { CpdDefaults } from "@/types/cpd";
 import type { MyWorkItem, MyWorkResponse } from "@/types/phase-12a-b";
 
 export const runtime = "nodejs";
@@ -86,8 +88,17 @@ function formatWorksDate(dateOnly: string): string {
  *      pricing data). Purely additive — mirrors office_task/
  *      insurance_expiring's exact "new source block, nothing else
  *      touched" pattern.
+ *   10. CPD tracker round — a single gentle pace nudge, per-user, NOT
+ *       admin-gated, when the caller's own CPD points-to-date (current
+ *       licence-year window, cpd_entries) are behind a straight-line
+ *       pro-rata pace toward app_settings('cpd_defaults').annual_target
+ *       — see lib/cpd.ts isBehindPace() for the exact rule ("only after
+ *       2+ months into the year"). At most ONE item, `due: null` (lands
+ *       in "No date" — there's no natural due date for a pace check).
+ *       Purely additive, same "new source block, nothing else touched"
+ *       shape as every source above.
  *
- * None of these eight sources require a project-membership check (this
+ * None of these ten sources require a project-membership check (this
  * codebase has no per-project team assignment — every team member sees
  * every project, per BUILD-SPEC.md §Security's Phase 1 "all team equal"
  * baseline), so no extra ownership filtering is needed beyond the
@@ -565,6 +576,34 @@ export async function GET() {
         }
       }
     }
+  }
+
+  // ---- 10. CPD nudge (pro-rata pace, per-user, not admin-gated) ----
+  const { data: cpdDefaultsRow } = await supabase
+    .from("app_settings")
+    .select("value")
+    .eq("key", "cpd_defaults")
+    .maybeSingle();
+  const cpdDefaults = (cpdDefaultsRow?.value as CpdDefaults | undefined) ?? FALLBACK_CPD_DEFAULTS;
+  const cpdWindow = computeCpdYearWindow(new Date(), cpdDefaults.year_start_month);
+  const { data: myCpdEntries } = await supabase
+    .from("cpd_entries")
+    .select("points")
+    .eq("user_id", userId)
+    .is("deleted_at", null)
+    .gte("activity_date", cpdWindow.start)
+    .lte("activity_date", cpdWindow.end);
+  const cpdPointsToDate = sumPoints(myCpdEntries ?? []);
+  if (isBehindPace(cpdPointsToDate, cpdDefaults.annual_target, new Date(), cpdWindow)) {
+    items.push({
+      kind: "cpd_nudge",
+      id: "cpd-nudge",
+      title: `CPD: ${formatPoints(cpdPointsToDate)} / ${formatPoints(cpdDefaults.annual_target)} points — behind pace`,
+      project: null,
+      due: null,
+      href: "/cpd",
+      meta: "Continuing Professional Development",
+    });
   }
 
   const groups = groupMyWorkItems(items);

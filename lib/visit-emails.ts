@@ -25,6 +25,11 @@ import { readFile } from "fs/promises";
 import path from "path";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { reportError } from "@/lib/report-error";
+import {
+  isResendConfigured as isResendConfiguredCore,
+  sendViaResend as sendViaResendCore,
+  type ResendAttachment,
+} from "@/lib/resend";
 import type {
   VisitEmailDetail,
   VisitEmailRecordType,
@@ -69,7 +74,7 @@ export async function loadTemplate(name: VisitEmailTemplateName): Promise<string
 // Merge
 // ------------------------------------------------------------
 
-const DEFAULT_PHILLIP_PHONE = "+61 439 870 594";
+export const DEFAULT_PHILLIP_PHONE = "+61 439 870 594";
 
 export interface VisitEmailMergeData {
   first_name?: string | null;
@@ -80,6 +85,20 @@ export interface VisitEmailMergeData {
   visit_time?: string | null;
   suburb?: string | null;
   phillip_phone?: string | null;
+  /** Lead flow round (048) — the Google Calendar "render" URL merged
+   * into {{calendar_link}} in BOTH templates' "ADD TO CALENDAR" link.
+   * See lib/ics.ts's leadVisitGoogleCalendarUrl(). Optional/blank-safe
+   * like every other field here — a caller that doesn't build one
+   * (none exist today; every lead-visit trigger site does) just leaves
+   * the literal {{calendar_link}} text in place, per merge()'s own
+   * "unknown placeholder fails visibly" contract below. */
+  calendar_link?: string | null;
+  /** Lead flow round (048) — the tokenised /brief/[token] URL merged
+   * into visit-reminder.html's {{brief_link}} ONLY (visit-
+   * confirmation.html has no such placeholder — see the merge audit in
+   * this round's final report). See lib/lead-brief.ts's
+   * ensureBriefToken()/briefUrlFor(). */
+  brief_link?: string | null;
 }
 
 /**
@@ -100,6 +119,11 @@ export function merge(html: string, data: VisitEmailMergeData): string {
     visit_time: data.visit_time ?? "",
     suburb: data.suburb ?? "",
     phillip_phone: data.phillip_phone ?? DEFAULT_PHILLIP_PHONE,
+    // Lead flow round (048) — both blank-safe like every field above;
+    // see VisitEmailMergeData's own doc comments for which template(s)
+    // actually reference each one.
+    calendar_link: data.calendar_link ?? "",
+    brief_link: data.brief_link ?? "",
   };
   return html.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (whole, key: string) => {
     const v = values[key];
@@ -303,7 +327,28 @@ export function formatVisitTime(iso: string): string {
 // Resend transport — plain fetch, no SDK (BUILD-SPEC.md decision).
 // ------------------------------------------------------------
 
-const RESEND_FROM = "Phillip — RESLU <visits@reslu.com.au>";
+// Lead flow round (048) SUPERSESSION: docs/RESLU-lead-flow-brief.md's
+// own "Sending" section specifies `Aria — RESLU <aria@reslu.com.au>`
+// as the sender identity for the designer's journey (both
+// visit-confirmation.html and visit-reminder.html are now the REAL,
+// brand-approved templates staged in emails/ — see emails/README.md —
+// superseding the r15 "Site-visit lifecycle emails" round's original
+// placeholder identity, `Phillip — RESLU <visits@reslu.com.au>`, kept
+// here only in this comment for the historical record). Reply-To is
+// UNCHANGED (`phillip@reslu.com.au` both before and after this round —
+// the lead-flow brief just confirms the existing choice).
+//
+// This constant is shared by BOTH trigger paths that call sendOrQueue()
+// below — lead site visits (this round's focus) AND project
+// client_events (the r15 "day before" Resend reminder, app/api/visit-
+// emails/run/route.ts) — because both paths render the exact same two
+// template files. No separate sender identity was ever specified for
+// client_events in this round's brief, and forking the FROM address
+// per record_type would fragment brand voice across what a recipient
+// experiences as one email design system (same visual template either
+// way). If client_events ever needs its own identity, that's a future
+// round's explicit decision, not an accidental side effect of this one.
+const RESEND_FROM = "Aria — RESLU <aria@reslu.com.au>";
 const RESEND_REPLY_TO = "phillip@reslu.com.au";
 
 export interface ResendSendResult {
@@ -312,52 +357,56 @@ export interface ResendSendResult {
 }
 
 export function isResendConfigured(): boolean {
-  return !!process.env.RESEND_API_KEY;
+  return isResendConfiguredCore();
 }
 
 /**
- * Sends one HTML email via Resend's REST API. No-op ({ skipped: true,
- * reason: 'no RESEND_API_KEY' }) when the key isn't configured — mirrors
- * lib/gmail/send.ts's isGmailConfigured() no-op contract, so callers
- * (sendOrQueue below) stay dormant until an on-machine engineer sets
- * RESEND_API_KEY, exactly like every other email integration in this
- * codebase. Real send failures (bad key, Resend API error) DO throw —
- * callers must not mark a row 'sent' on a failed call.
+ * Sends one HTML email via Resend's REST API, from this module's own
+ * sender identity (RESEND_FROM above — 'Aria — RESLU
+ * <aria@reslu.com.au>' as of the lead flow round, migration 048; see
+ * that constant's own doc comment for the supersession history). No-op
+ * ({ skipped: true, reason: 'no RESEND_API_KEY' }) when the key isn't
+ * configured — mirrors lib/gmail/send.ts's isGmailConfigured() no-op
+ * contract, so callers (sendOrQueue below) stay dormant until an
+ * on-machine engineer sets RESEND_API_KEY, exactly like every other
+ * email integration in this codebase. Real send failures (bad key,
+ * Resend API error) DO throw — callers must not mark a row 'sent' on a
+ * failed call.
+ *
+ * Client invoicing round: the actual HTTP-fetch transport now lives in
+ * lib/resend.ts (shared with app/api/client-invoices' send route, which
+ * needs its own 'RESLU <accounts@reslu.com.au>' sender identity + PDF
+ * attachments — capabilities this module never needed at the time).
+ * This function is a thin wrapper over that shared core, preserving
+ * this module's own call sites' signature/behaviour (nothing outside
+ * this file imports sendViaResend from here — confirmed by a
+ * full-repo grep before that extraction).
+ *
+ * Lead flow round (048): `attachments` is additive (optional, defaults
+ * to none) — the invite.ics attached to both lead-visit emails (see
+ * lib/lead-brief.ts's buildLeadVisitCalendarAssets()). The
+ * client_events reminder path (app/api/visit-emails/run/route.ts)
+ * simply never passes one, so it is unaffected by this addition.
  */
 export async function sendViaResend({
   to,
   subject,
   html,
+  attachments,
 }: {
   to: string[];
   subject: string;
   html: string;
+  attachments?: ResendAttachment[];
 }): Promise<ResendSendResult> {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) return { skipped: true, reason: "no RESEND_API_KEY" };
-  if (to.length === 0) return { skipped: true, reason: "No recipients" };
-
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: RESEND_FROM,
-      to,
-      reply_to: RESEND_REPLY_TO,
-      subject,
-      html,
-    }),
-    signal: AbortSignal.timeout(10_000),
+  return sendViaResendCore({
+    from: RESEND_FROM,
+    replyTo: RESEND_REPLY_TO,
+    to,
+    subject,
+    html,
+    attachments,
   });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Resend send failed (${res.status}): ${text.slice(0, 300)}`);
-  }
-  return { skipped: false };
 }
 
 // ------------------------------------------------------------
@@ -390,6 +439,15 @@ export interface SendOrQueueInput {
    * pre-formatted onto mergeData by the caller) AND stored raw as the
    * re-send guard's comparison key. */
   visitDatetime: string;
+  /** Lead flow round (048) — the invite.ics attached to this send (both
+   * templates carry an "ADD TO CALENDAR" link, and this is the native
+   * Apple Mail/Outlook equivalent per docs/RESLU-lead-flow-brief.md
+   * build task 5). Optional — the client_events reminder path never
+   * supplies one. Stored inside the row's own `detail` snapshot (see
+   * below) so a QUEUED send (outside the 7am-7pm window, or retried
+   * after a failure) still carries its attachment through to
+   * flushPendingSends()'s later, separate send attempt. */
+  attachments?: ResendAttachment[];
   now?: Date;
 }
 
@@ -428,7 +486,7 @@ export async function sendOrQueue(
   supabase: SupabaseClient,
   input: SendOrQueueInput
 ): Promise<SendOrQueueResult> {
-  const { recordType, recordId, template, to, subject, mergeData, visitDatetime } = input;
+  const { recordType, recordId, template, to, subject, mergeData, visitDatetime, attachments } = input;
   const now = input.now ?? new Date();
 
   if (to.length === 0) {
@@ -451,7 +509,16 @@ export async function sendOrQueue(
     return { action: "duplicate", reason: "Already sent for this visit date/time" };
   }
 
-  const detail: VisitEmailDetail = { ...mergeData, subject, visit_datetime: visitDatetime };
+  const detail: VisitEmailDetail = {
+    ...mergeData,
+    subject,
+    visit_datetime: visitDatetime,
+    // Lead flow round (048) — carried inside `detail` (not just passed
+    // straight to sendViaResend below) so a QUEUED row's later flush
+    // (flushPendingSends, which re-renders from `detail` alone) still
+    // has the attachment to re-send with.
+    ...(attachments && attachments.length > 0 ? { attachments } : {}),
+  };
 
   let html: string;
   try {
@@ -483,7 +550,7 @@ export async function sendOrQueue(
   }
 
   try {
-    const result = await sendViaResend({ to, subject, html });
+    const result = await sendViaResend({ to, subject, html, attachments });
     if (result.skipped) {
       await supabase.from("email_sends").insert({
         record_type: recordType,
@@ -580,6 +647,11 @@ export async function flushPendingSends(
         to,
         subject: detail.subject ?? "RESLU — your site visit",
         html,
+        // Lead flow round (048) — carried through from the original
+        // sendOrQueue() call's `detail.attachments` snapshot (see that
+        // function's own doc comment); undefined for every pre-048 row
+        // and every client_events send, same as before this round.
+        attachments: detail.attachments ?? undefined,
       });
       if (sendResult.skipped) {
         await supabase.from("email_sends").update({ status: "skipped" }).eq("id", row.id);

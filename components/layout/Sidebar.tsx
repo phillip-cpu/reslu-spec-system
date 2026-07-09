@@ -23,6 +23,15 @@ const NAV_ITEMS = [
   { label: "Office", href: "/office" },
   { label: "Search", href: "/search" },
   { label: "Library", href: "/library" },
+  // CPD tracker round — BUILD-SPEC.md "CPD point tracker". Team-visible
+  // (every signed-in user tracks their own CPD entries; the admin-only
+  // "All team" view is gated inside the page/API, not here — same
+  // pattern as My Work's admin-only sources). Placed between Library
+  // and Address Book per this round's own placement judgement call —
+  // both neighbours are reference/directory-style pages rather than
+  // "what needs doing" surfaces (My Work/Office), so a personal
+  // record-keeping page reads naturally in this cluster.
+  { label: "CPD", href: "/cpd" },
   { label: "Address Book", href: "/contacts" },
   // Week 10: admin-only (leads are "admin-only, financial-adjacent"
   // per BUILD-SPEC.md) — filtered out below for non-admins. This is

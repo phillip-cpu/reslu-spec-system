@@ -5,6 +5,7 @@ import {
   adelaideDateString,
   addDaysToDateString,
   adelaideDayRangeUtc,
+  DEFAULT_PHILLIP_PHONE,
   flushPendingSends,
   formatVisitDate,
   formatVisitTime,
@@ -12,6 +13,8 @@ import {
   sendOrQueue,
   suburbFrom,
 } from "@/lib/visit-emails";
+import { briefUrlFor, buildLeadVisitCalendarAssets, ensureBriefToken } from "@/lib/lead-brief";
+import { reportError } from "@/lib/report-error";
 import type { VisitEmailsRunResult } from "@/types/visit-emails";
 
 export const runtime = "nodejs";
@@ -24,6 +27,9 @@ interface LeadReminderRow {
   site_visit_date: string | null;
   site_visit_location: string | null;
   location: string | null;
+  // Lead flow round (048).
+  brief_token: string | null;
+  visit_ics_sequence: number;
 }
 
 interface ClientEventReminderRow {
@@ -50,16 +56,34 @@ interface ProjectRow {
  *   1. flushPendingSends() — every email_sends row queued 'pending'
  *      (outside-window sends, or in-window sends that failed and were
  *      queued for retry) whose scheduled_for is now due.
- *   2. Reminder sweep — every non-cancelled lead site visit / client
- *      event happening TOMORROW (Adelaide-local calendar date) gets a
- *      visit-reminder.html send attempt via sendOrQueue(); the same
- *      guard that powers the confirmation send (see
- *      lib/visit-emails.ts's sendOrQueue doc comment) makes this
- *      idempotent across repeated cron runs on the same day — a visit
- *      already reminded for its CURRENT date/time is a silent
- *      'duplicate' no-op, not a second email. A cancelled visit
+ *   2. Reminder sweep — TWO SEPARATE windows as of the lead flow round
+ *      (migration 048), deliberately no longer sharing one "tomorrow"
+ *      date:
+ *        - LEAD site visits: docs/RESLU-lead-flow-brief.md build task 4
+ *          calls for a reminder "48 hours before the visit." This is a
+ *          once-daily cron (see the vercel.json line below), so an
+ *          exact 48h-out sweep is impossible — the honest approximation
+ *          is "the Adelaide calendar day two days from today"
+ *          (`addDaysToDateString(adelaideToday, 2)`), which lands
+ *          anywhere from ~36h to ~60h before the visit depending what
+ *          time of day the visit itself is booked for, always inside a
+ *          day of the "48 hours" the brief asks for. Carries
+ *          {{brief_link}} (lazily-minted /brief/[token], see
+ *          lib/lead-brief.ts) and an invite.ics attachment — see the
+ *          lead loop below.
+ *        - CLIENT EVENTS: UNCHANGED from the r15 "Site-visit lifecycle
+ *          emails" round — still TOMORROW (`+1` day), since this
+ *          round's brief (docs/RESLU-lead-flow-brief.md) only ever
+ *          discusses the lead site-visit journey; client_events' own
+ *          brief (docs/RESLU-Spec-Visit-Emails-Brief.md) explicitly
+ *          says "the day before," and nothing in this round's
+ *          instructions asks that to change.
+ *      Both use sendOrQueue()'s same guard (see lib/visit-emails.ts's
+ *      doc comment) to stay idempotent across repeated daily cron
+ *      runs — a visit already reminded for its CURRENT date/time is a
+ *      silent 'duplicate' no-op, not a second email. A cancelled visit
  *      (site_visit_date cleared, or the client_event soft-deleted)
- *      simply never matches the range query below, so it's naturally
+ *      simply never matches its range query below, so it's naturally
  *      excluded without any extra "is it cancelled" check.
  *
  * Auth: `authorization: Bearer ${CRON_SECRET}` (Vercel Cron's actual
@@ -76,10 +100,13 @@ interface ProjectRow {
  * the full write-up):
  *   { "path": "/api/visit-emails/run", "schedule": "45 21 * * *" }
  * 21:45 UTC = 07:15 ACST (South Australia standard time, winter) — a
- * few minutes after the 7am window opens, so the "tomorrow" reminder
- * sweep and any overnight-queued pending sends flush promptly once
- * sending is allowed. DST CAVEAT (same limitation already documented
- * on every other fixed-UTC cron line in this codebase, e.g. README.md's
+ * few minutes after the 7am window opens, so both reminder sweeps
+ * (lead site visits ~2 days out, client_events the day before) and any
+ * overnight-queued pending sends flush promptly once sending is
+ * allowed. Unchanged by the lead flow round (048) — still one daily
+ * cron line covering both windows, since both are computed from the
+ * SAME `now` inside one `handle()` call. DST CAVEAT (same limitation
+ * already documented on every other fixed-UTC cron line in this codebase, e.g. README.md's
  * "Daily Brief cron" section): this fires at 08:15 ACDT during South
  * Australia's daylight-saving window (roughly October-April), not
  * 7:15am, since Vercel Cron always runs in UTC with no DST adjustment.
@@ -127,17 +154,24 @@ async function handle(request: NextRequest) {
 
   const reminders = { sent: 0, queued: 0, skipped: 0 };
 
+  // Lead flow round (048) — see this route's own header comment for
+  // why leads and client_events now use DIFFERENT day offsets.
+  const leadReminderDate = addDaysToDateString(adelaideDateString(now), 2);
+  const { start: leadStart, end: leadEnd } = adelaideDayRangeUtc(leadReminderDate);
+
   const tomorrow = addDaysToDateString(adelaideDateString(now), 1);
   const { start, end } = adelaideDayRangeUtc(tomorrow);
 
   // ---- Lead site visits ----
   const { data: leadRows } = await supabase
     .from("leads")
-    .select("id,first_name,surname_project,email,site_visit_date,site_visit_location,location")
+    .select(
+      "id,first_name,surname_project,email,site_visit_date,site_visit_location,location,brief_token,visit_ics_sequence"
+    )
     .is("deleted_at", null)
     .not("site_visit_date", "is", null)
-    .gte("site_visit_date", start.toISOString())
-    .lt("site_visit_date", end.toISOString());
+    .gte("site_visit_date", leadStart.toISOString())
+    .lt("site_visit_date", leadEnd.toISOString());
 
   for (const lead of (leadRows ?? []) as LeadReminderRow[]) {
     if (!lead.email || !lead.site_visit_date) {
@@ -145,28 +179,65 @@ async function handle(request: NextRequest) {
       continue;
     }
     const visitDatetime = lead.site_visit_date;
-    const result = await sendOrQueue(supabase, {
-      recordType: "lead",
-      recordId: lead.id,
-      template: "visit-reminder",
-      to: [lead.email],
-      subject: `Your site visit tomorrow — ${formatVisitDate(visitDatetime)}`,
-      mergeData: {
-        first_name: lead.first_name,
-        last_name: leadLastName(lead.surname_project),
-        visit_date: formatVisitDate(visitDatetime),
-        visit_time: formatVisitTime(visitDatetime),
-        suburb: suburbFrom(lead.site_visit_location || lead.location),
-      },
-      visitDatetime,
-      now,
-    });
-    if (result.action === "sent") reminders.sent++;
-    else if (result.action === "queued") reminders.queued++;
-    else reminders.skipped++;
+
+    // Per-lead try/catch: ensureBriefToken() can now throw on a failed
+    // write (see its own comment — it used to silently hand back an
+    // unpersisted token) rather than sending a dead {{brief_link}}.
+    // Without this guard, one lead's DB hiccup would throw out of the
+    // loop and skip every remaining lead's reminder for the day.
+    try {
+      // {{brief_link}} — mint the token lazily on this, its first real
+      // need (docs/RESLU-lead-flow-brief.md build task 1 + this round's
+      // own BUILD instructions: "Token: generated lazily when the
+      // reminder email builds {{brief_link}}"). ensureBriefToken() is a
+      // no-op read when the lead already has one (every reminder after
+      // the first for this lead).
+      const briefToken = await ensureBriefToken(supabase, lead.id, lead.brief_token);
+      const briefLink = briefUrlFor(briefToken);
+
+      // {{calendar_link}} + invite.ics — current visit_ics_sequence, NO
+      // increment (a reminder never changes the visit's date/time; only
+      // a reschedule via PATCH /api/leads/[id] increments the sequence —
+      // see that route's own doc comment).
+      const { calendarLink, icsAttachment } = buildLeadVisitCalendarAssets(
+        lead.id,
+        visitDatetime,
+        lead.visit_ics_sequence ?? 0,
+        DEFAULT_PHILLIP_PHONE
+      );
+
+      const result = await sendOrQueue(supabase, {
+        recordType: "lead",
+        recordId: lead.id,
+        template: "visit-reminder",
+        to: [lead.email],
+        // No longer says "tomorrow" — the reminder now fires ~2 days out
+        // (see this route's own header comment), so that word would be
+        // inaccurate for this record type specifically.
+        subject: `Your site visit — ${formatVisitDate(visitDatetime)}`,
+        mergeData: {
+          first_name: lead.first_name,
+          last_name: leadLastName(lead.surname_project),
+          visit_date: formatVisitDate(visitDatetime),
+          visit_time: formatVisitTime(visitDatetime),
+          suburb: suburbFrom(lead.site_visit_location || lead.location),
+          calendar_link: calendarLink,
+          brief_link: briefLink,
+        },
+        visitDatetime,
+        attachments: [icsAttachment],
+        now,
+      });
+      if (result.action === "sent") reminders.sent++;
+      else if (result.action === "queued") reminders.queued++;
+      else reminders.skipped++;
+    } catch (err) {
+      await reportError("visit-emails", err);
+      reminders.skipped++;
+    }
   }
 
-  // ---- Client events ----
+  // ---- Client events (UNCHANGED — still "tomorrow"; see header comment) ----
   const { data: eventRows } = await supabase
     .from("client_events")
     .select("id,project_id,starts_at,location")

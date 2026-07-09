@@ -67,6 +67,13 @@ export async function updateSession(request: NextRequest) {
     // the auth-redirect so trades (no session) and Vercel Cron reach them.
     pathname.startsWith("/trade") ||
     pathname.startsWith("/api/trade") ||
+    // Lead flow round (048): /brief/[token] is a public, token-gated
+    // pre-visit questionnaire page (same shape as /portal, /trade
+    // above); /api/brief-submit/[token] validates the token itself.
+    // Without this, every lead following their emailed brief link gets
+    // bounced to /login before the route handler ever runs.
+    pathname.startsWith("/brief") ||
+    pathname.startsWith("/api/brief-submit") ||
     pathname.startsWith("/_next") ||
     pathname.startsWith("/favicon") ||
     pathname.startsWith("/reslu-logo") ||

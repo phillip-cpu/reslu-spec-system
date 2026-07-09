@@ -1294,6 +1294,77 @@ const TOOLS = [
       });
     },
   },
+  // ------------------------------------------------------------
+  // CPD tracker round (BUILD-SPEC.md "CPD point tracker"). Per
+  // docs/ARIA.md's "CPD logging" section: when a webinar/course
+  // confirmation email lands in the shared inbox, Aria logs it here
+  // rather than leaving it for manual entry. Thin fetch to POST
+  // /api/cpd, same shape as every create_* tool above — the actual
+  // validation/year-window math lives in lib/cpd.ts, never duplicated
+  // here.
+  //
+  // Every cpd_entries row needs a user_id (migration 047, not null),
+  // but Aria only ever knows WHOSE inbox the confirmation email landed
+  // in as an email address, not a profiles.id — so this tool resolves
+  // user_email against GET /api/profiles first (same "fetch a live
+  // list, then case-insensitive exact-match the email" pattern
+  // create_office_task/create_design_task already use for
+  // assignee_email), then passes the resolved id as POST /api/cpd's
+  // admin-only `user_id` field. Aria's own account is admin (see
+  // list_leads' doc comment), so this override is honoured server-side
+  // — see that route's own doc comment for why a non-admin caller could
+  // never do this.
+  //
+  // user_email defaults to Phillip's address when omitted (documented
+  // here AND in docs/ARIA.md/README.md — CPD tracking launched with
+  // exactly one licensed team member using it day-to-day; extend this
+  // default, or start requiring user_email, once a second person is
+  // regularly logging CPD via Aria).
+  //
+  // Evidence attachment is DEFERRED — this tool never sets
+  // evidence_path (that needs the two-step signed-upload flow, which
+  // has no natural fit inside a single MCP tool call over a chat
+  // transcript); logging the confirmation email's existence via
+  // `notes` is enough for now, per this round's brief ("evidence attach
+  // deferred to her email pipeline later").
+  // ------------------------------------------------------------
+  {
+    name: "add_cpd_entry",
+    description:
+      "Log a completed CPD (Continuing Professional Development) activity — e.g. from a webinar/course confirmation email. Resolves user_email against the team roster to attribute the entry (defaults to phillip@reslu.com.au if omitted — CPD tracking currently has one regular user). Does NOT attach evidence files (deferred — a future round will wire this into the email pipeline); mention the confirmation email in `notes` instead, e.g. 'Confirmation email from Master Builders, 10 Jul 2026'.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        activity_title: { type: "string", description: "e.g. 'AS/NZS bathroom waterproofing webinar'" },
+        provider: { type: "string", description: "Optional — the training provider/organiser" },
+        activity_date: { type: "string", description: "ISO date, YYYY-MM-DD — when the activity took place" },
+        points: { type: "number", description: "CPD points/hours earned, must be > 0 (fractional allowed, e.g. 1.5)" },
+        category: {
+          type: "string",
+          description: "Optional free text — e.g. 'Technical', 'Business', 'Compliance', 'Safety' (suggestions only, not enforced)",
+        },
+        notes: { type: "string", description: "Optional — e.g. a reference to the confirmation email this was logged from" },
+        user_email: {
+          type: "string",
+          description: "Team member's email to attribute this entry to. Omit to default to phillip@reslu.com.au.",
+        },
+      },
+      required: ["activity_title", "activity_date", "points"],
+      additionalProperties: false,
+    },
+    handler: async ({ user_email, ...body }) => {
+      const targetEmail = (user_email || "phillip@reslu.com.au").trim().toLowerCase();
+      const { profiles } = await apiFetch("/api/profiles");
+      const match = profiles.find((p) => p.email && p.email.toLowerCase() === targetEmail);
+      if (!match) {
+        throw new Error(`No team member found with email "${targetEmail}".`);
+      }
+      return apiFetch("/api/cpd", {
+        method: "POST",
+        body: JSON.stringify({ ...body, user_id: match.id }),
+      });
+    },
+  },
 ];
 
 const toolsByName = new Map(TOOLS.map((t) => [t.name, t]));

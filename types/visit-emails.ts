@@ -34,6 +34,21 @@ export interface VisitEmailDetail {
   visit_datetime?: string | null;
   /** Present only on a 'skipped' row — human-readable reason. */
   reason?: string | null;
+  /** Lead flow round (048) — the Google Calendar "render" URL merged
+   * into {{calendar_link}}. See lib/ics.ts's leadVisitGoogleCalendarUrl(). */
+  calendar_link?: string | null;
+  /** Lead flow round (048) — the tokenised /brief/[token] URL merged
+   * into visit-reminder.html's {{brief_link}}. */
+  brief_link?: string | null;
+  /** Lead flow round (048) — the invite.ics Resend attachment(s) for
+   * this send, base64-encoded (no `data:` prefix — see
+   * lib/resend.ts's ResendAttachment). Carried inside `detail` (rather
+   * than only passed at the original sendOrQueue() call) so a QUEUED
+   * row's later flush (lib/visit-emails.ts's flushPendingSends, which
+   * re-renders/re-sends from `detail` alone, never a second live call)
+   * still has the attachment to re-send with. Absent for the
+   * client_events reminder path (never generates one). */
+  attachments?: { filename: string; content: string }[] | null;
 }
 
 export interface EmailSendRow {

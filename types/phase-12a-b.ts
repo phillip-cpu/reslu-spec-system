@@ -231,7 +231,17 @@ export type MyWorkItemKind =
   // same gating pattern as source #2 (lead follow-ups) — the exact
   // "if (isAdmin) { ... }" block shape, reused verbatim for this
   // source rather than any new gating mechanism.
-  | "ordering_due";
+  | "ordering_due"
+  // CPD tracker round — BUILD-SPEC.md "CPD point tracker" / this
+  // round's brief: "additive source — when the user's pro-rata pace is
+  // behind ... one gentle line ... linking /cpd." See
+  // app/api/my-work/route.ts source #10 and lib/cpd.ts's
+  // isBehindPace(). At most ONE item of this kind per response (unlike
+  // every other source above, which can produce many rows) — `due` is
+  // always null (lands in the "No date" bucket; there's no natural due
+  // date for a pace nudge). Per-user, NOT admin-gated — every team
+  // member sees their own pace, unlike ordering_due/lead_follow_up.
+  | "cpd_nudge";
 
 /**
  * One row in the My Work feed, normalised across five very different

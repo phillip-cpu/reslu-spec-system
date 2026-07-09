@@ -4,7 +4,15 @@ import { getUserRole } from "@/lib/auth";
 import { buildDashboardSummary } from "@/lib/leads";
 import { LEAD_STAGES, type CreateLeadInput, type Lead, type LeadStage } from "@/types";
 import { reportError } from "@/lib/report-error";
-import { formatVisitDate, formatVisitTime, leadLastName, sendOrQueue, suburbFrom } from "@/lib/visit-emails";
+import {
+  DEFAULT_PHILLIP_PHONE,
+  formatVisitDate,
+  formatVisitTime,
+  leadLastName,
+  sendOrQueue,
+  suburbFrom,
+} from "@/lib/visit-emails";
+import { buildLeadVisitCalendarAssets } from "@/lib/lead-brief";
 
 export const runtime = "nodejs";
 
@@ -233,6 +241,17 @@ export async function POST(request: NextRequest) {
       const service = createServiceRoleClient();
       try {
         const visitDatetime = created.site_visit_date as string;
+        // Lead flow round (048) — a freshly-inserted lead's
+        // visit_ics_sequence is always 0 (migration 048's column
+        // default; no prior invite has ever been sent for this record),
+        // so no increment logic is needed here (contrast with the PATCH
+        // route's reschedule branch).
+        const { calendarLink, icsAttachment } = buildLeadVisitCalendarAssets(
+          created.id,
+          visitDatetime,
+          0,
+          DEFAULT_PHILLIP_PHONE
+        );
         await sendOrQueue(service, {
           recordType: "lead",
           recordId: created.id,
@@ -245,8 +264,10 @@ export async function POST(request: NextRequest) {
             visit_date: formatVisitDate(visitDatetime),
             visit_time: formatVisitTime(visitDatetime),
             suburb: suburbFrom(created.site_visit_location || created.location),
+            calendar_link: calendarLink,
           },
           visitDatetime,
+          attachments: [icsAttachment],
         });
       } catch (err) {
         await reportError("visit-emails", err);

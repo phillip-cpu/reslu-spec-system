@@ -52,6 +52,13 @@ const nextConfig: NextConfig = {
     "/api/leads": ["./emails/**"],
     "/api/projects/[id]/client-events": ["./emails/**"],
     "/api/visit-emails/run": ["./emails/**"],
+    // Lead flow round (048): GET /brief/[token] reads emails/brief/
+    // project-brief.html off disk at runtime via lib/brief-page.ts's
+    // loadBriefPageHtml() (same dynamically-built-path tracing gap as
+    // lib/visit-emails.ts's loadTemplate(), documented above). POST
+    // /api/brief-submit/[token] does NOT need an entry — it only reads/
+    // writes leads/daily_brief_items, never touches disk.
+    "/brief/[token]": ["./emails/**"],
     // gte-small embeddings (migration 045): onnxruntime-node's native
     // addon dynamically loads libonnxruntime.so.1 (Linux) at runtime via
     // a path Next's static file tracer can't follow — without this entry

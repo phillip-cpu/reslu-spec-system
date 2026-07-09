@@ -213,3 +213,227 @@ export function googleCalendarUrl(input: CalendarEventInput): string {
 
   return `https://calendar.google.com/calendar/render?${params.toString()}`;
 }
+
+// ============================================================
+// Lead flow round (migration 048) — the site-visit INVITE ics
+// attached to visit-confirmation.html / visit-reminder.html (Resend
+// attachments, see lib/resend.ts), distinct from generateIcs()/
+// googleCalendarUrl() above (the existing GET /api/leads/[id]/
+// calendar.ics "download my own visit" button + LeadDetailPanel's own
+// "Add to calendar" menu — untouched by this round). Two differences
+// from generateIcs() that justify dedicated functions rather than
+// extending it:
+//   - TZID Australia/Adelaide wall-clock time (with a real VTIMEZONE
+//     block) instead of generateIcs()'s deliberate bare-UTC-Z choice
+//     (see that function's own header comment for why THAT approach is
+//     right for its callers) — docs/RESLU-lead-flow-brief.md build
+//     task 5 asks for TZID Australia/Adelaide explicitly.
+//   - SEQUENCE (RFC 5545 §3.8.7.4) — generateIcs() has never needed
+//     one (its callers each generate a single, never-reissued "add
+//     this to your calendar" file). This invite is RE-SENT on a
+//     reschedule with the SAME UID and an incremented SEQUENCE so
+//     Apple Mail/Outlook/Google Calendar update the existing event in
+//     place instead of duplicating it — see leads.visit_ics_sequence's
+//     migration 048 column comment.
+//
+// Buffer/base64-encoding for the actual Resend attachment payload
+// deliberately does NOT live here — see lib/lead-brief.ts's own header
+// comment for why (this file is imported by a "use client" component,
+// components/shared/AddToCalendarMenu.tsx; generateVisitIcs()/
+// leadVisitGoogleCalendarUrl() below stay plain-string, Node-global-free
+// functions like everything else in this file).
+// ============================================================
+
+/**
+ * Static VTIMEZONE block for Australia/Adelaide — DST-correct for the
+ * rule in effect since 2008 (ACST/ACDT transition on the first Sunday
+ * of April/October respectively; South Australia has not changed this
+ * rule since). Hand-rolled per RFC 5545 §3.6.5, same "no new dependency"
+ * convention as the rest of this file.
+ */
+const ADELAIDE_VTIMEZONE = [
+  "BEGIN:VTIMEZONE",
+  "TZID:Australia/Adelaide",
+  "BEGIN:STANDARD",
+  "DTSTART:19700405T030000",
+  "RRULE:FREQ=YEARLY;BYMONTH=4;BYDAY=1SU",
+  "TZOFFSETFROM:+1030",
+  "TZOFFSETTO:+0930",
+  "TZNAME:ACST",
+  "END:STANDARD",
+  "BEGIN:DAYLIGHT",
+  "DTSTART:19701004T020000",
+  "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=1SU",
+  "TZOFFSETFROM:+0930",
+  "TZOFFSETTO:+1030",
+  "TZNAME:ACDT",
+  "END:DAYLIGHT",
+  "END:VTIMEZONE",
+].join("\r\n");
+
+/** UTC ISO instant -> Adelaide-local `YYYYMMDDTHHMMSS` (NO trailing
+ * `Z` — paired with a `;TZID=Australia/Adelaide` param on the DTSTART/
+ * DTEND line itself, per RFC 5545 §3.3.5's "form #2: date with local
+ * time and time zone reference"). Same Intl.DateTimeFormat technique as
+ * lib/visit-emails.ts's formatVisitDate()/formatVisitTime(), just
+ * reassembled into ICS's compact digit form instead of prose. */
+function toAdelaideLocalIcs(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    throw new Error(`generateVisitIcs: invalid date "${iso}"`);
+  }
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Australia/Adelaide",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(d);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "00";
+  return `${get("year")}${get("month")}${get("day")}T${get("hour")}${get("minute")}${get("second")}`;
+}
+
+const DEFAULT_ICS_PHONE = "+61 439 870 594";
+
+export interface VisitIcsInput {
+  /** Baked into the stable UID `lead-visit-{leadId}@reslu.com.au`. */
+  leadId: string;
+  /** UTC-instant ISO string — leads.site_visit_date, straight from Postgres. */
+  start: string;
+  /** UTC-instant ISO string. Optional — defaults to start + 1 hour. */
+  end?: string | null;
+  /** leads.visit_ics_sequence's CURRENT value at send time (0 for a
+   * first booking; the caller increments it BEFORE calling this on a
+   * reschedule — see that column's migration 048 comment). */
+  sequence: number;
+  phone?: string;
+}
+
+/**
+ * Builds the lead-visit invite.ics attached to both visit-confirmation
+ * .html and visit-reminder.html (docs/RESLU-lead-flow-brief.md build
+ * task 5). METHOD:PUBLISH, TZID Australia/Adelaide (real VTIMEZONE
+ * block), SUMMARY "Site Visit · RESLU", LOCATION "219 Sturt Street,
+ * Adelaide SA 5000", ORGANIZER aria@reslu.com.au, stable UID
+ * `lead-visit-{leadId}@reslu.com.au`, SEQUENCE per input.
+ */
+export function generateVisitIcs(input: VisitIcsInput): string {
+  const { leadId, start, end, sequence, phone = DEFAULT_ICS_PHONE } = input;
+
+  const dtStartLocal = toAdelaideLocalIcs(start);
+  const dtEndLocal = toAdelaideLocalIcs(
+    end ?? new Date(new Date(start).getTime() + 60 * 60 * 1000).toISOString()
+  );
+  const dtStamp = toIcsUtc(new Date().toISOString());
+  const uid = `lead-visit-${leadId}@reslu.com.au`;
+  const safeSequence = Number.isFinite(sequence) ? Math.max(0, Math.floor(sequence)) : 0;
+
+  const lines: string[] = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//RESLU Spec System//Add to Calendar//EN",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    ADELAIDE_VTIMEZONE,
+    "BEGIN:VEVENT",
+    foldLine(`UID:${uid}`),
+    `DTSTAMP:${dtStamp}`,
+    `DTSTART;TZID=Australia/Adelaide:${dtStartLocal}`,
+    `DTEND;TZID=Australia/Adelaide:${dtEndLocal}`,
+    `SEQUENCE:${safeSequence}`,
+    foldLine(`SUMMARY:${escapeIcsText("Site Visit · RESLU")}`),
+    foldLine(`LOCATION:${escapeIcsText("219 Sturt Street, Adelaide SA 5000")}`),
+    foldLine(`DESCRIPTION:${escapeIcsText(`With Phillip. Need to move it? Call ${phone}.`)}`),
+    foldLine(`ORGANIZER;CN=${escapeIcsText(DEFAULT_ORGANIZER_NAME)}:mailto:${DEFAULT_ORGANIZER_EMAIL}`),
+    "STATUS:CONFIRMED",
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ];
+
+  return lines.join("\r\n") + "\r\n";
+}
+
+/**
+ * Hand-encodes one query VALUE to match docs/RESLU-lead-flow-brief.md's
+ * literal Google Calendar template URL example EXACTLY:
+ *
+ *   https://calendar.google.com/calendar/render?action=TEMPLATE&text=Site+Visit+%C2%B7+RESLU&dates=<start>/<end>&ctz=Australia/Adelaide&location=219+Sturt+Street,+Adelaide+SA+5000&details=With+Phillip.+Need+to+move+it%3F+Call+%2B61+439+870+594.
+ *
+ * That example keeps '/' (in `dates=<start>/<end>` and
+ * `ctz=Australia/Adelaide`) and ',' (in the location) UN-escaped —
+ * `URLSearchParams`/`encodeURIComponent` do NOT do this (both percent-
+ * encode '/' to %2F and ',' to %2C, confirmed by hand before writing
+ * this), so a generic encoder can't reproduce it. This hand-rolled one
+ * matches character-for-character instead: space -> '+', UTF-8
+ * percent-encoding for non-ASCII (the '·' in "Site Visit · RESLU"),
+ * and '+'/'?'/'&'/'='/'#'/'%' percent-encoded (each would otherwise
+ * either collide with the space encoding or break query parsing);
+ * every other character — including '/', ',', '.', ':' — passes
+ * through raw.
+ */
+function gcalValueEncode(value: string): string {
+  let out = "";
+  for (const ch of value) {
+    if (ch === " ") {
+      out += "+";
+      continue;
+    }
+    if (ch === "+") {
+      out += "%2B";
+      continue;
+    }
+    if (ch === "?") {
+      out += "%3F";
+      continue;
+    }
+    if (ch === "&") {
+      out += "%26";
+      continue;
+    }
+    if (ch === "=") {
+      out += "%3D";
+      continue;
+    }
+    if (ch === "#") {
+      out += "%23";
+      continue;
+    }
+    if (ch === "%") {
+      out += "%25";
+      continue;
+    }
+    if (ch.codePointAt(0)! > 127) {
+      out += encodeURIComponent(ch);
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * The `{{calendar_link}}` merge value for the lead-visit emails — the
+ * EXACT Google Calendar "render" URL shape docs/RESLU-lead-flow-brief.md
+ * build task 5 specifies (fixed text/location/details copy, only the
+ * dates vary per visit; default 1-hour duration when `end` is omitted,
+ * same as generateVisitIcs()). Distinct from the generic
+ * googleCalendarUrl() above (used by LeadDetailPanel's own "Add to
+ * calendar" button, out of this round's reason to touch) purely
+ * because of the raw-'/'-and-',' encoding quirk — see
+ * gcalValueEncode()'s own doc comment.
+ */
+export function leadVisitGoogleCalendarUrl(
+  start: string,
+  end?: string | null,
+  phone: string = DEFAULT_ICS_PHONE
+): string {
+  const dtStart = toIcsUtc(start);
+  const dtEnd = toIcsUtc(end ?? new Date(new Date(start).getTime() + 60 * 60 * 1000).toISOString());
+  const text = gcalValueEncode("Site Visit · RESLU");
+  const location = gcalValueEncode("219 Sturt Street, Adelaide SA 5000");
+  const details = gcalValueEncode(`With Phillip. Need to move it? Call ${phone}.`);
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&dates=${dtStart}/${dtEnd}&ctz=Australia/Adelaide&location=${location}&details=${details}`;
+}
