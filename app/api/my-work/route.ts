@@ -325,7 +325,13 @@ export async function GET() {
       .in("id", myOfficeTaskIds)
       .is("deleted_at", null)
       .eq("kind", "task")
-      .is("completed_at", null);
+      .is("completed_at", null)
+      // Phillip, 11 Jul 2026: a no-date office task used to sit in My
+      // Work's "No date" bucket forever — nothing ever removed it short
+      // of explicit completion. Matches design_tasks' own source #8
+      // filter below: no due date means it isn't ready to chase yet, so
+      // it stays on the Office board but doesn't clutter My Work.
+      .not("due_date", "is", null);
 
     const officeTaskRows = officeTasks ?? [];
     const groupIds = [...new Set(officeTaskRows.map((t) => t.group_id))];
