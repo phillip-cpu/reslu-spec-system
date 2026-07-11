@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { TradeBookingRequestDetail, TradeBookingRequestLine } from "@/types/round-grouped-trade-booking";
+import { formatShortDateAU, formatDateRangeAU } from "@/lib/gantt-window";
 
 /**
  * Grouped trade booking round (r20) — admin detail view for one
@@ -159,7 +160,10 @@ function LineCard({
   line: TradeBookingRequestLine;
   onResolve: (body: Record<string, unknown>) => void;
 }) {
-  const dateLabel = line.start_date === line.end_date ? line.start_date : `${line.start_date} → ${line.end_date}`;
+  const dateLabel =
+    line.start_date === line.end_date
+      ? formatShortDateAU(line.start_date)
+      : formatDateRangeAU(line.start_date, line.end_date);
 
   return (
     <div className="border border-[#dcd6cc] px-4 py-3">
@@ -172,8 +176,11 @@ function LineCard({
       {line.line_status === "date_suggested" && (
         <div className="mt-2 border border-[#c9c2b4] bg-nearwhite px-3 py-2">
           <p className="text-caption text-charcoal/60">
-            Suggested: {line.suggested_start}
-            {line.suggested_end !== line.suggested_start ? ` → ${line.suggested_end}` : ""}
+            Suggested:{" "}
+            {line.suggested_start &&
+              (line.suggested_end && line.suggested_end !== line.suggested_start
+                ? formatDateRangeAU(line.suggested_start, line.suggested_end)
+                : formatShortDateAU(line.suggested_start))}
           </p>
           {line.response_note && <p className="mt-1 text-caption text-charcoal/50">&quot;{line.response_note}&quot;</p>}
           <div className="mt-2 flex gap-2">

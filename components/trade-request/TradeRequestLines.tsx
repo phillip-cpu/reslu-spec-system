@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { formatShortDateAU, formatDateRangeAU } from "@/lib/gantt-window";
 
 export interface TradeRequestLineView {
   id: string;
@@ -74,7 +75,15 @@ function LineRow({ token, line: initialLine }: { token: string; line: TradeReque
     }
   }
 
-  const dateLabel = line.start_date === line.end_date ? line.start_date : `${line.start_date} → ${line.end_date}`;
+  // Word/abbreviated month always on this public, non-logged-in page —
+  // Phillip, 11 Jul 2026: a date shown to a trade must never be raw
+  // numeric (07/11 is ambiguous DD/MM vs MM/DD). Same helpers/format
+  // lib/trade-booking.ts's formatTaskLineDateRange uses for the initial
+  // booking-request email these lines are responding to.
+  const dateLabel =
+    line.start_date === line.end_date
+      ? formatShortDateAU(line.start_date)
+      : formatDateRangeAU(line.start_date, line.end_date);
 
   return (
     <div className="border border-[#dcd6cc] bg-offwhite px-4 py-4">
@@ -89,8 +98,10 @@ function LineRow({ token, line: initialLine }: { token: string; line: TradeReque
         <div className="mt-3 border border-[#c9c2b4] bg-nearwhite px-3 py-2">
           <p className="label-caps">You suggested</p>
           <p className="mt-1 text-body text-nearblack">
-            {line.suggested_start}
-            {line.suggested_end !== line.suggested_start ? ` → ${line.suggested_end}` : ""}
+            {line.suggested_start &&
+              (line.suggested_end && line.suggested_end !== line.suggested_start
+                ? formatDateRangeAU(line.suggested_start, line.suggested_end)
+                : formatShortDateAU(line.suggested_start))}
           </p>
           {line.response_note && <p className="mt-1 text-caption text-charcoal/60">{line.response_note}</p>}
           <p className="mt-1 text-caption text-charcoal/50">Waiting on RESLU to respond.</p>

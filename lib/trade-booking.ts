@@ -6,6 +6,8 @@
 // unit-testable in isolation.
 // ============================================================
 
+import { formatShortDateAU, formatDateRangeAU } from "@/lib/gantt-window";
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function parseDateOnly(s: string): Date {
@@ -55,9 +57,9 @@ export function allLinesResolved(
   return live.every((l) => l.line_status !== null && l.line_status !== "proposed");
 }
 
-/** Shared task-line rendering for both the grouped-request email body and the admin detail view — "{title} — {start}" or "{title} — {start} to {end}" when the range spans more than one day. Deliberately plain text (no HTML) so callers building an HTML table row or a plain admin list can both use it without stripping markup back out. */
+/** Shared task-line rendering for both the grouped-request email body and the admin detail view — "22 Jul" or "22 Jul → 25 Jul" when the range spans more than one day. Word/abbreviated month always (Phillip, 11 Jul 2026: any date reaching a correspondent must spell the month out — a raw numeric date like 07/11 is ambiguous DD/MM vs MM/DD). Reuses lib/gantt-window.ts's formatShortDateAU/formatDateRangeAU — same short-month convention the Gantt/board UI already uses, not a second date format invented for this round. Deliberately plain text (no HTML) so callers building an HTML table row or a plain admin list can both use it without stripping markup back out. */
 export function formatTaskLineDateRange(startDate: string, endDate: string): string {
-  return startDate === endDate ? startDate : `${startDate} → ${endDate}`;
+  return startDate === endDate ? formatShortDateAU(startDate) : formatDateRangeAU(startDate, endDate);
 }
 
 /**

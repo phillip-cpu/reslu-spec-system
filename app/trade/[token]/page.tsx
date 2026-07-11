@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { rateLimit } from "@/lib/rate-limit";
 import { isVisitExpired, findOverlappingVisits, formatArrival } from "@/lib/trade-visits";
+import { formatShortDateAU, formatDateRangeAU } from "@/lib/gantt-window";
 import { ExpiredNotice } from "@/components/trade/ExpiredNotice";
 import { WhoElseOnSite } from "@/components/trade/WhoElseOnSite";
 import { TradeRespondForm } from "@/components/trade/TradeRespondForm";
@@ -295,8 +296,9 @@ export default async function TradePage({
         <div className="mt-6 border border-[#dcd6cc] bg-offwhite px-4 py-4">
           <p className="label-caps">Nominated day{visit.start_date !== visit.end_date ? "s" : ""}</p>
           <p className="mt-1 text-body text-nearblack">
-            {visit.start_date}
-            {visit.start_date !== visit.end_date ? ` → ${visit.end_date}` : ""}
+            {visit.start_date === visit.end_date
+              ? formatShortDateAU(visit.start_date)
+              : formatDateRangeAU(visit.start_date, visit.end_date)}
           </p>
           <p className="mt-2 label-caps">Arrival</p>
           <p className="mt-1 text-body text-nearblack">{formatArrival(visit.arrival_slot, visit.arrival_time)}</p>
@@ -304,9 +306,10 @@ export default async function TradePage({
             <div className="mt-3 border-t border-[#dcd6cc] pt-3">
               <p className="label-caps">We&apos;ve proposed a different date</p>
               <p className="mt-1 text-body text-nearblack">
-                {visit.proposed_start}
-                {visit.proposed_end !== visit.proposed_start ? ` → ${visit.proposed_end}` : ""} —{" "}
-                {formatArrival(visit.proposed_slot, visit.proposed_time)}
+                {visit.proposed_end && visit.proposed_end !== visit.proposed_start
+                  ? formatDateRangeAU(visit.proposed_start, visit.proposed_end)
+                  : formatShortDateAU(visit.proposed_start)}{" "}
+                — {formatArrival(visit.proposed_slot, visit.proposed_time)}
               </p>
               {visit.proposed_note && <p className="mt-1 text-caption text-charcoal/60">{visit.proposed_note}</p>}
             </div>
