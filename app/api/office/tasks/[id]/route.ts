@@ -104,6 +104,12 @@ export async function PATCH(
       update.completed_at = new Date().toISOString();
       update.prev_group_id = existing.group_id;
       update.group_id = archived.id;
+      // Phillip, 11 Jul 2026: completing a task clears its due date —
+      // due_date only means anything for an active task (see this
+      // column's own partial index, "where deleted_at is null and
+      // completed_at is null"); leaving a stale date on a done/archived
+      // task is confusing clutter on the board, not useful history.
+      update.due_date = null;
     } else {
       update.completed_at = null;
       update.group_id = existing.prev_group_id ?? existing.group_id;

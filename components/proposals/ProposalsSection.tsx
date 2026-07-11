@@ -31,13 +31,14 @@ interface Props {
 
 /**
  * "Fee proposal" section (BUILD-SPEC.md §"Fee proposal phase (r23)"
- * item 3: "Builder UI on lead detail (+ projects): create from
- * template ... list"). One shared component, mounted from BOTH
- * components/leads/LeadDetailPanel.tsx (leadId) and
- * app/(dashboard)/projects/[id]/invoices/page.tsx (projectId) — exactly
- * one of the two props is passed by each caller, matching
- * proposals.lead_id/project_id's own "at least one set" shape
- * (migration 051's chk_proposals_lead_or_project).
+ * item 3). A proposal is a pre-job, lead-stage document — mounted only
+ * from components/leads/LeadDetailPanel.tsx (leadId). The projectId
+ * prop is kept (not mounted anywhere today) so a project can still be
+ * passed once something re-links an existing proposal after "Progress
+ * to job" — see proposals.project_id's own comment in
+ * 051_proposals.sql for that known, not-yet-automated gap. Exactly one
+ * of the two props is passed, matching proposals.lead_id/project_id's
+ * "at least one set" shape (migration 051's chk_proposals_lead_or_project).
  */
 export function ProposalsSection({ leadId, projectId }: Props) {
   const router = useRouter();

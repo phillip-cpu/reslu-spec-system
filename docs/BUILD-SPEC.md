@@ -88,3 +88,19 @@ Build:
 5. Aria: aria_queue item 'draft_proposal' created when proposal created from a lead with brief answers; MCP tools get_proposal, set_proposal_draft (letter/vision only, only while status draft). Documented in docs/ARIA.md.
 6. Follow-up: sent >5 days not accepted → My Work follow-ups + re-send option (dupe-guarded).
 7. Middleware: /proposal + /api/proposal-* public — if existing prefixes don't cover, document exact allowlist line for CC (do not touch middleware).
+
+## Booking selection v2 + Aria supplier invoices (r24)
+
+From Phillip's field testing 2026-07-11 (screenshot: Painting phase card, works dates all "—", per-item Book trade only).
+
+A. Booking selection v2 (rework of r20 entry points — r20 backend machinery stays):
+1. Lines (board rows + phase-card item rows) get selection checkboxes. Select any lines → action bar "Book selected → one trade" appears. All selected lines go into ONE grouped booking request (r20 trade_booking_requests) to ONE trade contact chosen in the panel.
+2. The grouped panel gains INLINE proposed-date editing: undated selected tasks are NOT excluded — they show editable start/end date fields right in the panel (writing back to the task as works placeholders on send). No more pre-filling the board first, no more greyed-out exclusions.
+3. Per-item "Book trade" button routes to the same panel, pre-listing ALL tasks on the project mapped to that item's trade/contact (selected by default), plus the rest of the project's tasks collapsibly addable. The ••• "Group book a trade" menu entry is replaced by these two entry points.
+4. "eg all the carpentry lines → one single booking email to the trade" is the acceptance test.
+
+B. Aria supplier-invoice intake (money out):
+5. Second Brain email pipeline flags likely supplier invoices (attachment/pdf + amount/invoice-number heuristics on ALREADY-INGESTED emails). Aria (mini) extracts: supplier, ABN, invoice number, invoice date, total inc GST, GST, line hints, job hints. MCP tool propose_supplier_invoice(payload incl. source email id) creates a DRAFT entry in the existing supplier-invoice queue (whatever its table is — study InvoiceQueue) marked source 'aria', status needing approval, with proposed project match + cost-line/item matches. HARD RULE: draft only — nothing applies without Phillip's explicit approve action in the UI (standing prompt-injection ruling; email content NEVER writes financials directly).
+6. Approval UI in the Supplier invoices section: review extracted fields + matches (editable), Approve & apply / Reject. PDF attachment stored on the job.
+7. Cost flow-through: when a supplier invoice application (Aria-proposed OR manual) confirms costs against matched items, the confirmed cost writes to those items' actual/confirmed cost fields AND (toggle per line, default on when a library product is linked) updates the linked library product's cost record so future quotes use real numbers. Admin-only, server-side gated like all financials.
+8. Migration 052 only for what's genuinely missing after studying the existing supplier-invoice tables (extraction/source columns, status, email link). One migration.
