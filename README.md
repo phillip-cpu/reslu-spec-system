@@ -1116,6 +1116,67 @@ the client's answers straight onto the lead record and surfaces a
 renders the submitted answers read-only; moving a lead to "Lead Lost"
 clears its follow-up date and cancels any still-pending reminder.
 
+## Fee proposal phase (migration 051)
+
+`docs/BUILD-SPEC.md` §"Fee proposal phase (r23)" + `docs/proposal-
+reference-content.md`: one signable document — proposal + terms merged,
+replacing the old LawDepot service contract. Full mechanics in
+`docs/API.md`'s "Fee proposal phase" section; this section covers
+on-machine steps only.
+
+**On-machine steps:**
+
+1. **Run migration 051** (Step 2 above covers this for a fresh install;
+   an existing environment just needs the one new file run). No new
+   storage bucket is created — signed proposal PDFs reuse the existing
+   private `assets` bucket (009/010).
+2. **Add the middleware allowlist lines** — `lib/supabase/middleware.ts`
+   is protected/out of this round's edit boundary. Without this
+   addition, `/proposal/[token]` (the client-facing document + sign
+   page) and `POST /api/proposal/[token]/accept` both redirect to
+   `/login`/401 before they ever run (both are fully built and correct
+   otherwise). These must be BOUNDARY-AWARE (not a bare `startsWith`) —
+   a bare `pathname.startsWith("/proposal")` would also incorrectly
+   match the admin-only `/proposals/[id]` editor route, and a bare
+   `pathname.startsWith("/api/proposal")` would also match the
+   admin-only `/api/proposals` CRUD API. Add, alongside the existing
+   `/brief`/`/trade-request` lines in `isPublicPath`:
+   ```ts
+   pathname === "/proposal" ||
+   pathname.startsWith("/proposal/") ||
+   pathname.startsWith("/api/proposal/") ||
+   ```
+3. **Nothing else changes for `RESEND_API_KEY`** — same key, same
+   verified domain as the existing Site-visit lifecycle emails setup.
+   The "send" email (`emails/proposal-sent.html`) goes out as `Aria —
+   RESLU <aria@reslu.com.au>`, reply-to `phillip@reslu.com.au` — same
+   sender identity as the lead-flow/trade-booking emails. The signed-
+   copy confirmation email (sent to the client + `phillip@reslu.com.au`
+   once they sign) uses the same sender/reply-to, inline HTML, no
+   template file.
+4. **MCP**: `mcp/src/index.mjs` gains two additive tools —
+   `get_proposal`/`set_proposal_draft` — no separate install step beyond
+   whatever `mcp/README.md` already documents for picking up new tool
+   definitions on the Mac mini (the tool list is served live from this
+   same file on every `tools/list` call, no build step of its own).
+
+**Everything else is already wired up** once the migration is run and
+the middleware lines land: creating a fee proposal from a lead's detail
+panel (or a project's Invoices tab — both mount the same
+`ProposalsSection`) seeds one of three templates
+(`lib/proposal-templates.ts`); the Builder UI at `/proposals/[id]`
+(draft-commit-on-blur, matching `LeadDetailPanel`'s own save pattern)
+edits letter/vision/scope/fees/timeline/exclusions/terms and shows a
+live "Live preview" link to `/proposal/{token}` even before Send;
+Send emails the client a branded button link; the client signs on that
+same page (draw + type, reusing `components/portal/SignatureCanvas.tsx`);
+acceptance is idempotent (double-POST/double-tap safe), stores a signed
+`ProposalPdf`, emails both parties a copy, drafts (never auto-sends) a
+deposit invoice via the existing client-invoicing machinery, and drops
+a dedupe-guarded Daily Brief item; a proposal sent more than 5 days ago
+and still not accepted surfaces on My Work (`proposal_followup`) with a
+link straight to its editor, where the existing Resend action lives.
+
 ## Monday.com and Gmail integrations
 
 Both are optional and dormant until configured — the app works fully

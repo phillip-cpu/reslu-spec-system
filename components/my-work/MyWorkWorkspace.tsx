@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import type { MyWorkGroups, MyWorkItem, MyWorkResponse } from "@/types/phase-12a-b";
 import { NotesPanel } from "@/components/my-work/NotesPanel";
@@ -37,6 +37,16 @@ const KIND_LABEL: Record<MyWorkItem["kind"], string> = {
   // CPD tracker round — pro-rata pace nudge (GET /api/my-work source
   // #10). Additive entry, same shape as every other kind here.
   cpd_nudge: "CPD",
+  // Grouped trade booking round (r20) — 3-day no-response follow-up
+  // (GET /api/my-work source #11). Additive entry, same shape as every
+  // other kind here.
+  trade_booking_followup: "Trade follow-up",
+  // Fee proposal phase round (r23) — 5-day not-accepted follow-up (GET
+  // /api/my-work source #12). Additive entry, same shape as every other
+  // kind here — missing this entry is a real TS2741 build error
+  // (Record<MyWorkItemKind, string> requires every kind to have one),
+  // per the "ordering_due" bug-fix precedent noted above.
+  proposal_followup: "Proposal follow-up",
 };
 
 /** project is null for leads (pre-project), Office tasks (global board), AND the CPD nudge (no project concept at all) — this small lookup picks the right fallback chip label for each, replacing what used to be a two-way ternary before cpd_nudge existed. */
@@ -62,6 +72,30 @@ function formatDueShort(due: string): string {
   const d = new Date(due.length <= 10 ? `${due}T00:00:00` : due);
   return `${d.getDate()} ${SHORT_MONTHS[d.getMonth()]}`;
 }
+
+/**
+ * Site capture + mobile QoL round (r21), BUILD-SPEC.md item 6: "My
+ * Work checkboxes — office/task items on My Work get an inline
+ * checkbox to mark complete (writes the same completion the source
+ * screen would)." Only kinds with a REAL completion semantic are
+ * wired: office_task (PATCH /api/office/tasks/[id] { complete: true })
+ * and design_task (PATCH /api/design-tasks/[id] { complete: true }) —
+ * both already carry a `completed_at` column and an existing
+ * `complete` boolean-intent PATCH action their own source screens
+ * (the Office board, the Design tab) already use, so ticking the box
+ * here writes the EXACT SAME completion those screens would, never a
+ * parallel/invented state (per this task's brief). Every other kind
+ * is deliberately left alone — board_task has no single-column
+ * "complete" concept (completion there is a column/status move, not a
+ * boolean), and lead_follow_up/diary_draft/trade_proposal/
+ * decision_overdue/insurance_expiring/ordering_due/cpd_nudge/
+ * trade_booking_followup are all informational flags/rollups/prompts
+ * with no underlying "done" write at all.
+ */
+const COMPLETABLE_ENDPOINT: Partial<Record<MyWorkItem["kind"], (id: string) => string>> = {
+  office_task: (id) => `/api/office/tasks/${id}`,
+  design_task: (id) => `/api/design-tasks/${id}`,
+};
 
 const SECTIONS: { key: keyof MyWorkGroups; label: string; emptyLabel: string }[] = [
   { key: "overdue", label: "Overdue", emptyLabel: "Nothing overdue." },
@@ -101,6 +135,38 @@ export function MyWorkWorkspace() {
     };
   }, []);
 
+  /**
+   * BUILD-SPEC.md item 6 — ticking the checkbox writes the SAME
+   * completion PATCH the item's own source screen (Office board /
+   * Design tab) uses, then optimistically removes it from every
+   * bucket client-side (mirrors those source screens' own "completed
+   * items disappear from the active list" behaviour, and matches GET
+   * /api/my-work's own server-side filter — a completed office_task/
+   * design_task is `is("completed_at", null)`-excluded on the very
+   * next load anyway, this just avoids waiting for a refetch).
+   */
+  async function completeItem(item: MyWorkItem) {
+    const endpoint = COMPLETABLE_ENDPOINT[item.kind];
+    if (!endpoint) return;
+    const res = await fetch(endpoint(item.id), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ complete: true }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error ?? "Could not mark complete.");
+    }
+    setData((prev) => {
+      if (!prev) return prev;
+      const nextGroups = { ...prev.groups };
+      for (const key of Object.keys(nextGroups) as (keyof MyWorkGroups)[]) {
+        nextGroups[key] = nextGroups[key].filter((i) => !(i.kind === item.kind && i.id === item.id));
+      }
+      return { ...prev, groups: nextGroups };
+    });
+  }
+
   return (
     <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_320px]">
       <div className="space-y-8">
@@ -125,6 +191,7 @@ export function MyWorkWorkspace() {
               emptyLabel={section.emptyLabel}
               items={data.groups[section.key]}
               highlightOverdue={section.key === "overdue"}
+              onComplete={completeItem}
             />
           ))}
       </div>
@@ -139,11 +206,13 @@ function Section({
   emptyLabel,
   items,
   highlightOverdue,
+  onComplete,
 }: {
   label: string;
   emptyLabel: string;
   items: MyWorkItem[];
   highlightOverdue: boolean;
+  onComplete: (item: MyWorkItem) => Promise<void>;
 }) {
   return (
     <section>
@@ -155,7 +224,7 @@ function Section({
       ) : (
         <ul className="space-y-2">
           {items.map((item) => (
-            <ItemRow key={`${item.kind}-${item.id}`} item={item} overdue={highlightOverdue} />
+            <ItemRow key={`${item.kind}-${item.id}`} item={item} overdue={highlightOverdue} onComplete={onComplete} />
           ))}
         </ul>
       )}
@@ -163,7 +232,35 @@ function Section({
   );
 }
 
-function ItemRow({ item, overdue }: { item: MyWorkItem; overdue: boolean }) {
+function ItemRow({
+  item,
+  overdue,
+  onComplete,
+}: {
+  item: MyWorkItem;
+  overdue: boolean;
+  onComplete: (item: MyWorkItem) => Promise<void>;
+}) {
+  const completable = item.kind in COMPLETABLE_ENDPOINT;
+  const [completing, setCompleting] = useState(false);
+  const [completeError, setCompleteError] = useState<string | null>(null);
+
+  async function handleComplete(e: MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (completing) return;
+    setCompleting(true);
+    setCompleteError(null);
+    try {
+      await onComplete(item);
+      // On success the item is removed from state by the parent — this
+      // component unmounts, no further local state update needed.
+    } catch (err) {
+      setCompleting(false);
+      setCompleteError(err instanceof Error ? err.message : "Could not mark complete.");
+    }
+  }
+
   return (
     <li>
       <a
@@ -173,27 +270,42 @@ function ItemRow({ item, overdue }: { item: MyWorkItem; overdue: boolean }) {
           overdue ? "border-red-700/30" : "border-[#dcd6cc]"
         )}
       >
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            {item.project && (
-              <span className="label-caps shrink-0 border border-[#c9c2b4] px-1.5 py-0.5 !text-charcoal/50">
-                {item.project.name}
-                {item.project.alias && <span className="text-charcoal/35"> · {item.project.alias}</span>}
-              </span>
-            )}
-            {/* project is null for leads (pre-project), Phase 13 Office
-                tasks (global board), and the CPD nudge (no project
-                concept) — projectlessChipLabel() picks the right
-                fallback chip rather than always saying "Lead". */}
-            {!item.project && (
-              <span className="label-caps shrink-0 border border-[#c9c2b4] px-1.5 py-0.5 !text-charcoal/50">
-                {projectlessChipLabel(item.kind)}
-              </span>
-            )}
-            <span className="label-caps shrink-0 !text-sand">{KIND_LABEL[item.kind]}</span>
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          {completable && (
+            <button
+              type="button"
+              aria-label="Mark complete"
+              title="Mark complete"
+              disabled={completing}
+              onClick={handleComplete}
+              className="flex h-5 w-5 shrink-0 items-center justify-center border border-[#c9c2b4] text-caption text-nearblack transition-colors hover:border-nearblack hover:bg-nearblack hover:text-white disabled:opacity-40"
+            >
+              {completing ? "…" : ""}
+            </button>
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              {item.project && (
+                <span className="label-caps shrink-0 border border-[#c9c2b4] px-1.5 py-0.5 !text-charcoal/50">
+                  {item.project.name}
+                  {item.project.alias && <span className="text-charcoal/35"> · {item.project.alias}</span>}
+                </span>
+              )}
+              {/* project is null for leads (pre-project), Phase 13 Office
+                  tasks (global board), and the CPD nudge (no project
+                  concept) — projectlessChipLabel() picks the right
+                  fallback chip rather than always saying "Lead". */}
+              {!item.project && (
+                <span className="label-caps shrink-0 border border-[#c9c2b4] px-1.5 py-0.5 !text-charcoal/50">
+                  {projectlessChipLabel(item.kind)}
+                </span>
+              )}
+              <span className="label-caps shrink-0 !text-sand">{KIND_LABEL[item.kind]}</span>
+            </div>
+            <p className="mt-1 truncate text-body text-nearblack">{item.title}</p>
+            {item.meta && <p className="mt-0.5 text-caption text-charcoal/50">{item.meta}</p>}
+            {completeError && <p className="mt-0.5 text-caption text-red-700">{completeError}</p>}
           </div>
-          <p className="mt-1 truncate text-body text-nearblack">{item.title}</p>
-          {item.meta && <p className="mt-0.5 text-caption text-charcoal/50">{item.meta}</p>}
         </div>
         {item.due && (
           <span className={clsx("shrink-0 text-caption", overdue ? "text-red-700" : "text-charcoal/50")}>

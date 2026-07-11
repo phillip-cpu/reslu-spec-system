@@ -1,0 +1,10 @@
+{
+  "template_note": "Fill in TBC values, or better: read these from Spec's team member records if they exist.",
+  "people": [
+    { "id": "phillip",  "name": "Phillip",  "title": "DIRECTOR · DESIGN & BUILD", "phone": "+61 439 870 594", "email": "phillip@reslu.com.au" },
+    { "id": "tenille",  "name": "Tenille",  "title": "TBC",                            "phone": "TBC",             "email": "TBC" },
+    { "id": "tony",     "name": "Tony",     "title": "TBC",                            "phone": "TBC",             "email": "TBC" },
+    { "id": "nathan",   "name": "Nathan",   "title": "TBC",                            "phone": "TBC",             "email": "TBC" },
+    { "id": "accounts", "name": "Accounts", "title": "ACCOUNTS · RESLU",           "phone": "TBC",             "email": "accounts@reslu.com.au" }
+  ]
+}

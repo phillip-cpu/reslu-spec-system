@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RESLU signature · Phillip</title>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&display=swap" rel="stylesheet">
+</head>
+<body style="margin:0;padding:40px 20px;background:#EDE8DE;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
+
+<div style="max-width:460px;margin:0 auto 18px;font-weight:300;font-size:13px;line-height:1.7;color:#313131;">
+  <strong style="font-weight:500;">How to install</strong><br>
+  1. Click the button below (copies the signature).<br>
+  2. Apple Mail: Settings &rarr; Signatures &rarr; + &rarr; paste. Gmail: Settings &rarr; See all settings &rarr; Signature &rarr; Create new &rarr; paste.<br>
+  3. Send yourself a test email to check it.
+</div>
+
+<div style="max-width:460px;margin:0 auto 26px;">
+  <button onclick="copySig()" style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;letter-spacing:2px;padding:10px 22px;background:#1A1A1A;color:#EDE8DE;border:0;cursor:pointer;">COPY SIGNATURE</button>
+  <span id="copied" style="font-size:12px;color:#274690;margin-left:10px;visibility:hidden;">Copied.</span>
+</div>
+
+<!-- ============ SIGNATURE STARTS ============ -->
+<div id="signature">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="max-width:460px;width:100%;margin:0 auto;">
+<tr><td style="padding:6px 0;">
+
+  <div style="font-family:'Caveat','Segoe Script','Bradley Hand',cursive;font-weight:600;font-size:30px;line-height:1.1;color:#274690;">Phillip</div>
+
+  <div style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-weight:300;font-size:10px;letter-spacing:3px;color:#313131;padding:8px 0 14px;border-bottom:1px solid #1A1A1A;">DIRECTOR &middot; DESIGN &amp; BUILD</div>
+
+  <div style="padding:16px 0 10px;"><a href="https://www.reslu.com.au" style="text-decoration:none;"><img src="https://www.reslu.com.au/reslu-logo-sig.png" width="100" height="41" alt="RESLU" style="display:inline-block;width:100px;height:41px;border:0;vertical-align:bottom;"></a></div>
+
+  <div style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-weight:300;font-size:12px;line-height:1.9;color:#313131;">
+    <a href="tel:+61439870594" style="color:#313131;text-decoration:none;">+61 439 870 594</a> &middot; <a href="https://www.reslu.com.au" style="color:#1A1A1A;text-decoration:underline;">reslu.com.au</a><br>
+    219 Sturt Street, Adelaide SA 5000 &middot; BLD 299219
+  </div>
+
+  <div style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-weight:300;font-size:9px;letter-spacing:3px;color:#A08C72;padding-top:16px;">ONE PROJECT &middot; ONE TEAM &middot; ONE STANDARD</div>
+
+</td></tr>
+</table>
+</div>
+<!-- ============ SIGNATURE ENDS ============ -->
+
+<script>
+function copySig(){
+  var sig = document.getElementById('signature');
+  var r = document.createRange();
+  r.selectNodeContents(sig);
+  var sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(r);
+  document.execCommand('copy');
+  sel.removeAllRanges();
+  document.getElementById('copied').style.visibility = 'visible';
+}
+</script>
+
+</body>
+</html>

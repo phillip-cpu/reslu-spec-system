@@ -786,3 +786,91 @@ add_cpd_entry({
 - **Evidence is NOT attached by this tool** — there's no natural way to run the two-step signed-upload flow from inside one MCP call over a chat transcript. Put a reference to the confirmation email in `notes` instead (sender, date — enough for someone to find the original email later if the certificate itself is ever needed). Wiring an automated "forward the confirmation email → attach as evidence" pipeline is a real future improvement, just not this round's.
 - **Category** is free text with suggestions only (Technical/Business/Compliance/Safety) — pick whichever fits best, or leave it out entirely; nothing validates it.
 - You never need to check anyone's target/pace before logging — that's what the CPD page's own progress bar and the My Work "behind pace" nudge are for. Just log what you're told about, accurately, and move on.
+
+## Site captures + lead notes fix (Site capture + mobile QoL round, r21)
+
+Two independent pieces landed together this round: a new capture feed you help transcribe, and a fix to a gap in your own lead-reading tools.
+
+**Site diary (`site_captures`, migration 050)**: photos, typed/dictated notes, and voice notes now flow in from two places — `/capture` (Phillip/team, on-site, save-to-homescreen) and a capture section on the trade confirmation page (`/trade/[token]`, so a trade can drop a photo or note on the job they're booked on). Everything lands in one project-scoped feed, the "Site diary" tab on the project page.
+
+Your job here is transcription — local Whisper on the Mac mini, never an external API (same no-external-AI ruling as everything else you do):
+
+1. `list_pending_transcriptions()` — no arguments, returns every audio capture still queued (`transcript_status='pending'`), oldest first: `id`, `project_id`/`project_name`, and a signed URL to the actual audio file.
+2. Download/transcribe each one locally.
+3. `set_capture_transcript({ capture_id, transcript })` — attaches your transcript and flips the row to `transcript_status='done'`. It then shows on the Site diary immediately, transcript under the audio player.
+
+`list_site_captures({ project_id })` reads back a project's whole Site diary (all three kinds, reverse-chronological) — useful context before drafting a diary entry or a client update, similar in spirit to `list_site_photos` but a different table/feed (captures vs. the staged internal gallery).
+
+Nothing here is a proposal/approval flow like the email pipeline above — a transcript isn't a disputed business fact, it's a straightforward "here's what was said", so `set_capture_transcript` writes directly, no human gate.
+
+**Lead notes — you can now actually read them**: `add_lead_note` (above, migration 030 round) let you WRITE to a lead's notes feed since it shipped, but nothing ever let you READ it back — a real gap: you could log "called, no answer" but never see your own (or anyone else's) prior notes before making the next call. `get_lead_notes({ lead_id })` closes that — same admin gate as every other leads tool, returns the feed newest-first. Use it before `move_lead_stage`/`add_lead_note` on a lead you haven't touched recently, so you're not repeating a call someone already logged.
+
+## Fee proposal drafting (Fee proposal phase round, r23)
+
+A fee proposal (`proposals`, migration 051) merges the old proposal
+document AND its service-contract terms into ONE signable document —
+`/proposal/{token}`, client draws or types a signature, a signed PDF
+gets stored + emailed, and a deposit invoice is drafted (never sent
+automatically). **You never send a proposal, and you never touch
+anything except its letter and vision paragraphs** — Phillip always
+reviews the whole document and presses Send himself.
+
+**When you're pulled in**: whenever an admin creates a fee proposal
+from a lead's detail panel AND that lead has `brief_answers` on file
+(the pre-visit questionnaire, lead flow round), one `aria_queue` row
+lands with `kind: 'draft_proposal'`, `payload: { proposal_id, lead_id }`.
+Claim it with `get_aria_queue()` like any other queue item.
+
+**Ground the draft in something real before you write it** — the whole
+point of a hand-drafted letter is that it references the actual visit,
+not generic copy:
+
+1. `get_lead_notes({ lead_id })` — what was discussed, any specifics
+   Phillip logged from the site visit.
+2. The lead's own `brief_answers` (already on the `payload.lead_id`'s
+   lead row — `get_lead`/`search` if you need the fuller record) — the
+   client's own words about rooms, priorities, budget expectations.
+3. `list_site_captures({ project_id })` — if this lead has progressed
+   far enough to have a linked project with site-diary entries (photos/
+   notes from the visit), read them too. Most `draft_proposal` items
+   fire on a pre-project lead, so this step is often a no-op — that's
+   fine, skip it.
+4. `get_proposal({ id: payload.proposal_id })` — the current content,
+   so you see which TEMPLATE (renovation / new build / multi-phase
+   whole-home) the admin picked and its example placeholder prose (the
+   `{{double-brace}}` tokens in the template seed mark the genuinely
+   per-client specifics you're filling in — see
+   `docs/proposal-reference-content.md`'s "Voice rules for Aria drafts").
+
+**Then draft**, referencing at least one specific, real detail from the
+visit/brief (a room, an aspect of the site, something the client said
+they wanted) — never ship the template's placeholder prose verbatim:
+
+```
+set_proposal_draft({
+  id: "...",
+  letter: "Dear Sam and Alex,\n\nThank you for having us out to 14 Seaview Road...",
+  vision: "14 Seaview Road has real bones to work with. The northern light into what's currently a dark, closed-off kitchen is the obvious opportunity...",
+})
+```
+
+Voice (per `docs/proposal-reference-content.md`'s own rules, verbatim):
+warm, direct, confident; references the actual visit and specific
+rooms/aspects; "quiet luxury", restraint/ambition balance; never salesy;
+no em dashes; middots (`·`) are fine; sign off `Phillip Introna,
+Director, RESLU`.
+
+**Two hard restrictions, enforced server-side (not just by you reading
+this)**: `set_proposal_draft` only ever writes `content.letter` /
+`content.vision` — never scope, fees, timeline, exclusions, or terms —
+and only while the proposal's own `status` is still `'draft'`. Both are
+checked by `PATCH /api/proposals/[id]/draft` itself, so calling it on a
+proposal that's already been sent (or trying to sneak a fee number into
+`letter`) fails with a clear error rather than silently doing the wrong
+thing.
+
+**Resolve the queue item once you're done**: `resolve_queue_item({ id: queueRowId, status: 'done' })`. There is no approval gate here (unlike the
+email pipeline's `change_proposals` flow above) — a draft letter isn't a
+disputed business fact the way a price is, and Phillip reviews/edits
+every word before Send regardless, so there's nothing for a human to
+approve at this step specifically.

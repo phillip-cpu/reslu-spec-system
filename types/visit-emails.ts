@@ -7,13 +7,29 @@
 // round's edit boundary).
 // ============================================================
 
-export type VisitEmailRecordType = "lead" | "client_event";
+// Grouped trade booking round (r20) — 'trade_booking_request' added.
+// record_id points at trade_booking_requests.id for BOTH the initial
+// grouped-request send and the admin "keep original + reply" short
+// reply — see migration 049's own email_sends.record_type comment.
+// (The DB's own CHECK constraint also allows 'client_invoice' — see
+// migration 046 — but that send path writes email_sends directly,
+// never through this module/type, so it's deliberately not listed
+// here; this type only ever needs to cover values THIS module's own
+// sendOrQueue()/flushPendingSends() actually read/write.)
+export type VisitEmailRecordType = "lead" | "client_event" | "trade_booking_request";
 
 /** Matches an emails/*.html filename (without extension) 1:1 — see
  * lib/visit-emails.ts's loadTemplate(). Free text in the DB (not a
- * fixed union) so a future milestone template needs no migration, but
- * today only these two exist. */
-export type VisitEmailTemplateName = "visit-confirmation" | "visit-reminder";
+ * fixed union) so a future milestone template needs no migration.
+ * Grouped trade booking round (r20) additions: 'trade-booking-request'
+ * (the grouped-send email) and 'trade-booking-reply' (the admin's
+ * short "keep original + reply" note — see POST
+ * /api/trade-requests/[id]/lines/[visitId]/resolve). */
+export type VisitEmailTemplateName =
+  | "visit-confirmation"
+  | "visit-reminder"
+  | "trade-booking-request"
+  | "trade-booking-reply";
 
 export type VisitEmailStatus = "pending" | "sent" | "skipped";
 
@@ -49,6 +65,16 @@ export interface VisitEmailDetail {
    * still has the attachment to re-send with. Absent for the
    * client_events reminder path (never generates one). */
   attachments?: { filename: string; content: string }[] | null;
+  /** Grouped trade booking round (r20) — trade-booking-request.html / trade-booking-reply.html placeholders. All blank-safe (merge()'s existing "missing key = empty string" contract), never referenced by the two lead-visit templates above. */
+  company?: string | null;
+  project_name?: string | null;
+  project_address?: string | null;
+  /** Pre-built HTML `<tr>` rows (lib/trade-booking.ts's buildTaskRowsHtml()) — merged verbatim into {{task_rows}}, not further escaped by merge() itself. */
+  task_rows?: string | null;
+  request_link?: string | null;
+  attachments_note?: string | null;
+  /** trade-booking-reply.html only — the admin's short "keep original" note. */
+  message?: string | null;
 }
 
 export interface EmailSendRow {

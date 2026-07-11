@@ -5,6 +5,7 @@ import { Header } from "@/components/layout/Header";
 import { ProjectTabs } from "@/components/projects/ProjectTabs";
 import { InvoiceQueue } from "@/components/invoices/InvoiceQueue";
 import { ClientInvoiceQueue } from "@/components/invoices/ClientInvoiceQueue";
+import { ProposalsSection } from "@/components/proposals/ProposalsSection";
 import { portalUrlFor } from "@/lib/portal-link";
 
 /**
@@ -71,6 +72,21 @@ export default async function ProjectInvoicesPage({
       <Header title={project.name} subtitle={`${project.client_name} · Invoices`} titleHref={`/projects/${id}`} />
       <ProjectTabs projectId={id} active="invoices" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
       <main className="flex-1 space-y-10 px-8 py-8">
+        {/* Fee proposal phase round (r23) — BUILD-SPEC.md item 3: "Builder
+            UI on lead detail (+ projects)". Same shared component the
+            lead detail panel mounts (components/leads/LeadDetailPanel.tsx),
+            here passed projectId instead of leadId — a proposal raised
+            after "Progress to job" (post project creation) lives here. */}
+        <section>
+          <h2 className="mb-1 text-subhead text-nearblack">Fee proposals</h2>
+          <p className="mb-4 text-body text-charcoal/60">
+            Design fee proposals for this project — letter, vision, scope, fees, timeline,
+            exclusions and terms, signed by the client on a private link. Accepting one drafts a
+            deposit invoice below (never sent automatically).
+          </p>
+          <ProposalsSection projectId={id} />
+        </section>
+
         {/* Client invoicing round — money IN (RESLU bills THIS client).
             Deliberately its own clearly-labelled section above the
             pre-existing supplier queue below (money OUT, trade/supplier

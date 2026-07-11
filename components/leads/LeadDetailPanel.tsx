@@ -13,6 +13,7 @@ import { LeadAttachments } from "@/components/leads/LeadAttachments";
 import { StandardItemsChecklist } from "@/components/projects/StandardItemsChecklist";
 import { VisitEmailStatusChips } from "@/components/shared/VisitEmailStatusChips";
 import { BRIEF_ANSWER_FIELDS, type LeadWithBriefFields } from "@/types/round-lead-flow";
+import { ProposalsSection } from "@/components/proposals/ProposalsSection";
 
 interface Props {
   lead: Lead;
@@ -502,6 +503,18 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
               </dl>
             </div>
           )}
+
+          {/* Fee proposal phase round (r23) — BUILD-SPEC.md item 3:
+              "Builder UI on lead detail (+ projects): create from
+              template ... list". Renders nothing but the "New proposal"
+              composer + an empty state until at least one proposal
+              exists for this lead — see components/proposals/
+              ProposalsSection.tsx (shared with the project Invoices
+              tab's own mount, which passes projectId instead). */}
+          <div className="border-t border-[#dcd6cc] pt-4">
+            <p className="label-caps mb-2 !text-charcoal/50">Fee proposal</p>
+            <ProposalsSection leadId={lead.id} />
+          </div>
 
           <div className="flex flex-wrap items-center gap-2">
             {dirty && (

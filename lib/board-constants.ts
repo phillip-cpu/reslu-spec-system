@@ -302,6 +302,11 @@ export function computeDependencyChips(groupsInSortOrder: DependencyChipSourceGr
 
 const SUMMARY_DONE_COLUMN_NAMES = new Set(["done", "complete", "completed"]);
 
+/** Same "done" heuristic as the group summary tally above, exported for call sites that need a plain boolean rather than a count (e.g. hiding a completed task's DUE date/overdue styling — a done task can't be overdue). */
+export function isDoneColumnName(columnName: string): boolean {
+  return SUMMARY_DONE_COLUMN_NAMES.has(columnName.trim().toLowerCase());
+}
+
 export interface GroupSummarySourceTask {
   /** Whether this task is a sub-item (has a non-null parent_task_id) — excluded from both the total and the done tally, per spec. */
   isSubItem: boolean;

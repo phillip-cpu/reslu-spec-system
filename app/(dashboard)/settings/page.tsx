@@ -13,6 +13,8 @@ import { DesignTaskTemplateSettings } from "@/components/settings/DesignTaskTemp
 import { ExportPresetSettings } from "@/components/settings/ExportPresetSettings";
 import { BankDetailsSettings } from "@/components/settings/BankDetailsSettings";
 import { CpdDefaultsSettings } from "@/components/settings/CpdDefaultsSettings";
+import { EmailSignaturesSettings } from "@/components/settings/EmailSignaturesSettings";
+import { getSignaturePeople } from "@/lib/email-signatures";
 import { FALLBACK_PHASE_TEMPLATE, FALLBACK_PHASE_TASK_TEMPLATES } from "@/lib/phase-template";
 import { FALLBACK_DESIGN_TASK_TEMPLATES } from "@/lib/design-task-templates";
 import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
@@ -52,6 +54,12 @@ export default async function SettingsPage() {
   // API routes — see app/api/categories/route.ts, app/api/categories/[id]/route.ts,
   // app/api/profiles/[id]/route.ts.
   const [categories, team] = await Promise.all([getCategories(), getProfiles()]);
+
+  // Email signatures round (r22) — static, JSON-backed list (see
+  // lib/email-signatures.ts header comment for why: profiles has no
+  // title/phone columns). No DB round-trip needed, unlike every other
+  // section's app_settings read above.
+  const signaturePeople = getSignaturePeople();
 
   // Fix Round A — Pre-populated phases (BUILD-SPEC.md "Pre-populated
   // phases"): the editable seed template both the Timeline and Board
@@ -321,6 +329,28 @@ export default async function SettingsPage() {
             canEdit={isAdmin}
             currentUserId={info?.userId ?? ""}
           />
+        </section>
+
+        {/* Email signatures round (r22) — BUILD-SPEC.md "Email
+            signatures page". Team-visible, no admin gate (item 5: "no
+            secrets, visible to all users") — every team member can copy
+            their own signature or download their Mac installer here.
+            Design is locked (item 3); the markup itself lives in
+            lib/email-signatures.ts, extracted verbatim from
+            emails/signatures/reference-signature-phillip.html between
+            its SIGNATURE STARTS/ENDS comments. People, titles and phones
+            are sourced from emails/signatures/people.json — the
+            profiles table (migrations 001/003) has no title or phone
+            columns, so per item 5 no migration was added this round. */}
+        <section>
+          <h2 className="mb-1 text-subhead text-nearblack">Email signatures</h2>
+          <p className="mb-4 text-body text-charcoal/60">
+            Copy your signature straight into Gmail or Apple Mail, or download a Mac installer
+            script that sets it up for you. Everyone&apos;s title and phone number come from{" "}
+            <code>emails/signatures/people.json</code> for now, so TBC values are shown as-is until
+            they&apos;re filled in.
+          </p>
+          <EmailSignaturesSettings people={signaturePeople} />
         </section>
 
         <section>

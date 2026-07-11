@@ -241,7 +241,25 @@ export type MyWorkItemKind =
   // always null (lands in the "No date" bucket; there's no natural due
   // date for a pace nudge). Per-user, NOT admin-gated — every team
   // member sees their own pace, unlike ordering_due/lead_follow_up.
-  | "cpd_nudge";
+  | "cpd_nudge"
+  // Grouped trade booking round (r20) — BUILD-SPEC.md item 6: a
+  // trade_booking_requests row still `status = 'sent'` with `sent_at`
+  // more than 3 days ago (lib/trade-booking.ts's
+  // isBookingRequestFollowupDue). See app/api/my-work/route.ts source
+  // #11. Same additive pattern as every kind above -- `due` is always
+  // set (sent_at's date), so this kind always lands in "overdue", never
+  // "no_date".
+  | "trade_booking_followup"
+  // Fee proposal phase round (r23) — BUILD-SPEC.md §"Fee proposal phase
+  // (r23)" item 6: a proposals row still `status = 'sent'` whose
+  // `sent_at` is more than 5 days ago and not yet accepted
+  // (lib/proposals.ts's isProposalFollowupDue). See
+  // app/api/my-work/route.ts source #12. Admin-gated (financial-
+  // adjacent — same `if (isAdmin) { ... }` block shape as source #2/#9,
+  // not the ungated shape source #11 happens to use). `due` is always
+  // set (sent_at's date), so this kind always lands in "overdue", never
+  // "no_date" — same shape as trade_booking_followup above.
+  | "proposal_followup";
 
 /**
  * One row in the My Work feed, normalised across five very different

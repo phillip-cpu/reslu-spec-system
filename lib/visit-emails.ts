@@ -47,6 +47,9 @@ const ADELAIDE_TZ = "Australia/Adelaide";
 const TEMPLATE_FILES: Record<VisitEmailTemplateName, string> = {
   "visit-confirmation": "visit-confirmation.html",
   "visit-reminder": "visit-reminder.html",
+  // Grouped trade booking round (r20) — see emails/README.md.
+  "trade-booking-request": "trade-booking-request.html",
+  "trade-booking-reply": "trade-booking-reply.html",
 };
 
 const templateCache = new Map<VisitEmailTemplateName, string>();
@@ -99,6 +102,20 @@ export interface VisitEmailMergeData {
    * this round's final report). See lib/lead-brief.ts's
    * ensureBriefToken()/briefUrlFor(). */
   brief_link?: string | null;
+  /** Grouped trade booking round (r20) — trade-booking-request.html /
+   * trade-booking-reply.html placeholders. Blank-safe, same contract as
+   * every field above; never referenced by the two lead-visit
+   * templates. See types/visit-emails.ts's VisitEmailDetail (this
+   * shape is spread into that jsonb snapshot verbatim by sendOrQueue). */
+  company?: string | null;
+  project_name?: string | null;
+  project_address?: string | null;
+  /** Pre-built HTML `<tr>` rows (lib/trade-booking.ts's buildTaskRowsHtml()) — merged verbatim, not further escaped by merge() itself. */
+  task_rows?: string | null;
+  request_link?: string | null;
+  attachments_note?: string | null;
+  /** trade-booking-reply.html only. */
+  message?: string | null;
 }
 
 /**
@@ -124,6 +141,14 @@ export function merge(html: string, data: VisitEmailMergeData): string {
     // actually reference each one.
     calendar_link: data.calendar_link ?? "",
     brief_link: data.brief_link ?? "",
+    // Grouped trade booking round (r20).
+    company: data.company ?? "",
+    project_name: data.project_name ?? "",
+    project_address: data.project_address ?? "",
+    task_rows: data.task_rows ?? "",
+    request_link: data.request_link ?? "",
+    attachments_note: data.attachments_note ?? "",
+    message: data.message ?? "",
   };
   return html.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (whole, key: string) => {
     const v = values[key];

@@ -167,8 +167,17 @@ export async function GET(
       ? supabase.from("contacts").select("id,company,contact_name").in("id", contactIds)
       : Promise.resolve({ data: [] as { id: string; company: string; contact_name: string | null }[] }),
     visitIds.length
-      ? supabase.from("trade_visits").select("id,status,start_date,end_date,contact_id").in("id", visitIds)
-      : Promise.resolve({ data: [] as { id: string; status: string; start_date: string; end_date: string; contact_id: string | null }[] }),
+      ? supabase.from("trade_visits").select("id,status,start_date,end_date,contact_id,line_status").in("id", visitIds)
+      : Promise.resolve({
+          data: [] as {
+            id: string;
+            status: string;
+            start_date: string;
+            end_date: string;
+            contact_id: string | null;
+            line_status: string | null;
+          }[],
+        }),
   ]);
 
   const teamById = new Map((team ?? []).map((p) => [p.id, p]));
@@ -193,6 +202,7 @@ export async function GET(
           start_date: linkedVisit.start_date,
           end_date: linkedVisit.end_date,
           contact: linkedVisit.contact_id ? contactById.get(linkedVisit.contact_id) ?? null : null,
+          line_status: (linkedVisit.line_status as LinkedVisitSummary["line_status"]) ?? null,
         }
       : null;
     return {

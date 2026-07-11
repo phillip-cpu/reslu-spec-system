@@ -6341,3 +6341,620 @@ touched — `types/index.ts`, `lib/supabase/middleware.ts`, `vercel.json`,
 and every other file on this round's protected list were read for
 context but never edited. The middleware gap is documented above and
 in `README.md`'s "Lead flow" section, not silently worked around.
+
+## Grouped trade booking (10 July 2026, migration 049)
+
+`docs/BUILD-SPEC.md` §"Grouped trade booking (r20)": booking one trade
+for several spaced-apart tasks used to fire one confirmation email PER
+r15 `trade_visits` row — spam for a trade with e.g. three separate
+tiling visits on one project. New flow: staff propose dates on the
+board, send ONE email covering every task, the trade responds per line
+on a single tokened page. The r15 single-visit flow
+(`BookVisitPanel.tsx`, `app/trade/[token]`) is untouched and stays the
+path for one-off bookings — this round is additive.
+
+### Migration `049_grouped_trade_booking.sql`
+
+- **`trade_booking_requests`** (new table) — the envelope for one
+  "send": `project_id`, `contact_id` (nullable, `on delete set null`,
+  same discipline as `trade_visits.contact_id`), `token` (unique,
+  `encode(gen_random_bytes(32), 'hex')` — same shape as
+  `trade_visits.confirm_token`/`leads.brief_token`), `status`
+  (`draft|sent|responded|closed` — every route in this round writes
+  `'sent'` straight away; `draft`/`closed` exist for schema
+  completeness only), `sent_at`, `responded_at`, `created_by`,
+  `created_at`/`updated_at` (+ trigger).
+- **`trade_visits` additions** — `booking_request_id` (nullable FK
+  back to `trade_booking_requests`, `on delete set null`; null for
+  every ordinary r15-booked visit), `suggested_start date`,
+  `suggested_end date`, `response_note text` (a GROUPED line's
+  trade-suggested alternative — deliberately separate columns from the
+  r15 `proposed_start`/`proposed_end`/`proposed_note` trio, which
+  drives a different state machine, `status = 'proposed_change'`), and
+  `line_status text check (in 'proposed','accepted','date_suggested')`
+  — null for every r15 visit, only set for a row linked to a
+  `trade_booking_requests` row.
+- **`email_sends.record_type`** CHECK widened to add
+  `'trade_booking_request'` (drop+recreate constraint under its
+  Postgres-default name, same pattern `046_client_invoices.sql`
+  established for `'client_invoice'`). `record_id` points at
+  `trade_booking_requests.id` for BOTH the grouped-request send
+  (template `trade-booking-request`) and the admin "keep original +
+  reply" note (template `trade-booking-reply`).
+
+Every line of a grouped request is a REAL `trade_visits` row (not a
+parallel line-items table) — the day-before reminder cron, "who else
+is on site" overlap detection, and every other existing
+`trade_visits`-reading feature keep working unmodified for a grouped
+line, since from their point of view it's an ordinary visit with a
+`start_date`/`end_date`/`status`.
+
+### Group-mode booking panel — `components/board/GroupBookPanel.tsx`
+
+Sibling to `BookVisitPanel.tsx` (r15), not an extension of it — a
+fundamentally different flow (pick a trade FIRST, then see every one
+of their tasks, vs. one phase/trade/date-range form opened from one
+card). Launched from `ProjectBoard.tsx`'s existing "•••" board-actions
+menu ("Group book a trade…"), disturbing zero of `BookVisitPanel`'s
+own code. Picking a trade contact lists every project task
+(`GET /api/projects/[id]/board`'s existing response — no new GET
+route) carrying that same `contact_id`; a task is eligible (checkbox
+enabled, checked by default) only when it has both `booking_date`/
+`booking_end_date` AND a resolvable `phase_id` via its `board_groups`
+row (a `trade_visits` row cannot exist without a `phase_id` — the
+"undated tasks... excluded" rule from BUILD-SPEC.md item 2 is extended
+here to also exclude "unphased"). One "Include documents" pack
+(plans/schedule/SOW-trade-extract), reusing the exact same
+`lib/export-presets.ts`/`lib/trade-doc-pack.ts` machinery
+`BookVisitPanel` already established — frozen identically onto every
+selected line's `trade_visits.document_pack` at send time.
+
+### `POST /api/projects/[id]/trade-requests`
+
+The panel's "Send" action. Body: `{ contact_id, task_ids, document_pack? }`.
+Each `task_id` is validated independently and SKIPPED (not a
+whole-request failure, reported back in the response's `skipped`
+array with a reason: `no_booking_dates`/`no_phase`/`wrong_contact`/
+`not_found`) rather than aborting the request — same per-row
+error-collection discipline as `POST /api/phases/[id]/shift-items`. A
+task already linked to an existing `trade_visits` row (booked
+individually via r15) is RE-LINKED into this request rather than
+creating a second, orphaned visit. Creates one `trade_booking_requests`
+row (`status: 'sent'`, `sent_at: now()`), one `trade_visits` row per
+eligible task (`line_status: 'proposed'`), then sends ONE email via
+`lib/visit-emails.ts`'s existing `sendOrQueue()` — `email_sends` log,
+7am-7pm Adelaide window, same machinery every other trigger in this
+codebase reuses. Response: `CreateTradeBookingRequestResponse` —
+`{ request, visit_ids, skipped, email_sent, email_skip_reason? }`.
+
+### `GET /trade-request/[token]` — public response page
+
+Mirrors `app/trade/[token]/page.tsx`'s patterns exactly: service-role
+client (bypasses RLS — not a team session), rate-limited
+(`lib/rate-limit.ts`, default 30/min), `noindex,nofollow` metadata,
+mobile-first, RESLU brand (cream `#EDE8DE` / off-white `#F5F1E8` /
+charcoal `#313131` / sand `#A08C72`, sharp corners, real
+`/reslu-logo.png` — never typeset). Renders every non-deleted line
+linked to the request (task title + date range + current state) via
+`components/trade-request/TradeRequestLines.tsx`. Documents section
+reuses the r15 pack-resolution logic (frozen `document_pack` choices
+against the project's CURRENT live documents), proxied through this
+round's own `/api/trade-request/[token]/documents/{plans,schedule,sow}`
+routes (307-redirect to a representative line's own r15 `confirm_token`
+proxy — `lib/trade-request.ts`'s `findRepresentativeVisitToken()` —
+genuine reuse, not a parallel implementation). Expiry
+(`lib/trade-request.ts`'s `isRequestFullyExpired()`) is true only once
+EVERY non-deleted line has passed its own `end_date` — a request with
+one line still upcoming stays live.
+
+**MIDDLEWARE — verified, no change needed:** `lib/supabase/
+middleware.ts`'s `isPublicPath` allowlist (protected, read-only this
+round) already covers `/trade-request/**` and `/api/trade-request/**`
+without any edit — both checks are plain string-prefix tests
+(`pathname.startsWith("/trade")` / `pathname.startsWith("/api/trade")`,
+not route-segment-aware), and `"/trade-request/..."` / `"/api/trade-
+request/..."` both satisfy those prefixes as a side effect of sharing
+the `/trade` string. Confirmed by reading that file before writing
+this page — no on-machine follow-up needed, unlike the `/brief` gap
+the Lead flow round above had to document.
+
+### `POST /api/trade-request/[token]/respond`
+
+Public, token-gated, rate-limited tighter (10/min) than the page GET.
+Body: `TradeRequestRespondInput` — `{ action: 'accept', line_id }` or
+`{ action: 'suggest', line_id, suggested_start, suggested_end,
+response_note? }`.
+
+- **`accept`** — `line_status -> 'accepted'`, `status -> 'confirmed'`
+  (the EXISTING r15 status enum — deliberate, so every existing
+  status-driven feature, e.g. the day-before reminder cron's
+  `status in ('unconfirmed','tentative')` filter, treats a confirmed
+  grouped line exactly like an ordinary r15 visit). Valid from
+  `'proposed'` OR `'date_suggested'` (a trade can still accept the
+  original date after having suggested something else). **Idempotent**
+  — re-POSTing `accept` for an already-`'accepted'` line 200s with its
+  current state rather than erroring (double-POST safe).
+- **`suggest`** — sets `suggested_start`/`suggested_end`/
+  `response_note`, `line_status -> 'date_suggested'`. Rejected (400) if
+  the line is already `'accepted'` (locked). BUILD-SPEC.md item 4/5
+  "Suggestions never move the board" — this action NEVER touches
+  `start_date`/`end_date`/`status`, only the `suggested_*`/`line_status`
+  columns, plus inserts a `daily_brief_items` attention row
+  (`source: 'trade'`, `title: "{Company} suggested new dates —
+  {task}"`, `link_href: /trade-requests/{id}?focus=line-{visitId}`).
+
+After either action, if every non-deleted line on the request now has
+`line_status != 'proposed'` (`lib/trade-booking.ts`'s
+`allLinesResolved()`), the request itself moves to `status: 'responded'`,
+`responded_at: now()` (guarded so this only fires once).
+
+### `GET /api/trade-requests/[id]` + `components/trade-requests/TradeRequestDetail.tsx`
+
+Authenticated admin detail view — the request envelope plus every
+line, each annotated with its task title + phase name. Page:
+`app/(dashboard)/trade-requests/[id]/page.tsx`, deep-linked from the
+`daily_brief_items` "suggested new dates" row above and from the My
+Work follow-up source below.
+
+### `POST /api/trade-requests/[id]/lines/[visitId]/resolve`
+
+The two admin actions on a `'date_suggested'` line (BUILD-SPEC.md item
+5). Body: `{ action: 'accept_shift' }` or `{ action: 'keep_reply',
+message? }`.
+
+- **`accept_shift`** — applies `suggested_start`/`suggested_end` onto
+  the line (`line_status -> 'accepted'`, `status -> 'confirmed'`,
+  `confirmed_by: 'staff'`), syncs the linked `board_tasks.booking_date`/
+  `booking_end_date` to match, re-runs `lib/phase-rollup.ts`'s
+  `rollupPhaseDatesForGroup()`, then OFFERS (never applies) the
+  EXISTING `POST /api/phases/[id]/shift-items` ripple for the rest of
+  that phase's tasks via `shift_offer: { phase_id, delta_days } | null`
+  in the response — this route never calls `shift-items` itself; the
+  admin UI does, on a separate explicit click
+  ("Shift timeline" button, `TradeRequestDetail.tsx`), reusing that
+  route entirely unchanged (BUILD-SPEC.md: "do NOT reimplement ripple
+  math"). `delta_days` = whole days from the line's OLD `start_date` to
+  the accepted `suggested_start`, same positive-later sign convention
+  `shift-items` already expects.
+- **`keep_reply`** — frees the line back to `line_status: 'proposed'`
+  (clears `suggested_start`/`end`/`response_note` — the original dates
+  stand), optionally sends a short reply email (template
+  `trade-booking-reply`, same `sendOrQueue()`/`email_sends` machinery,
+  same sender). Idempotent both ways (an already-`'accepted'` or
+  already-back-to-`'proposed'` line 200s without re-applying/re-sending).
+
+Lines are independent per BUILD-SPEC.md item 5 ("Phillip confirmed
+default") — accepting or resolving one line never touches any other
+line's dates; the downstream phase shift is only ever offered, never
+automatic, on this one explicit admin action.
+
+### `POST /api/trade-requests/[id]/resend`
+
+BUILD-SPEC.md item 6: "No response after 3 days -> follow-up flag...
+re-send option (same token, SEQUENCE-style resend guard in
+`email_sends`)." Only valid while `status = 'sent'`. Re-sends
+`trade-booking-request` against the SAME unchanged `token` (no new
+row, no new link minted), re-listing only lines still
+`line_status = 'proposed'` (an already-accepted/date-suggested line has
+nothing left to chase). Duplicate-send guard: blocks a resend if a
+`'sent'` `email_sends` row for this exact `(record_type, record_id,
+template)` was logged within the last 2 minutes (a rapid double-click
+guard — `sendOrQueue()`'s own dedupe is keyed on `visit_datetime`,
+which has no single meaning for a multi-line request, so this route
+supplies its own explicit guard instead).
+
+### My Work follow-up — `GET /api/my-work` source #11
+
+**Genuine gap found and fixed during this round's own verification
+pass:** `app/(dashboard)/trade-requests/[id]/page.tsx`'s own doc
+comment already referenced "the My Work 'follow-up' source (GET
+/api/my-work, source #11)" as if it existed, and
+`POST /api/trade-requests/[id]/resend`'s doc comment said the same —
+but no such source was actually wired into `app/api/my-work/route.ts`,
+and `MyWorkItemKind` (`types/phase-12a-b.ts`) had no matching kind.
+Added: one `MyWorkItem` per `trade_booking_requests` row still
+`status = 'sent'` whose `sent_at` is more than 3 whole days ago
+(`lib/trade-booking.ts`'s `isBookingRequestFollowupDue()` — the exact
+same helper `POST .../resend`'s own guard uses, so both agree on
+"due"). `due` is set to `sent_at`'s date, which is always in the past
+by construction here, so this always lands in the "overdue" bucket
+(same as an overdue lead follow-up). `href` deep-links to the admin
+request detail page, which carries the real "Resend request" button —
+this source only surfaces the flag, per every other My Work source's
+"deep link to where the action lives" convention. Team-visible, not
+admin-gated (scheduling data, not financial). Required a matching
+addition to `MyWorkItemKind` (additive union member) and to
+`components/my-work/MyWorkWorkspace.tsx`'s `KIND_LABEL` — that `Record`
+is exhaustive over `MyWorkItemKind`, so skipping it would have been a
+genuine TS2741 build error, the exact class of bug that file's own
+comment already documents happening once before (`ordering_due`, Order-
+by engine round).
+
+### Sender identity
+
+The grouped-request/reply emails go out via `lib/visit-emails.ts`'s
+`sendOrQueue()`/Resend, sender `'Aria — RESLU <aria@reslu.com.au>'`
+(`RESEND_FROM`, unchanged, shared with the lead/client_event paths).
+The r15 single-visit trade confirmation email (`POST
+/api/board-tasks/[id]/book-visit`) sends via a DIFFERENT transport —
+`lib/gmail/send.ts`'s `sendTeamEmail()`, sender `'RESLU
+<aria@reslu.com.au>'`. **Same underlying mailbox address
+(`aria@reslu.com.au`) either way** — only the transport (Resend HTML
+vs. Gmail plain-text) and the FROM display-name string differ
+cosmetically (`'Aria — RESLU <...>'` vs `'RESLU <...>'`). Reusing
+`sendOrQueue()` (per this round's own build instruction: "via existing
+visit-emails machinery — sendOrQueue, email_sends log, Adelaide
+window") was judged to satisfy "match the existing trade sender" in
+substance — a recipient sees the same sending address either way — 
+without forking `RESEND_FROM` per-record-type, which would have meant
+either a breaking signature change to a function three other rounds'
+trigger sites already call, or a second near-duplicate send function.
+Flagged here explicitly rather than silently assumed correct.
+
+### `lib/trade-booking.ts` (new, pure helpers)
+
+`isBookingRequestFollowupDue()`, `allLinesResolved()`,
+`formatTaskLineDateRange()`, `buildTaskRowsHtml()`,
+`computeShiftDeltaDays()`, `diffDays()` — plain data-in/data-out, no
+Supabase/Next imports, mirroring `lib/trade-visits.ts`'s own shape.
+
+**Files touched:** `supabase/migrations/049_grouped_trade_booking.sql`
+(new, only migration this round), `types/round-grouped-trade-booking.ts`
+(new), `lib/trade-booking.ts` (new), `lib/trade-request.ts` (new),
+`lib/visit-emails.ts` (additive — `trade-booking-request`/
+`trade-booking-reply` added to `TEMPLATE_FILES`, `VisitEmailMergeData`/
+`merge()` gain `company`/`project_name`/`project_address`/`task_rows`/
+`request_link`/`attachments_note`/`message`; nothing existing changed),
+`types/visit-emails.ts` (`VisitEmailRecordType` gains
+`'trade_booking_request'`, `VisitEmailTemplateName` gains the two new
+template names, `VisitEmailDetail` gains the matching fields —
+additive), `emails/trade-booking-request.html` (new),
+`emails/trade-booking-reply.html` (new), `emails/README.md` (new
+section), `components/board/GroupBookPanel.tsx` (new),
+`components/board/ProjectBoard.tsx` ("Group book a trade…" menu item +
+panel mount, additive), `components/trade-request/TradeRequestLines.tsx`
+(new), `components/trade-requests/TradeRequestDetail.tsx` (new),
+`app/trade-request/[token]/page.tsx` (new),
+`app/api/trade-request/[token]/respond/route.ts` (new),
+`app/api/trade-request/[token]/documents/{plans,schedule,sow}/route.ts`
+(new), `app/api/projects/[id]/trade-requests/route.ts` (new),
+`app/api/trade-requests/[id]/route.ts` (new),
+`app/api/trade-requests/[id]/resend/route.ts` (new),
+`app/api/trade-requests/[id]/lines/[visitId]/resolve/route.ts` (new),
+`app/(dashboard)/trade-requests/[id]/page.tsx` (new),
+`app/api/my-work/route.ts` (source #11, additive — added during this
+round's own verification pass, see that section above),
+`types/phase-12a-b.ts` (`MyWorkItemKind` gains `trade_booking_followup`,
+additive), `components/my-work/MyWorkWorkspace.tsx` (`KIND_LABEL` gains
+the matching entry, additive), `next.config.ts`
+(`outputFileTracingIncludes` gains the three new routes that call
+`sendOrQueue()`, same tracing-gap pattern as every other entry there),
+`docs/API.md` (this section). Single migration (049); no protected
+file touched — `lib/supabase/middleware.ts`, `vercel.json`,
+`components/items/SpecRegister.tsx`/`RoomAssignBar.tsx`/
+`RoomBuilder.tsx`/`ItemRoomsEditor.tsx`, `lib/csv.ts`,
+`app/api/projects/[id]/import/**`, `types/index.ts`, every Second
+Brain/invoicing(046)/CPD(047)/lead-flow(048) file, and every other file
+on this round's protected list were read for context (several — board
+route, r15 trade-visit files, shift-items, daily_brief_items shape,
+visit-emails, export-presets — were read specifically to match
+existing conventions) but never edited. `lib/visit-emails.ts` was
+extended additively only, per this round's explicit allowance —
+the lead-flow round's sender/48h/ICS work is untouched (confirmed by
+diff-reading that file's lead-flow-era sections before adding to them).
+
+## Fee proposal phase (11 July 2026, migration 051)
+
+BUILD-SPEC.md §"Fee proposal phase (r23)": "ONE signable document:
+proposal + terms merged (replaces LawDepot service contract). Client
+signs on the tokened page → signed PDF stored + emailed → deposit
+invoice auto-DRAFTED (never auto-sent) via 046 machinery → attention
+item." Content source of truth: `docs/proposal-reference-content.md`.
+
+### Migration `051_proposals.sql`
+
+`proposals` (id, lead_id FK null, project_id FK null — at least one set
+via `chk_proposals_lead_or_project`, token unique default 32-byte hex,
+status draft|sent|accepted|closed, content jsonb, total_inc numeric,
+deposit_inc numeric, viewed_at, sent_at, signed_name, signed_at,
+signature jsonb, signed_pdf_path, created_at, updated_at) — column list
+exactly per BUILD-SPEC.md item 1. `content` is one flat jsonb document
+(`types/proposals.ts`'s `ProposalContent`: letter, vision,
+scope_sections[], fees{}, timeline[], exclusions{}, terms_md) — no
+sub-table per section/stage/milestone/row, unlike a SOW's own
+normalised sections/lines, since nothing else in this schema needs to
+query into a single scope bullet or fee milestone relationally.
+`total_inc`/`deposit_inc` are numeric(12,2) dollars, INC GST — matches
+the existing `client_invoices` numeric convention (not cents-as-
+integer). No new storage bucket: signed PDFs reuse the existing private
+`assets` bucket (009/010) at `proposals/{id}/{timestamp}-signed.pdf`
+(`lib/proposals.ts`'s `proposalPdfPath()`) — the same "one immutable
+generated PDF per record, private, signed-URL-only access" shape every
+other generated PDF in this schema already uses. Same drop+recreate-
+under-default-name CHECK-widening technique 046/049 already used on
+`email_sends.record_type` (now also allows `'proposal'`), applied here
+to two MORE columns this round doesn't own: `aria_queue.kind` (now
+allows `'draft_proposal'`, owned by 033) and `daily_brief_items.source`
+(now allows `'proposal'`, owned by 041) — no row in either table's
+owning migration is touched, only the CHECK constraint from outside it.
+
+### `lib/proposal-templates.ts` — three seed templates + default terms
+
+`proposalTemplateContent(kind)` returns a fresh `ProposalContent` for
+`'renovation'` (Alley, Glenelg North — percentage-form fee, single
+"Design Fee" stage), `'new_build'` (Greenwith — percentage-form fee,
+single stage), or `'multi_phase'` (Neave, canonical — three
+dollar-form stages, one per phase) — copied verbatim into a new
+proposal's `content` column by `POST /api/proposals`, then ordinary
+freely-editable data from that point on, same "seed as templates" shape
+`lib/sow-templates.ts` already established. Every fee milestone/stage
+amount ships at `0` — the reference doc's real historical dollar
+figures are structure guidance, not placeholder pricing to ship on a
+new proposal. `DEFAULT_TERMS_MD` carries the RESLU custom clauses
+(Media & Content Usage, Value Management & Cost Alignment, Additional
+Services) plus the Hone-contract core boilerplate, verbatim per
+`docs/proposal-reference-content.md`'s "Default terms" section,
+rendered as plain ALL-CAPS-heading/blank-line-separated paragraphs
+(no markdown renderer exists in this repo, and this round adds none —
+see that file's own header comment). Letter/vision ship with Neave-
+style EXAMPLE prose (not lorem), `{{double-brace}}` tokens marking the
+genuinely per-client specifics — no server-side template-engine
+substitution happens; an admin (or Aria, via `set_proposal_draft`)
+edits the text directly.
+
+### `lib/proposals.ts` — shared helpers
+
+`computeProposalTotal(fees)` — server-computed `total_inc`, sum of
+every fee stage's own `total_inc`, never accepted verbatim from the
+client (same posture as `client_invoices`' stored totals). `sumStageMilestones(stage)` —
+Builder-UI convenience (not DB-enforced) for auto-summing a stage's
+milestones into its own total on blur. `defaultDepositInc(totalInc)` —
+`round(30% of total_inc)` to the nearest whole DOLLAR (`Math.round`, not
+cents-rounding) at proposal-create time only; a later manual override
+sticks (content edits never re-force it back to 30%). `depositExGst(depositInc)` —
+`deposit_inc / 1.1`, rounded half-up to cents, the ex-GST figure fed
+into `lib/client-invoices.ts`'s `computeTotals()` when drafting the
+deposit invoice. `isProposalFollowupDue(proposal, now?)` — `status='sent'`
+and `sent_at` more than 5 whole days ago; drives the My Work follow-up
+source #12 below. `proposalPdfPath(id, now?)` — see migration section
+above. `residenceLabel({lead, project})` / `recipientEmail({lead, project})` —
+shared resolution precedence (`project.alias` → `project.name` →
+`lead.surname_project` → `"your project"`; `project.client_email` →
+`lead.email` → `null`) used by every route that needs a display name or
+send-to address for a proposal.
+
+### `POST /api/proposals` / `GET /api/proposals`
+
+Admin-only (fee proposals carry design-fee/pricing data). `POST` body:
+`{ lead_id?, project_id?, template }` — at least one of lead_id/
+project_id required. Seeds `content` from `proposalTemplateContent()`,
+computes `total_inc`/`deposit_inc` (both land at 0 until the admin
+fills in real numbers), starts `status='draft'`. **Aria pre-draft**
+(item 5): when `lead_id` is set AND that lead has `brief_answers`,
+inserts one `aria_queue` row (`kind: 'draft_proposal'`, `dedupe_key: 'draft_proposal:{proposal_id}'`,
+`payload: { proposal_id, lead_id }`) — Aria drafts
+`content.letter`/`content.vision` via `set_proposal_draft`, Phillip
+always reviews before Send. `GET` lists by `?lead_id=` or `?project_id=`,
+newest first.
+
+### `GET` / `PATCH /api/proposals/[id]`
+
+Admin-only. `GET` — full row (also the MCP `get_proposal` tool's fetch
+target — Aria authenticates as a real admin user, same gate covers
+her). `PATCH` body: `PatchProposalInput` — `{ content?, deposit_inc? }`
+— the Builder UI's own **draft-commit-on-blur** save target
+(`components/proposals/ProposalEditor.tsx`), always sending the WHOLE
+`content` object on blur, never per-keystroke (this codebase "was
+burned before" on per-keystroke PATCH — see that component's own
+header comment). `total_inc` is always server-recomputed from
+`content.fees` when `content` is provided; `deposit_inc`, when
+provided, is stored as-is. Blocked (409) once `status` is `'accepted'`
+or `'closed'` — freely editable while `'draft'` or `'sent'`.
+
+### `PATCH /api/proposals/[id]/draft` — Aria's `set_proposal_draft` target
+
+Deliberately narrower than the general PATCH above — body:
+`{ letter?, vision? }`, at least one required, merged into `content`
+(every other field untouched, `total_inc` never recomputed). Enforces
+BOTH of item 5's restrictions server-side (not just by MCP-tool
+description discipline): 409 if `status !== 'draft'`, and only
+`letter`/`vision` can ever be written by this route regardless of what
+else might be in the body.
+
+### `POST /api/proposals/[id]/send`
+
+Admin-only, `status` must be `'draft'` (409 otherwise — use `.../resend`
+for an already-sent proposal). Requires a recipient email
+(`lib/proposals.ts`'s `recipientEmail()`); the token is NOT rotated
+(migration 051 mints it once, at row-create time, so the Builder UI's
+"Live preview" link stays stable and usable even before Send). Flips
+`status='sent'` + stamps `sent_at` BEFORE attempting the email send
+(same "the envelope is sent" convention as the grouped-trade-booking
+send route, 049) — a queued-outside-window or failed Resend call still
+starts the >5-day follow-up clock. Sends via `lib/proposal-emails.ts`'s
+own `sendProposalEmail()` (see `emails/README.md`'s "`proposal-sent.html`"
+section for why this is a separate, small re-implementation rather than
+extending `lib/visit-emails.ts`'s own private template/record-type
+unions) — sender `'Aria — RESLU <aria@reslu.com.au>'`, `email_sends`
+logged (`record_type='proposal'`, `template='proposal-sent'`), 7am-7pm
+Adelaide window respected. Email body: branded button link to
+`https://spec.reslu.com.au/proposal/{token}` (`{{request_link}}`), no
+attachment.
+
+### `POST /api/proposals/[id]/resend`
+
+Admin-only, `status` must be `'sent'`. Same token/link as the original
+send; does NOT touch `sent_at` (the follow-up clock keeps counting from
+the ORIGINAL send). Dupe guard: a simple 60-second window against the
+latest `email_sends` "proposal-sent" row for this proposal (a
+SELECT-then-guard, not the atomic claim-function shape
+`trade_booking_requests`' resend has — migration 051's own column list,
+followed exactly per item 1, has no `last_resend_at` column to back
+that shape; documented as a smaller, deliberately-accepted race window
+for this rare, manual admin action).
+
+### `GET /proposal/[token]` — public client-facing document + sign
+
+Public, token-gated, rate-limited, noindex, mobile-first, real logo —
+same trust model as `/trade-request/[token]`/`/brief/[token]` (this
+round's own "study first" list). Renders the FULL document: letter,
+vision, scope sections (bullets + `→` deliverables), design fee +
+payment structure (auto-summed stage totals, grand total, deposit),
+project timeline (+ the fixed "Council assessment timeframes..."
+caveat line, `lib/proposal-templates.ts`'s `TIMELINE_COUNCIL_CAVEAT`,
+always appended by the renderer — never stored per-row), exclusions +
+allowance, terms (`<details>` collapsible, plain preformatted
+paragraphs — no markdown renderer added). `viewed_at` is set ONCE, only
+while `status='sent'` and only if still null — a draft-status "Live
+preview" visit from the Builder UI never sets it, and a later revisit
+never re-sets it. Sign-to-accept section renders `ProposalSignForm`
+(reuses `components/portal/SignatureCanvas.tsx`'s own plain-`<canvas>`
+draw capture) only while `status='sent'`; shows a "signed by ... on ..."
+summary once `accepted`, or a plain notice for `draft`/`closed`.
+
+### `POST /api/proposal/[token]/accept`
+
+Public, token-gated, rate-limited. Body: `AcceptProposalInput` —
+`{ drawn_data_url, typed_name, consent }` — ALL three required (unlike
+the pre-existing e-signature machinery's "draw AND/OR type": this
+round's own migration 051 column comment captures both
+unconditionally, simpler for a document with only the one accept
+action). **Idempotent / double-POST safe**: the actual status flip is a
+CONDITIONAL update (`.eq("status", "sent")`) — of any two concurrent or
+retried POSTs, only one can ever win it; the other (and any later
+re-POST once `status='accepted'`) gets the SAME `{ ok: true, status:
+'accepted', already_accepted: true }` response, never a duplicate
+write. Only the winning request proceeds to: render+store the signed
+`ProposalPdf` (private `assets` bucket), draft the deposit invoice via
+`lib/client-invoices.ts`'s own `cleanLineItems`/`computeTotals`/
+`nextInvoiceNumber` (line `"Design fee deposit — {residence}"`, amount
+`depositExGst(deposit_inc)` ex-GST — status stays `'draft'`, NEVER
+auto-sent), email the signed PDF to the client + `phillip@reslu.com.au`
+(inline HTML body, no template file — see `emails/README.md`), and
+insert a dedupe-guarded `daily_brief_items` row (`source='proposal'`,
+same "existing open row" guard shape as `POST /api/brief-submit/[token]`'s
+own insert). All four of those are wrapped so a failure is reported
+(`lib/report-error.ts`) but never turns an already-recorded signature
+into an error response — same "the evidence row is the real record;
+everything after it is best-effort" posture as
+`app/api/portal/[token]/sign/[requestId]/route.ts`'s own certificate/
+email step. **Known, documented gap**: because each of those four steps
+runs at most once (only inside the single winning request), a failure
+partway through (e.g. the deposit-invoice insert fails after the PDF
+already stored) is NOT automatically retried on a later re-POST — that
+re-POST just sees `status='accepted'` and short-circuits. This matches
+the existing signature route's own risk tolerance exactly rather than
+inventing a new repair-on-retry mechanism; a stuck proposal is visible
+via `lib/report-error.ts`'s admin Settings "System health" surface.
+
+### `components/pdf/ProposalPdf.tsx`
+
+Cover (logo, `"{CLIENT} | DESIGN PROPOSAL"`, residence, date) → body
+page(s) (letter, vision, scope, fees, timeline, exclusions, terms) →
+signature page (drawn PNG or typed name, signed date, IP; RESLU's own
+block reads "Countersigned by issuance of this proposal" — no live
+counter-signature flow exists). Same font/logo `Font.register`
+duplication + brand-palette-constant convention as
+`InvoicePdf.tsx`/`SowPdf.tsx` (deliberate — each PDF module owns its
+own module-scope font state). **Pagination**: per `SowPdf.tsx`'s own
+documented "overlapping text" lesson, NO section is `wrap={false}` —
+only short atomic rows (a bullet, a milestone line, a timeline row) are,
+and every section heading carries `minPresenceAhead` so it's never
+orphaned alone at the bottom of a page.
+
+### My Work follow-up — `GET /api/my-work` source #12
+
+Mirrors source #11 (`trade_booking_followup`, 049) exactly in shape,
+admin-gated like source #2/#9 (financial-adjacent, unlike source #11's
+booking dates): a `proposals` row still `status='sent'` whose `sent_at`
+is more than 5 whole days ago and not yet accepted
+(`lib/proposals.ts`'s `isProposalFollowupDue()`). `types/phase-12a-b.ts`'s
+`MyWorkItemKind` gains `'proposal_followup'` (additive);
+`components/my-work/MyWorkWorkspace.tsx`'s `KIND_LABEL` gains the
+matching entry — the SAME exhaustive-`Record` gotcha the `ordering_due`
+bug-fix comment already documents ("missing the label entry is a real
+TS2741 build error") applied proactively this round rather than fixed
+after the fact. `href` points at the new `/proposals/{id}` editor,
+where the existing `POST /api/proposals/[id]/resend` action lives
+(item 6's "re-send option (same token, email_sends dupe guard)" — see
+that route's own section above; no separate resend route was needed).
+
+### Builder UI — `components/proposals/{ProposalsSection,ProposalEditor}.tsx`
+
+`ProposalsSection` (list + "New proposal" template-picker composer) is
+ONE shared component mounted from BOTH
+`components/leads/LeadDetailPanel.tsx` (`leadId` prop, new "Fee
+proposal" section) and `app/(dashboard)/projects/[id]/invoices/page.tsx`
+(`projectId` prop, new "Fee proposals" section above the existing
+Client/Supplier invoice sections) — exactly one prop set per caller,
+mirroring `proposals.lead_id`/`project_id`'s own "at least one" shape.
+`ProposalEditor` is the full section editor, mounted at the dedicated
+`app/(dashboard)/proposals/[id]` route (a full page, not a slide-over
+panel — chosen over `components/leads/LeadDetailPanel.tsx`'s panel
+pattern because a proposal's content is far more than a panel
+comfortably holds, the same reasoning the SOW/estimate editors already
+apply to their own content-heavy pages) — **draft-commit-on-blur**,
+mirroring `LeadDetailPanel.tsx`'s own single-save `draft`/`dirty`/
+blur-commits pattern (the whole `content` object PATCHes on blur, never
+per-keystroke), NOT `SowBuilder.tsx`'s per-ROW save (a proposal's
+content has no sub-row ids to PATCH independently — see migration 051's
+own table comment). Section add/remove/reorder uses plain ↑/↓ move
+buttons (no drag-and-drop library added).
+
+### Middleware — exact allowlist lines for Claude Code
+
+`lib/supabase/middleware.ts` is protected/out of this round's edit
+boundary (confirmed by reading it before writing any route — no
+existing `isPublicPath` prefix covers `/proposal` or `/api/proposal`;
+in particular a BARE `pathname.startsWith("/proposal")` would ALSO
+incorrectly match the admin-only `/proposals/[id]` editor route, and a
+bare `pathname.startsWith("/api/proposal")` would ALSO match the
+admin-only `/api/proposals` CRUD API — both are boundary-sensitive the
+same way the grouped-trade-booking round's own `/trade` vs.
+`/trade-request` fix already documents). Add, boundary-aware, alongside
+the existing `/brief`/`/trade-request` lines in `isPublicPath`:
+
+```ts
+pathname === "/proposal" ||
+pathname.startsWith("/proposal/") ||
+pathname.startsWith("/api/proposal/") ||
+```
+
+Without these two lines, `/proposal/[token]` and
+`/api/proposal/[token]/accept` both redirect to `/login` (or 401) before
+they ever run — both routes are fully built and correct otherwise. See
+`README.md`'s "Fee proposal phase" section for the full install-step
+writeup.
+
+**Files touched:** `supabase/migrations/051_proposals.sql` (new, only
+migration this round), `types/proposals.ts` (new),
+`lib/proposals.ts`/`lib/proposal-templates.ts`/`lib/proposal-emails.ts`
+(new), `components/pdf/ProposalPdf.tsx` (new),
+`components/proposal/ProposalSignForm.tsx` (new),
+`components/proposals/{ProposalsSection,ProposalEditor}.tsx` (new),
+`app/api/proposals/route.ts` + `[id]/{route,draft/route,send/route,resend/route}.ts`
+(new), `app/api/proposal/[token]/accept/route.ts` (new),
+`app/proposal/[token]/page.tsx` (new),
+`app/(dashboard)/proposals/[id]/page.tsx` (new), `emails/proposal-sent.html`
+(new), `emails/README.md` (additive section), `docs/ARIA.md` (additive
+"Fee proposal drafting" section), `docs/API.md` (this section),
+`mcp/src/index.mjs` (additive — `get_proposal`/`set_proposal_draft`
+tools), `types/phase-12a-b.ts` (`MyWorkItemKind` gains
+`proposal_followup`, additive), `components/my-work/MyWorkWorkspace.tsx`
+(`KIND_LABEL` gains the matching entry, additive), `app/api/my-work/route.ts`
+(source #12, additive), `components/leads/LeadDetailPanel.tsx`
+("Fee proposal" section, additive), `app/(dashboard)/projects/[id]/invoices/page.tsx`
+("Fee proposals" section, additive), `next.config.ts`
+(`outputFileTracingIncludes` gains three new entries — the two send/
+resend routes' `emails/**` read and the accept route's PDF font/logo
+read — same tracing-gap pattern as every other entry there). Single
+migration (051); no protected file touched — `lib/supabase/middleware.ts`,
+`vercel.json`, `app/api/digest/**`, `components/items/SpecRegister.tsx`/
+`RoomAssignBar.tsx`/`RoomBuilder.tsx`/`ItemRoomsEditor.tsx`, `lib/csv.ts`,
+`app/api/projects/[id]/import/**`, `types/index.ts`, every Second Brain
+migration/route/lib file, `lib/signatures.ts` (read for its
+`decodePngDataUrl()`/`SIGNATURE_CONSENT_STATEMENT` exports and its own
+route's certificate/email posture, never edited), `lib/client-invoices.ts`
+(read for its exact insert shape, never edited), and `app/brief/[token]`/
+`app/trade-request/[token]`/`app/trade/[token]` (read for pattern only)
+were all read for context but never edited.

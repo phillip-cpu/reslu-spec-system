@@ -36,10 +36,12 @@ import {
   subItemCountChip,
   computeGroupWorksDateRange,
   suggestStatusColumnName,
+  isDoneColumnName,
 } from "@/lib/board-constants";
 import { ContactPicker } from "@/components/shared/ContactPicker";
 import type { DocumentPackChoices } from "@/types/trade-doc-pack";
 import { BookVisitPanel } from "./BookVisitPanel";
+import { GroupBookPanel } from "./GroupBookPanel";
 import { MilestoneDiaryPrompt } from "./MilestoneDiaryPrompt";
 // Board v3.3 — shared with GanttChart.tsx's own identical "Dates
 // changed — re-send confirmation?" affordance, not duplicated here.
@@ -222,6 +224,13 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   // below), which owns its own open/close state, so this file only
   // needs to track whether the PANEL is open.
   const [statusNamesPanelOpen, setStatusNamesPanelOpen] = useState(false);
+  // Grouped trade booking round (r20) — whether GroupBookPanel (the
+  // "pick a trade, see every one of their tasks, send one request"
+  // group-mode sibling to BookVisitPanel — see that component's own
+  // header comment) is open. A standalone modal with no card context
+  // (unlike bookingTask above), opened from the "•••" board-actions
+  // menu below rather than from any one specific card.
+  const [groupBookOpen, setGroupBookOpen] = useState(false);
   // Board v3.3 — "Dates changed — re-send confirmation?" affordance,
   // surfaced on a row whose linked visit was 'confirmed' at the moment
   // a direct works-date PATCH (WorksDateCell, GroupRows below) moved
@@ -1165,16 +1174,30 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               plumbing). */}
           <PopoverCell trigger="•••" triggerTitle="More board actions">
             {(close) => (
-              <button
-                type="button"
-                onClick={() => {
-                  close();
-                  setStatusNamesPanelOpen(true);
-                }}
-                className="block w-full min-w-[10rem] px-2 py-1.5 text-left text-caption text-charcoal hover:bg-cream"
-              >
-                Update status names…
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    close();
+                    setStatusNamesPanelOpen(true);
+                  }}
+                  className="block w-full min-w-[10rem] px-2 py-1.5 text-left text-caption text-charcoal hover:bg-cream"
+                >
+                  Update status names…
+                </button>
+                {/* Grouped trade booking round (r20) — see groupBookOpen's
+                    own doc comment above. */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    close();
+                    setGroupBookOpen(true);
+                  }}
+                  className="block w-full min-w-[10rem] px-2 py-1.5 text-left text-caption text-charcoal hover:bg-cream"
+                >
+                  Group book a trade…
+                </button>
+              </>
             )}
           </PopoverCell>
         </div>
@@ -1187,6 +1210,10 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
           onClose={() => setStatusNamesPanelOpen(false)}
         />
       )}
+
+      {/* Grouped trade booking round (r20) — see groupBookOpen's own
+          doc comment above. */}
+      {groupBookOpen && <GroupBookPanel projectId={projectId} onClose={() => setGroupBookOpen(false)} />}
 
       {view === "kanban" && layout === "stacked" && (
         <div className="space-y-6">
@@ -1567,7 +1594,12 @@ function StackedColumnSection({
           </thead>
           <tbody>
             {column.tasks.map((task) => {
-              const pastDue = isPastDue(task.due_date);
+              // A done task can't be overdue — this table renders once
+              // per status column, so `column` here IS the task's own
+              // current column (e.g. this render pass IS the Done
+              // column's card list for a task sitting in Done).
+              const done = isDoneColumnName(column.name);
+              const pastDue = !done && isPastDue(task.due_date);
               return (
                 <tr
                   key={task.id}
@@ -1591,7 +1623,7 @@ function StackedColumnSection({
                       : "—"}
                   </td>
                   <td className={clsx("px-3 py-2 text-caption", pastDue ? "text-red-700" : "text-charcoal/60")}>
-                    {task.due_date ? formatShortDate(task.due_date) : "—"}
+                    {task.due_date && !done ? formatShortDate(task.due_date) : "—"}
                   </td>
                   <td className="px-3 py-2">
                     <select
@@ -3110,13 +3142,20 @@ function GroupRows({
 
   /** One row — shared by both top-level tasks and sub-items, differing only in indentation/prefix/count-chip/context-menu contents. `topLevelIndex` is this row's position among ITS OWN sibling set (top-level tasks for a top-level row, or this parent's sub-items for a sub-item row) — used for the Move up/down disabled-at-ends check and drag-drop index, so a sub-item's reorder is scoped to its own sibling set exactly as BUILD-SPEC.md requires ("never across parents or up to top level"). */
   function renderRow(task: BoardTaskV3, siblingIndex: number, siblingCount: number, isSubItem: boolean) {
-    // migration 041 — datetime-aware once due_time is set, else the
-    // original date-only rule (see isOverdueByDateTime's own doc
-    // comment for the full "why datetime, not date+Date-object" story).
-    const pastDue = isOverdueByDateTime(task.due_date, task.due_time);
     const isExpanded = expandedId === task.id;
     const column = columnById.get(task.column_id);
     const columnName = column?.name ?? "";
+    // A done task can't be overdue, and its due date is no longer
+    // relevant to show — Phillip 10 Jul: "the due date should be
+    // removed if the item is set to done". The underlying due_date
+    // value is untouched in the DB (see the DueDateCell call below),
+    // this only masks the DISPLAY while the task sits in a Done-named
+    // column; it reappears correctly if the task is moved back out.
+    const isDone = isDoneColumnName(columnName);
+    // migration 041 — datetime-aware once due_time is set, else the
+    // original date-only rule (see isOverdueByDateTime's own doc
+    // comment for the full "why datetime, not date+Date-object" story).
+    const pastDue = !isDone && isOverdueByDateTime(task.due_date, task.due_time);
     const tint = resolveStatusPillTint(columnName, task.visit?.status ?? null, allColumnNames);
     const children = subItemsByParent.get(task.id) ?? [];
     const isParentCollapsed = collapsedParents.has(task.id);
@@ -3270,6 +3309,23 @@ function GroupRows({
                 onPatch={(patch, refUpdate) => onPatchTask(task, patch, refUpdate)}
                 truncate
               />
+              {/* Review fix, grouped trade booking round (r20): BUILD-
+                  SPEC.md item 4's "suggestion -> attention/daily-brief
+                  item + project board badge" only had the daily-brief
+                  half wired in — a trade suggesting a different date
+                  was otherwise invisible on the board itself. Pure
+                  indicator, not a link (resolving which trade_booking_
+                  requests row to open would need booking_request_id,
+                  not carried on LinkedVisitSummary) — see Daily Brief
+                  or /trade-requests/[id] to actually act on it. */}
+              {task.visit?.line_status === "date_suggested" && (
+                <span
+                  title="This trade suggested a different date for this line — see Daily Brief or the trade request to accept or decline."
+                  className="shrink-0 border border-amber-700/40 bg-amber-50 px-1.5 py-0.5 text-caption text-amber-800"
+                >
+                  Date suggested
+                </span>
+              )}
               {/* Bug fix, 8 July 2026: the whole row is now the click
                   target for expand/collapse (onClick on the <tr> above)
                   — was previously only this small chevron. Kept as an
@@ -3418,8 +3474,8 @@ function GroupRows({
                 called. Bug fix, 8 July 2026: stops propagation so
                 opening this input never also collapses the row. */}
             <DueDateCell
-              value={task.due_date}
-              timeValue={task.due_time}
+              value={isDone ? null : task.due_date}
+              timeValue={isDone ? null : task.due_time}
               pastDue={pastDue}
               onCommit={(next) => onPatchTask(task, next, next)}
             />

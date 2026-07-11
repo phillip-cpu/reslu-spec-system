@@ -13,6 +13,7 @@ export type ProjectTabKey =
   | "timeline"
   | "documents"
   | "gallery" // Phase 11B — site photo gallery, see app/(dashboard)/projects/[id]/gallery/
+  | "diary" // Site capture + mobile QoL round (r21) — Site diary, see app/(dashboard)/projects/[id]/diary/
   | "client" // Phase 11B — team-side client area, see app/(dashboard)/projects/[id]/client/
   | "estimate"
   | "invoices"
@@ -75,6 +76,15 @@ interface Props {
  * `position: sticky`/backdrop-blur to try to manufacture that effect;
  * the polish here is scoped to the underline + hover/label-weight
  * treatment only.
+ *
+ * Site capture + mobile QoL round (r21) addition: "Site diary" —
+ * BUILD-SPEC.md item 4, reverse-chronological photos/notes/audio
+ * captures (migration 050 site_captures), see
+ * app/(dashboard)/projects/[id]/diary/. Placed right after Gallery
+ * (both are photo/media surfaces) and before Client area. Team-
+ * visible, not adminOnly — same trust tier as Gallery/Documents (no
+ * pricing data). Single-line-per-array-entry diff, same minimal
+ * pattern the Gallery tab itself used when it was added to this file.
  */
 export function ProjectTabs({ projectId, active, isAdmin, portalUrl }: Props) {
   const tabs: { key: ProjectTabKey; label: string; href: string; adminOnly?: boolean }[] = [
@@ -85,6 +95,7 @@ export function ProjectTabs({ projectId, active, isAdmin, portalUrl }: Props) {
     { key: "timeline", label: "Timeline", href: `/projects/${projectId}/timeline` },
     { key: "documents", label: "Documents", href: `/projects/${projectId}/documents` },
     { key: "gallery", label: "Gallery", href: `/projects/${projectId}/gallery` },
+    { key: "diary", label: "Site diary", href: `/projects/${projectId}/diary` },
     { key: "client", label: "Client area", href: `/projects/${projectId}/client` },
     { key: "estimate", label: "Estimate", href: `/projects/${projectId}/estimate`, adminOnly: true },
     { key: "invoices", label: "Invoices", href: `/projects/${projectId}/invoices`, adminOnly: true },

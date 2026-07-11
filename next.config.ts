@@ -59,6 +59,13 @@ const nextConfig: NextConfig = {
     // /api/brief-submit/[token] does NOT need an entry — it only reads/
     // writes leads/daily_brief_items, never touches disk.
     "/brief/[token]": ["./emails/**"],
+    // Grouped trade booking round (r20): these three routes call
+    // lib/visit-emails.ts's sendOrQueue() (trade-booking-request.html /
+    // trade-booking-reply.html) — same dynamically-built-path tracing
+    // gap as every other loadTemplate() call site above.
+    "/api/projects/[id]/trade-requests": ["./emails/**"],
+    "/api/trade-requests/[id]/resend": ["./emails/**"],
+    "/api/trade-requests/[id]/lines/[visitId]/resolve": ["./emails/**"],
     // gte-small embeddings (migration 045): onnxruntime-node's native
     // addon dynamically loads libonnxruntime.so.1 (Linux) at runtime via
     // a path Next's static file tracer can't follow — without this entry
@@ -71,6 +78,23 @@ const nextConfig: NextConfig = {
     "/api/second-brain/reindex": ["./node_modules/onnxruntime-node/bin/**"],
     "/api/second-brain/search": ["./node_modules/onnxruntime-node/bin/**"],
     "/api/second-brain/match": ["./node_modules/onnxruntime-node/bin/**"],
+    // Fee proposal phase round (r23): POST /api/proposals/[id]/send and
+    // .../resend both call lib/proposal-emails.ts's own
+    // loadProposalSentTemplate(), which reads emails/proposal-sent.html
+    // off disk at runtime via a dynamically-built path — same tracing
+    // gap as every other loadTemplate()-style call site above. POST
+    // /api/proposal/[token]/accept never reads emails/** (its
+    // confirmation email is built inline, no template file — see that
+    // route's own doc comment) but DOES render components/pdf/ProposalPdf.tsx
+    // via @react-pdf at runtime, which reads the Cormorant font + the
+    // actual logo file off disk exactly like /api/projects/[id]/pdf
+    // above — same entry shape as that route's own line.
+    "/api/proposals/[id]/send": ["./emails/**"],
+    "/api/proposals/[id]/resend": ["./emails/**"],
+    "/api/proposal/[token]/accept": [
+      "./public/fonts/**",
+      "./public/reslu-logo.png",
+    ],
   },
 };
 

@@ -9,6 +9,7 @@ import { ExpiredNotice } from "@/components/trade/ExpiredNotice";
 import { WhoElseOnSite } from "@/components/trade/WhoElseOnSite";
 import { TradeRespondForm } from "@/components/trade/TradeRespondForm";
 import { TradeDocuments } from "@/components/trade/TradeDocuments";
+import { TradeCaptureSection } from "@/components/trade/TradeCaptureSection";
 import { latestPlansFile, latestIssuedSow, findPresetNameForCategories, scheduleLabel, formatFileSize } from "@/lib/trade-doc-pack";
 import type { TradeDocumentRow } from "@/types/trade-doc-pack";
 import type { SowDocument } from "@/types";
@@ -330,6 +331,15 @@ export default async function TradePage({
             hasArrival={Boolean(visit.arrival_slot || visit.arrival_time)}
             currentStatus={visit.status}
           />
+        </div>
+
+        {/* Site capture + mobile QoL round (r21), BUILD-SPEC.md item 1b —
+            "trade can drop photos/notes onto the job they're booked on;
+            author recorded as the contact." No new token infra: posts to
+            POST /api/trade/${token}/captures, the SAME confirm_token this
+            page already renders under. */}
+        <div className="mt-6">
+          <TradeCaptureSection token={token} />
         </div>
       </main>
       <footer className="mx-auto max-w-md px-6 py-10 text-caption text-charcoal/40">

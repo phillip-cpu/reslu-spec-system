@@ -60,6 +60,72 @@ made to the shipped file itself was wiring its submit handler
 `location.pathname` client-side. See that route's own doc comment, and
 `docs/API.md`'s "Lead flow" section, for the full submit/storage story.
 
+## `trade-booking-request.html` / `trade-booking-reply.html` — Grouped trade booking round (r20)
+
+Two new, plain (not the designer's script-font "paper card" style —
+these are business/trade-facing, not the lead's client journey)
+templates for `docs/BUILD-SPEC.md`'s "Grouped trade booking (r20)":
+
+- **`trade-booking-request.html`** — the ONE email a trade receives
+  covering every task/date line proposed for them on a project
+  (replacing what used to be one email per visit). Placeholders:
+  `{{company}}` `{{project_name}}` `{{project_address}}`
+  `{{task_rows}}` (pre-built HTML `<tr>` rows — see
+  `lib/trade-booking.ts`'s `buildTaskRowsHtml()`, merged verbatim, not
+  further escaped by `merge()`) `{{request_link}}`
+  (`https://spec.reslu.com.au/trade-request/{token}`)
+  `{{attachments_note}}` `{{phillip_phone}}`. Sent via
+  `POST /api/projects/[id]/trade-requests`.
+- **`trade-booking-reply.html`** — the admin's short "keep original +
+  reply" note (BUILD-SPEC.md item 5) sent from a trade-booking-request
+  line's "Keep original + reply" action. Placeholders: `{{company}}`
+  `{{message}}` `{{request_link}}` `{{phillip_phone}}`. Sent via
+  `POST /api/trade-requests/[id]/lines/[visitId]/resolve`.
+
+Both go through the same `lib/visit-emails.ts` `sendOrQueue()` /
+`email_sends` / 7am-7pm Adelaide window machinery as the two lead
+templates above (`record_type = 'trade_booking_request'`, migration
+049 widens `email_sends.record_type`'s CHECK to allow it) — additive
+entries in `TEMPLATE_FILES`/`VisitEmailMergeData`/`merge()`'s values
+map, nothing about the existing lead-flow templates/sender/window
+changed. Same "missing/unreadable file logs a `'skipped'` row and
+`reportError()`s rather than crashing the caller" contract as every
+other template here.
+
+## `proposal-sent.html` — Fee proposal phase round (r23)
+
+One new template for `docs/BUILD-SPEC.md`'s "Fee proposal phase (r23)":
+
+- **`proposal-sent.html`** — the branded "your fee proposal is ready"
+  button-link email, same plain (not the designer's "paper card") style
+  as the trade-booking templates above — this is a business email, not
+  part of the lead's client journey. Placeholders: `{{company}}`
+  (greeting name) `{{project_name}}` (residence label) `{{project_address}}`
+  `{{request_link}}` (`https://spec.reslu.com.au/proposal/{token}`)
+  `{{attachments_note}}` (always blank for this template — nothing is
+  attached to the SEND email, only the later signed-copy email)
+  `{{phillip_phone}}`. Sent via `POST /api/proposals/[id]/send` and
+  `.../resend`, through `lib/proposal-emails.ts`'s own thin
+  `sendProposalEmail()` — that module deliberately does NOT add
+  `'proposal'`/`'proposal-sent'` into `lib/visit-emails.ts`'s own
+  private `VisitEmailRecordType`/`TEMPLATE_FILES` maps (this round's own
+  file-boundary note keeps that file untouched); instead it reuses
+  `merge()`/`sendViaResend()`/the 7am-7pm Adelaide window gate unmodified
+  and re-implements its own small `email_sends` log + template-file
+  cache locally. See `lib/proposal-emails.ts`'s own header comment for
+  the full reasoning.
+
+**No `proposal-accepted.html` template file exists** — the signed-copy
+confirmation email (sent to the client + `phillip@reslu.com.au` by
+`POST /api/proposal/[token]/accept` once the client signs) is a short,
+plain, INLINE HTML string built by that route itself (no template
+file), the exact same "attach the PDF directly, simple branded HTML
+body inline" shape `POST /api/client-invoices/[id]/send`'s own
+`buildInvoiceEmailHtml()` already established for the client-invoicing
+round — a transactional confirmation with a PDF attachment doesn't need
+a hand-edited template file the way a marketing-adjacent lifecycle email
+does.
+
 ## What happens if a file is missing or fails to load
 
 Unchanged from the r15 behaviour: `lib/visit-emails.ts`'s

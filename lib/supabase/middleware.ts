@@ -65,8 +65,43 @@ export async function updateSession(request: NextRequest) {
     // (like /portal); /api/trade/[token]/respond validates the token itself;
     // /api/trade-reminders self-authenticates via CRON_SECRET. All must skip
     // the auth-redirect so trades (no session) and Vercel Cron reach them.
-    pathname.startsWith("/trade") ||
-    pathname.startsWith("/api/trade") ||
+    //
+    // Boundary-aware, not a bare startsWith("/trade") — that used to also
+    // match /trade-requests/[id] (the admin grouped-trade-booking detail
+    // PAGE, migration 049) and /api/trade-requests/* (its admin API),
+    // silently exempting them from the login redirect by string-prefix
+    // coincidence rather than intent. The admin API routes already do
+    // their own auth.getUser() 401 check so this was never a live data
+    // leak, but the admin PAGE itself has no such check and would have
+    // rendered its shell for an anonymous visitor. Every entry below is
+    // either an exact path or requires a "/" immediately after the
+    // matched segment, so "/trade-requests" can never satisfy a
+    // "/trade" or "/trade-request" check.
+    pathname === "/trade" ||
+    pathname.startsWith("/trade/") ||
+    pathname === "/api/trade" ||
+    pathname.startsWith("/api/trade/") ||
+    pathname.startsWith("/api/trade-reminders") ||
+    // Grouped trade booking round (r20, migration 049): /trade-request/
+    // [token] (singular) is the public, token-gated multi-line response
+    // page; /api/trade-request/[token]/* validates the token itself.
+    // Deliberately does NOT cover /trade-requests (plural) — the admin
+    // surfaces for this same feature — see the boundary-aware note above.
+    pathname === "/trade-request" ||
+    pathname.startsWith("/trade-request/") ||
+    pathname === "/api/trade-request" ||
+    pathname.startsWith("/api/trade-request/") ||
+    // Fee proposal phase (r23, migration 051): /proposal/[token]
+    // (singular) is the public, token-gated client signing page (also
+    // the Builder UI's own "Live preview" link, reachable before Send);
+    // /api/proposal/[token]/accept validates the token itself.
+    // Deliberately does NOT cover /proposals or /api/proposals (plural)
+    // — the admin builder/list surfaces for this same feature — same
+    // boundary-aware singular/plural split as /trade-request above.
+    pathname === "/proposal" ||
+    pathname.startsWith("/proposal/") ||
+    pathname === "/api/proposal" ||
+    pathname.startsWith("/api/proposal/") ||
     // Lead flow round (048): /brief/[token] is a public, token-gated
     // pre-visit questionnaire page (same shape as /portal, /trade
     // above); /api/brief-submit/[token] validates the token itself.

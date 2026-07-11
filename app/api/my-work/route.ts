@@ -6,6 +6,8 @@ import { computeInsuranceStatus } from "@/lib/insurance";
 import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
 import { deriveOrderBy, formatOrderByWorksDate, type OrderByContactInput, type OrderByItemInput, type WorksDateSource } from "@/lib/order-by";
 import { FALLBACK_CPD_DEFAULTS, computeCpdYearWindow, formatPoints, isBehindPace, sumPoints } from "@/lib/cpd";
+import { isBookingRequestFollowupDue } from "@/lib/trade-booking";
+import { isProposalFollowupDue } from "@/lib/proposals";
 import type { ExportPresetRow } from "@/types/round-export-batch";
 import type { CpdDefaults } from "@/types/cpd";
 import type { MyWorkItem, MyWorkResponse } from "@/types/phase-12a-b";
@@ -97,6 +99,23 @@ function formatWorksDate(dateOnly: string): string {
  *       in "No date" — there's no natural due date for a pace check).
  *       Purely additive, same "new source block, nothing else touched"
  *       shape as every source above.
+ *   11. Grouped trade booking round (r20) — BUILD-SPEC.md item 6: "No
+ *       response after 3 days -> follow-up flag on the request
+ *       (surfaces in My Work follow-ups)." One item per
+ *       trade_booking_requests row still `status = 'sent'` whose
+ *       `sent_at` is more than 3 whole days ago (lib/trade-booking.ts's
+ *       isBookingRequestFollowupDue — shared with the resend route's
+ *       own guard, so both agree on "due"). `due` is set to sent_at's
+ *       date, which is always in the past by construction here, so
+ *       this always lands in the "overdue" bucket, same as an
+ *       overdue lead follow-up. `href` deep-links to the admin request
+ *       detail page (app/(dashboard)/trade-requests/[id]/page.tsx),
+ *       which carries the actual "Resend request" action (POST
+ *       /api/trade-requests/[id]/resend) — this source only surfaces
+ *       the flag, per every other source's "deep link to where the
+ *       action lives" convention (e.g. trade_proposal above). Team-
+ *       visible, not admin-gated (scheduling data, not financial —
+ *       same reasoning as source #4).
  *
  * None of these ten sources require a project-membership check (this
  * codebase has no per-project team assignment — every team member sees
@@ -604,6 +623,90 @@ export async function GET() {
       href: "/cpd",
       meta: "Continuing Professional Development",
     });
+  }
+
+  // ---- 11. Grouped trade booking round (r20) — 3-day no-response follow-up ----
+  const { data: sentBookingRequests } = await supabase
+    .from("trade_booking_requests")
+    .select("id,project_id,contact_id,sent_at,status")
+    .eq("status", "sent")
+    .not("sent_at", "is", null);
+
+  const dueBookingRequests = (sentBookingRequests ?? []).filter((r) => isBookingRequestFollowupDue(r));
+
+  if (dueBookingRequests.length > 0) {
+    const bookingProjectIds = [...new Set(dueBookingRequests.map((r) => r.project_id))];
+    const bookingContactIds = [...new Set(dueBookingRequests.map((r) => r.contact_id).filter(Boolean))] as string[];
+    const [{ data: bookingProjects }, { data: bookingContacts }] = await Promise.all([
+      bookingProjectIds.length
+        ? supabase.from("projects").select("id,name,alias").in("id", bookingProjectIds)
+        : Promise.resolve({ data: [] as { id: string; name: string; alias: string | null }[] }),
+      bookingContactIds.length
+        ? supabase.from("contacts").select("id,company").in("id", bookingContactIds)
+        : Promise.resolve({ data: [] as { id: string; company: string }[] }),
+    ]);
+    const bookingProjectById = new Map((bookingProjects ?? []).map((p) => [p.id, p]));
+    const bookingContactById = new Map((bookingContacts ?? []).map((c) => [c.id, c]));
+
+    for (const r of dueBookingRequests) {
+      const project = bookingProjectById.get(r.project_id);
+      const company = r.contact_id ? bookingContactById.get(r.contact_id)?.company ?? "Trade" : "Trade";
+      items.push({
+        kind: "trade_booking_followup",
+        id: r.id,
+        title: `${company} hasn't responded — site visit dates`,
+        project: project ? { id: project.id, name: project.name, alias: project.alias } : null,
+        due: r.sent_at ? r.sent_at.slice(0, 10) : null,
+        href: `/trade-requests/${r.id}`,
+        meta: "No response after 3 days",
+      });
+    }
+  }
+
+  // ---- 12. Fee proposal phase round (r23) — 5-day not-accepted follow-up ----
+  // BUILD-SPEC.md item 6: "proposals status sent, sent_at >5 days, not
+  // accepted -> My Work follow-ups". Admin-gated (financial-adjacent —
+  // same `if (isAdmin) { ... }` block shape as source #2/#9), unlike
+  // source #11's trade_booking_followup (booking dates aren't pricing
+  // data, so that one is ungated).
+  if (isAdmin) {
+    const { data: sentProposals } = await supabase
+      .from("proposals")
+      .select("id,lead_id,project_id,sent_at,status")
+      .eq("status", "sent")
+      .not("sent_at", "is", null);
+
+    const dueProposals = (sentProposals ?? []).filter((p) => isProposalFollowupDue(p));
+
+    if (dueProposals.length > 0) {
+      const proposalLeadIds = [...new Set(dueProposals.map((p) => p.lead_id).filter(Boolean))] as string[];
+      const proposalProjectIds = [...new Set(dueProposals.map((p) => p.project_id).filter(Boolean))] as string[];
+      const [{ data: proposalLeads }, { data: proposalProjects }] = await Promise.all([
+        proposalLeadIds.length
+          ? supabase.from("leads").select("id,surname_project").in("id", proposalLeadIds)
+          : Promise.resolve({ data: [] as { id: string; surname_project: string }[] }),
+        proposalProjectIds.length
+          ? supabase.from("projects").select("id,name,alias").in("id", proposalProjectIds)
+          : Promise.resolve({ data: [] as { id: string; name: string; alias: string | null }[] }),
+      ]);
+      const proposalLeadById = new Map((proposalLeads ?? []).map((l) => [l.id, l]));
+      const proposalProjectById = new Map((proposalProjects ?? []).map((p) => [p.id, p]));
+
+      for (const p of dueProposals) {
+        const project = p.project_id ? proposalProjectById.get(p.project_id) : null;
+        const lead = p.lead_id ? proposalLeadById.get(p.lead_id) : null;
+        const residence = project?.name ?? lead?.surname_project ?? "Fee proposal";
+        items.push({
+          kind: "proposal_followup",
+          id: p.id,
+          title: `${residence} hasn't signed — fee proposal`,
+          project: project ? { id: project.id, name: project.name, alias: project.alias } : null,
+          due: p.sent_at ? p.sent_at.slice(0, 10) : null,
+          href: `/proposals/${p.id}`,
+          meta: "Sent, not yet accepted",
+        });
+      }
+    }
   }
 
   const groups = groupMyWorkItems(items);

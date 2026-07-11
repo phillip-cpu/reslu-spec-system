@@ -458,6 +458,35 @@ const TOOLS = [
         body: JSON.stringify({ text }),
       }),
   },
+  // ------------------------------------------------------------
+  // Site capture + mobile QoL round (r21) — BUILD-SPEC.md item 5's
+  // "ALSO fix" clause: "Aria cannot read lead notes — expose lead
+  // notes through get_lead/list_leads or a get_lead_notes tool
+  // (read-only, whatever matches existing MCP conventions)."
+  //
+  // Root cause (found by reading, not guessed): GET /api/leads/[id]/
+  // notes has existed since migration 030 (lead_notes table) — the
+  // route itself was never the gap. add_lead_note (just above) has
+  // always been able to WRITE to that feed via its POST sibling; no
+  // tool ever called the matching GET. This is a thin fetch to that
+  // existing route, same shape as list_site_photos below — no API
+  // change needed, the read path already worked, it just had no MCP
+  // door.
+  // ------------------------------------------------------------
+  {
+    name: "get_lead_notes",
+    description:
+      "Read the attributed, timestamped notes feed for a lead (newest first) — e.g. before calling a lead back, to see what was last discussed. Admin-only (leads are admin-only, financial-adjacent, same as every other leads route/tool). Read-only — pairs with add_lead_note (write) and move_lead_stage (stage changes, never touches notes).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        lead_id: { type: "string", description: "Lead UUID" },
+      },
+      required: ["lead_id"],
+      additionalProperties: false,
+    },
+    handler: async ({ lead_id }) => apiFetch(`/api/leads/${lead_id}/notes`),
+  },
   {
     name: "get_needs_attention",
     description:
@@ -598,6 +627,56 @@ const TOOLS = [
       additionalProperties: false,
     },
     handler: async ({ project_id }) => apiFetch(`/api/projects/${project_id}/site-photos`),
+  },
+  // ------------------------------------------------------------
+  // Site capture + mobile QoL round (r21) — BUILD-SPEC.md item 5:
+  // "list_pending_transcriptions, set_capture_transcript(capture_id,
+  // transcript), list_site_captures(project)." Distinct from
+  // list_site_photos above: site_captures (migration 050) is a
+  // separate table from site_photos, fed by /capture and the
+  // /trade/[token] capture section (photo/note/audio, one Site diary
+  // per project — app/(dashboard)/projects/[id]/diary/), not the
+  // internal staging gallery.
+  // ------------------------------------------------------------
+  {
+    name: "list_pending_transcriptions",
+    description:
+      "List audio site-captures still queued for transcription (transcript_status='pending'), oldest first — the queue Aria's Mac mini (local Whisper, no external AI) polls. Each entry: id, project_id, project_name, a signed audio URL, created_at. Call set_capture_transcript once a transcript is ready for one of these.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    handler: async () => apiFetch("/api/site-captures/pending-transcriptions"),
+  },
+  {
+    name: "set_capture_transcript",
+    description:
+      "Attach a finished transcript to an audio site-capture — sets transcript_status='done'. Only valid for audio captures (400s otherwise). Use after locally transcribing a recording returned by list_pending_transcriptions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        capture_id: { type: "string", description: "site_captures UUID (the audio row)" },
+        transcript: { type: "string", description: "The finished transcript text" },
+      },
+      required: ["capture_id", "transcript"],
+      additionalProperties: false,
+    },
+    handler: async ({ capture_id, transcript }) =>
+      apiFetch(`/api/site-captures/${capture_id}/transcript`, {
+        method: "PATCH",
+        body: JSON.stringify({ transcript }),
+      }),
+  },
+  {
+    name: "list_site_captures",
+    description:
+      "List a project's Site diary — every photo/note/audio capture from BOTH /capture (team) and the /trade/[token] capture section (trade contacts), reverse-chronological (most recent first). Each entry carries kind, signed url/thumb_url (photo/audio only), text_content (notes), transcript/transcript_status (audio), and who captured it (author).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project UUID" },
+      },
+      required: ["project_id"],
+      additionalProperties: false,
+    },
+    handler: async ({ project_id }) => apiFetch(`/api/projects/${project_id}/site-captures`),
   },
   {
     name: "list_contacts",
@@ -1102,6 +1181,58 @@ const TOOLS = [
     handler: async ({ id, ...body }) =>
       apiFetch(`/api/aria-queue/${id}/resolve`, {
         method: "POST",
+        body: JSON.stringify(body),
+      }),
+  },
+  // ------------------------------------------------------------
+  // Fee proposal phase round (r23) — BUILD-SPEC.md §"Fee proposal phase
+  // (r23)" item 5: "MCP tools get_proposal, set_proposal_draft (updates
+  // content.letter/content.vision ONLY and ONLY while status='draft')."
+  // Same thin-fetch pattern as every tool in this file — get_proposal is
+  // a plain GET (admin-gated the same way every proposals route is;
+  // Aria authenticates as a real admin user, docs/ARIA.md), and
+  // set_proposal_draft targets the DELIBERATELY narrower
+  // PATCH /api/proposals/[id]/draft (not the general
+  // PATCH /api/proposals/[id] every other field group uses) — that
+  // route itself enforces "letter/vision only, draft status only" at
+  // the API layer, not just here, so this tool's own restriction can't
+  // be bypassed by calling the route directly either. Draft a proposal
+  // AFTER an aria_queue item of kind 'draft_proposal' surfaces via
+  // get_aria_queue (raised by POST /api/proposals when the source lead
+  // has brief_answers — migration 051 PART 3) — see docs/ARIA.md's own
+  // "Fee proposal drafting" section for the full worked example.
+  // ------------------------------------------------------------
+  {
+    name: "get_proposal",
+    description:
+      "Read one fee proposal's full content (letter, vision, scope sections, fees, timeline, exclusions, terms) plus its status/token/totals. Admin-only (fee proposals carry design-fee/pricing data). Use this to see the current draft before calling set_proposal_draft, or to check a proposal's status/token for any other reason.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "proposals row UUID (from a draft_proposal aria_queue item's payload.proposal_id)" },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    handler: async ({ id }) => apiFetch(`/api/proposals/${id}`),
+  },
+  {
+    name: "set_proposal_draft",
+    description:
+      "Draft (or redraft) a fee proposal's intro letter and/or project vision alignment paragraph — content.letter / content.vision ONLY, and ONLY while the proposal's status is still 'draft' (the route itself enforces both restrictions server-side, not just this tool). Never touches scope/fees/timeline/exclusions/terms, and can never send a proposal — Phillip always reviews and edits before pressing Send himself. Use get_lead_notes / get_lead / search first to ground the draft in the actual site visit — voice: warm, direct, confident, references the actual visit and specific rooms/aspects, 'quiet luxury', never salesy, no em dashes, middots ok, sign-off 'Phillip Introna, Director, RESLU' (see docs/proposal-reference-content.md's own 'Voice rules for Aria drafts').",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "proposals row UUID" },
+        letter: { type: "string", description: "Full intro letter text, e.g. 'Dear Sam and Alex,\\n\\n...'" },
+        vision: { type: "string", description: "Full PROJECT VISION ALIGNMENT paragraph text" },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    handler: async ({ id, ...body }) =>
+      apiFetch(`/api/proposals/${id}/draft`, {
+        method: "PATCH",
         body: JSON.stringify(body),
       }),
   },
