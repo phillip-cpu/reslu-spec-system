@@ -23,6 +23,25 @@ export const runtime = "nodejs";
 const RESEND_GUARD_MS = 60_000;
 
 /**
+ * Same reused-{{visit_date}}-slot technique as
+ * app/api/proposals/[id]/send/route.ts's own formatSentDateAdelaide()
+ * (kept as a small, deliberate per-route duplicate — same "independent
+ * pipelines, independent tiny helpers" precedent lib/proposal-emails.ts's
+ * header comment already documents for this round's other files). A
+ * resend shows the date printed on the ORIGINAL packet, not today's date
+ * — sent_at never moves on resend (see this route's own doc comment on
+ * why), and the card's date shouldn't either.
+ */
+function formatSentDateAdelaide(d: Date): string {
+  return new Intl.DateTimeFormat("en-AU", {
+    timeZone: "Australia/Adelaide",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(d);
+}
+
+/**
  * POST /api/proposals/[id]/resend
  * Admin-only. Same token/link as the original send (BUILD-SPEC.md item
  * 6) — re-sends the 'proposal-sent' email without touching sent_at
@@ -101,6 +120,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
       project_address: project?.address ?? lead?.location ?? "",
       request_link: proposalLink,
       attachments_note: "",
+      visit_date: formatSentDateAdelaide(proposal.sent_at ? new Date(proposal.sent_at) : new Date()),
     },
   });
 

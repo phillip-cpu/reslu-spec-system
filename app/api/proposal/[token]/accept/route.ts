@@ -8,6 +8,7 @@ import { cleanLineItems, computeTotals, nextInvoiceNumber } from "@/lib/client-i
 import { depositExGst, proposalPdfPath, recipientEmail, residenceLabel } from "@/lib/proposals";
 import { sendViaResend } from "@/lib/resend";
 import { reportError } from "@/lib/report-error";
+import { sendPushToAdmins } from "@/lib/push";
 import { ProposalPdf } from "@/components/pdf/ProposalPdf";
 import type {
   AcceptProposalInput,
@@ -337,6 +338,21 @@ export async function POST(
         created_by_kind: "system",
       });
     }
+
+    // ---- 5. Health + web push round (r26), BUILD-SPEC.md item 3(b):
+    // "proposal signed (r23 accept route)." Insert + push ONLY —
+    // everything above (steps 1-4) is byte-identical to before this
+    // round. Already inside this route's own best-effort try/catch
+    // (see this function's header comment), so no separate one is
+    // needed here. ----
+    await supabase.from("notifications").insert({
+      user_id: null,
+      kind: "proposal_signed",
+      title,
+      body: null,
+      link_href: linkHref,
+    });
+    await sendPushToAdmins("proposal_signed", title, "", linkHref);
   } catch (err) {
     // Belt-and-braces — nothing above should throw uncaught (each step
     // has its own try/catch), but if something unexpected does, it must

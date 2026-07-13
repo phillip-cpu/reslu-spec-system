@@ -541,6 +541,65 @@ const TOOLS = [
         body: JSON.stringify(body),
       }),
   },
+  // ------------------------------------------------------------
+  // Booking selection v2 + Aria supplier invoices (r24). BUILD-SPEC.md
+  // §"Booking selection v2 + Aria supplier invoices (r24)", item 5:
+  // Second Brain's email pipeline flags a likely supplier invoice
+  // (attachment/pdf + amount/invoice-number heuristics) on an
+  // ALREADY-INGESTED email — you read the attachment, extract the
+  // fields, work out which project it belongs to and (if you can) which
+  // cost line or spec item it matches, then call this tool.
+  //
+  // HARD RULE, enforced in code (not just by you reading this): this
+  // tool is a thin POST to the SAME route create_invoice above calls
+  // (POST /api/projects/[id]/invoices) — read that route's own doc
+  // comment if you want to verify this yourself. It only ever INSERTs a
+  // draft row. There is no tool, no route, and no code path reachable
+  // from here that applies a cost, writes a cost_line/item, or updates
+  // a library product's price — that only ever happens when a human
+  // clicks Approve in the Invoice queue UI. Calling this tool is
+  // exactly as safe as flagging an email for a human's attention; it
+  // never moves money or changes anything else in the system.
+  // ------------------------------------------------------------
+  {
+    name: "propose_supplier_invoice",
+    description:
+      "Propose a DRAFT supplier invoice (money OUT) extracted from an already-ingested email — for the Invoice queue's Aria pipeline (BUILD-SPEC.md r24). Creates a row with source='aria', status='proposed' if you also pass a match, marked 'Aria · needs approval' in the queue UI. INSERT ONLY — nothing is applied to any cost/item/library record until a human clicks Approve in the UI; you cannot bypass that gate with this tool. source_email_id is required — every proposed invoice must trace back to the email it came from. If you can identify which cost_line or item this invoice covers, pass proposed_match_type + proposed_match_id (use list_invoices' sibling read tools / the project's own estimate to find candidates first) — the queue UI shows your proposed match for the human to confirm or change before approving.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project UUID this invoice belongs to — your best match from the email's job hints (address, job number, contact name mentioned)" },
+        source_email_id: { type: "string", description: "emails.id (Second Brain, already-ingested) this was extracted from — required, this is the traceability link a human reviews it against" },
+        supplier: { type: "string" },
+        invoice_number: { type: "string" },
+        invoice_date: { type: "string", description: "ISO date, YYYY-MM-DD" },
+        amount_ex_gst: { type: "number", description: "Ex-GST amount — the canonical figure Approve applies" },
+        gst: { type: "number", description: "Omit to let the server compute 10% of amount_ex_gst" },
+        total: { type: "number", description: "Omit to let the server compute amount_ex_gst + gst" },
+        abn: { type: "string", description: "Supplier's ABN, if visible on the invoice — stored in `extracted`, not a canonical column" },
+        line_hints: { type: "string", description: "Free text — which line items/work this invoice covers, and why you think so" },
+        job_hints: { type: "string", description: "Free text — what in the email told you which project this belongs to (address, job number, contact name, etc)" },
+        proposed_match_type: { type: "string", enum: ["cost_line", "item"], description: "Omit if you can't confidently match — the invoice still lands in the queue as 'unmatched' for a human to match manually" },
+        proposed_match_id: { type: "string", description: "cost_lines.id or items.id, matching proposed_match_type — must belong to the same project_id" },
+        confidence_note: { type: "string", description: "Free text — anything about the extraction/match a human reviewer should know, e.g. 'ABN partly obscured by a coffee stain, verify supplier'" },
+      },
+      required: ["project_id", "source_email_id", "supplier", "invoice_number", "amount_ex_gst"],
+      additionalProperties: false,
+    },
+    handler: async ({ project_id, abn, line_hints, job_hints, ...body }) => {
+      const extracted = {};
+      if (abn !== undefined) extracted.abn = abn;
+      if (line_hints !== undefined) extracted.line_hints = line_hints;
+      if (job_hints !== undefined) extracted.job_hints = job_hints;
+      if (body.supplier !== undefined) extracted.supplier = body.supplier;
+      if (body.invoice_number !== undefined) extracted.invoice_number = body.invoice_number;
+      if (body.invoice_date !== undefined) extracted.invoice_date = body.invoice_date;
+      return apiFetch(`/api/projects/${project_id}/invoices`, {
+        method: "POST",
+        body: JSON.stringify({ ...body, source: "aria", extracted }),
+      });
+    },
+  },
   {
     name: "post_client_update",
     description:
@@ -1495,6 +1554,89 @@ const TOOLS = [
         body: JSON.stringify({ ...body, user_id: match.id }),
       });
     },
+  },
+  // ------------------------------------------------------------
+  // Health + web push round (r26) — BUILD-SPEC.md item 6: "MCP tools
+  // (mini side talks through these): post_heartbeat,
+  // report_channel_status, get_pending_diagnostics,
+  // complete_diagnostic." Thin fetch wrappers over app/api/health/*,
+  // same shape as every other tool in this file — no business logic
+  // duplicated here, the route is the source of truth (incident
+  // dedupe, pruning, status transitions all live server-side).
+  //
+  // NOTE for the reviewing manager (also in docs/MINI-HEALTH-
+  // HANDOFF.md): the mini's actual automated heartbeat/diagnostics
+  // loop is a plain bash+curl script hitting these same REST routes
+  // directly, NOT going through this MCP server or any LLM call — see
+  // that doc's "why not through Aria/MCP" note. These four tools exist
+  // so Aria (the agent) can ALSO call them conversationally (e.g. she
+  // notices something during an unrelated task and wants to report a
+  // channel status by hand), but they are not the automated path.
+  // ------------------------------------------------------------
+  {
+    name: "post_heartbeat",
+    description:
+      "Report a mini heartbeat (uptime/disk/mem/openclaw status/pending macOS updates). Normally sent by the mini's own dumb bash+curl script every ~5 minutes (docs/MINI-HEALTH-HANDOFF.md), not by Aria herself — this tool exists so you CAN post one conversationally if useful (e.g. right after a manual repair), but it is not part of any automated monitoring loop you need to run.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        uptime: { type: "string", description: "Free text, e.g. output of `uptime`" },
+        disk_free_gb: { type: "number" },
+        mem_free_gb: { type: "number" },
+        openclaw_up: { type: "boolean" },
+        pending_updates: { type: "number", description: "Count of pending macOS updates (softwareupdate -l)" },
+        extra: { type: "object", description: "Any additional free-form fields" },
+      },
+      additionalProperties: false,
+    },
+    handler: async (body = {}) => apiFetch("/api/health/heartbeat", { method: "POST", body: JSON.stringify(body) }),
+  },
+  {
+    name: "report_channel_status",
+    description:
+      "Report the status of one monitored channel (WhatsApp group bridge, email, RESLU calendar). Upserts by `channel` (a stable machine key, e.g. 'whatsapp'/'email'/'calendar' — NOT a display label). A transition to 'degraded'/'down' or session_valid:false fires a deduped incident push to admins; a transition back to 'ok' (with session_valid true/omitted) auto-resolves any open incident for this channel.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        channel: { type: "string", description: "Stable machine key, e.g. 'whatsapp', 'email', 'calendar'" },
+        label: { type: "string", description: "Optional display label" },
+        status: { type: "string", enum: ["ok", "degraded", "down"] },
+        last_inbound_at: { type: "string", description: "ISO timestamp of the most recent inbound message/event" },
+        last_outbound_at: { type: "string", description: "ISO timestamp of the most recent outbound message/event" },
+        session_valid: { type: "boolean", description: "Whether the channel's login/session is still valid" },
+        note: { type: "string" },
+      },
+      required: ["channel", "status"],
+      additionalProperties: false,
+    },
+    handler: async (body) => apiFetch("/api/health/channel-status", { method: "POST", body: JSON.stringify(body) }),
+  },
+  {
+    name: "get_pending_diagnostics",
+    description:
+      "List queued diagnostics/repair requests (health_diagnostics status='pending', oldest first) and claim them (flips them to 'running' as they're returned, so a second poll doesn't reprocess the same request). A request is queued when an admin presses 'Run diagnostics & repair' on the Health page. Call complete_diagnostic once you've worked one.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    handler: async () => apiFetch("/api/health/diagnostics/pending"),
+  },
+  {
+    name: "complete_diagnostic",
+    description:
+      "Report the outcome of a diagnostics/repair run claimed via get_pending_diagnostics. status 'done' or 'failed'; `report` is free text (what was checked, what was restarted, current state) — its first ~200 characters are sent to admins as the completion push body, so lead with the headline. This is the mini's own repair loop (restart WhatsApp bridge, verify session, check softwareupdate -l — see docs/MINI-HEALTH-HANDOFF.md) — NOT a Claude Code repair session; those are Phillip's own separate, explicit button press outside this system.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "health_diagnostics UUID (from get_pending_diagnostics)" },
+        status: { type: "string", enum: ["done", "failed"] },
+        report: { type: "string" },
+      },
+      required: ["id", "status", "report"],
+      additionalProperties: false,
+    },
+    handler: async ({ id, status, report }) =>
+      apiFetch(`/api/health/diagnostics/${id}/complete`, {
+        method: "POST",
+        body: JSON.stringify({ status, report }),
+      }),
   },
 ];
 

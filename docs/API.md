@@ -6958,3 +6958,615 @@ route's certificate/email posture, never edited), `lib/client-invoices.ts`
 (read for its exact insert shape, never edited), and `app/brief/[token]`/
 `app/trade-request/[token]`/`app/trade/[token]` (read for pattern only)
 were all read for context but never edited.
+
+## Booking selection v2 + Aria supplier invoices (11 July 2026, migration 052)
+
+Two independent halves under one round (BUILD-SPEC.md §"Booking
+selection v2 + Aria supplier invoices (r24)"), taken over mid-build
+from two prior agents that both died to API errors — see this section's
+own "Repair notes" for exactly what was found broken and fixed.
+
+### A. Booking selection v2 — `components/board/ProjectBoard.tsx` + `components/board/GroupBookPanel.tsx`
+
+Reworks the r20 grouped-trade-booking entry points; the r20 BACKEND
+(migration 049, `POST /api/projects/[id]/trade-requests`, the
+`/trade-request/[token]` response page) is completely unchanged — see
+that route's own doc comment, still accurate.
+
+- **Selection** — `ProjectBoard`'s `selectedTaskIds: Set<string>` state
+  (board-level, not per-view, so it survives a Kanban↔Grouped-list tab
+  switch) plus a row-edge checkbox on both `StackedColumnSection`'s
+  board rows (Kanban, "stacked" layout — the default) and `GroupRows`'
+  phase-card item rows (Grouped list — both top-level AND sub-item rows,
+  each is its own independently-bookable `board_tasks` row). Both
+  components gained `selectedTaskIds`/`onToggleSelect` props, threaded
+  through `GroupTable`/`UngroupedTable` to `GroupRows`. `GroupRows`' table
+  went from 7 columns (ITEM·WHO·STATUS·CONTACT·WORKS·DUE·AFTER) to 8 (a
+  leading checkbox column, no header label) — every `colSpan` on that
+  table's drop-line/reconfirm/expanded-editor rows was bumped 7→8 to
+  match. The side-by-side kanban's `BoardCard` (the non-default layout
+  toggle) deliberately did NOT get a checkbox — BUILD-SPEC.md item 1
+  names exactly "board rows" and "phase-card item rows", i.e. the two
+  table-row components, not the card-style alternate layout.
+- **Action bar** — `{selectedTaskIds.size > 0 && ...}`, rendered above
+  the view tabs: a count + "Book selected → trade" button that opens
+  `GroupBookPanel` seeded with every checked task id
+  (`setGroupBookSeed([...selectedTaskIds])`).
+- **`groupBookSeed: string[] | null`** replaces the old bare
+  `groupBookOpen: boolean` — `null` = panel closed; a non-null array
+  (one id from a per-item "Book trade" button, or many from the action
+  bar) opens `GroupBookPanel` seeded with those ids. Closing the panel
+  (`onClose`) clears BOTH `groupBookSeed` and `selectedTaskIds`, so a
+  sent/cancelled panel never leaves stale ticked rows behind.
+- **Per-item "Book trade"** — every existing call site (`BoardCard`'s
+  expanded editor, `GroupRows`' expanded editor, both via the shared
+  `BoardTaskEditorBody`) now calls `setGroupBookSeed([task.id])` instead
+  of the removed `setBookingTask`. `GroupBookPanel`'s own seed-resolution
+  effect (unchanged, already built correctly by the prior agent before
+  it died — see "Repair notes") turns a single-id seed into "every
+  eligible task already linked to that task's own contact, pre-checked"
+  — BUILD-SPEC.md item 3's "pre-listing ALL tasks ... mapped to that
+  item's trade/contact (selected by default)".
+- **The "•••" → "Group book a trade…" menu entry is REMOVED** (item 3:
+  "replaced by these two entry points") — the popover menu now only
+  has "Update status names…".
+- **`GroupBookPanel`'s own rework** (items 2/3, already complete and
+  correct when found — not touched beyond confirming it): `seedTaskIds`
+  prop (was a bare `onClose`-only blank panel); undated tasks are no
+  longer excluded — every listed task gets its own editable start/end
+  `<input type="date">` pair (`dateDrafts`, prefilled from
+  `booking_date`/`booking_end_date`, blank otherwise); a "+ Add more
+  lines" collapsible section lists every OTHER eligible project task
+  (any contact, including none) — checking one reassigns it to the
+  panel's chosen contact on Send. The ONE hard exclusion left is a task
+  with no resolvable `phase_id` (a `trade_visits` row cannot exist
+  without one, migration 016 — a real DB constraint, not a policy). Send
+  does exactly what the outer spec says: PATCH every changed task's
+  works dates (+ contact_id for a reassigned "add more lines" pick) via
+  the existing `PATCH /api/board-tasks/[id]` route, THEN POST
+  `/api/projects/[id]/trade-requests` (r20, unchanged) for the ONE
+  `trade_booking_request` + ONE email. A single selected line takes the
+  identical path (one-element seed array) — there is no longer a
+  separate single-visit code path in this file; the r15 `BookVisitPanel`
+  component itself is untouched and still used by the Timeline
+  (`components/gantt/GanttChart.tsx`), just no longer rendered here.
+
+**Repair notes** (from the mid-build inventory, since a manager verifies
+this by reading, not running): the working copy's `ProjectBoard.tsx` had
+`groupBookSeed`/`selectedTaskIds` state ALREADY DECLARED (a prior agent
+had started the r24 refactor) but the render tree still referenced the
+REMOVED r20 single-visit state — `bookingTask`, `setBookingTask`,
+`bookingEmailNotice`, `setBookingEmailNotice`, `groupBookOpen`,
+`setGroupBookOpen`, and `EMAIL_SKIP_REASON_LABEL` — none of which were
+declared anywhere in the file any more (a `<BookVisitPanel>` render
+block with no matching import, per the task brief's own description of
+where the agent died: "removing a dead `bookVisit()` function after
+removing a `BookVisitPanel` render block"). Fixed by deleting the
+orphaned notice banner + `BookVisitPanel` block entirely (replaced with
+the selection action bar), removing the dead "•••" menu entry, and
+rewiring `groupBookOpen`/`setBookingTask` → `groupBookSeed`/
+`setGroupBookSeed` at all six call sites (three `onBookVisit={(task) =>
+...}` props, two `<GroupTable>`/`<UngroupedTable>` call sites missing
+the new `selectedTaskIds`/`onToggleSelect` props entirely, one
+`<StackedColumnSection>` call site same gap). `GroupBookPanel.tsx`
+itself, and its full `types/round-grouped-trade-booking.ts` /
+`POST /api/projects/[id]/trade-requests` dependency chain, were found
+already complete and correct — verified by reading (brace/paren
+balance, every import resolves, every referenced column exists on
+migration 049) rather than rewritten.
+
+### B. Aria supplier-invoice intake — migration 052 + `POST /api/invoices/[id]/approve`
+
+**Migration 052** (`supabase/migrations/052_supplier_invoice_intake.sql`,
+the ONLY migration this round) adds four columns to the EXISTING
+supplier-invoice queue table `invoices` (007_estimating.sql, money OUT
+— not `client_invoices`, 046, money IN):
+
+- `source text not null default 'manual' check (source in ('manual','aria'))`
+- `source_email_id uuid references emails(id) on delete set null` — same
+  FK shape as `change_proposals.source_email_id` (040)
+- `extracted jsonb` — Aria's raw extraction (supplier/ABN/date/totals/
+  line hints/job hints), read-only context in the queue UI
+- `library_cost_applied boolean not null default false` — audit flag,
+  not a gate (see below)
+
+Everything else the round brief asked to check for was ALREADY PRESENT
+and needed no migration: `status` ('unmatched'/'proposed'/'approved'/
+'rejected' — 'proposed' already means "has a match, needs approval", so
+no new status value was added — "Aria · needs approval" is a pure
+`source='aria' AND status NOT IN ('approved','rejected')` display
+derivation), `storage_path` (the PDF-on-the-job field), `approved_by`/
+`approved_at`. `daily_brief_items.source='invoice'` was ALREADY a valid
+value (041_brief_and_due_times.sql's original check constraint,
+commented "reserved" — reserved for exactly this round), so no
+`daily_brief_items` migration was needed either.
+
+**`POST /api/projects/[id]/invoices`** (existing route, extended, JSON
+branch only — the manual UploadForm's multipart request is untouched
+and always lands `source='manual'`): accepts `source` ('manual'|'aria'),
+`source_email_id` (required when `source='aria'`), `extracted` (object).
+On a successful `source='aria'` insert, ALSO raises a dedupe-guarded
+`daily_brief_items` row (`source: 'invoice'`, same "check for an
+existing OPEN row with this exact source+link_href+title before
+inserting" shape as `POST /api/proposal/[token]/accept`'s own insert) —
+BUILD-SPEC.md's "daily_brief_items dedupe-guarded on Aria proposal".
+This route is INSERT-ONLY — see its own doc comment for the "hard rule
+in code" statement the MCP tool's own description also makes.
+
+**`POST /api/invoices/[id]/approve`** (existing route, extended) — cost
+flow-through (item 7), admin-gated (unchanged whole-route 403), body is
+`ApproveInvoiceInput` (`types/round-supplier-invoice-intake.ts`),
+OPTIONAL (`{}`/no body = pre-r24 behaviour):
+
+1. `cost_line` match (unchanged): `cost_lines.actual_paid_ex_gst` +=
+   `amount_ex_gst` (additive, not overwrite — supports partial/staged
+   invoices). Resolves `affectedItem` via that cost line's own
+   `item_id`, when set.
+2. `item` match (REVERSES the pre-r24 "does nothing" behaviour):
+   `affectedItem` = the matched item directly; its confirmed-cost field
+   is `cost_lines.actual_paid_ex_gst` on the cost line(s) linked to it
+   via `item_id` — exactly one linked cost line → same additive update
+   as above; zero → 207 warning, no write; more than one → 207 warning,
+   no write (ambiguous which line the payment applies to, never
+   guessed).
+3. EITHER match type, then — the per-line "update library product cost"
+   toggle (`apply_to_library_cost` in the body, default: true when
+   `affectedItem.library_item_id` is set, otherwise a no-op regardless
+   of the flag): writes `library_items.price_trade` (unit cost =
+   `amount_ex_gst / item.quantity`, rounded to cents, quantity≤0 treated
+   as 1), `library_items.trade_price_received_at` (now), and
+   `library_items.trade_price_source` (`"Invoice {number} · {supplier}"`)
+   — the SAME three fields `PATCH /api/library/[id]` already writes for
+   a manual trade-price entry. `invoices.library_cost_applied` is set
+   `true` exactly when this write succeeds.
+
+**Idempotent, structurally, not just by convention**: approve on an
+already-`approved` invoice 400s before any of the above runs (unchanged
+check, first thing in the handler) — a duplicate/retried Approve click
+can never double-credit a cost line or double-write a library price.
+"Approve & apply" is one button/one request; there is no separate
+"apply" step to re-run.
+
+**Queue UI** (`components/invoices/InvoiceQueue.tsx`): "Aria · needs
+approval" sand/amber pill (`border-amber-700/40 bg-amber-50
+!text-amber-800` — same tone as `ProjectBoard.tsx`'s existing "Date
+suggested" chip, for a consistent visual language) next to the status
+pill, shown whenever `source==='aria'` and the row isn't yet
+approved/rejected. Expanded row gains: Aria's raw `extracted` fields
+(read-only, amber-tinted context box) when present; an "Edit" toggle on
+the canonical fields (supplier/invoice #/date/amount ex GST) that PATCHes
+the EXISTING `PATCH /api/invoices/[id]` route (unchanged this round,
+already accepted these fields — no route change needed for "editable
+fields"); the per-line library-cost checkbox (defaults checked,
+harmlessly ignored server-side when the matched item has no
+`library_item_id`); a one-line "library product cost was updated" note
+when `library_cost_applied` is true. "Approve" button relabelled
+"Approve & apply" per the round brief's own wording. "Reject" is
+UNCHANGED (`POST /api/invoices/[id]/reject`, not touched this round) —
+sets `status='rejected'`, never deletes the row, so a rejected
+Aria-drafted invoice stays in the queue/table for audit exactly as the
+brief requires ("Reject kept for audit").
+
+**MCP — `propose_supplier_invoice`** (`mcp/src/index.mjs`, new, sits
+alongside the existing generic `create_invoice`): a thin `fetch()` to
+`POST /api/projects/[id]/invoices` with `source: 'aria'` and an
+`extracted` object built from `abn`/`line_hints`/`job_hints` +
+copies of `supplier`/`invoice_number`/`invoice_date`. `source_email_id`
+is a REQUIRED input — every Aria-proposed row must trace back to the
+already-ingested email it came from. The tool's own description states
+the insert-only hard rule explicitly and points at the route's doc
+comment so it can be verified by reading, matching this round's "prove
+by reading your final code" requirement. Documented in `docs/ARIA.md`'s
+new "Supplier invoice intake" section (worked example, the same
+gate-stated-plainly language as the email pipeline section above it).
+
+**PDF attachment — deferred, same precedent as CPD evidence**: this
+round does NOT wire "copy the email's PDF attachment into the
+invoice's own `storage_path`" — there is no existing MCP upload tool
+(the CPD round's `add_cpd_entry` deferred evidence attachment for the
+identical reason: "no natural fit inside a single MCP call over a chat
+transcript" — see `docs/ARIA.md`'s CPD section). `source_email_id` is
+the traceability link back to the original email/attachment in the
+interim; a human reviewing an Aria-proposed invoice can open the source
+email directly if they need to see the PDF. Manual invoices (existing
+`UploadForm`, unchanged) still attach a PDF exactly as before.
+
+**Files touched:** `supabase/migrations/052_supplier_invoice_intake.sql`
+(new, only migration this round), `types/round-supplier-invoice-intake.ts`
+(new — `InvoiceWithIntake`/`SupplierInvoiceExtracted`/
+`ApproveInvoiceInput`/`ApproveInvoiceResponse`, same "round-local types,
+never touch types/index.ts" convention as `types/round-grouped-trade-booking.ts`),
+`app/api/projects/[id]/invoices/route.ts` (extended — GET return type,
+POST source/source_email_id/extracted + Aria daily-brief insert),
+`app/api/invoices/[id]/approve/route.ts` (extended — cost flow-through),
+`app/api/invoices/[id]/route.ts` + `app/api/invoices/[id]/reject/route.ts`
+(return-type only, `Invoice`→`InvoiceWithIntake`, no behaviour change),
+`components/invoices/InvoiceQueue.tsx` (extended), `mcp/src/index.mjs`
+(additive — `propose_supplier_invoice`), `docs/ARIA.md` (additive
+"Supplier invoice intake" section), `docs/API.md` (this section),
+`components/board/ProjectBoard.tsx` (repaired + completed, see "Repair
+notes" above). Single migration (052); no protected file touched —
+`lib/supabase/middleware.ts`, `vercel.json`, `app/api/digest/**`,
+`components/items/SpecRegister.tsx`/`RoomAssignBar.tsx`/`RoomBuilder.tsx`/
+`ItemRoomsEditor.tsx`, `lib/csv.ts`, `app/api/projects/[id]/import/**`,
+`types/index.ts`, every Second Brain migration/route/lib file (`emails`/
+`email_attachments` read-only via the new FK, never written to by this
+round). `components/board/GroupBookPanel.tsx` was read in full and
+verified but not edited (already correct — see "Repair notes").
+
+## Proposal delivery skin (r25)
+
+Purely visual round, no migration, no schema change (BUILD-SPEC.md
+§"Proposal delivery skin (r25)"). The client's own core requirement,
+verbatim: "the page needs to be the page from the website the video of
+the turning pages" — the reveal on `/proposal/[token]` plays a real,
+filmed `<video>` (`public/begin-unfold.mp4`), not a CSS imitation of
+paper; CSS is only ever the fallback path. Every technique (the pen
+`write()`/`.ink`/`.caret`, the `.sheet` cardstock recipe, the emboss
+mask, the `videoFold()` geometry/clip-path/feather-gradient technique,
+`prefers-reduced-motion` handling) is copied verbatim-adapted from the
+WORKING production implementation at reslu-site's own
+`src/components/BeginForm.astro`, per `docs/RESLU-Paper-Animation-Brief.md`
+and `docs/RESLU-Card-Design-Spec.md` — see
+`components/proposal/ProposalReveal.tsx`'s own header comment for the
+full technique-by-technique attribution.
+
+### `emails/proposal-sent.html` — reworked, r23's send machinery untouched
+
+The card/packet language replaces the old plain button-link email —
+see `emails/README.md`'s own "`proposal-sent.html` — Fee proposal phase
+round (r23), reworked r25" section for the full placeholder mapping
+(`{{company}}`/`{{project_name}}`/`{{visit_date}}`/`{{request_link}}`,
+all still merged by `lib/visit-emails.ts`'s own `merge()`, reused
+unmodified) and the design-spec-to-markup mapping. `lib/proposal-emails.ts`,
+the send/resend routes, and the 7am-7pm Adelaide window/`email_sends`
+logging are byte-for-byte unchanged — only the template FILE's markup
+changed.
+
+### `/proposal/[token]` — page wrapper only, r23 machinery untouched
+
+`app/proposal/[token]/page.tsx`'s data fetch, rate limiting (`rateLimit()`),
+`notFound()` gates, `viewed_at` set-once logic, and the
+`ProposalSignForm` sign-to-accept section are ALL unchanged — the only
+edits are: (1) the `projects` select gains `client_name` (additive
+column, same value the send/resend routes already read as the email's
+`{{company}}` greeting name, so the emailed packet and the page's own
+packet always agree — see that select's own inline comment); (2) two
+new `const`s (`greetingName`, `sentDateLabel`) computed from data
+already fetched; (3) the existing `<main>...</main>` JSX is now passed
+as `children` to the new `<ProposalReveal>` wrapper, inserted between
+the page's `<header>` and `<footer>` — no JSX inside `<main>` itself
+changed (the inline `{p.sent_at ? formatDate(...) : formatDate(...)}`
+date line was simplified to reuse the new `sentDateLabel` const — same
+value, same output, not a behaviour change).
+
+`components/proposal/ProposalReveal.tsx` (new, client component) is a
+pure visibility/opacity skin around that server-rendered `children` —
+it never re-fetches or re-renders proposal data, so the document is
+always in the DOM (SSR included) and there is no layout shift when the
+reveal is skipped. Beat 1 (packet + `write()`-penned client first
+name(s) + plain-text date, per Phillip's explicit "date is never
+handwritten" correction), beat 2 (the filmed unfold — `begin-unfold.mp4`,
+which IS `begin-fold.mp4` reversed, so the same measured `FV` fractions
+apply; the geometry itself is calibrated the opposite way from
+`BeginForm`'s own `videoFold()` since the packet, not the sheet, is
+what's on screen at the start here — see that component's own
+`computeUnfoldGeometry()` comment for the full reversed-geometry
+derivation), beat 3 (cross-fade to the ever-present document). Plays
+once per visitor via a try/catch-guarded `sessionStorage` flag keyed by
+token; a quiet "Replay" text control (always server-rendered, next to
+the packet-summary strip near the page header) re-runs the whole
+sequence regardless. Skip/fallback matrix: already-seen or
+`prefers-reduced-motion` → straight to the document with a static,
+non-animated packet summary in that same strip; viewport <480px,
+degenerate alignment maths, or the video not reaching `readyState >= 3`
+within its own budget → the CSS-only `pr-cssflap`/`pr-csssheet` unfold
+(a genuine reverse choreography of `BeginForm`'s own `cssFold()`, not a
+disguised skip) plays instead, if motion is otherwise allowed.
+
+**Files touched:** `emails/proposal-sent.html` (reworked),
+`emails/README.md` (its own "reworked r25" section, additive),
+`app/globals.css` (additive — `.pr-*` structural CSS the reveal's
+JS-positioned video/feather overlay depends on; kept as plain global
+CSS rather than CSS modules/styled-jsx for the same "scoped styles
+don't reach JS-created/JS-positioned nodes" reason `BeginForm.astro`
+itself documents), `components/proposal/ProposalReveal.tsx` (new),
+`app/proposal/[token]/page.tsx` (wrapper edit only, see above),
+`docs/API.md` (this section). No migration. No protected file
+touched — `lib/supabase/middleware.ts`, `vercel.json`,
+`app/api/digest/**`, `lib/csv.ts`, `app/api/projects/[id]/import/**`,
+`types/index.ts`, every Second Brain file, and every r23 proposal
+MACHINERY file (`app/api/proposal/[token]/accept/route.ts`,
+`app/api/proposals/**`, `components/proposal/ProposalSignForm.tsx`,
+`components/pdf/ProposalPdf.tsx`, `components/proposals/**`,
+`lib/proposals.ts`, `lib/proposal-templates.ts`, `lib/proposal-emails.ts`)
+were all either read for context only or (the email template, the page
+select/consts) touched exactly as described above — signing, rate
+limiting, `noindex`, and `viewed_at` behaviour are all byte-for-byte
+unchanged.
+
+### Proposal reveal — text lands on the filmed sheet (r25.1)
+
+**Superseded by r25.2 below** — the on-sheet landing layer this section
+describes (`mountLanding()`/`crossfadeToDocumentLanded()`/
+`.pr-landing`) has been removed from `components/proposal/ProposalReveal.tsx`
+entirely; kept here only as the historical record of what shipped
+between r25 and r25.2. See the r25.2 section for the current filmed-path
+behaviour.
+
+Follow-up to the round above (BUILD-SPEC.md §"Proposal reveal — text
+lands on the filmed sheet (r25.1)"; Phillip 2026-07-12, "option 1
+approved"). Beat 2→3 no longer jumps straight from the filmed sheet to
+a document that fades up FROM BELOW (`translateY(24px)` — still the
+exact fallback behaviour for every non-filmed path, see below) — on the
+filmed path only, the document's opening view lands ON the paper itself
+before the sheet dissolves around it.
+
+**Geometry:** `computeUnfoldGeometry()`'s return type gained `sx0/sy0/
+sx1/sy1` — the flat sheet's rect local to the packet element's own
+(0,0), already computed internally for the clip-path/feather maths, now
+also exposed so the new landing layer uses the EXACT same numbers
+rather than a second, possibly-drifting calculation. `playVideoFold()`'s
+new `mountLanding()` closure turns that into an on-screen rect (packet's
+live `getBoundingClientRect()` + those offsets) and guards it: a missing
+`heading` prop, or a degenerate/off-screen rect (width/height too small,
+or entirely outside the viewport), returns `false` and the ORIGINAL
+immediate `seal() -> crossfadeToDocument()` behaviour runs untouched —
+this is also what keeps the cssfold/reduced-motion/skip paths (which
+never call `mountLanding()` at all) byte-for-byte unchanged.
+
+**Choreography (filmed path, landing engaged):** at the existing
+duration-0.6s seal threshold, `mountLanding()` positions a new
+`.pr-landing` layer over the sheet rect containing the document's real
+opening view (title, client/residence/date line, opening letter line —
+passed in via a new `heading` prop on `ProposalReveal`, built once in
+`app/proposal/[token]/page.tsx` with the SAME classes as the real
+in-flow heading) and fades it in over ~0.35s while the video still shows
+the flat, settling sheet. ~0.35s later, `crossfadeToDocumentLanded()`
+(a new function, sibling to the untouched `crossfadeToDocument()`) runs:
+the overlay's existing 0.55s background/packet/video fade starts
+(dissolving the paper), and — **handoff choice, documented per the
+round's own instruction:** the landing layer EASES (CSS `transform`,
+~0.3s) from the sheet rect to the real in-flow document's own
+`#pr-doc-anchor` position (a new `id` on the real `<h1>`, purely an
+addressable measurement target, no visual change) while fading out, at
+the exact same time `.pr-doc` (now carrying a new `.pr-landed` modifier
+— opacity-only, no `translateY`) fades in AT that same anchor position.
+Ease-to-position was chosen over resizing the in-flow document to start
+at the (much narrower, video-derived) sheet rect: the sheet's on-screen
+width is calibrated to the packet's own small on-screen box, nowhere
+near the real document's `max-w-2xl` reading column, so forcing the
+real layout to begin there would require fragile, viewport-dependent
+layout hacks; measuring two rects and CSS-easing between them at handoff
+time needs no such coupling and degrades gracefully at any viewport
+size. Because both animations target the SAME final position over the
+SAME ~0.3s window, the crossfade never shows the text in two different
+places at once — only a normal same-spot dissolve.
+
+**Files touched:** `components/proposal/ProposalReveal.tsx` (`Geometry`
+gains `sx0/sy0/sx1/sy1`; new `heading` prop; new `landingRect`/
+`sheetLanded` state + `landedRef`/`landingRef` refs; `playVideoFold()`'s
+`mountLanding()`/`tryLanding()`; new `crossfadeToDocumentLanded()`
+sibling to the untouched `crossfadeToDocument()`; `runFull()`/
+`handleReplay()` reset the new state; new `.pr-landing` JSX block +
+`.pr-landed` modifier on `.pr-doc`), `app/globals.css` (additive —
+`.pr-landing`/`.pr-landing-col`/`.pr-doc.pr-landed*`, plus `.pr-landing`
+added to the existing `prefers-reduced-motion` selector list; the
+original `.pr-doc.pr-pre`/`.pr-in` rules are untouched, still the live
+fallback), `app/proposal/[token]/page.tsx` (`openingLine`/
+`revealHeading` consts; `heading={revealHeading}` on `<ProposalReveal>`;
+`id="pr-doc-anchor"` added to the real `<h1>` — no other JSX changed),
+`docs/preview-proposal-reveal.html` (self-contained preview, rebuilt to
+match — see its own header comment; embeds `public/begin-unfold.mp4` as
+a `data:` URI, hardcodes the same FV `sx0/sx1/sy0/sy1` fractions from
+`docs/RESLU-Paper-Animation-Brief.md`/`ProposalReveal.tsx`'s own `FV`
+const, plain vanilla JS mirroring the same threshold/hold/ease timings),
+`docs/API.md` (this section). No migration, no protected file touched,
+no r23 signing/PDF/editor machinery touched.
+
+### Proposal reveal — final approved choreography (r25.2)
+
+Follow-up to both rounds above (BUILD-SPEC.md §"Proposal reveal — final
+approved choreography (r25.2)"; Phillip approved
+`docs/preview-proposal-reveal.html` verbatim 2026-07-12, "you got it").
+Ports that preview's `layout()`/`write()`/`textOnSheet()`/`seal()` and
+its `timeupdate` handler EXACTLY into `ProposalReveal.tsx`, on the
+filmed path only — fallback paths (cssfold/reduced-motion/skip) are
+byte-for-byte unchanged.
+
+**Sheet-as-column (item 1):** r25's own `computeUnfoldGeometry()`
+(packet-box-matched clip-path + HALO-padded feather union) and r25.1's
+on-sheet landing layer are both gone, replaced by
+`computeSheetGeometry()` — a direct port of the preview's `layout()`:
+`sheetW=min(520,innerWidth*0.86)`, `vw=sheetW/(FV.sx1-FV.sx0)`,
+`vh=vw*720/1280`, `top=max(8,(innerHeight-vh)/2*0.6)`,
+`doc.marginTop=top+vh*FV.sy0+14`. The spec's own text settles the
+"check the page's actual column width and reconcile" instruction:
+`main`'s `max-w-2xl` (672px) is NOT the reveal's reading column — the
+spec's own `(~520px, 86vw cap)` parenthetical is. `applySheetGeometry()`
+applies these numbers as inline styles to the packet element (now
+doubling as the video wrapper — `width`/`height`/`align-self:flex-start`/
+`margin-top`, pulled out of `.pr-overlay`'s flex-centring only on the
+filmed path) and to a new `.pr-doc` ref (`width`/`margin`), so the real
+`<main>` document renders exactly on the filmed sheet's on-screen box
+with no separate landing/measurement step — and, matching the preview,
+this is never released back to `max-w-2xl` afterwards.
+
+**Ink wipe (item 2):** the packet's front face (emboss/label/pen name/
+date) is now grouped in JSX as `.pr-packet-front` (single ref,
+`frontRef`) so its opacity can be driven as one value straight off the
+video's own clock in `playVideoFold()`'s `timeupdate` handler — `1`
+until `t=WIPE_START` (0.9s), linear to `0` by `t=WIPE_END` (1.7s), no
+CSS transition on the filmed path (set inline `transition:"none"` at
+video start so per-frame writes aren't fighting a stylesheet
+transition). The CSS fallback keeps its old instant-hide behaviour
+unchanged, now scoped to a new `.pr-cssfold-active` class (`playCssFold()`
+adds it; `playVideoFold()` never does) so the two paths' opacity
+handling can never collide on the same selector.
+
+**Document fade + seal (items 3-4):** two independent triggers inside
+the same `timeupdate` handler (both also fire on `ended` as a safety
+net, matching the preview): `showDoc()` at `duration-DOC_FADE_LEAD`
+(1.4s) adds `.pr-doc`'s `.pr-landed` modifier — opacity-only, ~1.1s ease,
+no `translateY` (`app/globals.css`, was 0.3s under r25.1's landing
+handoff) — and `sealFilmed()` at `duration-SEAL_LEAD` (0.1s) fades the
+overlay out (~0.6s, `.pr-overlay`'s own transition, was 0.55s pre-r25.2)
+and unlocks scroll IMMEDIATELY (matching the preview's own synchronous
+`body.classList.remove('locked')` inside `seal()` — NOT deferred to the
+end of the fade, a change from r25/r25.1's own `crossfadeToDocument()`,
+which is otherwise untouched and still the fallback paths' own beat-3).
+
+**Feather (item 5):** `.pr-vfeather`'s gradient is now a static rule in
+`app/globals.css` (`6%/26%/74%/94%` horizontal, `2%/16%/84%/98%`
+vertical, matching the preview's own `.feather` exactly) instead of a
+runtime-computed `featherBg` string — percentage stops don't need pixel
+geometry the way the old HALO-padded px stops did.
+
+**Resize (item 6):** `playVideoFold()` now adds a `window` `resize`
+listener (recomputing geometry via `computeSheetGeometry()` and
+reapplying it via `applySheetGeometry()`) for the duration of the filmed
+phase, torn down on seal/replay/unmount (`stopFilmedResize()`) — the
+component previously computed geometry once, at video start, and never
+revisited it.
+
+**Files touched:** `components/proposal/ProposalReveal.tsx` (`Geometry`/
+`computeUnfoldGeometry()`/`videoStyle()`/`HALO`/`BONE` removed; new
+`SheetGeometry`/`computeSheetGeometry()`/`applySheetGeometry()`/
+`stopFilmedResize()`; new `WIPE_START`/`WIPE_END`/`DOC_FADE_LEAD`/
+`SEAL_LEAD`/`SEAL_TEARDOWN_MS`/`COLUMN_MAX_PX`/`COLUMN_VIEWPORT_RATIO`/
+`TOP_LIFT_RATIO`/`TOP_MIN_PX`/`DOC_TOP_GAP_PX`/`VIDEO_ASPECT_H_OVER_W`
+constants; `heading` prop, `landingRect`/`sheetLanded`-as-landing-flag/
+`landedRef`/`landingRef`/`geometry` state and `mountLanding()`/
+`crossfadeToDocumentLanded()` all removed — `sheetLanded` now just gates
+`.pr-landed`; new `frontRef`/`docRef`/`resizeCleanupRef`;
+`playVideoFold()` rewritten around the new geometry + timeupdate
+choreography; `playCssFold()` adds `pr-cssfold-active`; JSX drops the
+`.pr-landing` block, wraps the packet's front face in `.pr-packet-front`,
+adds `docRef` to `.pr-doc`), `app/globals.css` (`.pr-packet` loses
+`gap`/keeps flex-centring; new `.pr-packet-front` + `.pr-cssfold-active`
+scoped opacity rule, replacing the old unconditional
+`.pr-folding .pr-emboss/.pr-label/.pr-name/.pr-cap` rule; `.pr-vfold`
+loses clip-path/isolation, gains `inset:0`; `.pr-vfeather` gains the new
+static gradient; `.pr-overlay` transition `0.55s`→`0.6s`; `.pr-doc.pr-landed`
+transition `0.3s`→`1.1s`; `.pr-landing`/`.pr-landing-col` removed, and
+`.pr-landing` dropped from the `prefers-reduced-motion` selector list),
+`app/proposal/[token]/page.tsx` (`openingLine`/`revealHeading` consts and
+`heading={revealHeading}` removed — `ProposalReveal` no longer takes a
+`heading` prop; `id="pr-doc-anchor"` removed from the real `<h1>`, no
+longer addressed by anything; no other JSX changed), `docs/API.md` (this
+section, plus a superseded-by pointer added to the r25.1 section above).
+No migration, no protected file touched, no r23 signing/PDF/editor
+machinery touched.
+
+### Proposal reveal — beat 1/2 seam fix (r25.2 follow-up)
+
+Tiny follow-up to r25.2 above (`docs/preview-proposal-reveal.html`
+approved verbatim 2026-07-12, "you got it"). r25.2 ported the preview's
+choreography honestly but left one seam the preview itself doesn't have:
+beat 1 showed the small, overlay-centred CSS `.pr-packet` mockup for
+every visitor, then — only once the filmed path was actually chosen —
+`playVideoFold()` resized that same element to `computeSheetGeometry()`'s
+larger, higher-sitting box. A visible size/position jump the preview
+never has, because the preview's own `<video>` IS the packet from
+`play()`'s very first frame (`film.pause(); film.currentTime = 0;`, pen
+writes ON that paused frame, THEN it plays). This round closes that gap
+on the filmed path only — cssfold/static/reduced-motion are unchanged by
+trace.
+
+**Split the packet visual in two:** `.pr-packet` (the CSS cardstock
+mockup) is now the cssfold fallback's own visual, full stop — JSX gates
+it on `!videoOn`, so the filmed path never renders it, at any phase
+(including the shared `"crossfade"` teardown). The filmed path gets its
+own separate wrapper, `.pr-vwrap` (`filmWrapRef`), with none of
+`.pr-packet`'s cardstock chrome — no settle-in animation, no default
+aspect-ratio — mounted for the WHOLE overlay lifetime (from
+`phase === "checking"` onward, one phase earlier than r25.2's own
+`"packet"` start) purely so the `<video>` inside it can preload without
+ever unmounting/remounting. `applySheetGeometry()` (BUILD-SPEC r25.2
+item 1) now targets `filmWrapRef` instead of `packetRef`.
+
+**The paused first frame IS the packet:** `playVideoFold()` applies
+`computeSheetGeometry()` to `.pr-vwrap` and calls `video.pause();
+video.currentTime = 0;` BEFORE anything else on the filmed path — the
+video is sized/positioned at its FINAL beat-2 geometry from the first
+paint of the filmed path, showing the reversed film's own resting-packet
+frame, exactly like the preview's own `play()`.
+
+**Separate ink+date overlay:** the filmed path's ink+date overlay is a
+new element, `.pr-film-overlay` (`frontRef`, paired with a new
+`filmNameRef` for the pen target) — positioned like the preview's own
+`.overlay` (`top:50%` of the video wrapper, `translateY(-50%)`, centred
+text; `app/globals.css`'s `.pr-film-name`/`.pr-film-date` port the
+preview's `.ink`/`.date` sizing). No emboss/label on this path — the
+video itself is the packet, and the preview's own overlay never had them
+either. The cssfold packet's `.pr-packet-front` (emboss + label + pen
+name + date) is untouched, still that path's own visual only.
+
+**Readiness decision moves before either path's pen write:**
+`decideAndPlayBeat2()` now runs directly off `runFull()` after a plain
+`CHECKING_SETTLE_MS` (350ms) settle beat, not after a write-then-dwell
+step — beat 1 opens on a brief, neutral bone `.pr-overlay` background
+only (the existing `"checking"` phase, now actually visible as such
+instead of skipped straight into `"packet"`). `CHECKING_BUDGET_MS`
+(2150ms) is `decideAndPlayBeat2()`'s own deadline, so the total budget
+before falling back to cssfold is 350+2150=2500ms — the same "~2.5s"
+figure r25.2's original (now-removed) comment referenced, just no longer
+split across a write-then-dwell step that ran before the decision. The
+pen now writes strictly AFTER the path is chosen: `playVideoFold()`
+writes into `filmNameRef` on the paused first frame, then
+`FILM_PLAY_DWELL_MS` (250ms, ported from the preview's own
+`write(ink, name, function(){ setTimeout(function(){ film.play(); },
+250); })`) before calling `video.play()` — only then do the existing
+`timeupdate`/`ended`/resize listeners' wipe/doc-fade/seal choreography
+(WIPE_START/WIPE_END/DOC_FADE_LEAD/SEAL_LEAD, all unchanged) take over.
+`playCssFold()` writes into the (renamed-in-role but otherwise
+unchanged) `nameRef` on the CSS packet, dwells `CSS_PACKET_DWELL_MS`
+(500ms — the same figure r25.2's own pre-decision dwell used), then
+hands off to a new `startCssFoldAnimation()` sibling that is the old
+`playCssFold()` body verbatim (flap sweep, crossfade at 1300ms) — the
+cssfold path's own animation timing is byte-for-byte unchanged, only
+which function starts it moved.
+
+**No-JS/SSR guard:** making `"checking"` a genuinely visible,
+overlay-mounted phase introduced a hazard the pre-fix code didn't have —
+`phase`'s SSR-initial value IS `"checking"`, so without a guard, a no-JS
+or pre-hydration render would mount the same full-screen bone overlay
+PERMANENTLY over the already-visible document (`docIn` defaults `true`
+specifically so the document is never hidden before JS decides to
+animate — see that state's own comment, unchanged from r25). New
+`running` state (`false` until `runFull()` — a client-only function —
+sets it `true`) gates `overlayMounted`, so SSR/no-JS output is
+unaffected; the video-preload `useEffect` also gained `running` to its
+dependency array (`[running, phase]`, was `[phase]`) since the very
+first `runFull()` call sets `phase` to `"checking"` again (already its
+initial value), so `phase` alone wouldn't have changed on that first
+transition.
+
+**Files touched:** `components/proposal/ProposalReveal.tsx` (header
+comment updated; new `CHECKING_SETTLE_MS`/`CHECKING_BUDGET_MS`/
+`FILM_PLAY_DWELL_MS`/`CSS_PACKET_DWELL_MS` constants; new `filmWrapRef`/
+`filmNameRef` refs; `applySheetGeometry()` retargeted from `packetRef` to
+`filmWrapRef`; `playCssFold()` now only shows the CSS packet + writes the
+pen, handing off to new `startCssFoldAnimation()` (old `playCssFold()`
+body); `playVideoFold()` rewritten — pauses the video at `currentTime=0`
+and sizes `.pr-vwrap` first, writes the pen into `filmNameRef`, THEN
+dwells `FILM_PLAY_DWELL_MS` before `video.play()`; `runFull()` simplified
+to a settle-then-decide call, no more pre-decision write/dwell; new
+`running` state (gates `overlayMounted`, see "No-JS/SSR guard" above);
+`useEffect` video `load()` trigger moved from `phase === "packet"` to
+`running && phase === "checking"`, deps `[running, phase]`;
+`handleReplay()` resets `filmWrapRef`/
+`filmNameRef` instead of `packetRef`'s inline geometry; `overlayMounted`
+gains `"checking"`; JSX splits the single always-rendered `.pr-packet`
+block into a `!videoOn`-gated `.pr-packet` (cssfold only) and an
+always-mounted `.pr-vwrap` (filmed path, holds the `<video>` + new
+`.pr-film-overlay`)), `app/globals.css` (`.pr-packet`/`.pr-packet-front`/
+`.pr-packet.pr-folding` comments updated to reflect cssfold-only scope,
+no rule values changed on the cssfold path itself; `.pr-vfold`/
+`.pr-vfeather` comments updated to reference `.pr-vwrap` instead of
+`.pr-packet`, rule values unchanged; new `.pr-vwrap`/`.pr-film-overlay`/
+`.pr-film-name`/`.pr-film-date` rules, the last three porting the
+preview's own `.overlay`/`.ink`/`.date` rules), `docs/API.md` (this
+section). No migration, no protected file touched, no r23 signing/PDF/
+editor machinery touched — cssfold/static/reduced-motion paths verified
+unchanged by trace.

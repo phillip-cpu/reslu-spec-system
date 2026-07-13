@@ -7,6 +7,7 @@ import { rateLimit } from "@/lib/rate-limit";
 import { residenceLabel } from "@/lib/proposals";
 import { TIMELINE_COUNCIL_CAVEAT } from "@/lib/proposal-templates";
 import { ProposalSignForm } from "@/components/proposal/ProposalSignForm";
+import { ProposalReveal } from "@/components/proposal/ProposalReveal";
 import type { Proposal, ProposalContent } from "@/types/proposals";
 
 /**
@@ -116,12 +117,21 @@ export default async function ProposalPage({ params }: { params: Promise<{ token
       ? supabase.from("leads").select("id,first_name,surname_project,location").eq("id", p.lead_id).maybeSingle()
       : Promise.resolve({ data: null }),
     p.project_id
-      ? supabase.from("projects").select("id,name,alias,address").eq("id", p.project_id).maybeSingle()
+      ? // r25 adds client_name to this select — same "greeting name" field
+        // app/api/proposals/[id]/{send,resend}/route.ts already read off
+        // project for the email's {{company}} pen name; the page reveal's
+        // packet (components/proposal/ProposalReveal.tsx) writes the same
+        // value so the emailed packet and the page packet always agree.
+        supabase.from("projects").select("id,name,alias,address,client_name").eq("id", p.project_id).maybeSingle()
       : Promise.resolve({ data: null }),
   ]);
 
   const residence = residenceLabel({ lead, project });
   const address = project?.address ?? lead?.location ?? null;
+  // Same precedence as the send/resend routes' own greetingName — kept
+  // in sync deliberately (see the select() comment above).
+  const greetingName = project?.client_name || lead?.first_name || lead?.surname_project || "there";
+  const sentDateLabel = p.sent_at ? formatDate(p.sent_at) : formatDate(p.created_at);
 
   // viewed_at: set once, only while status='sent', only if still null —
   // migration 051's own column comment. A draft-status "Live preview"
@@ -138,7 +148,20 @@ export default async function ProposalPage({ params }: { params: Promise<{ token
         </div>
       </header>
 
-      <main className="mx-auto max-w-2xl px-6 py-10">
+      {/* r25 "Proposal delivery skin" — ProposalReveal is a client
+       * component; this whole <main> document is passed through as its
+       * `children`, so it stays a Server Component render (same data,
+       * same JSX below, completely unchanged) — ProposalReveal only
+       * toggles visibility/opacity around it and layers the filmed-
+       * unfold overlay on top. See that component's own header comment
+       * for the full beat 1/2/3 sequence and fallback matrix. r25.2:
+       * no more `heading` prop — the on-sheet landing layer it fed is
+       * gone, ProposalReveal now sizes/positions THIS <main> directly
+       * (via its `.pr-doc` wrapper) off the same sheet geometry the
+       * video uses, so the real document is always the thing on screen,
+       * never a second approximation of it. */}
+      <ProposalReveal token={token} greetingName={greetingName} sentDateLabel={sentDateLabel} residence={residence}>
+        <main className="mx-auto max-w-2xl px-6 py-10">
         {p.status === "draft" && (
           <p className="mb-6 border border-sand/60 bg-offwhite px-4 py-2 text-caption text-sand">
             Preview — this proposal has not been sent yet.
@@ -148,9 +171,7 @@ export default async function ProposalPage({ params }: { params: Promise<{ token
         <p className="label-caps">Design Proposal</p>
         <h1 className="mt-1 font-display text-section text-nearblack">{residence}</h1>
         {address && <p className="mt-1 text-body text-charcoal/70">{address}</p>}
-        <p className="mt-1 text-caption text-charcoal/40">
-          {p.sent_at ? formatDate(p.sent_at) : formatDate(p.created_at)}
-        </p>
+        <p className="mt-1 text-caption text-charcoal/40">{sentDateLabel}</p>
 
         {/* Letter */}
         <section className="mt-10">
@@ -290,14 +311,12 @@ export default async function ProposalPage({ params }: { params: Promise<{ token
           </div>
         </section>
 
-        {/* Terms — collapsible */}
+        {/* Terms — inline, always open (Phillip 2026-07-12: whole document scrolls, nothing behind tabs) */}
         <section className="mt-10 border-t border-[#dcd6cc] pt-8">
-          <details>
-            <summary className="label-caps cursor-pointer select-none">Terms (click to expand)</summary>
-            <div className="mt-4">
-              <TermsBody md={content.terms_md} />
-            </div>
-          </details>
+          <h2 className="label-caps">Terms</h2>
+          <div className="mt-4">
+            <TermsBody md={content.terms_md} />
+          </div>
         </section>
 
         {/* Sign to accept */}
@@ -319,7 +338,8 @@ export default async function ProposalPage({ params }: { params: Promise<{ token
             </p>
           )}
         </section>
-      </main>
+        </main>
+      </ProposalReveal>
 
       <footer className="mx-auto max-w-2xl px-6 py-10 text-caption text-charcoal/40">
         RESLU · This is a private link. Please don&apos;t share it.

@@ -92,28 +92,62 @@ changed. Same "missing/unreadable file logs a `'skipped'` row and
 `reportError()`s rather than crashing the caller" contract as every
 other template here.
 
-## `proposal-sent.html` — Fee proposal phase round (r23)
+## `proposal-sent.html` — Fee proposal phase round (r23), reworked r25
 
-One new template for `docs/BUILD-SPEC.md`'s "Fee proposal phase (r23)":
+Originally a plain "your fee proposal is ready" button-link email
+(business style, not the designer's paper-card language). **Reworked in
+the "Proposal delivery skin (r25)" round** to adopt the website's
+card/packet language per `docs/RESLU-Card-Design-Spec.md` — the email
+now IS the closed packet: bone `#EDE8DE` background, centred cardstock
+card (`#faf6ec` / `1px solid #e6dfcf` / radius 1px, card shadow
+deliberately omitted — card spec section 7: "shadows unreliable, fine to
+skip" in email), a small typeset "debossed" RESLU mark (`#e2dac5` block,
+letterspaced, two-tone border standing in for a bevel — NOT the
+hotlinked `email-packet.jpg` photo `visit-confirmation.html`/
+`visit-reminder.html` use below an open letter, since this card doesn't
+have an "open letter" state to photograph past — it only ever shows the
+closed packet), the `DESIGN PROPOSAL` taupe letterspaced label, the
+client's first name(s) handwritten in pen (Caveat, `#274690`), the send
+date **as plain text** (small letterspaced `#313131` — Phillip's
+explicit correction: unlike a visit date, this is never handwritten),
+the residence line, and a charcoal `OPEN YOUR PROPOSAL` button.
 
-- **`proposal-sent.html`** — the branded "your fee proposal is ready"
-  button-link email, same plain (not the designer's "paper card") style
-  as the trade-booking templates above — this is a business email, not
-  part of the lead's client journey. Placeholders: `{{company}}`
-  (greeting name) `{{project_name}}` (residence label) `{{project_address}}`
-  `{{request_link}}` (`https://spec.reslu.com.au/proposal/{token}`)
-  `{{attachments_note}}` (always blank for this template — nothing is
-  attached to the SEND email, only the later signed-copy email)
-  `{{phillip_phone}}`. Sent via `POST /api/proposals/[id]/send` and
-  `.../resend`, through `lib/proposal-emails.ts`'s own thin
-  `sendProposalEmail()` — that module deliberately does NOT add
-  `'proposal'`/`'proposal-sent'` into `lib/visit-emails.ts`'s own
-  private `VisitEmailRecordType`/`TEMPLATE_FILES` maps (this round's own
-  file-boundary note keeps that file untouched); instead it reuses
-  `merge()`/`sendViaResend()`/the 7am-7pm Adelaide window gate unmodified
-  and re-implements its own small `email_sends` log + template-file
-  cache locally. See `lib/proposal-emails.ts`'s own header comment for
-  the full reasoning.
+- **`proposal-sent.html`** — placeholders (all still merged by
+  `lib/visit-emails.ts`'s `merge()`, reused unmodified — see
+  `lib/proposal-emails.ts`'s own header comment for why that file itself
+  stays untouched):
+  - `{{company}}` — now the pen-written first name(s) on the packet
+    (same greeting-name value the send/resend routes always computed —
+    only where/how it's rendered changed, not the merge key or the
+    route logic that fills it)
+  - `{{project_name}}` — residence label (`lib/proposals.ts`'s
+    `residenceLabel()`) — the plain "residence line" under the date
+  - `{{visit_date}}` — **repurposed** by this template for the
+    proposal's own plain-text send date (`"11 July 2026"`, Adelaide
+    timezone) rather than a visit date — see
+    `app/api/proposals/[id]/{send,resend}/route.ts`'s own
+    `formatSentDateAdelaide()` comment for why this reuses the existing
+    generic slot instead of adding a new key to `lib/visit-emails.ts`'s
+    own `merge()` values map (kept untouched, same r23 file-boundary).
+    A resend prints the ORIGINAL `sent_at` date, not the resend time.
+  - `{{request_link}}` (`https://spec.reslu.com.au/proposal/{token}`) —
+    the `OPEN YOUR PROPOSAL` button target
+  - `{{project_address}}` / `{{attachments_note}}` / `{{phillip_phone}}`
+    — still passed by both routes (harmless, land in `email_sends.detail`
+    for audit) but **not referenced** by the r25 card markup —
+    `{{project_address}}` in particular is deliberately dropped from the
+    visible card per the card design spec's own voice rule: "Suburb
+    only — never a client street address in anything sent or shown."
+
+  Sent via `POST /api/proposals/[id]/send` and `.../resend`, through
+  `lib/proposal-emails.ts`'s own thin `sendProposalEmail()` — that
+  module deliberately does NOT add `'proposal'`/`'proposal-sent'` into
+  `lib/visit-emails.ts`'s own private `VisitEmailRecordType`/
+  `TEMPLATE_FILES` maps (this round's own file-boundary note keeps that
+  file untouched); instead it reuses `merge()`/`sendViaResend()`/the
+  7am-7pm Adelaide window gate unmodified and re-implements its own
+  small `email_sends` log + template-file cache locally. See
+  `lib/proposal-emails.ts`'s own header comment for the full reasoning.
 
 **No `proposal-accepted.html` template file exists** — the signed-copy
 confirmation email (sent to the client + `phillip@reslu.com.au` by

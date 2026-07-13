@@ -874,3 +874,137 @@ email pipeline's `change_proposals` flow above) — a draft letter isn't a
 disputed business fact the way a price is, and Phillip reviews/edits
 every word before Send regardless, so there's nothing for a human to
 approve at this step specifically.
+
+## Supplier invoice intake (Booking selection v2 + Aria supplier invoices round, r24)
+
+Money OUT, and the gate here is the strictest one you work under —
+stricter even than the email pipeline's `change_proposals` flow above,
+which at least writes something (behind a human's `approve_proposal`
+click). `propose_supplier_invoice` writes NOTHING except a draft row
+sitting in a queue. Read that literally: there is no tool, no route, and
+no code path reachable from this tool that ever applies a cost, links a
+payment to a cost line, or updates a library product's price. That only
+ever happens when Phillip (or another admin) clicks "Approve & apply" in
+the Invoice queue UI himself. This was audited the same way the email
+pipeline's own gate was — by reading `POST /api/projects/[id]/invoices`
+(what this tool calls) and confirming it does one thing, an INSERT, full
+stop.
+
+**When to use it**: Second Brain's email pipeline (the same triage/
+extraction machinery described above) flags a likely supplier invoice
+on an email that's ALREADY been ingested and triaged — an attachment/PDF
+plus amount and invoice-number-shaped text. Read the attachment, work
+out:
+
+- Which project this belongs to (job hints — address, job number, a
+  contact name mentioned) — you need a real `project_id`, this tool
+  can't guess one for you.
+- The canonical fields: `supplier`, `invoice_number`, `invoice_date`,
+  `amount_ex_gst` (the figure Approve actually applies — get this one
+  right), `gst`/`total` (omit either to let the server compute them).
+- If you can confidently tell which cost line or spec item this invoice
+  covers, a `proposed_match_type` (`'cost_line'` or `'item'`) +
+  `proposed_match_id`. If you're not confident, leave both out — the
+  invoice still lands in the queue, just as "unmatched" rather than
+  "proposed", for a human to match by hand. Guessing wrong here is worse
+  than not guessing — never fabricate a match id you're not reasonably
+  sure of.
+
+```
+propose_supplier_invoice({
+  project_id: "...",
+  source_email_id: "...",
+  supplier: "Beaumont Tiles",
+  invoice_number: "INV-88213",
+  invoice_date: "2026-07-09",
+  amount_ex_gst: 1840.50,
+  abn: "12 345 678 901",
+  line_hints: "Floor tiles, ensuite — matches the tiling cost line",
+  job_hints: "Invoice addressed to '14 Seaview Road' — matches this project's site address",
+  proposed_match_type: "cost_line",
+  proposed_match_id: "...",
+  confidence_note: "Confident on amount/supplier; matched by address only, no job number on the invoice",
+})
+```
+
+- **`source_email_id` is required** — every row you propose must trace
+  back to the specific already-ingested email it came from (Second
+  Brain's `emails.id`). This is the row's whole audit trail; there's no
+  legitimate reason to omit it.
+- **`abn`/`line_hints`/`job_hints`** aren't canonical invoice fields —
+  they're stored in the row's `extracted` blob (migration 052) and shown
+  as read-only context in the queue UI next to the fields you DID map to
+  canonical columns, so a human reviewer can see your reasoning, not
+  just your conclusion.
+- The row lands `source='aria'`, and — if you passed a match —
+  `status='proposed'`, which together show up in the queue UI as an
+  amber **"Aria · needs approval"** pill. It also raises a Daily Brief
+  item the same day (dedupe-guarded — proposing the same invoice twice
+  in one day, e.g. a retry after a tool error, never creates two brief
+  items), so it doesn't sit silently in a queue nobody's looking at.
+- **PDF attachment is NOT wired up by this tool** — same reason
+  `add_cpd_entry` (above) doesn't attach evidence: there's no natural
+  two-step signed-upload flow to run from inside one MCP call. Don't try
+  to pass a storage path; there's no parameter for it. `source_email_id`
+  is enough for a human to go find the original PDF if they need to see
+  it — a future round may wire this up properly.
+- **You never approve, and you never need to check back** — unlike the
+  `draft_proposal` flow above, there's no `resolve_queue_item` step here
+  either, because proposing an invoice was never a queue item to begin
+  with (it's a direct, always-safe INSERT triggered straight from your
+  own email-triage pass, not something staged for Phillip to hand you
+  first). Just propose what you find and move on; the Invoice queue UI
+  is where a human takes it from there.
+
+## Health monitoring (Health + web push round, r26)
+
+Phillip 2026-07-13: "Mini can't be reached from Vercel -> mini
+heartbeats OUT; diagnostics = queued request the mini picks up.
+Monitoring must burn zero AI credits (dumb scripts + timestamp
+comparisons); Claude Code repair sessions run ONLY on explicit button
+press." Read that literally before touching anything in this section:
+the mini's ACTUAL automated heartbeat/diagnostics loop is a plain
+bash+curl script (docs/MINI-HEALTH-HANDOFF.md — launchd job, no LLM
+anywhere in it) hitting the REST routes below directly, authenticating
+the exact same way this MCP server itself does (sign in as Aria via
+Supabase Auth's password grant, send the access token as
+`Authorization: Bearer`). The four tools below exist so YOU can also
+call them conversationally when it's useful — e.g. you notice
+something during an unrelated task and want to log a channel status by
+hand, or you want to check whether a diagnostics run is queued — but
+none of them are something you need to poll in a loop yourself. Doing
+that would reintroduce exactly the "monitoring burns AI credits"
+problem this round's whole design avoids.
+
+**`post_heartbeat`** — reports uptime/disk/mem/openclaw status/pending
+macOS updates. Normally sent by the bash script every ~5 minutes; call
+it yourself only if you have a specific reason to (e.g. confirming a
+fresh state right after a manual fix).
+
+**`report_channel_status`** — reports one monitored channel's health
+(`channel`: a stable key like `'whatsapp'`/`'email'`/`'calendar'`,
+`status`: `'ok'|'degraded'|'down'`, optionally `session_valid`,
+`last_inbound_at`/`last_outbound_at`, `note`). If you notice the
+WhatsApp bridge's session looks stale, or a channel you're operating on
+the mini's behalf (email, calendar) is misbehaving, report it here —
+it's upserted by `channel`, so re-reporting the same channel just
+updates its row. A transition to `degraded`/`down`/`session_valid:false`
+fires ONE deduped push to admins (not a fresh one on every subsequent
+report while the condition persists); reporting back to `ok` clears it.
+
+**`get_pending_diagnostics`** / **`complete_diagnostic`** — the
+diagnostics queue. An admin presses "Run diagnostics & repair" on the
+Health page (`/health`), which queues a `health_diagnostics` row.
+`get_pending_diagnostics` lists (and claims — flips to `running`)
+anything queued; work through whatever repair steps are appropriate
+(restart the WhatsApp bridge, verify the session, check
+`softwareupdate -l` — see docs/MINI-HEALTH-HANDOFF.md's own diagnostics
+loop sketch for the concrete script this backs) and call
+`complete_diagnostic(id, status, report)` when done. `report`'s first
+~200 characters land in the completion push, so lead with the headline
+("Restarted WhatsApp bridge, session now valid" / "Could not restart —
+manual intervention needed"). **This is not you (Aria/Claude Code)
+doing a coding-agent repair session** — it's the mini's own
+plain-script repair loop; an actual Claude Code session on the
+codebase only ever runs when Phillip explicitly starts one himself,
+entirely outside this queue.

@@ -5,7 +5,6 @@ import clsx from "clsx";
 import type { AssigneeSummary, BoardGroup } from "@/types/phase-12a-b";
 import type { Contact } from "@/types";
 import { BOARD_LAYOUT_STORAGE_KEY, type BoardLayoutMode } from "@/types/phase-fix-a";
-import type { ContactPickerOption } from "@/types/board-cockpit";
 // Board v3 — Monday parity round: BoardColumnV3/BoardGroupV3/BoardTaskV3
 // (types/board-v3.ts) are structural supersets of their Board-cockpit-
 // round counterparts (BoardColumnCockpit/BoardGroupCockpit/
@@ -39,8 +38,6 @@ import {
   isDoneColumnName,
 } from "@/lib/board-constants";
 import { ContactPicker } from "@/components/shared/ContactPicker";
-import type { DocumentPackChoices } from "@/types/trade-doc-pack";
-import { BookVisitPanel } from "./BookVisitPanel";
 import { GroupBookPanel } from "./GroupBookPanel";
 import { MilestoneDiaryPrompt } from "./MilestoneDiaryPrompt";
 // Board v3.3 — shared with GanttChart.tsx's own identical "Dates
@@ -61,19 +58,6 @@ interface Props {
 }
 
 const SORT_STEP = 1000;
-
-// Board v3.3 — item 2: same skip-reason copy BookVisitPanel.tsx shows
-// inline, mirrored here (not imported — this file doesn't import
-// component-local constants from a sub-component, same "each file owns
-// its own display strings" convention this file's own BOOKING_STATUS_LABEL
-// constant further down already follows relative to other files) for
-// the transient board-level echo (see bookingEmailNotice's own doc
-// comment for what this banner is and isn't).
-const EMAIL_SKIP_REASON_LABEL: Record<string, string> = {
-  no_gmail_config: "email not configured",
-  no_contact: "no trade linked",
-  no_contact_email: "trade has no email on file",
-};
 
 // Board v3.2 — "Reorder slot animation". Row height in px, matching
 // GroupRows' row className (`h-8` = 2rem = 32px) — used purely to
@@ -195,42 +179,50 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   // updateTaskField below whenever a milestone-kind card's column_id
   // changes into a Done-like column).
   const [milestonePrompt, setMilestonePrompt] = useState<{ title: string } | null>(null);
-  // Board cockpit round — which card's "Book trade" popover is open.
-  // Prefill fix ("Two more" round, 7 July 2026 evening): this used to be
-  // a bare `taskId: string | null`, so BookVisitPanel had nothing but an
-  // id to work with and always rendered blank. Now carries the full
-  // BoardTaskV3 the popover was opened for, so its phase/trade/
-  // dates can be resolved and passed down as initial* props (see the
-  // BookVisitPanel render below) — same "capture full context at the
-  // moment of opening" fix on every path that can open it (BoardCard,
-  // StackedColumnSection's rows via BoardTaskEditorBody, GroupRows).
-  const [bookingTask, setBookingTask] = useState<BoardTaskV3 | null>(null);
-  // Board v3.3 — item 2: a short-lived, board-level echo of the booking
-  // email outcome BookVisitPanel already shows inline — the panel's own
-  // message is the primary surface (it's already open, already reading
-  // the exact "request sent to {contact}" / "email not sent: {reason}"
-  // copy), but this ALSO flashes a matching banner up near the board's
-  // existing error banner so the outcome is still visible for a moment
-  // after the panel closes, e.g. if a staff member clicks Close quickly
-  // without reading it — "the card badge surfaces" per this round's own
-  // brief, in the absence of a persisted DB column to show it from on
-  // every future page load (no new migration this round — see BUILD's
-  // own constraint — so this is necessarily transient, not a permanent
-  // per-card badge state). Cleared whenever a new booking flow opens.
-  const [bookingEmailNotice, setBookingEmailNotice] = useState<string | null>(null);
+  // Booking selection v2 (r24) — BUILD-SPEC.md §"Booking selection v2 +
+  // Aria supplier invoices (r24)" items 1-3. Replaces the old bare
+  // `groupBookOpen: boolean` (always opened blank from the "•••" menu)
+  // with a seed carried at open time: either the checked rows from
+  // `selectedTaskIds` below (action bar) or a single task id (per-item
+  // "Book trade" button) — see GroupBookPanel's own header comment for
+  // what each shape does once inside the panel. Replaces bookingTask/
+  // BookVisitPanel as this file's own board entry point into trade
+  // booking. VERIFICATION NOTE (r24 repair pass): the previous version
+  // of this comment claimed BookVisitPanel.tsx "is still used by the
+  // Timeline (GanttChart.tsx)" — checked while repairing this file, and
+  // that turned out not to be true: GanttChart.tsx's own booking UI is
+  // a separate, self-contained PhaseEditPanel (its own ContactPicker +
+  // date fields + "Book trade" context-menu action) that never imports
+  // BookVisitPanel. A repo-wide grep confirms BookVisitPanel.tsx has NO
+  // remaining importer anywhere in the app — it is genuinely orphaned,
+  // not "still used elsewhere". Left in place rather than deleted (out
+  // of scope for this round's 8 spec items; deleting it is a call for
+  // whoever picks up that follow-up, not an incidental side effect of
+  // this repair) — flagged here, and in this round's own docs/API.md
+  // section, so it isn't mistaken for live code again.
+  const [groupBookSeed, setGroupBookSeed] = useState<string[] | null>(null);
+  // Booking selection v2 (r24) — row/card-edge checkboxes on both board
+  // views (StackedColumnSection's "board rows" and GroupRows' "phase-
+  // card item rows" — BUILD-SPEC.md item 1). Board-level (not per-view)
+  // so a selection persists across a Kanban<->Grouped-list tab switch;
+  // cleared whenever the booking panel opened from it closes (sent or
+  // cancelled — simplest behaviour, avoids stale ticked rows lingering
+  // after either outcome).
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
+  function toggleTaskSelected(taskId: string) {
+    setSelectedTaskIds((cur) => {
+      const next = new Set(cur);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      return next;
+    });
+  }
   // Board v3.1 — display-first cells, item 6: the "Update status
   // names" panel opened from the board's "..." overflow menu (near the
   // layout toggle) — the menu itself is a PopoverCell (see the JSX
   // below), which owns its own open/close state, so this file only
   // needs to track whether the PANEL is open.
   const [statusNamesPanelOpen, setStatusNamesPanelOpen] = useState(false);
-  // Grouped trade booking round (r20) — whether GroupBookPanel (the
-  // "pick a trade, see every one of their tasks, send one request"
-  // group-mode sibling to BookVisitPanel — see that component's own
-  // header comment) is open. A standalone modal with no card context
-  // (unlike bookingTask above), opened from the "•••" board-actions
-  // menu below rather than from any one specific card.
-  const [groupBookOpen, setGroupBookOpen] = useState(false);
   // Board v3.3 — "Dates changed — re-send confirmation?" affordance,
   // surfaced on a row whose linked visit was 'confirmed' at the moment
   // a direct works-date PATCH (WorksDateCell, GroupRows below) moved
@@ -517,49 +509,6 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
       });
     }
     return updated;
-  }
-
-  /**
-   * Board cockpit round — "Book-trade-from-card with visit_id linkage
-   * + live status badge." POSTs to /api/board-tasks/[id]/book-visit
-   * (creates the trade_visits row + links it in one call — see that
-   * route's doc comment) and merges the returned task (now carrying
-   * visit_id/booking_date/booking_end_date/visit) into both column and
-   * group state via applyTaskPatch, same targeted-merge approach every
-   * other card mutation in this file uses.
-   */
-  /**
-   * Returns the trade-insurance warning (or null) PLUS this round's
-   * email outcome from the book-visit response — same non-blocking
-   * insurance check every other booking path in the app surfaces
-   * (GanttChart's AddVisitForm, VisitBottomSheet); this was the one
-   * booking path that silently dropped it. Board v3.3 — item 2: also
-   * returns `email_sent`/`email_skip_reason` (see POST
-   * /api/board-tasks/[id]/book-visit's own doc comment for what each
-   * skip reason means) so BookVisitPanel can show "request sent to
-   * {contact}" vs. "booked — email not sent: {reason}" immediately,
-   * without a second fetch.
-   */
-  async function bookVisit(
-    taskId: string,
-    input: {
-      phase_id: string;
-      contact_id?: string | null;
-      start_date: string;
-      end_date: string;
-      /** "Trade booking document pack" — forwarded verbatim to POST /api/board-tasks/[id]/book-visit's own optional document_pack body field; see that route's doc comment for the full frozen-choices write-through. */
-      document_pack?: DocumentPackChoices;
-    }
-  ): Promise<{ insuranceWarning: string | null; emailSent: boolean; emailSkipReason?: string }> {
-    const res = await fetch(`/api/board-tasks/${taskId}/book-visit`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
-    });
-    if (!res.ok) throw new Error((await res.json()).error ?? "Could not book the visit.");
-    const { task: updated, insurance_warning, email_sent, email_skip_reason } = await res.json();
-    applyTaskPatch(taskId, updated as Partial<BoardTaskV3>);
-    return { insuranceWarning: insurance_warning ?? null, emailSent: !!email_sent, emailSkipReason: email_skip_reason };
   }
 
   /** Unlinks a card's booking without deleting the underlying visit — see DELETE /api/board-tasks/[id]/book-visit's doc comment. */
@@ -1054,49 +1003,38 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
         </p>
       )}
 
-      {/* Board v3.3 — item 2: transient echo of the booking email
-          outcome — see bookingEmailNotice's own doc comment. Dismissible
-          (not auto-clearing on a timer) since a staff member may be mid-
-          scroll/mid-task when it appears. */}
-      {bookingEmailNotice && (
-        <p className="flex items-center justify-between gap-3 border border-sand bg-cream px-3 py-2 text-body text-charcoal">
-          <span>{bookingEmailNotice}</span>
-          <button
-            type="button"
-            onClick={() => setBookingEmailNotice(null)}
-            className="shrink-0 text-caption text-charcoal/50 underline hover:text-nearblack"
-          >
-            Dismiss
-          </button>
-        </p>
-      )}
-
-      {bookingTask && (
-        <BookVisitPanel
-          key={bookingTask.id}
-          projectId={projectId}
-          initialPhaseId={groups.find((g) => g.id === bookingTask.phase_group_id)?.phase_id ?? null}
-          initialContactId={bookingTask.contact_id}
-          initialStartDate={bookingTask.booking_date}
-          initialEndDate={bookingTask.booking_end_date}
-          cardContext={{ title: bookingTask.title }}
-          onBook={async (input) => {
-            const result = await bookVisit(bookingTask.id, input);
-            // Board v3.3 — item 2: transient board-level echo of the
-            // panel's own inline message — see bookingEmailNotice's own
-            // doc comment above for why this exists alongside (not
-            // instead of) the panel's message.
-            setBookingEmailNotice(
-              result.emailSent
-                ? `Request sent to the trade for "${bookingTask.title}".`
-                : `"${bookingTask.title}" booked — email not sent: ${
-                    EMAIL_SKIP_REASON_LABEL[result.emailSkipReason ?? ""] ?? "unknown reason"
-                  }.`
-            );
-            return result;
-          }}
-          onClose={() => setBookingTask(null)}
-        />
+      {/* Booking selection v2 (r24) — board-wide selection action bar.
+          Appears whenever at least one row/card-edge checkbox is ticked
+          (StackedColumnSection's board rows or GroupRows' phase-card
+          item rows — see selectedTaskIds' own doc comment above).
+          "Book selected -> trade" opens GroupBookPanel seeded with every
+          checked task id; the panel resolves a single trade contact
+          from that seed (prefilled when unambiguous, per its own header
+          comment) — this is the ONE entry point for "select several
+          lines -> one email to one trade" (this round's acceptance
+          test: select every carpentry line -> one booking email). */}
+      {selectedTaskIds.size > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 border border-nearblack bg-cream px-3 py-2">
+          <span className="text-body text-nearblack">
+            {selectedTaskIds.size} line{selectedTaskIds.size === 1 ? "" : "s"} selected
+          </span>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setSelectedTaskIds(new Set())}
+              className="text-caption text-charcoal/50 underline hover:text-nearblack"
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              onClick={() => setGroupBookSeed([...selectedTaskIds])}
+              className="border border-nearblack bg-nearblack px-4 py-1.5 text-subhead text-white transition-colors hover:bg-charcoal"
+            >
+              Book selected → trade
+            </button>
+          </div>
+        </div>
       )}
 
       {milestonePrompt && (
@@ -1185,18 +1123,11 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
                 >
                   Update status names…
                 </button>
-                {/* Grouped trade booking round (r20) — see groupBookOpen's
-                    own doc comment above. */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    close();
-                    setGroupBookOpen(true);
-                  }}
-                  className="block w-full min-w-[10rem] px-2 py-1.5 text-left text-caption text-charcoal hover:bg-cream"
-                >
-                  Group book a trade…
-                </button>
+                {/* Booking selection v2 (r24) — the old bare "Group book a
+                    trade…" entry point is REMOVED per BUILD-SPEC.md item 3
+                    ("replaced by these two entry points" — the selection
+                    action bar above and each row's own "Book trade"
+                    button, both opening GroupBookPanel via groupBookSeed). */}
               </>
             )}
           </PopoverCell>
@@ -1211,9 +1142,21 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
         />
       )}
 
-      {/* Grouped trade booking round (r20) — see groupBookOpen's own
-          doc comment above. */}
-      {groupBookOpen && <GroupBookPanel projectId={projectId} onClose={() => setGroupBookOpen(false)} />}
+      {/* Booking selection v2 (r24) — the ONE board entry point into
+          trade booking (single-line or grouped, both the same panel —
+          see groupBookSeed's own doc comment above). Selection is
+          cleared on close so a sent/cancelled panel never leaves stale
+          ticked rows behind. */}
+      {groupBookSeed !== null && (
+        <GroupBookPanel
+          projectId={projectId}
+          seedTaskIds={groupBookSeed}
+          onClose={() => {
+            setGroupBookSeed(null);
+            setSelectedTaskIds(new Set());
+          }}
+        />
+      )}
 
       {view === "kanban" && layout === "stacked" && (
         <div className="space-y-6">
@@ -1224,6 +1167,8 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               columns={columns}
               teamById={teamById}
               currentUserId={currentUserId}
+              selectedTaskIds={selectedTaskIds}
+              onToggleSelect={toggleTaskSelected}
               onDragStart={onDragStart}
               onDropOnColumn={() => onDrop(column.id, null)}
               onRename={(name) => renameColumn(column.id, name)}
@@ -1286,7 +1231,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               onAddTask={(title, assigneeIds) => addTask(column.id, title, assigneeIds)}
               onPatchTask={(task, patch, refUpdate) => updateTaskField(task, patch, refUpdate ?? {})}
               onDeleteTask={deleteTask}
-              onBookVisit={(task) => setBookingTask(task)}
+              onBookVisit={(task) => setGroupBookSeed([task.id])}
               onUnlinkVisit={unlinkVisit}
             />
           ))}
@@ -1371,11 +1316,13 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               currentUserId={currentUserId}
               stageColor={stageColorForIndex(index)}
               dependencyChip={dependencyChipsByGroupId.get(group.id) ?? null}
+              selectedTaskIds={selectedTaskIds}
+              onToggleSelect={toggleTaskSelected}
               onRename={(name) => renameGroup(group.id, name)}
               onDelete={() => deleteGroup(group.id, group.name)}
               onPatchTask={(task, patch, refUpdate) => updateTaskField(task, patch, refUpdate ?? {})}
               onDeleteTask={(task) => deleteTask(task)}
-              onBookVisit={(task) => setBookingTask(task)}
+              onBookVisit={(task) => setGroupBookSeed([task.id])}
               onUnlinkVisit={(taskId) => unlinkVisit(taskId)}
               onPatchPhaseDates={(patch) => group.phase_id && patchGroupPhaseDates(group.id, group.phase_id, patch)}
               onDragStartTask={onDragStart}
@@ -1410,9 +1357,11 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               team={team}
               groups={groups}
               allColumnNames={columns.map((c) => c.name)}
+              selectedTaskIds={selectedTaskIds}
+              onToggleSelect={toggleTaskSelected}
               onPatchTask={(task, patch, refUpdate) => updateTaskField(task, patch, refUpdate ?? {})}
               onDeleteTask={(task) => deleteTask(task)}
-              onBookVisit={(task) => setBookingTask(task)}
+              onBookVisit={(task) => setGroupBookSeed([task.id])}
               onUnlinkVisit={(taskId) => unlinkVisit(taskId)}
               onDragStartTask={onDragStart}
               onDropInGroup={(index) => onDropInGroup(null, index)}
@@ -1497,6 +1446,8 @@ function StackedColumnSection({
   columns,
   teamById,
   currentUserId,
+  selectedTaskIds,
+  onToggleSelect,
   onDragStart,
   onDropOnColumn,
   onRename,
@@ -1508,6 +1459,9 @@ function StackedColumnSection({
   columns: BoardColumnV3[];
   teamById: Map<string, AssigneeSummary>;
   currentUserId: string;
+  /** Booking selection v2 (r24) — board rows' own edge checkboxes, see ProjectBoard's selectedTaskIds doc comment. */
+  selectedTaskIds: Set<string>;
+  onToggleSelect: (taskId: string) => void;
   onDragStart: (taskId: string) => void;
   onDropOnColumn: () => void;
   onRename: (name: string) => void;
@@ -1584,6 +1538,7 @@ function StackedColumnSection({
         <table className="w-full text-left">
           <thead>
             <tr className="border-b border-[#e5e0d6] text-caption text-charcoal/40">
+              <th className="w-8 px-3 py-1.5 font-normal" />
               <th className="px-3 py-1.5 font-normal">Title</th>
               <th className="px-3 py-1.5 font-normal">Assignees</th>
               <th className="px-3 py-1.5 font-normal">Contact</th>
@@ -1607,6 +1562,17 @@ function StackedColumnSection({
                   onDragStart={() => onDragStart(task.id)}
                   className="cursor-move border-b border-[#e5e0d6] last:border-b-0 hover:bg-nearwhite"
                 >
+                  <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                    {/* Booking selection v2 (r24) — item 1: row-edge
+                        checkbox, board rows. Feeds the action bar /
+                        GroupBookPanel seed, never the row's own drag. */}
+                    <input
+                      type="checkbox"
+                      checked={selectedTaskIds.has(task.id)}
+                      onChange={() => onToggleSelect(task.id)}
+                      className="h-3.5 w-3.5"
+                    />
+                  </td>
                   <td className="px-3 py-2 text-body text-nearblack">
                     <span className="flex items-center gap-1.5">
                       {task.kind === "milestone" && <MilestoneDiamond />}
@@ -2404,6 +2370,8 @@ function GroupTable({
   currentUserId,
   stageColor,
   dependencyChip,
+  selectedTaskIds,
+  onToggleSelect,
   onRename,
   onDelete,
   onPatchTask,
@@ -2428,6 +2396,9 @@ function GroupTable({
   /** Board cockpit round — item 9 parity: threaded through to GroupRows' shared BoardTaskEditorBody. */
   team: AssigneeSummary[];
   groups: BoardGroupV3[];
+  /** Booking selection v2 (r24) — item 1: phase-card item rows' own edge checkboxes, threaded through to GroupRows. See ProjectBoard's selectedTaskIds doc comment. */
+  selectedTaskIds: Set<string>;
+  onToggleSelect: (taskId: string) => void;
   /** Board v3 — Monday parity round: every status column's name on this board, for the booking soft-mapping's /booked/i check (lib/board-constants.ts's boardHasBookedColumn/resolveStatusPillTint) — see GroupRows' status cell for where this is actually consumed. */
   allColumnNames: string[];
   /** Auto-assign-to-me default for the new composer below — same convention as StackedColumnSection's own currentUserId prop. */
@@ -2704,6 +2675,8 @@ function GroupTable({
             groups={groups}
             allColumnNames={allColumnNames}
             dependencyChip={dependencyChip}
+            selectedTaskIds={selectedTaskIds}
+            onToggleSelect={onToggleSelect}
             onPatchTask={onPatchTask}
             onDeleteTask={onDeleteTask}
             onBookVisit={onBookVisit}
@@ -2837,6 +2810,8 @@ function UngroupedTable({
   team,
   groups,
   allColumnNames,
+  selectedTaskIds,
+  onToggleSelect,
   onPatchTask,
   onDeleteTask,
   onBookVisit,
@@ -2857,6 +2832,9 @@ function UngroupedTable({
   groups: BoardGroupV3[];
   /** Board v3 — Monday parity round: see GroupTable's own prop of the same name. */
   allColumnNames: string[];
+  /** Booking selection v2 (r24) — see GroupTable's own prop of the same name. */
+  selectedTaskIds: Set<string>;
+  onToggleSelect: (taskId: string) => void;
   onPatchTask: (task: BoardTaskV3, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskV3>) => void;
   onDeleteTask: (task: BoardTaskV3) => void;
   /** Prefill fix: now passes the full task (was `taskId: string`) so BookVisitPanel can be preloaded with this card's own phase/trade/dates. */
@@ -2901,6 +2879,8 @@ function UngroupedTable({
         groups={groups}
         allColumnNames={allColumnNames}
         dependencyChip={null}
+        selectedTaskIds={selectedTaskIds}
+        onToggleSelect={onToggleSelect}
         onPatchTask={onPatchTask}
         onDeleteTask={onDeleteTask}
         onBookVisit={onBookVisit}
@@ -2966,6 +2946,8 @@ function GroupRows({
   groups,
   allColumnNames,
   dependencyChip,
+  selectedTaskIds,
+  onToggleSelect,
   onPatchTask,
   onDeleteTask,
   onBookVisit,
@@ -2988,6 +2970,9 @@ function GroupRows({
   allColumnNames: string[];
   /** Board v3 — Monday parity round: "after ◆ {prev milestone}" chip text to show on the FIRST non-milestone TOP-LEVEL row, or null. */
   dependencyChip: string | null;
+  /** Booking selection v2 (r24) — item 1: this row's own edge checkbox state/toggle — see ProjectBoard's selectedTaskIds doc comment. */
+  selectedTaskIds: Set<string>;
+  onToggleSelect: (taskId: string) => void;
   onPatchTask: (task: BoardTaskV3, patch: Record<string, unknown>, refUpdate?: Partial<BoardTaskV3>) => void;
   /** Board cockpit round — item 9 parity: "Remove card" action, matching kanban's BoardCard. */
   onDeleteTask: (task: BoardTaskV3) => void;
@@ -3188,7 +3173,7 @@ function GroupRows({
             `siblingIndex` alone). */}
         {showDropLineBefore && (
           <tr aria-hidden className="h-0">
-            <td colSpan={7} className="p-0">
+            <td colSpan={8} className="p-0">
               <div className="h-[2px] bg-sand" />
             </td>
           </tr>
@@ -3277,7 +3262,20 @@ function GroupRows({
           )}
           style={{ transform: gapTransform(listKey, siblingIndex) || undefined }}
         >
-          <td className="py-1 pl-3 pr-3 text-body text-nearblack">
+          <td className="py-1 pl-3 pr-1" onClick={(e) => e.stopPropagation()}>
+            {/* Booking selection v2 (r24) — item 1: row-edge checkbox,
+                phase-card item rows (both top-level and sub-item rows —
+                each is its own board_task, individually bookable).
+                Feeds the action bar / GroupBookPanel seed, never the
+                row's own expand-on-click or drag. */}
+            <input
+              type="checkbox"
+              checked={selectedTaskIds.has(task.id)}
+              onChange={() => onToggleSelect(task.id)}
+              className="h-3.5 w-3.5"
+            />
+          </td>
+          <td className="py-1 pl-1 pr-3 text-body text-nearblack">
             {/* Board v3.1 — display-first cells, item 3: nowrap +
                 min-w-0 (was flex-wrap) so a long title ellipsis-
                 truncates in this ~32px single-line row instead of
@@ -3493,7 +3491,7 @@ function GroupRows({
             for consistency with that file's own convention. */}
         {task.visit_id && reconfirmPrompts.has(task.visit_id) && (
           <tr className="border-b border-[#e5e0d6] last:border-b-0">
-            <td colSpan={7} className="px-3 pb-1.5">
+            <td colSpan={8} className="px-3 pb-1.5">
               <ReconfirmAffordance
                 onResend={() => onResendConfirmation(task.visit_id as string)}
                 onDismiss={() => onDismissReconfirm(task.visit_id as string)}
@@ -3503,7 +3501,7 @@ function GroupRows({
         )}
         {isExpanded && (
           <tr className="border-b border-[#e5e0d6] bg-nearwhite last:border-b-0">
-            <td colSpan={7} className="px-3 pb-3">
+            <td colSpan={8} className="px-3 pb-3">
               <BoardTaskEditorBody
                 task={task}
                 team={team}
@@ -3612,7 +3610,7 @@ function GroupRows({
             list) — see showDropLineAfter's own definition above. */}
         {showDropLineAfter && (
           <tr aria-hidden className="h-0">
-            <td colSpan={7} className="p-0">
+            <td colSpan={8} className="p-0">
               <div className="h-[2px] bg-sand" />
             </td>
           </tr>
@@ -3654,7 +3652,11 @@ function GroupRows({
             (company names, "15 Jul · Unconfirmed", dependency chips)
             without starving ITEM again. */}
         <tr className="border-b border-[#e5e0d6] text-caption text-charcoal/40">
-          <th className="w-[30%] py-1.5 pl-3 pr-3 font-normal">ITEM</th>
+          {/* Booking selection v2 (r24) — item 1: row-edge checkbox
+              header column — no label, matches the row cell's own
+              plain checkbox (no "select all" affordance this round). */}
+          <th className="w-[4%] py-1.5 pl-3 pr-1 font-normal" />
+          <th className="w-[26%] py-1.5 pl-1 pr-3 font-normal">ITEM</th>
           <th className="w-[7%] py-1.5 pr-3 font-normal">WHO</th>
           <th className="w-[10%] py-1.5 pr-3 font-normal">STATUS</th>
           <th className="w-[12%] py-1.5 pr-3 font-normal">CONTACT</th>

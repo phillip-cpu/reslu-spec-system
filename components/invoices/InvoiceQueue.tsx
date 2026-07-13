@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import type { CostSectionWithLines, Invoice, InvoiceMatchType, InvoiceStatus, Item } from "@/types";
+import type { CostSectionWithLines, InvoiceMatchType, InvoiceStatus, Item } from "@/types";
+import type { InvoiceWithIntake } from "@/types/round-supplier-invoice-intake";
 import { formatMoney } from "@/components/estimate/EstimateWorkspace";
 
 const STATUS_TABS: { value: InvoiceStatus | "all"; label: string }[] = [
@@ -37,7 +38,7 @@ interface Props {
  * status the server actually rejected (e.g. approving twice).
  */
 export function InvoiceQueue({ projectId }: Props) {
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [invoices, setInvoices] = useState<InvoiceWithIntake[]>([]);
   const [statusFilter, setStatusFilter] = useState<InvoiceStatus | "all">("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -63,16 +64,46 @@ export function InvoiceQueue({ projectId }: Props) {
     load();
   }, [load]);
 
-  async function approve(id: string) {
+  /**
+   * Booking selection v2 + Aria supplier invoices (r24), item 7:
+   * `applyToLibraryCost` is the per-line "update the linked library
+   * product's cost record" toggle (MatchedItemLibraryToggle below) —
+   * omitted (undefined) lets the server apply its own default (ON when
+   * the matched item carries a library_item_id, per POST
+   * /api/invoices/[id]/approve's own doc comment); passed explicitly
+   * once the admin has touched the checkbox in the expanded row.
+   */
+  async function approve(id: string, applyToLibraryCost?: boolean) {
     setError(null);
     try {
-      const res = await fetch(`/api/invoices/${id}/approve`, { method: "POST" });
+      const res = await fetch(`/api/invoices/${id}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(applyToLibraryCost === undefined ? {} : { apply_to_library_cost: applyToLibraryCost }),
+      });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Could not approve invoice.");
       if (body.warning) setError(body.warning);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not approve invoice.");
+    }
+  }
+
+  /** r24 — "review extracted fields + matches (editable)": PATCHes the canonical fields via the existing PATCH /api/invoices/[id] route (unchanged this round, already accepts these). */
+  async function saveFields(id: string, patch: Record<string, unknown>) {
+    setError(null);
+    try {
+      const res = await fetch(`/api/invoices/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Could not save changes.");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save changes.");
     }
   }
 
@@ -163,9 +194,10 @@ export function InvoiceQueue({ projectId }: Props) {
                   projectId={projectId}
                   expanded={expandedId === inv.id}
                   onToggle={() => setExpandedId((cur) => (cur === inv.id ? null : inv.id))}
-                  onApprove={() => approve(inv.id)}
+                  onApprove={(applyToLibraryCost) => approve(inv.id, applyToLibraryCost)}
                   onReject={() => reject(inv.id)}
                   onSetMatch={(match) => setMatch(inv.id, match)}
+                  onSaveFields={(patch) => saveFields(inv.id, patch)}
                 />
               ))}
             </tbody>
@@ -184,15 +216,48 @@ function InvoiceRow({
   onApprove,
   onReject,
   onSetMatch,
+  onSaveFields,
 }: {
-  invoice: Invoice;
+  invoice: InvoiceWithIntake;
   projectId: string;
   expanded: boolean;
   onToggle: () => void;
-  onApprove: () => void;
+  onApprove: (applyToLibraryCost?: boolean) => void;
   onReject: () => void;
   onSetMatch: (match: { proposed_match_type: InvoiceMatchType | null; proposed_match_id: string | null }) => void;
+  onSaveFields: (patch: Record<string, unknown>) => void;
 }) {
+  const editable = invoice.status !== "approved" && invoice.status !== "rejected";
+  // r24 item 7's per-line toggle — undefined means "let the server pick
+  // its own default" (see POST /api/invoices/[id]/approve's own doc
+  // comment); starts checked so the UI's own default reads as ON,
+  // matching the server's stated default.
+  const [applyToLibraryCost, setApplyToLibraryCost] = useState(true);
+  const [editingFields, setEditingFields] = useState(false);
+  const [fieldDrafts, setFieldDrafts] = useState({
+    supplier: invoice.supplier,
+    invoice_number: invoice.invoice_number,
+    invoice_date: invoice.invoice_date ?? "",
+    amount_ex_gst: String(invoice.amount_ex_gst),
+  });
+  // r24 — "Aria · needs approval": source='aria' AND not yet in a
+  // terminal state (migration 052's own comment on invoices.source is
+  // the single source of truth for this derivation — kept in sync with
+  // it here rather than adding a server-computed flag for one pill).
+  const needsAriaApproval = invoice.source === "aria" && editable;
+
+  function saveFieldEdits() {
+    const amountNum = Number(fieldDrafts.amount_ex_gst);
+    if (!fieldDrafts.supplier.trim() || !fieldDrafts.invoice_number.trim() || !Number.isFinite(amountNum)) return;
+    onSaveFields({
+      supplier: fieldDrafts.supplier.trim(),
+      invoice_number: fieldDrafts.invoice_number.trim(),
+      invoice_date: fieldDrafts.invoice_date || null,
+      amount_ex_gst: amountNum,
+    });
+    setEditingFields(false);
+  }
+
   return (
     <>
       <tr className="border-b border-[#e5e0d6] align-top">
@@ -213,9 +278,24 @@ function InvoiceRow({
         </td>
         <td className="px-2 py-1.5 text-right text-body">{formatMoney(invoice.amount_ex_gst)}</td>
         <td className="px-2 py-1.5">
-          <span className={clsx("label-caps border px-1.5 py-0.5", STATUS_STYLES[invoice.status])}>
-            {invoice.status}
-          </span>
+          <div className="flex flex-wrap items-center gap-1">
+            <span className={clsx("label-caps border px-1.5 py-0.5", STATUS_STYLES[invoice.status])}>
+              {invoice.status}
+            </span>
+            {/* r24 item 6: "Aria · needs approval" sand/amber pill — same
+                amber tone as the board's other trade-proposed-a-change
+                badge (components/board/ProjectBoard.tsx's "Date
+                suggested" chip), for a consistent "something needs your
+                eyes" visual language across the app. */}
+            {needsAriaApproval && (
+              <span
+                title="Drafted by Aria from an incoming supplier email — review the extracted fields and match below before approving."
+                className="label-caps border border-amber-700/40 bg-amber-50 px-1.5 py-0.5 !text-amber-800"
+              >
+                Aria · needs approval
+              </span>
+            )}
+          </div>
         </td>
         <td className="px-2 py-1.5 text-caption text-charcoal/60">
           {invoice.proposed_match_type
@@ -224,16 +304,16 @@ function InvoiceRow({
         </td>
         <td className="px-2 py-1.5">
           <div className="flex gap-2">
-            {invoice.status !== "approved" && invoice.status !== "rejected" && (
+            {editable && (
               <>
                 <button
                   type="button"
                   disabled={!invoice.proposed_match_type}
                   title={!invoice.proposed_match_type ? "Set a match before approving" : undefined}
-                  onClick={onApprove}
+                  onClick={() => onApprove(applyToLibraryCost)}
                   className="border border-nearblack px-2 py-1 text-caption text-nearblack transition-colors hover:bg-nearblack hover:text-white disabled:opacity-40"
                 >
-                  Approve
+                  Approve & apply
                 </button>
                 <button
                   type="button"
@@ -258,6 +338,143 @@ function InvoiceRow({
                   {invoice.confidence_note}
                 </p>
               )}
+
+              {/* r24 item 5/6: Aria's raw extraction, shown read-only as
+                  context — the canonical fields (supplier/invoice_number/
+                  invoice_date/amount_ex_gst, editable just below) are
+                  what Approve actually applies; this is "what she read
+                  off the PDF", useful for spotting an extraction miss. */}
+              {invoice.source === "aria" && invoice.extracted && (
+                <div className="space-y-1 border border-amber-700/30 bg-amber-50/60 px-3 py-2">
+                  <p className="label-caps !text-amber-800">Aria's extraction</p>
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-caption text-charcoal/70 sm:grid-cols-4">
+                    {invoice.extracted.abn && (
+                      <div>
+                        <dt className="text-charcoal/40">ABN</dt>
+                        <dd>{invoice.extracted.abn}</dd>
+                      </div>
+                    )}
+                    {invoice.extracted.total_inc_gst !== undefined && (
+                      <div>
+                        <dt className="text-charcoal/40">Total inc GST</dt>
+                        <dd>{formatMoney(invoice.extracted.total_inc_gst)}</dd>
+                      </div>
+                    )}
+                    {invoice.extracted.line_hints && (
+                      <div className="col-span-2 sm:col-span-4">
+                        <dt className="text-charcoal/40">Line hints</dt>
+                        <dd>{invoice.extracted.line_hints}</dd>
+                      </div>
+                    )}
+                    {invoice.extracted.job_hints && (
+                      <div className="col-span-2 sm:col-span-4">
+                        <dt className="text-charcoal/40">Job hints</dt>
+                        <dd>{invoice.extracted.job_hints}</dd>
+                      </div>
+                    )}
+                  </dl>
+                </div>
+              )}
+
+              {/* r24 item 6: "review extracted fields ... editable". */}
+              <div className="space-y-2 border border-[#dcd6cc] bg-nearwhite p-3">
+                <div className="flex items-center justify-between">
+                  <p className="label-caps">Invoice fields</p>
+                  {editable && !editingFields && (
+                    <button
+                      type="button"
+                      onClick={() => setEditingFields(true)}
+                      className="text-caption text-charcoal/50 underline hover:text-nearblack"
+                    >
+                      Edit
+                    </button>
+                  )}
+                </div>
+                {editingFields ? (
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                      <label className="block">
+                        <span className="label-caps mb-1 block !text-charcoal/50">Supplier</span>
+                        <input
+                          value={fieldDrafts.supplier}
+                          onChange={(e) => setFieldDrafts((d) => ({ ...d, supplier: e.target.value }))}
+                          className="w-full border border-[#c9c2b4] bg-cream px-2 py-1 text-body focus:border-nearblack focus:outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="label-caps mb-1 block !text-charcoal/50">Invoice #</span>
+                        <input
+                          value={fieldDrafts.invoice_number}
+                          onChange={(e) => setFieldDrafts((d) => ({ ...d, invoice_number: e.target.value }))}
+                          className="w-full border border-[#c9c2b4] bg-cream px-2 py-1 text-body focus:border-nearblack focus:outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="label-caps mb-1 block !text-charcoal/50">Date</span>
+                        <input
+                          type="date"
+                          value={fieldDrafts.invoice_date}
+                          onChange={(e) => setFieldDrafts((d) => ({ ...d, invoice_date: e.target.value }))}
+                          className="w-full border border-[#c9c2b4] bg-cream px-2 py-1 text-body focus:border-nearblack focus:outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="label-caps mb-1 block !text-charcoal/50">Amount ex GST</span>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={fieldDrafts.amount_ex_gst}
+                          onChange={(e) => setFieldDrafts((d) => ({ ...d, amount_ex_gst: e.target.value }))}
+                          className="w-full border border-[#c9c2b4] bg-cream px-2 py-1 text-body focus:border-nearblack focus:outline-none"
+                        />
+                      </label>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={saveFieldEdits}
+                        className="border border-nearblack px-3 py-1 text-caption text-nearblack hover:bg-nearblack hover:text-white"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingFields(false)}
+                        className="text-caption text-charcoal/50 hover:text-nearblack"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-caption text-charcoal/60">
+                    {invoice.supplier} · #{invoice.invoice_number}
+                    {invoice.invoice_date ? ` · ${new Date(invoice.invoice_date).toLocaleDateString("en-AU")}` : ""} ·{" "}
+                    {formatMoney(invoice.amount_ex_gst)} ex GST
+                  </p>
+                )}
+              </div>
+
+              {editable && invoice.proposed_match_type && (
+                <label className="flex items-start gap-2 text-caption text-charcoal/70">
+                  <input
+                    type="checkbox"
+                    checked={applyToLibraryCost}
+                    onChange={(e) => setApplyToLibraryCost(e.target.checked)}
+                    className="mt-0.5 h-3.5 w-3.5"
+                  />
+                  <span>
+                    On approve, also update the matched item&apos;s linked library product&apos;s cost (so future
+                    quotes use this real price) — only applies when the matched item is linked to a library product;
+                    otherwise this is a no-op.
+                  </span>
+                </label>
+              )}
+
+              {invoice.library_cost_applied && (
+                <p className="text-caption text-charcoal/50">Library product cost was updated from this invoice.</p>
+              )}
+
               <MatchPicker
                 projectId={projectId}
                 currentMatchType={invoice.proposed_match_type}

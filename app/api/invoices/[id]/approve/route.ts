@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
-import type { Invoice } from "@/types";
+import type { ApproveInvoiceInput, ApproveInvoiceResponse, InvoiceWithIntake } from "@/types/round-supplier-invoice-intake";
 
 export const runtime = "nodejs";
 
@@ -10,9 +10,14 @@ export const runtime = "nodejs";
  * BUILD-SPEC.md "Invoice pipeline — AI-updated actuals": "admin
  * one-click approves → actual_paid updates on matched line, variance
  * recalculates, PDF stays attached as evidence." Rules: "AI proposes,
- * admin approves — no silent money writes v1."
+ * admin approves — no silent money writes v1." Body is OPTIONAL
+ * (ApproveInvoiceInput, r24 addition) — every call site pre-r24 sends
+ * none, which is still valid (an empty/missing JSON body is treated
+ * the same as `{}`).
  *
- * Approve sets status='approved', approved_by/approved_at, THEN:
+ * Approve sets status='approved', approved_by/approved_at, THEN, per
+ * the invoice's proposed_match_type — resolving `affectedItem` (the
+ * items row whose cost is being confirmed, used for BOTH halves below):
  *
  *  - cost_line match: ADDS amount_ex_gst to the line's existing
  *    actual_paid_ex_gst (COALESCE(existing, 0) + amount_ex_gst) rather
@@ -22,37 +27,68 @@ export const runtime = "nodejs";
  *    lineVariance() in lib/estimate.ts recomputes on next read from
  *    this updated actual_paid_ex_gst, so "variance recalculates" falls
  *    out of the existing rollup math for free — no separate variance
- *    column to maintain.
+ *    column to maintain. `affectedItem` is the cost line's own item_id,
+ *    when set (a cost line isn't required to link to a spec item).
  *
- *  - item match: deliberately does NOT write price_trade (or anything
- *    else) on the item. Only the linkage (this invoice's
- *    proposed_match_type/id, already set by the propose step) is
- *    preserved as the audit trail. Reasoning: price_trade represents
- *    the NEGOTIATED unit price the item was quoted at — it is captured
- *    once (typically from a quote, via the scraper/library trade-price
- *    flow) and is not the same figure as "amount this specific invoice
- *    paid" (an invoice could cover partial quantity, freight, multiple
- *    items, etc., none of which map 1:1 onto a single item's per-unit
- *    price_trade). Item-level actuals are intentionally routed through
- *    cost_lines (which DO have an actual_paid_ex_gst designed exactly
- *    for this), not by mutating the spec register's pricing fields as
- *    a side effect of invoice approval. An admin who wants an item's
- *    price_trade to reflect what was actually paid still does that
- *    explicitly via PATCH /api/items/[id], same as any other pricing
- *    edit — approval never silently rewrites it.
+ *  - item match (BOOKING SELECTION V2 + ARIA SUPPLIER INVOICES, r24,
+ *    item 7 — REVERSES the pre-r24 "deliberately does NOT write
+ *    anything on the item" behaviour, which routed ALL item-level
+ *    actuals through cost_lines only): the matched item's OWN
+ *    confirmed-cost field is still `cost_lines.actual_paid_ex_gst`
+ *    (items themselves carry no actual-cost column of their own — see
+ *    types/index.ts's Item interface, unchanged/protected this round —
+ *    cost_lines.actual_paid_ex_gst IS "the item's real actual/confirmed
+ *    cost field", exactly as the pre-r24 version of this comment
+ *    described it, just now ALSO reachable when the invoice was matched
+ *    directly to the item rather than to a cost line). Looked up via
+ *    cost_lines.item_id = the matched item's id:
+ *      - exactly one linked cost line -> same additive update as the
+ *        cost_line-match branch above.
+ *      - zero linked cost lines -> 207 warning, no write (nothing to
+ *        credit against).
+ *      - more than one linked cost line -> 207 warning, no write
+ *        (ambiguous which line the payment applies to — safer to ask
+ *        an admin to apply it manually via PATCH /api/estimate/lines/[id]
+ *        than to guess and silently misattribute a real payment).
+ *
+ *  - EITHER match type, THEN (r24 item 7's second half): if
+ *    `affectedItem.library_item_id` is set AND `apply_to_library_cost`
+ *    (body, default true when library_item_id is set, false otherwise)
+ *    is true, ALSO writes `library_items.price_trade` (unit cost =
+ *    amount_ex_gst / item.quantity, rounded to cents — quantity<=0
+ *    treated as 1) + `trade_price_received_at` (now) +
+ *    `trade_price_source` (`Invoice {number} · {supplier}`) — the SAME
+ *    three fields PATCH /api/library/[id] already writes for a manual
+ *    trade-price entry (see that route's own FINANCIAL_EDITABLE set),
+ *    so "future quotes use real numbers" falls out of the library's
+ *    existing price_trade-is-the-quoted-figure convention for free.
+ *    `invoices.library_cost_applied` (migration 052) is set true when
+ *    this write happens — documented exactly in docs/API.md.
+ *
+ * Admin-only, server-side gated (whole-route 403 below) — the ONLY
+ * place any of this ever runs from is a human's explicit Approve click
+ * in the queue UI (or an equivalent authenticated admin API call);
+ * nothing in the Aria pipeline (MCP propose_supplier_invoice, the email
+ * pipeline that feeds it) can reach this route on its own.
+ *
+ * IDEMPOTENT: re-running approve on an already-approved invoice 400s
+ * immediately, before any of the above runs — see the status check
+ * below — so a retried/duplicate approve click can never double-credit
+ * a cost line or double-write a library price.
  *
  * "Transaction-ish": Supabase JS has no multi-statement transaction
  * API available here, so this does the invoice update first (the
- * authoritative "this invoice is approved" fact), then the cost_line
- * update. If the second write fails, the invoice is already approved
- * but the cost_line wasn't credited — surfaced as a 500 with a message
- * telling the admin to retry manually (re-running approve on an
- * already-approved invoice is rejected below, so a clean retry route
- * doesn't exist yet; this is flagged as a known follow-up rather than
- * silently swallowed).
+ * authoritative "this invoice is approved" fact), then the cost_line/
+ * library_items updates. If a later write fails, the invoice is already
+ * approved but that write wasn't applied — surfaced as a 207 (partial
+ * success) with a `warning` telling the admin what to redo manually
+ * (re-running approve on an already-approved invoice is rejected, so a
+ * clean retry route doesn't exist yet; flagged as a known follow-up
+ * rather than silently swallowed, same as the pre-r24 version of this
+ * route already documented for the cost_line-update failure case).
  */
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
@@ -67,6 +103,19 @@ export async function POST(
       { error: "Only admins can approve invoices" },
       { status: 403 }
     );
+  }
+
+  // Body is optional — every pre-r24 caller sends none. An unparsable
+  // (but present) body is a real client error; a genuinely empty body
+  // is treated as `{}` (no override of the default toggle behaviour).
+  let input: ApproveInvoiceInput = {};
+  const rawBody = await request.text();
+  if (rawBody.trim()) {
+    try {
+      input = JSON.parse(rawBody);
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
   }
 
   const { data: existing, error: fetchError } = await supabase
@@ -105,46 +154,119 @@ export async function POST(
     return NextResponse.json({ error: approveError.message }, { status: 500 });
   }
 
-  const typedInvoice = invoice as Invoice;
+  const typedInvoice = invoice as InvoiceWithIntake;
+  const warnings: string[] = [];
+
+  // Resolve the affected item (for the library-cost sync below) while
+  // applying the cost_line/item match's own actual_paid_ex_gst credit.
+  type AffectedItem = { id: string; quantity: number; library_item_id: string | null };
+  let affectedItem: AffectedItem | null = null;
 
   if (typedInvoice.proposed_match_type === "cost_line") {
     const { data: line, error: lineFetchError } = await supabase
       .from("cost_lines")
-      .select("id, actual_paid_ex_gst")
+      .select("id, actual_paid_ex_gst, item_id")
       .eq("id", typedInvoice.proposed_match_id)
       .single();
 
     if (lineFetchError || !line) {
-      return NextResponse.json(
-        {
-          invoice: typedInvoice,
-          warning:
-            "Invoice approved, but its matched cost line could not be found — actuals were not updated.",
-        },
-        { status: 207 }
-      );
+      warnings.push("its matched cost line could not be found — actuals were not updated");
+    } else {
+      const nextActual = roundToCents((line.actual_paid_ex_gst ?? 0) + typedInvoice.amount_ex_gst);
+      const { error: lineUpdateError } = await supabase
+        .from("cost_lines")
+        .update({ actual_paid_ex_gst: nextActual })
+        .eq("id", line.id);
+      if (lineUpdateError) {
+        warnings.push(`updating the cost line failed: ${lineUpdateError.message}`);
+      }
+      if (line.item_id) {
+        const { data: item } = await supabase
+          .from("items")
+          .select("id, quantity, library_item_id")
+          .eq("id", line.item_id)
+          .maybeSingle();
+        if (item) affectedItem = item as AffectedItem;
+      }
     }
+  } else if (typedInvoice.proposed_match_type === "item") {
+    // r24 item 7 — see this route's own header comment for the full
+    // "why cost_lines.actual_paid_ex_gst, not a new items column" story.
+    const { data: item } = await supabase
+      .from("items")
+      .select("id, quantity, library_item_id")
+      .eq("id", typedInvoice.proposed_match_id)
+      .maybeSingle();
+    if (item) affectedItem = item as AffectedItem;
 
-    const nextActual = roundToCents((line.actual_paid_ex_gst ?? 0) + typedInvoice.amount_ex_gst);
-
-    const { error: lineUpdateError } = await supabase
+    const { data: linkedLines, error: linesFetchError } = await supabase
       .from("cost_lines")
-      .update({ actual_paid_ex_gst: nextActual })
-      .eq("id", line.id);
+      .select("id, actual_paid_ex_gst")
+      .eq("item_id", typedInvoice.proposed_match_id)
+      .is("deleted_at", null);
 
-    if (lineUpdateError) {
-      return NextResponse.json(
-        {
-          invoice: typedInvoice,
-          warning: `Invoice approved, but updating the cost line failed: ${lineUpdateError.message}`,
-        },
-        { status: 207 }
+    if (linesFetchError) {
+      warnings.push(`could not look up cost lines for this item: ${linesFetchError.message}`);
+    } else if (!linkedLines || linkedLines.length === 0) {
+      warnings.push("this item has no linked cost line — actuals were not updated (link one in the Estimate first)");
+    } else if (linkedLines.length > 1) {
+      warnings.push(
+        `this item is linked to ${linkedLines.length} cost lines — actuals were not updated automatically (ambiguous which line the payment applies to; apply it manually in the Estimate)`
       );
+    } else {
+      const line = linkedLines[0];
+      const nextActual = roundToCents((line.actual_paid_ex_gst ?? 0) + typedInvoice.amount_ex_gst);
+      const { error: lineUpdateError } = await supabase
+        .from("cost_lines")
+        .update({ actual_paid_ex_gst: nextActual })
+        .eq("id", line.id);
+      if (lineUpdateError) {
+        warnings.push(`updating the cost line failed: ${lineUpdateError.message}`);
+      }
     }
   }
-  // item match: no automatic write — see the file-level comment above.
 
-  return NextResponse.json({ invoice: typedInvoice });
+  // r24 item 7, second half — per-line "update the linked library
+  // product's cost record" toggle. Default: ON when the affected item
+  // carries a library_item_id, OFF otherwise (nothing to update).
+  let libraryCostApplied = false;
+  if (affectedItem?.library_item_id) {
+    const applyToLibraryCost = input.apply_to_library_cost ?? true;
+    if (applyToLibraryCost) {
+      const qty = affectedItem.quantity > 0 ? affectedItem.quantity : 1;
+      const unitCost = roundToCents(typedInvoice.amount_ex_gst / qty);
+      const { error: libraryUpdateError } = await supabase
+        .from("library_items")
+        .update({
+          price_trade: unitCost,
+          // library_items.trade_price_received_at is a `date` column
+          // (004_library_scraper.sql) — same .slice(0, 10) convention
+          // PATCH /api/library/[id] already uses when it auto-stamps
+          // this column on a price_trade change, not a full timestamp.
+          trade_price_received_at: new Date().toISOString().slice(0, 10),
+          trade_price_source: `Invoice ${typedInvoice.invoice_number} · ${typedInvoice.supplier}`,
+        })
+        .eq("id", affectedItem.library_item_id);
+      if (libraryUpdateError) {
+        warnings.push(`updating the library product's cost failed: ${libraryUpdateError.message}`);
+      } else {
+        libraryCostApplied = true;
+      }
+    }
+  }
+
+  if (libraryCostApplied) {
+    await supabase.from("invoices").update({ library_cost_applied: true }).eq("id", id);
+    typedInvoice.library_cost_applied = true;
+  }
+
+  const payload: ApproveInvoiceResponse = { invoice: typedInvoice, library_cost_applied: libraryCostApplied };
+  if (warnings.length > 0) {
+    payload.warning = `Invoice approved, but ${warnings.join("; ")}.`;
+    return NextResponse.json(payload, { status: 207 });
+  }
+
+  return NextResponse.json(payload);
 }
 
 function roundToCents(value: number): number {

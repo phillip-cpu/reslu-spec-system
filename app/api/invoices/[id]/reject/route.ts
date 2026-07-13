@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
-import type { Invoice } from "@/types";
+import type { InvoiceWithIntake } from "@/types/round-supplier-invoice-intake";
 
 export const runtime = "nodejs";
 
@@ -62,5 +62,5 @@ export async function POST(
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ invoice: invoice as Invoice });
+  return NextResponse.json({ invoice: invoice as InvoiceWithIntake });
 }

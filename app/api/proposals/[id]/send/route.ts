@@ -35,6 +35,25 @@ export const runtime = "nodejs";
  * reuses that module's merge()/sendViaResend()/window-gate exports
  * unmodified.
  */
+/**
+ * Plain-text send date for the r25 packet card ("11 July 2026") —
+ * BUILD-SPEC.md §"Proposal delivery skin (r25)" item 1: "DATE AS PLAIN
+ * TEXT ... Phillip's explicit correction: date is NOT handwritten".
+ * Reuses lib/visit-emails.ts merge()'s existing {{visit_date}} slot
+ * (this template has no visit of its own to describe) rather than
+ * adding a new key to that file's own values map — lib/visit-emails.ts
+ * stays untouched, same "reuse the generic {{company}} slot for the
+ * greeting name" precedent this route already relies on below.
+ */
+function formatSentDateAdelaide(d: Date): string {
+  return new Intl.DateTimeFormat("en-AU", {
+    timeZone: "Australia/Adelaide",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(d);
+}
+
 export async function POST(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const supabase = await createClient();
@@ -110,6 +129,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
       project_address: project?.address ?? lead?.location ?? "",
       request_link: proposalLink,
       attachments_note: "",
+      visit_date: formatSentDateAdelaide(now),
     },
     now,
   });

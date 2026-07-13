@@ -40,6 +40,13 @@ const NAV_ITEMS = [
   // (also admin-gated server-side — GET /api/badges returns 0 for
   // non-admins regardless, this is belt-and-braces with the nav filter).
   { label: "Leads", href: "/leads", adminOnly: true, badgeKey: "leads_followups" as const },
+  // Health + web push round (r26) — BUILD-SPEC.md item 4: "Health page
+  // (sidebar entry 'Health')". Admin-only, same gating shape as Leads
+  // right above (this app's other top-level admin-only nav entry) —
+  // see app/(dashboard)/health/page.tsx's own header comment for why.
+  // No badge — health incidents surface via push notifications, not a
+  // sidebar count.
+  { label: "Health", href: "/health", adminOnly: true },
   { label: "Settings", href: "/settings" },
   // Phillip 8 Jul: external link to the RESLU journal/blog CMS (Sanity
   // Studio). Renders as a plain <a target="_blank"> below — external

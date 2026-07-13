@@ -35,3 +35,463 @@ body {
   text-transform: uppercase;
   color: #a08c72;
 }
+
+/* ============================================================
+   Proposal delivery skin (r25) — components/proposal/ProposalReveal.tsx
+   Techniques copied (verbatim-adapted) from reslu-site's own
+   BeginForm.astro — write() pen + .ink/.caret, the .sheet cardstock
+   recipe, the videoFold() clip-path/feather-gradient technique, the
+   emboss mask recipe, and prefers-reduced-motion handling. See
+   docs/RESLU-Paper-Animation-Brief.md for the source technique and
+   docs/RESLU-Card-Design-Spec.md for the palette/type tokens.
+
+   Kept in this plain global stylesheet (NOT CSS modules / styled-jsx)
+   because ProposalReveal.tsx positions the <video>/feather overlay with
+   values computed at runtime and applied as inline styles, but the
+   STRUCTURAL classes below are shared with elements that, exactly like
+   BeginForm's own JS-created caret/flap nodes, must resolve their
+   selectors outside any per-component scoping attribute — see the
+   Animation Brief's "Hard-won gotchas" #1 ("Astro scoped styles do NOT
+   apply to JS-created elements"), the same class of bug under any
+   scoped-CSS tool, React's included.
+
+   BeginForm folds a WRITTEN SHEET DOWN into a resting packet on submit.
+   This reveal runs the mirror image: begin-unfold.mp4 (begin-fold.mp4,
+   reversed) unfolds a RESTING PACKET UP into the flat sheet on page
+   load — first video frame = packet, last video frame = sheet. See
+   ProposalReveal.tsx's own header comment for the geometry maths this
+   reversal implies.
+   ============================================================ */
+
+.pr-ink {
+  font-family: "Caveat", "Segoe Script", "Bradley Hand", cursive;
+  font-weight: 600;
+  color: #274690;
+}
+.pr-ink .pr-caret {
+  display: inline-block;
+  width: 2px;
+  height: 0.85em;
+  background: #274690;
+  vertical-align: -2px;
+  margin-left: 1px;
+  animation: pr-blink 0.7s steps(1) infinite;
+}
+@keyframes pr-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes pr-settle {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* the small, always-server-rendered strip — the skin's "quiet" state:
+   permanent replay control, and (client-decided, post-mount) the
+   static packet summary a returning/reduced-motion/no-video visitor
+   gets instead of the filmed reveal. */
+.pr-strip {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 2px 0 0;
+}
+.pr-strip-static {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  animation: pr-settle 0.4s ease;
+}
+.pr-strip .pr-ink {
+  font-size: 20px;
+  transform: rotate(-0.5deg);
+  transform-origin: left bottom;
+}
+.pr-strip-date {
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-weight: 300;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: #313131;
+}
+.pr-replay {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-weight: 300;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #a08c72;
+  border-bottom: 1px solid transparent;
+  transition: color 0.3s, border-color 0.3s;
+}
+.pr-replay:hover {
+  color: #313131;
+  border-bottom-color: #313131;
+}
+
+/* the fullscreen overlay stage — beats 1/2/3. `align-items: center`
+   still governs beat 1's packet (unchanged); on the filmed path,
+   ProposalReveal.tsx's applySheetGeometry() pulls the packet out of
+   this centring via an inline `align-self: flex-start` + `margin-top`,
+   reproducing the approved preview's own "sit slightly high" layout()
+   (BUILD-SPEC r25.2 item 1) without disturbing beat 1's centred packet
+   or the CSS-fallback path (neither ever sets that inline style). */
+.pr-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ede8de;
+  opacity: 1;
+  /* BUILD-SPEC r25.2 item 4 — "overlay/video fade ~0.6s", matching the
+     approved preview's own `.vwrap{transition:opacity .6s ease}` (was
+     0.55s pre-r25.2). */
+  transition: opacity 0.6s ease;
+}
+.pr-overlay.pr-out {
+  /* background snaps to transparent (invisible switch, body is the same bone)
+     so the document text fades in on a CLEAR background while only the
+     film/packet dissolves above it (Phillip 2026-07-12). */
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* the packet — cardstock, close cousin of BeginForm's own .sheet.packet.
+   r25.2 seam fix: this is now the CSS-fallback (cssfold) path's OWN
+   "closed packet" mockup, full stop — ProposalReveal.tsx only ever
+   renders it while that path is live (gated on `!videoOn`), and never
+   applies runtime geometry to it any more (that's `.pr-vwrap` below,
+   the filmed path's own separate wrapper). The width/aspect-ratio here
+   is this element's only sizing, permanently. */
+.pr-packet {
+  position: relative;
+  width: min(78vw, 300px);
+  aspect-ratio: 467 / 315; /* FV packet fraction, video-native px (1280x720) */
+  background: #faf6ec;
+  border: 1px solid #e6dfcf;
+  border-radius: 1px;
+  opacity: 0;
+  animation: pr-settle 0.5s ease forwards;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-shadow: 0 2px 3px rgba(60, 50, 30, 0.12), 0 20px 50px rgba(60, 50, 30, 0.22),
+    inset 0 -14px 18px -14px rgba(60, 50, 30, 0.35);
+}
+.pr-packet::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='p'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.42 0 0 0 0 0.38 0 0 0 0 0.30 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23p)'/%3E%3C/svg%3E");
+}
+.pr-packet > * {
+  position: relative;
+}
+/* r25.2 seam fix: `.pr-packet` (and this transition) is cssfold-only now
+   — while the flap sweeps open, the packet's own static chrome steps
+   back so the flap/sheet read as the only thing moving. No filmed-path
+   equivalent needed (the filmed path never renders `.pr-packet` at all). */
+.pr-packet.pr-folding {
+  transition: opacity 0.4s ease;
+}
+/* the cssfold packet's front face (emboss + label + pen name + date),
+   grouped in ProposalReveal.tsx as .pr-packet-front. r25.2 seam fix:
+   this element (and this whole file's `.pr-packet*` rule block) is now
+   the cssfold fallback's OWN visual only — the filmed path has its own,
+   separate `.pr-film-overlay` below, so there's no video sharing this
+   stacking context to out-z-index any more. Its opacity is entirely
+   CSS-driven (the `.pr-cssfold-active` latch below, added by
+   playCssFold()), never touched from JS on this element. */
+.pr-packet-front {
+  position: relative;
+  z-index: 5; /* above .pr-csssheet (kept from pre-seam-fix, harmless —
+    no video shares this stacking context any more, but .pr-cssflap is
+    also z-index:5 and must still win DOM-order ties over this element,
+    unchanged cssfold behaviour). */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.pr-packet.pr-cssfold-active .pr-packet-front {
+  opacity: 0 !important;
+  transition: opacity 0.35s ease;
+}
+
+.pr-label {
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-weight: 400;
+  font-size: 10px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #a08c72;
+}
+.pr-name {
+  font-size: 30px;
+  transform: rotate(-0.5deg);
+  transform-origin: left bottom;
+  min-height: 1.3em;
+}
+.pr-cap {
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-weight: 300;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  color: #313131;
+  opacity: 0;
+  animation: pr-settle 0.4s ease forwards;
+  animation-delay: 0.1s;
+}
+
+.pr-emboss {
+  position: absolute;
+  top: 14%;
+  left: 50%;
+  width: min(42%, 130px);
+  aspect-ratio: 640 / 261;
+  transform: translateX(-50%);
+  opacity: 0;
+  transition: opacity 0.55s ease;
+  -webkit-mask: url("/reslu-logo.png") center/contain no-repeat;
+  mask: url("/reslu-logo.png") center/contain no-repeat;
+  background: #e2dac5;
+  filter: drop-shadow(0 -2px 1px rgba(255, 255, 255, 0.9)) drop-shadow(0 2px 2px rgba(60, 50, 30, 0.55))
+    drop-shadow(0 5px 8px rgba(60, 50, 30, 0.22));
+}
+.pr-emboss.pr-show {
+  opacity: 1;
+}
+
+/* filmed unfold — r25.2 "sheet-as-column", r25.2 seam fix for the
+   wrapper: the video simply fills its wrapper, no clip-path/union-of-
+   boxes maths needed (that whole technique — r25's own
+   computeUnfoldGeometry() — is gone; see ProposalReveal.tsx's own
+   header comment). The wrapper is now `.pr-vwrap` below (sized to
+   `vw`x`vh` inline by ProposalReveal.tsx's applySheetGeometry() —
+   BUILD-SPEC item 1) — a plain, chrome-free element, never `.pr-packet`
+   any more (the seam fix's whole point: no CSS-packet-sized visual on
+   the filmed path, ever). `.pr-vfeather`'s static gradient (item 5)
+   blends the video's own edges into the bone background. */
+.pr-vfold {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  transform: translateZ(0);
+}
+.pr-vfold.pr-on {
+  opacity: 1;
+}
+/* BUILD-SPEC r25.2 item 5 — feather stops deepened per the approved
+   preview (docs/preview-proposal-reveal.html's own `.feather` rule):
+   horizontal 6%/26%/74%/94%, vertical 2%/16%/84%/98%. Purely
+   percentage-based (independent of pixel geometry), so — unlike r25's
+   own runtime-computed featherBg — this is a static rule; no inline
+   `style` needed from ProposalReveal.tsx any more. */
+.pr-vfeather {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  transform: translateZ(0);
+  background: linear-gradient(
+      to right,
+      #ede8de 6%,
+      rgba(237, 232, 222, 0) 26%,
+      rgba(237, 232, 222, 0) 74%,
+      #ede8de 94%
+    ),
+    linear-gradient(to bottom, #ede8de 2%, rgba(237, 232, 222, 0) 16%, rgba(237, 232, 222, 0) 84%, #ede8de 98%);
+}
+.pr-vfold video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform: translateZ(0);
+}
+
+/* ============================================================
+   r25.2 seam fix — "the filmed path's beat 1 IS the film". The FILMED
+   path's own wrapper and ink+date overlay, separate from `.pr-packet`
+   (the cssfold fallback's own visual — see that rule's own comment
+   above). ProposalReveal.tsx mounts `.pr-vwrap` for the whole overlay
+   lifetime (so the <video> inside it can preload from the very start,
+   without ever unmounting/remounting) and applies computeSheetGeometry()
+   to it — inline width/height/align-self/margin-top — the instant the
+   filmed path is chosen, exactly mirroring the approved preview's own
+   `#vwrap` (docs/preview-proposal-reveal.html). Until sized, it has no
+   inline style and both its children are `position:absolute`, so it
+   takes up no visible space. See ProposalReveal.tsx's own header
+   comment for the full seam-fix writeup.
+   ============================================================ */
+.pr-vwrap {
+  position: relative;
+}
+/* Ports the preview's own `.overlay` rule exactly (top:50% of the video
+   wrapper, translateY(-50%), centred text) — no emboss/label (the video
+   itself is the packet on this path). Opacity 0 by default so this
+   stays invisible while `.pr-vwrap` is mounted but the filmed path
+   hasn't been chosen yet (the "checking" phase, or the cssfold path);
+   ProposalReveal.tsx's playVideoFold() drives it to 1 (no transition,
+   set inline) the instant the filmed path starts, then wipes it via the
+   video's own `timeupdate` clock (WIPE_START/WIPE_END). */
+.pr-film-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  text-align: center;
+  z-index: 5; /* above .pr-vfold's z-index: 4 */
+  opacity: 0;
+  pointer-events: none;
+}
+/* Ports the preview's own `.ink` sizing (`.pr-ink` above already
+   supplies the Caveat font-family/weight/color). */
+.pr-film-name {
+  font-size: 32px;
+  transform: rotate(-1deg);
+  display: block;
+  min-height: 44px;
+}
+/* Ports the preview's own `.date` rule exactly. */
+.pr-film-date {
+  font-size: 11px;
+  letter-spacing: 3px;
+  color: #313131;
+  margin: 2px 0 0;
+}
+
+/* CSS-only fallback unfold (no video) — reverse choreography of
+   BeginForm's own cssFold(): that one sweeps a flap DOWN and OVER a
+   written sheet (rotateX 0 -> -180deg) to make a packet; this sweeps a
+   flap back OPEN (rotateX -180deg -> 0) off a packet to reveal the
+   sheet growing underneath. Same easing curve, same "bowing" lower
+   segment language, timing halved (fallback path — a shorter dwell is
+   the point, not a second filmed-length performance). */
+.pr-cssflap {
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  top: 0;
+  height: 50%;
+  background: #f4efe3;
+  border: 1px solid #e6dfcf;
+  transform-origin: center top;
+  transform: rotateX(-180deg);
+  box-shadow: 0 -4px 14px rgba(60, 50, 30, 0.15);
+  z-index: 5;
+}
+@keyframes pr-unsweep {
+  0% {
+    transform: rotateX(-180deg);
+    box-shadow: 0 -4px 14px rgba(60, 50, 30, 0.15);
+  }
+  45% {
+    box-shadow: 0 -40px 70px rgba(60, 50, 30, 0.35);
+  }
+  100% {
+    transform: rotateX(0deg);
+    box-shadow: 0 0 0 rgba(60, 50, 30, 0);
+  }
+}
+.pr-cssflap.pr-go {
+  animation: pr-unsweep 0.9s cubic-bezier(0.5, 0.05, 0.3, 1) forwards;
+}
+.pr-csssheet {
+  position: absolute;
+  inset: 0;
+  background: #faf6ec;
+  border: 1px solid #e6dfcf;
+  opacity: 0;
+  transition: opacity 0.5s ease 0.35s;
+}
+.pr-csssheet.pr-on {
+  opacity: 1;
+}
+
+/* beat 3, fallback paths (cssfold/reduced-motion/skip) — the document
+   rising in under the fading overlay. Byte-for-byte unchanged by r25.2
+   (item 6): still the live behaviour whenever `.pr-doc` does NOT carry
+   the `.pr-landed` modifier below. */
+.pr-doc {
+  transition: opacity 0.45s ease, transform 0.45s ease;
+}
+.pr-doc.pr-pre {
+  opacity: 0;
+  transform: translateY(24px);
+}
+.pr-doc.pr-in {
+  opacity: 1;
+  transform: none;
+}
+
+/* ============================================================
+   r25.2 "Proposal reveal — final approved choreography" —
+   components/proposal/ProposalReveal.tsx's playVideoFold(). Ports
+   docs/preview-proposal-reveal.html's `.doc{opacity:0;transition:opacity
+   1.1s ease} .doc.in{opacity:1}` verbatim as the filmed path's own
+   fade — no translateY, the text never moves (BUILD-SPEC item 3).
+   SUPERSEDES r25.1's on-sheet landing layer (`.pr-landing`/
+   `.pr-landing-col`, its own `.pr-doc.pr-landed` transform-ease
+   handoff, and ProposalReveal.tsx's mountLanding()/
+   crossfadeToDocumentLanded()) — all removed; see docs/API.md's r25.1
+   section for that superseded approach's own writeup, and
+   ProposalReveal.tsx's own header comment for why.
+   ============================================================ */
+
+/* .pr-doc gets this modifier (ALONGSIDE the existing .pr-pre/.pr-in
+   pair above, never instead of it) whenever THIS play-through is on the
+   filmed path (playVideoFold()'s showDoc(), triggered at
+   duration-DOC_FADE_LEAD) — opacity-only, no translateY, ~1.1s ease
+   (BUILD-SPEC item 3). Fallback paths (cssfold/reduced-motion/skip)
+   never set it, so the .pr-pre/.pr-in pair above — the original
+   translateY(24px) fade — stays their live, unchanged behaviour. */
+.pr-doc.pr-landed {
+  transition: opacity 1.1s ease;
+}
+.pr-doc.pr-landed.pr-pre {
+  opacity: 0;
+  transform: none;
+}
+.pr-doc.pr-landed.pr-in {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pr-packet,
+  .pr-strip-static,
+  .pr-cap,
+  .pr-doc {
+    animation: none !important;
+    transition: none !important;
+  }
+  .pr-doc.pr-pre {
+    opacity: 1;
+    transform: none;
+  }
+}

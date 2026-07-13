@@ -14,6 +14,7 @@ import { ExportPresetSettings } from "@/components/settings/ExportPresetSettings
 import { BankDetailsSettings } from "@/components/settings/BankDetailsSettings";
 import { CpdDefaultsSettings } from "@/components/settings/CpdDefaultsSettings";
 import { EmailSignaturesSettings } from "@/components/settings/EmailSignaturesSettings";
+import { PushSettings } from "@/components/settings/PushSettings";
 import { getSignaturePeople } from "@/lib/email-signatures";
 import { FALLBACK_PHASE_TEMPLATE, FALLBACK_PHASE_TASK_TEMPLATES } from "@/lib/phase-template";
 import { FALLBACK_DESIGN_TASK_TEMPLATES } from "@/lib/design-task-templates";
@@ -351,6 +352,22 @@ export default async function SettingsPage() {
             they&apos;re filled in.
           </p>
           <EmailSignaturesSettings people={signaturePeople} />
+        </section>
+
+        {/* Health + web push round (r26) — BUILD-SPEC.md item 2:
+            "subscribe/unsubscribe toggle in Settings." Team-visible, no
+            admin gate (same "no secrets" shape as Email signatures
+            above it) — any signed-in team member can turn push on for
+            their own device; only admins are ever actually TARGETED by
+            a push today (lib/push.ts's sendPushToAdmins), a deliberate,
+            documented gap rather than an enforced restriction here. */}
+        <section>
+          <h2 className="mb-1 text-subhead text-nearblack">Push notifications</h2>
+          <p className="mb-4 text-body text-charcoal/60">
+            Get a browser notification on this device for trade responses, signed proposals, and
+            system health alerts. Currently only admins receive pushes; anyone can enable it here.
+          </p>
+          <PushSettings />
         </section>
 
         <section>

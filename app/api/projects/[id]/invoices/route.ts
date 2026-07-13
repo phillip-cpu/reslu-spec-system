@@ -4,11 +4,13 @@ import { getUserRole } from "@/lib/auth";
 import { ASSET_BUCKET, slugFilename } from "@/lib/storage";
 import { validateUploadBytes } from "@/lib/file-sniff";
 import type { CreateInvoiceResponse, Invoice, InvoiceMatchType, InvoiceStatus } from "@/types";
+import type { InvoiceSource, InvoiceWithIntake, SupplierInvoiceExtracted } from "@/types/round-supplier-invoice-intake";
 
 export const runtime = "nodejs";
 
 const STATUSES: InvoiceStatus[] = ["unmatched", "proposed", "approved", "rejected"];
 const MATCH_TYPES: InvoiceMatchType[] = ["cost_line", "item"];
+const SOURCES: InvoiceSource[] = ["manual", "aria"];
 
 /**
  * GET /api/projects/[id]/invoices?status=
@@ -56,7 +58,7 @@ export async function GET(
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ invoices: invoices as Invoice[] });
+  return NextResponse.json({ invoices: invoices as InvoiceWithIntake[] });
 }
 
 /**
@@ -75,6 +77,31 @@ export async function GET(
  * proposes, admin approves — no silent money writes", not "reject
  * duplicates"), and the existing one is returned alongside it as
  * `duplicate_warning` so the queue UI/Aria can flag it for review.
+ *
+ * Booking selection v2 + Aria supplier invoices (r24), item 5: the MCP
+ * `propose_supplier_invoice` tool is a thin caller of THIS SAME route
+ * (JSON branch) with `source: 'aria'`, `source_email_id` (the
+ * ALREADY-INGESTED Second Brain email this was extracted from), and
+ * `extracted` (Aria's raw read of the PDF — supplier/ABN/date/totals/
+ * line hints/job hints, migration 052's jsonb column). This is the
+ * DRAFT-ONLY hard rule in code, not just policy: this handler only ever
+ * INSERTs a row — nothing here (or anywhere reachable from it) applies
+ * a cost, writes an item/cost_line, or touches `library_items`. The
+ * only path that ever does that is POST /api/invoices/[id]/approve,
+ * which requires a human's explicit action in the queue UI. A row
+ * created with `proposed_match_type`/`proposed_match_id` already set
+ * (Aria always proposes a match) starts at status='proposed' — combined
+ * with source='aria' this is exactly the "Aria · needs approval"
+ * sand/amber pill (item 6), a pure display derivation, no new status
+ * value (see migration 052's header comment).
+ *
+ * Aria proposing an invoice ALSO raises a dedupe-guarded
+ * daily_brief_items row (source='invoice' — already a valid value,
+ * reserved for this round by 041_brief_and_due_times.sql, see migration
+ * 052's header) so it surfaces on the Daily Brief the same day, not
+ * just silently in the queue — same "existing open row" dedupe shape as
+ * POST /api/proposal/[token]/accept's own daily_brief_items insert
+ * (check source+link_href+title+status='open' before inserting).
  */
 export async function POST(
   request: NextRequest,
@@ -175,6 +202,35 @@ export async function POST(
   const confidence_note =
     typeof body.confidence_note === "string" && body.confidence_note ? body.confidence_note : null;
 
+  // Booking selection v2 + Aria supplier invoices (r24) — source/
+  // source_email_id/extracted (migration 052). JSON branch only — the
+  // manual UploadForm's multipart request never sends these, so a
+  // manual upload always lands source='manual' (the column default),
+  // source_email_id null, extracted null.
+  let source: InvoiceSource = "manual";
+  if (body.source !== undefined && body.source !== null && body.source !== "") {
+    const s = String(body.source);
+    if (!SOURCES.includes(s as InvoiceSource)) {
+      return NextResponse.json({ error: "Invalid source" }, { status: 400 });
+    }
+    source = s as InvoiceSource;
+  }
+  const source_email_id =
+    typeof body.source_email_id === "string" && body.source_email_id ? body.source_email_id : null;
+  if (source === "aria" && !source_email_id) {
+    return NextResponse.json(
+      { error: "source_email_id is required when source is 'aria' — every Aria-proposed invoice must trace back to the email it was extracted from" },
+      { status: 400 }
+    );
+  }
+  let extracted: SupplierInvoiceExtracted | null = null;
+  if (body.extracted !== undefined && body.extracted !== null) {
+    if (typeof body.extracted !== "object" || Array.isArray(body.extracted)) {
+      return NextResponse.json({ error: "extracted must be an object" }, { status: 400 });
+    }
+    extracted = body.extracted as SupplierInvoiceExtracted;
+  }
+
   // Duplicate check (warn, not block) — same key as the partial unique
   // index (project_id, supplier, invoice_number) where status != 'rejected'.
   const { data: existing } = await supabase
@@ -229,6 +285,9 @@ export async function POST(
     proposed_match_id,
     confidence_note,
     created_by: info.userId,
+    source,
+    source_email_id,
+    extracted,
   };
   // proposed_match_type/id set at creation time means a match is
   // already proposed (e.g. Aria posting with high-confidence
@@ -255,6 +314,37 @@ export async function POST(
     // as a 409 rather than a raw 500 in that edge case.
     const status = insertError.code === "23505" ? 409 : 500;
     return NextResponse.json({ error: insertError.message }, { status });
+  }
+
+  // Booking selection v2 + Aria supplier invoices (r24), item 5:
+  // dedupe-guarded Daily Brief surfacing — same "check for an existing
+  // OPEN row with this source+link_href+title, only insert if none
+  // found" shape as POST /api/proposal/[token]/accept's own
+  // daily_brief_items insert (that route's doc comment). source='invoice'
+  // is already a valid daily_brief_items.source value (reserved by
+  // 041_brief_and_due_times.sql — see migration 052's header comment),
+  // so no schema change was needed for this half of the round.
+  if (source === "aria") {
+    const briefTitle = `Aria flagged a supplier invoice — ${supplier} #${invoice_number}`;
+    const briefLink = `/projects/${projectId}/invoices`;
+    const { data: existingBriefItem } = await supabase
+      .from("daily_brief_items")
+      .select("id")
+      .eq("source", "invoice")
+      .eq("link_href", briefLink)
+      .eq("title", briefTitle)
+      .eq("status", "open")
+      .maybeSingle();
+    if (!existingBriefItem) {
+      await supabase.from("daily_brief_items").insert({
+        title: briefTitle,
+        source: "invoice",
+        link_href: briefLink,
+        status: "open",
+        created_by_kind: "aria",
+        project_id: projectId,
+      });
+    }
   }
 
   const payload: CreateInvoiceResponse = { invoice: invoice as Invoice };

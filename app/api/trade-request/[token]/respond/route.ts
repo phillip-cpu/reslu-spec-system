@@ -4,6 +4,7 @@ import { createServiceRoleClient } from "@/lib/supabase/server";
 import { rateLimit } from "@/lib/rate-limit";
 import { isRequestFullyExpired } from "@/lib/trade-request";
 import { allLinesResolved } from "@/lib/trade-booking";
+import { sendPushToAdmins } from "@/lib/push";
 import type { TradeRequestRespondInput } from "@/types/round-grouped-trade-booking";
 
 export const runtime = "nodejs";
@@ -124,6 +125,36 @@ export async function POST(
       .single();
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
+    // Health + web push round (r26), BUILD-SPEC.md item 3(a): "trade
+    // accepts/suggests dates (r20 respond route)." Insert + push ONLY —
+    // everything above this line is byte-identical to before this
+    // round. Best-effort (never fails the response): a notification
+    // failing to send must not turn an already-recorded acceptance into
+    // an error for the trade contact on the other end of this POST.
+    try {
+      const { data: acceptTask } = await supabase
+        .from("board_tasks")
+        .select("title")
+        .eq("visit_id", line.id)
+        .is("deleted_at", null)
+        .maybeSingle();
+      const { data: acceptContact } = bookingRequest.contact_id
+        ? await supabase.from("contacts").select("company").eq("id", bookingRequest.contact_id).maybeSingle()
+        : { data: null };
+      const acceptTitle = `Trade confirmed dates — ${acceptContact?.company ?? "Trade"}, ${acceptTask?.title ?? "a task"}`;
+      const acceptLinkHref = `/trade-requests/${bookingRequest.id}?focus=line-${line.id}`;
+      await supabase.from("notifications").insert({
+        user_id: null,
+        kind: "trade_confirmed",
+        title: acceptTitle,
+        body: null,
+        link_href: acceptLinkHref,
+      });
+      await sendPushToAdmins("trade_confirmed", acceptTitle, "", acceptLinkHref);
+    } catch {
+      // Best-effort — see comment above.
+    }
+
     const requestStatus = await maybeMarkResponded(supabase, bookingRequest, lines, line.id, "accepted");
     return NextResponse.json({ line: updated, request_status: requestStatus });
   }
@@ -190,6 +221,27 @@ export async function POST(
         created_by_kind: "system",
         project_id: bookingRequest.project_id,
       });
+    }
+
+    // Health + web push round (r26), BUILD-SPEC.md item 3(a) — insert +
+    // push ONLY, see the 'accept' branch's own identical comment above
+    // for why this is best-effort/never-throws. Title per item 3's own
+    // exact wording ("suggest -> 'Trade suggested new dates'"); the
+    // company/task detail already computed above for the daily-brief
+    // item goes in `body` instead, so the push/notification still
+    // carries the useful detail without diverging from the spec's
+    // literal title text.
+    try {
+      await supabase.from("notifications").insert({
+        user_id: null,
+        kind: "trade_suggested",
+        title: "Trade suggested new dates",
+        body: attentionTitle,
+        link_href: attentionLinkHref,
+      });
+      await sendPushToAdmins("trade_suggested", "Trade suggested new dates", attentionTitle, attentionLinkHref);
+    } catch {
+      // Best-effort — see comment above.
     }
 
     const requestStatus = await maybeMarkResponded(supabase, bookingRequest, lines, line.id, "date_suggested");
