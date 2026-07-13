@@ -2,7 +2,7 @@
 
 Phillip will just say: "read docs/CC-TONIGHT.md and do it."
 
-1. GIT AUTHOR / BLOCKED DEPLOY: Vercel refused the last deploy — commit authored as
+1. [RESOLVED 13 Jul — Phillip added aria@reslu.com.au as a Vercel team member (paid seat), deploys unblocked. SKIP the git-author steps below; optionally do the config change when he is back from China so the seat can be cancelled.] GIT AUTHOR / BLOCKED DEPLOY: Vercel refused the last deploy — commit authored as
    aria@reslu.com.au (not a team member; Phillip is NOT paying for a seat).
    On the mini: git config user.name "Phillip Introna"; git config user.email <Phillip's GitHub email>.
    Re-author the blocked commit (git commit --amend --reset-author --no-edit if it's the tip,
@@ -20,7 +20,19 @@ Phillip will just say: "read docs/CC-TONIGHT.md and do it."
    channel-status reporting (each WhatsApp group + email poller + calendar →
    report_channel_status), and the diagnostics runner loop (poll get_pending_diagnostics —
    there's one pending request from Phillip already waiting to complete).
-8. Verify the Aria wake loop end-to-end: aria_queue stuck count was 232 → 56 today,
+8. [ROOT CAUSE FOUND 14 Jul — Phillip's own words: "I've had to force her to
+   clear those, it wasn't automated." Confirmed in code: `scripts/aria_heartbeat.py`'s
+   `wake_aria()` is a literal stub — it just prints a message and `sys.exit(1)`. The
+   count-check half genuinely works (zero-cost when queue is empty, per the script's
+   own doc comment); NOTHING has ever actually invoked Aria when work is waiting.
+   Every queue drain so far has been Phillip manually prompting her, not the heartbeat.
+   THIS is the task: finish `wake_aria()` on the mini itself — it needs to know how
+   OpenClaw actually gets invoked there (CLI command? local API? file drop into a
+   workspace vault?), which only whoever has hands on that machine can supply; not
+   fixable from a sandbox. Once wired, wire the launchd job to run it on a real
+   interval (e.g. every 5 min) unattended, surviving reboots — that's the second half
+   of this same item, unchanged from Fable's original wording below.] Verify the Aria
+   wake loop end-to-end: aria_queue stuck count was 232 → 56 today,
    so something is draining; make sure it keeps running unattended (launchd, not a
    terminal session), incl. after reboots.
 9. After deploy, tell Phillip. His test lap: enable notifications (Mac + iPhone),
