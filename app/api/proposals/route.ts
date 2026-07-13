@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { proposalTemplateContent } from "@/lib/proposal-templates";
-import { computeProposalTotal, defaultDepositInc } from "@/lib/proposals";
+import { applyProposalPrefill, computeProposalTotal, defaultDepositInc, proposalPrefillFields } from "@/lib/proposals";
 import type {
   CreateProposalInput,
   Proposal,
@@ -95,23 +95,43 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let lead: { id: string; brief_answers: unknown } | null = null;
+  let lead: {
+    id: string;
+    brief_answers: unknown;
+    first_name: string | null;
+    surname_project: string;
+    location: string | null;
+  } | null = null;
   if (lead_id) {
     const { data } = await supabase
       .from("leads")
-      .select("id,brief_answers")
+      .select("id,brief_answers,first_name,surname_project,location")
       .eq("id", lead_id)
       .is("deleted_at", null)
       .maybeSingle();
     if (!data) return NextResponse.json({ error: "Lead not found" }, { status: 404 });
     lead = data;
   }
+  let project: { id: string; client_name: string; address: string | null; alias: string | null; name: string } | null =
+    null;
   if (project_id) {
-    const { data: project } = await supabase.from("projects").select("id").eq("id", project_id).maybeSingle();
-    if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    const { data } = await supabase
+      .from("projects")
+      .select("id,client_name,address,alias,name")
+      .eq("id", project_id)
+      .maybeSingle();
+    if (!data) return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    project = data;
   }
 
-  const content = proposalTemplateContent(body.template);
+  // BUILD-SPEC.md r27 item 9 — proposal prefill. Substitutes the known
+  // per-client-data {{...}} tokens (client names/address/residence)
+  // into the fresh template seed BEFORE it's ever stored — see
+  // lib/proposals.ts's applyProposalPrefill()/proposalPrefillFields()
+  // for the exact token list and why every other {{...}} prompt in
+  // these templates is deliberately left alone.
+  const templateContent = proposalTemplateContent(body.template);
+  const content = applyProposalPrefill(templateContent, proposalPrefillFields({ lead, project }));
   const total_inc = computeProposalTotal(content.fees);
   const deposit_inc = defaultDepositInc(total_inc);
 

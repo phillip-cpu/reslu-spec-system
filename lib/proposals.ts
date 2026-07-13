@@ -118,4 +118,119 @@ export function recipientEmail(source: {
   return source.project?.client_email || source.lead?.email || null;
 }
 
+// ------------------------------------------------------------
+// QA fix round (r27) item 9 — proposal prefill.
+// docs/BUILD-SPEC.md: "creating a proposal from a lead substitutes
+// client names, address/residence, date into letter/vision/scope
+// placeholders ({{client name}} etc.) server-side at create time" —
+// see lib/proposal-templates.ts's own header comment, which (before
+// this round) explicitly documented "no template-engine substitution
+// happens server-side" for its {{double-brace}} tokens. This is that
+// substitution, added narrowly: ONLY the handful of tokens that are
+// genuinely per-client DATA (names/address/residence label) get
+// filled in; every other {{...}} token in these templates is a
+// deliberate free-text PROMPT for a human/Aria to fill from actual
+// site-visit knowledge ("{{note something specific from the visit,
+// e.g. ...}}") — those are never touched here, by design, and are
+// left exactly as the template shipped them.
+// ------------------------------------------------------------
+
+/**
+ * Best-effort surname/descriptor split off a lead's `surname_project`
+ * card title — duplicated (deliberately, not imported) from the
+ * private extractSurname() in app/api/leads/[id]/create-project/
+ * route.ts and lib/visit-emails.ts's own leadLastName(): same "split on
+ * the first em-dash/hyphen, best-effort, not a full name parser"
+ * heuristic, kept local per this codebase's established convention of
+ * duplicating this one small function rather than exporting it across
+ * an unrelated round's file boundary (see either of those two
+ * functions' own header comments for the same reasoning).
+ */
+function surnameFromCardTitle(surnameProject: string): string {
+  const match = /\s+[—-]\s+/.exec(surnameProject);
+  if (!match) return surnameProject.trim();
+  return surnameProject.slice(0, match.index).trim();
+}
+
+/** Values substituted into a fresh proposal's content by applyProposalPrefill() below. Every field is nullable — a null field's matching token(s) are left untouched (see that function's own doc comment). */
+export interface ProposalPrefillFields {
+  /** Informal salutation form — "Dear {{client names}}," — a lead's own first_name when on file, else the project's client_name, else null. */
+  clientNames: string | null;
+  /** Formal terms_md form — "Client: {{client full name(s)}}" — first_name + extracted surname for a lead, or the project's client_name as-is. */
+  clientFullNames: string | null;
+  /** Street/site address — project.address or lead.location. */
+  address: string | null;
+  /** Short residence label for the vision opening — project.alias/name or the lead's surname_project card title. Deliberately NOT residenceLabel()'s own "your project" fallback (that fallback is fine inside a fixed sentence on an email/PDF that always needs SOME text; substituting it into "{{residence name / address}} has real bones to work with" would read worse than leaving the bracketed prompt for a human to fill — see this interface's own header comment on "keep placeholders when data missing"). */
+  residence: string | null;
+}
+
+/** Builds ProposalPrefillFields from the same {lead, project} source shape residenceLabel()/recipientEmail() already take — called once by POST /api/proposals at create time. */
+export function proposalPrefillFields(source: {
+  lead?: { first_name?: string | null; surname_project?: string | null; location?: string | null } | null;
+  project?: { client_name?: string | null; address?: string | null; alias?: string | null; name?: string | null } | null;
+}): ProposalPrefillFields {
+  const { lead, project } = source;
+
+  const leadFullName =
+    lead?.first_name && lead?.surname_project
+      ? `${lead.first_name} ${surnameFromCardTitle(lead.surname_project)}`.trim()
+      : lead?.surname_project
+        ? surnameFromCardTitle(lead.surname_project)
+        : null;
+
+  return {
+    clientNames: lead?.first_name || project?.client_name || null,
+    clientFullNames: project?.client_name || leadFullName,
+    address: project?.address || lead?.location || null,
+    residence: project?.alias || project?.name || lead?.surname_project || null,
+  };
+}
+
+/**
+ * Substitutes ONLY the known per-client-data tokens (see
+ * ProposalPrefillFields' own doc comment for the exact list and why
+ * every other {{...}} token is left alone) across content.letter,
+ * content.vision, content.scope_sections (title/intro/bullets/
+ * deliverables), and content.terms_md. A field that's null leaves its
+ * token(s) untouched in the output — this is a pure, repeatable
+ * string substitution (safe to call once at create time on the fresh
+ * template seed; never re-applied on a later PATCH, since by then the
+ * content is ordinary admin-edited data that may have deliberately
+ * restored a bracketed prompt).
+ */
+export function applyProposalPrefill(
+  content: ProposalContent,
+  fields: ProposalPrefillFields
+): ProposalContent {
+  const replacements: [RegExp, string | null][] = [
+    [/\{\{client names\}\}/g, fields.clientNames],
+    [/\{\{client full name\(s\)\}\}/g, fields.clientFullNames],
+    [/\{\{client address\}\}/g, fields.address],
+    [/\{\{residence address\}\}/g, fields.address],
+    [/\{\{residence name \/ address\}\}/g, fields.residence],
+  ];
+
+  function substitute(text: string): string {
+    let out = text;
+    for (const [pattern, value] of replacements) {
+      if (value) out = out.replace(pattern, value);
+    }
+    return out;
+  }
+
+  return {
+    ...content,
+    letter: substitute(content.letter),
+    vision: substitute(content.vision),
+    scope_sections: content.scope_sections.map((section) => ({
+      ...section,
+      title: substitute(section.title),
+      intro: section.intro !== undefined ? substitute(section.intro) : section.intro,
+      bullets: section.bullets.map(substitute),
+      deliverables: section.deliverables.map(substitute),
+    })),
+    terms_md: substitute(content.terms_md),
+  };
+}
+
 export type { Proposal, ProposalContent };

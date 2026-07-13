@@ -9,6 +9,7 @@ import { depositExGst, proposalPdfPath, recipientEmail, residenceLabel } from "@
 import { sendViaResend } from "@/lib/resend";
 import { reportError } from "@/lib/report-error";
 import { sendPushToAdmins } from "@/lib/push";
+import { closeBriefItem } from "@/lib/daily-brief-close";
 import { ProposalPdf } from "@/components/pdf/ProposalPdf";
 import type {
   AcceptProposalInput,
@@ -260,6 +261,12 @@ export async function POST(
         );
         await supabase.from("client_invoices").insert({
           project_id: project?.id ?? null,
+          // BUILD-SPEC.md r27 item 7 — migration 054's lead_id column.
+          // Only meaningful (and only ever set) when this invoice is
+          // being created project_id-null (a lead-only proposal) — see
+          // that column's own migration comment for the backfill this
+          // enables once the lead becomes a project.
+          lead_id: !project?.id && proposalRow.lead_id ? proposalRow.lead_id : null,
           invoice_number: invoiceNumber,
           kind: "design_fee",
           client_name: clientName,
@@ -337,6 +344,22 @@ export async function POST(
         status: "open",
         created_by_kind: "system",
       });
+    }
+
+    // ---- 4b. BUILD-SPEC.md r27 item 10 — Daily Brief self-close.
+    // "proposal-accept related items": a lead-nurture attention row
+    // ("Nurture — {surname_project} (Proposal Sent, no movement)" or
+    // "Stale proposal — ...", both source='lead', link_href
+    // `/leads?lead={id}` — see lib/daily-brief.ts's buildLeadCandidates())
+    // may already be sitting open for this exact lead, flagging it as
+    // having gone quiet. A client signing THIS proposal is unambiguous
+    // movement, so close it — title is deliberately omitted from the
+    // match (either of buildLeadCandidates()' two titles for this lead
+    // is equally resolved by an acceptance). Only applies to a lead-
+    // sourced proposal (proposalRow.project_id-only proposals have no
+    // lead to look up). Best-effort, never blocks the accept above. ----
+    if (proposalRow.lead_id) {
+      await closeBriefItem(supabase, "lead", `/leads?lead=${proposalRow.lead_id}`);
     }
 
     // ---- 5. Health + web push round (r26), BUILD-SPEC.md item 3(b):

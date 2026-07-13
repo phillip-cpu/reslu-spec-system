@@ -10,6 +10,7 @@ import type {
   ProposalStatus,
   ProposalTimelineRow,
 } from "@/types/proposals";
+import { BRIEF_ANSWER_FIELDS, type BriefAnswers } from "@/types/round-lead-flow";
 
 /**
  * Deliberately NOT importing lib/proposals.ts's own sumStageMilestones()
@@ -238,6 +239,8 @@ export function ProposalEditor({ proposalId }: { proposalId: string }) {
           This proposal is {proposal.status} and can no longer be edited.
         </p>
       )}
+
+      {proposal.lead_id && <BriefAnswersReference leadId={proposal.lead_id} />}
 
       <fieldset disabled={readOnly} className="space-y-8">
         {/* Letter */}
@@ -614,6 +617,68 @@ function TimelineRowEditor({
       <button type="button" className={clsx(smallBtn, "text-red-700/70")} onClick={onRemove}>
         ✕
       </button>
+    </div>
+  );
+}
+
+/**
+ * BUILD-SPEC.md r27 item 9 — "brief_answers surfaced in a side panel
+ * in the editor for reference while writing." Read-only render of the
+ * lead's submitted pre-visit questionnaire (same 10-field shape/order
+ * as components/leads/LeadDetailPanel.tsx's own "Project brief"
+ * section, BRIEF_ANSWER_FIELDS — deliberately mirrored rather than
+ * extracted into a shared component, since that panel's version is
+ * embedded inside a much larger lead-editing surface with its own
+ * fetch/state, and this one only ever needs the two fields
+ * (brief_answers, brief_submitted_at) off a single GET /api/leads/[id]
+ * call scoped to the proposal's own lead_id). Renders nothing while
+ * loading, on a fetch error, or when the lead has no submitted brief
+ * yet — this is a convenience reference, not a load-bearing part of
+ * the editor, so it fails quiet rather than surfacing its own error
+ * banner alongside the proposal's real save/send errors above.
+ */
+function BriefAnswersReference({ leadId }: { leadId: string }) {
+  const [answers, setAnswers] = useState<BriefAnswers | null>(null);
+  const [submittedAt, setSubmittedAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/leads/${leadId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        if (cancelled || !body?.lead) return;
+        setAnswers(body.lead.brief_answers ?? null);
+        setSubmittedAt(body.lead.brief_submitted_at ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [leadId]);
+
+  if (!submittedAt || !answers) return null;
+
+  return (
+    <div className="border border-[#dcd6cc] bg-offwhite px-4 py-3">
+      <p className="label-caps mb-1 !text-charcoal/50">Brief answers (reference)</p>
+      <p className="mb-3 text-caption text-charcoal/40">
+        Submitted{" "}
+        {new Date(submittedAt).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })} — read-only, for reference while writing the letter/vision above.
+      </p>
+      <dl className="grid gap-2.5 sm:grid-cols-2">
+        {BRIEF_ANSWER_FIELDS.map(({ key, label }) => {
+          const value = answers[key];
+          if (!value) return null;
+          return (
+            <div key={key}>
+              <dt className="label-caps !text-charcoal/40">{label}</dt>
+              <dd className="text-body" style={{ color: "#274690" }}>
+                {value}
+              </dd>
+            </div>
+          );
+        })}
+      </dl>
     </div>
   );
 }

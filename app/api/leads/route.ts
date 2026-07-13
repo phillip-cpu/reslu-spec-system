@@ -12,7 +12,7 @@ import {
   sendOrQueue,
   suburbFrom,
 } from "@/lib/visit-emails";
-import { buildLeadVisitCalendarAssets } from "@/lib/lead-brief";
+import { buildLeadVisitCalendarAssets, ensureBriefToken, briefUrlFor } from "@/lib/lead-brief";
 
 export const runtime = "nodejs";
 
@@ -252,6 +252,15 @@ export async function POST(request: NextRequest) {
           0,
           DEFAULT_PHILLIP_PHONE
         );
+        // BUILD-SPEC.md r27 item 5 — the brief questionnaire link used
+        // to ride ONLY the day-before reminder (app/api/visit-emails/
+        // run/route.ts), which never fires for a short-notice visit
+        // booked inside that 1-2 day window — the questionnaire simply
+        // never reached the lead. Same ensureBriefToken()/briefUrlFor()
+        // pair the reminder sweep already uses, called here too so the
+        // BOOKING-TIME confirmation carries the same link as a fallback.
+        const briefToken = await ensureBriefToken(service, created.id, null);
+        const briefLink = briefUrlFor(briefToken);
         await sendOrQueue(service, {
           recordType: "lead",
           recordId: created.id,
@@ -265,6 +274,7 @@ export async function POST(request: NextRequest) {
             visit_time: formatVisitTime(visitDatetime),
             suburb: suburbFrom(created.site_visit_location || created.location),
             calendar_link: calendarLink,
+            brief_link: briefLink,
           },
           visitDatetime,
           attachments: [icsAttachment],

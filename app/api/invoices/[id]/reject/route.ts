@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
+import { closeBriefItem } from "@/lib/daily-brief-close";
 import type { InvoiceWithIntake } from "@/types/round-supplier-invoice-intake";
 
 export const runtime = "nodejs";
@@ -62,5 +63,22 @@ export async function POST(
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ invoice: invoice as InvoiceWithIntake });
+  const typedInvoice = invoice as InvoiceWithIntake;
+
+  // BUILD-SPEC.md r27 item 10 — Daily Brief self-close. Same reasoning
+  // as POST /api/invoices/[id]/approve's own identical block: a
+  // rejection is just as much a resolution of the Aria "needs approval"
+  // flag as an approval is — either way, staff have acted on it, so the
+  // attention item should close either way. Best-effort, never blocks
+  // the reject, which already committed above.
+  if (typedInvoice.source === "aria") {
+    await closeBriefItem(
+      supabase,
+      "invoice",
+      `/projects/${typedInvoice.project_id}/invoices`,
+      `Aria flagged a supplier invoice — ${typedInvoice.supplier} #${typedInvoice.invoice_number}`
+    );
+  }
+
+  return NextResponse.json({ invoice: typedInvoice });
 }

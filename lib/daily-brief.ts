@@ -40,7 +40,23 @@
 // not expire/auto-close anything.
 // ============================================================
 
-export type DailyBriefSource = "booking" | "ordering" | "lead" | "trade" | "email" | "invoice" | "manual" | "aria";
+// QA fix round (r27) item 14 — "proposal" was added to the DB's own
+// daily_brief_items.source CHECK constraint by migration 051 (fee
+// proposal phase, r23 — POST /api/proposal/[token]/accept's own
+// "Proposal accepted — {residence}" attention row) but never added
+// HERE, the actual TS source-of-truth union every SOURCE_LABEL Record
+// below is keyed off — the exact same "schema widened, TS type left
+// behind" gap this round's own BUILD-SPEC item literally names.
+export type DailyBriefSource =
+  | "booking"
+  | "ordering"
+  | "lead"
+  | "trade"
+  | "email"
+  | "invoice"
+  | "manual"
+  | "aria"
+  | "proposal";
 
 /** One candidate brief item, built from a live attention-feed row — not yet checked against existing open items. */
 export interface DailyBriefCandidate {
@@ -260,6 +276,8 @@ const SOURCE_LABEL: Record<DailyBriefSource, string> = {
   invoice: "Invoices",
   manual: "Manual",
   aria: "Aria",
+  // QA fix round (r27) item 14 — see DailyBriefSource's own comment.
+  proposal: "Proposals",
 };
 
 export interface BriefEmailItem {

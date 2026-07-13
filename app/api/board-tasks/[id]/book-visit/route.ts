@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 import { computeInsuranceStatus, insuranceWarningForBooking } from "@/lib/insurance";
 import { rollupPhaseDatesForGroup } from "@/lib/phase-rollup";
-import { sendTeamEmail, isGmailConfigured } from "@/lib/gmail/send";
+import { sendOrQueue } from "@/lib/visit-emails";
 import { formatArrival } from "@/lib/trade-visits";
 import { hasAnyDocumentPackChoice, documentPackMentionLine } from "@/lib/trade-doc-pack";
 import type { BookVisitInput } from "@/types/board-cockpit";
@@ -32,12 +33,14 @@ const VALID_SLOTS = new Set(["first_thing", "midday", "afternoon"]);
  * visit CREATION has never sent anything).
  *
  * Returns `{ sent: true }` on an actual send, or `{ sent: false, reason }`
- * for every no-op case — never throws for a "nothing to send" reason
- * (no Gmail config / no contact / contact has no email), only a genuine
- * Gmail API error during an attempted send propagates, which the caller
- * catches (fire-and-forget, per this codebase's "the booking write is
- * the source of truth, the email is best-effort" discipline — same as
- * every other trade-visit email send site).
+ * for every no-op case — never throws for a "nothing to send"/"nothing
+ * to send YET" reason (no Resend config / no contact / contact has no
+ * email / queued outside the send window / duplicate), only a genuine
+ * send exception propagates, which the caller catches (fire-and-forget,
+ * per this codebase's "the booking write is the source of truth, the
+ * email is best-effort" discipline — same as every other trade-visit
+ * email send site). See this function's own r27 item 13 comment
+ * immediately below for the sendOrQueue routing this round added.
  *
  * "Trade booking document pack" round: when `hasDocumentPack` is true
  * (the booking's document_pack has at least one of the three choices
@@ -47,19 +50,58 @@ const VALID_SLOTS = new Set(["first_thing", "midday", "afternoon"]);
  * `documentPackMentionLine` helper below, shared by this email AND
  * resend-confirmation/trade-reminders so the three templates never
  * drift on wording.
+ *
+ * QA fix round (r27) item 13 — was a raw lib/gmail/send.ts
+ * sendTeamEmail() call (no dedupe, no send window, no email_sends
+ * log — this route's booking WRITE was logged nowhere near as
+ * carefully as its EMAIL was). Now routes through lib/visit-emails.ts's
+ * sendOrQueue — the exact dedupe/window/email_sends-logging machinery
+ * every other trade/lead visit email in this codebase already gets.
+ * SAME content, SAME sender identity (sendTeamEmail's own SENDER
+ * constant was "RESLU <aria@reslu.com.au>" — the literal same mailbox
+ * sendOrQueue's RESEND_FROM already sends everything else from, just a
+ * different transport/display-name string): the plain-text booking
+ * message below is unchanged; it's now delivered as sendOrQueue's
+ * generic trade-booking-reply.html shell ({{company}}/{{message}}/
+ * {{request_link}} — the same "message + view your dates" template
+ * this round's item 2 fix (accept_shift branch, POST /api/trade-
+ * requests/[id]/lines/[visitId]/resolve) already reuses for an
+ * ad-hoc one-off trade notification) rather than a raw-text Gmail
+ * message, since sendOrQueue only ever renders one of the four fixed
+ * VisitEmailTemplateName HTML files — there is no "plaintext" option,
+ * and this is the closest existing template to what was being sent
+ * before (a short note + a link, trade-facing, no fixed visit-date
+ * placeholders of its own).
+ *
+ * record_type is 'trade_booking_request' even though a single-visit
+ * (r15) booking has no real trade_booking_requests row behind it — see
+ * migration 054's own "keep it minimal, item 7 only" scope for this
+ * round; there is no email_sends.record_type value that describes "a
+ * single trade_visits row" and widening that CHECK constraint is out
+ * of this round's one-migration budget. record_id is the trade_visits
+ * row's own id (never a real trade_booking_requests.id), which keeps
+ * the dedupe guard (record_type, record_id, template) correctly scoped
+ * to just this one visit — it can never collide with a real r20
+ * grouped-request row's own email_sends history (those always use a
+ * genuine trade_booking_requests.id as record_id). Documented deviation,
+ * not a silent misuse.
  */
-async function sendBookingConfirmationEmail(params: {
-  contactEmail: string | null;
-  contactCompany: string | null;
-  projectName: string;
-  phaseName: string;
-  startDate: string;
-  endDate: string;
-  arrivalSlot: string | null;
-  arrivalTime: string | null;
-  confirmToken: string;
-  hasDocumentPack: boolean;
-}): Promise<{ sent: true } | { sent: false; reason: BookVisitEmailSkipReason }> {
+async function sendBookingConfirmationEmail(
+  supabase: SupabaseClient,
+  params: {
+    visitId: string;
+    contactEmail: string | null;
+    contactCompany: string | null;
+    projectName: string;
+    phaseName: string;
+    startDate: string;
+    endDate: string;
+    arrivalSlot: string | null;
+    arrivalTime: string | null;
+    confirmToken: string;
+    hasDocumentPack: boolean;
+  }
+): Promise<{ sent: true } | { sent: false; reason: BookVisitEmailSkipReason }> {
   if (!params.contactEmail) {
     // Distinguish "no contact linked at all" from "contact has no email
     // on file" for the UI's skip-reason copy — both are surfaced
@@ -69,30 +111,35 @@ async function sendBookingConfirmationEmail(params: {
     // each maps to a reason before even calling this helper.
     return { sent: false, reason: "no_contact_email" };
   }
-  if (!isGmailConfigured()) {
-    return { sent: false, reason: "no_gmail_config" };
-  }
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://spec.reslu.com.au";
   const tradeLink = `${appUrl}/trade/${params.confirmToken}`;
   const subject = `RESLU · site booking — ${params.projectName}: ${params.phaseName} ${params.startDate}`;
-  const body = [
-    `Hi ${params.contactCompany ?? "there"},`,
-    "",
+  const message = [
     `You've been booked for a site visit:`,
     `${params.startDate}${params.endDate !== params.startDate ? ` → ${params.endDate}` : ""} — ${formatArrival(params.arrivalSlot as "first_thing" | "midday" | "afternoon" | null, params.arrivalTime)}`,
     "",
-    `Please confirm this date, or let us know if it doesn't work: ${tradeLink}`,
+    `Please confirm this date, or let us know if it doesn't work.`,
     ...(params.hasDocumentPack ? ["", documentPackMentionLine()] : []),
   ].join("\n");
-  const result = await sendTeamEmail({ to: [params.contactEmail], subject, body });
-  if (result.skipped) {
-    // isGmailConfigured() already guards the common case above, but
-    // sendTeamEmail's own creds() check is the single source of truth —
-    // this covers the (currently theoretical, but cheap to guard)
-    // case of a config change between the two checks.
-    return { sent: false, reason: "no_gmail_config" };
-  }
-  return { sent: true };
+
+  const result = await sendOrQueue(supabase, {
+    recordType: "trade_booking_request",
+    recordId: params.visitId,
+    template: "trade-booking-reply",
+    to: [params.contactEmail],
+    subject,
+    mergeData: { company: params.contactCompany, message, request_link: tradeLink },
+    visitDatetime: params.startDate,
+  });
+
+  if (result.action === "sent") return { sent: true };
+  if (result.action === "queued") return { sent: false, reason: "queued" };
+  if (result.action === "duplicate") return { sent: false, reason: "duplicate" };
+  // 'skipped' — either RESEND_API_KEY isn't set (result.reason ===
+  // "no RESEND_API_KEY" per lib/resend.ts's isResendConfigured() guard,
+  // the direct successor to the old isGmailConfigured() check this
+  // route used to make up front) or the template failed to load.
+  return { sent: false, reason: "no_resend_config" };
 }
 
 /**
@@ -427,7 +474,8 @@ export async function POST(
         supabase.from("projects").select("name").eq("id", task.project_id).maybeSingle(),
         supabase.from("contacts").select("email,company").eq("id", visitContactId).maybeSingle(),
       ]);
-      const outcome = await sendBookingConfirmationEmail({
+      const outcome = await sendBookingConfirmationEmail(supabase, {
+        visitId,
         contactEmail: contact?.email ?? null,
         contactCompany: contact?.company ?? null,
         projectName: project?.name ?? "Project",
@@ -448,9 +496,10 @@ export async function POST(
       console.error("book-visit POST: booking confirmation email send failed", emailError);
       // Fire-and-forget — the booking itself has already committed
       // above; email_sent stays false with no more specific reason than
-      // this generic fallback (a real Gmail API error, not a
-      // config/contact skip, which are handled above without throwing).
-      email_skip_reason = "no_gmail_config";
+      // this generic fallback (a real send exception, not a
+      // config/contact/window/dedupe skip, which sendOrQueue itself
+      // already handles without throwing).
+      email_skip_reason = "send_failed";
     }
   }
 

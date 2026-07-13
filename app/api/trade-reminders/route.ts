@@ -67,11 +67,18 @@ export async function GET(request: NextRequest) {
   // phase.kind === 'umbrella' at the source — so this query never
   // needs to (and does not) filter by phase kind; every row it reads
   // is structurally guaranteed to be a real, phase-owned visit.
+  // BUILD-SPEC.md r27 item 4 — a CONFIRMED visit still needs its
+  // day-before nudge; the original filter only covered 'unconfirmed'/
+  // 'tentative', so a trade who'd already confirmed silently got no
+  // reminder at all. `reminder_sent_at is null` below is still the one
+  // dedupe guard (unchanged) — each visit is reminded exactly once
+  // regardless of which of these three statuses it's in when the cron
+  // runs.
   const { data: visits, error } = await supabase
     .from("trade_visits")
     .select("*")
     .is("deleted_at", null)
-    .in("status", ["unconfirmed", "tentative"])
+    .in("status", ["unconfirmed", "tentative", "confirmed"])
     .is("reminder_sent_at", null)
     .in("start_date", [oneDayOut, twoDaysOut]);
 

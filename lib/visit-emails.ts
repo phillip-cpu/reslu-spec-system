@@ -97,9 +97,12 @@ export interface VisitEmailMergeData {
    * "unknown placeholder fails visibly" contract below. */
   calendar_link?: string | null;
   /** Lead flow round (048) — the tokenised /brief/[token] URL merged
-   * into visit-reminder.html's {{brief_link}} ONLY (visit-
-   * confirmation.html has no such placeholder — see the merge audit in
-   * this round's final report). See lib/lead-brief.ts's
+   * into visit-reminder.html's {{brief_link}}. QA fix round (r27) item
+   * 5 — visit-confirmation.html now carries the same {{brief_link}}
+   * too (a "TELL US ABOUT YOUR PROJECT" link alongside "ADD TO
+   * CALENDAR"), since a short-notice visit booked inside the reminder
+   * sweep's 1-2 day window would otherwise never receive the
+   * questionnaire link at all. See lib/lead-brief.ts's
    * ensureBriefToken()/briefUrlFor(). */
   brief_link?: string | null;
   /** Grouped trade booking round (r20) — trade-booking-request.html /

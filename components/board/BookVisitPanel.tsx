@@ -15,10 +15,20 @@ interface PhaseOption {
   kind: "phase" | "umbrella";
 }
 
+// QA fix round (r27) item 13 — POST .../book-visit now sends via
+// lib/visit-emails.ts's sendOrQueue (Resend), replacing the raw Gmail
+// send this panel's copy used to describe — see
+// types/board-v3-3.ts's BookVisitEmailSkipReason for the full mapping
+// story. Record<string, ...> (not the exhaustive kind) with its own
+// "?? unknown reason" fallback at the render call site below, so this
+// was never a TS2741 risk — updated anyway so the copy stays accurate.
 const EMAIL_SKIP_REASON_LABEL: Record<string, string> = {
-  no_gmail_config: "email not configured",
+  no_resend_config: "email not configured",
   no_contact: "no trade linked",
   no_contact_email: "trade has no email on file",
+  queued: "queued (outside the 7am-7pm Adelaide send window)",
+  duplicate: "already sent for this visit date",
+  send_failed: "send failed",
 };
 
 /** Minimal shape this panel reads off the raw GET /api/contacts response for the Schedule auto-pick — that route does `select("*")`, so `category` is already present in the JSON even though the shared ContactPickerOption type (types/board-cockpit.ts, not edited by this round) doesn't declare it. Kept local rather than widening ContactPickerOption, which is a cross-cutting shared type used by four other pickers that have no need for this field. */

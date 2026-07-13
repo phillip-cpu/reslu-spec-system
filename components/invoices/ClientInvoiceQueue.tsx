@@ -80,7 +80,7 @@ export function ClientInvoiceQueue({
     load();
   }, [load]);
 
-  async function runAction(id: string, action: "send" | "mark-paid" | "void" | "stripe-link") {
+  async function runAction(id: string, action: "send" | "resend" | "mark-paid" | "void" | "stripe-link") {
     setBusyId(id);
     setError(null);
     try {
@@ -163,6 +163,21 @@ export function ClientInvoiceQueue({
                           className="border border-nearblack px-2 py-1 text-caption text-nearblack transition-colors hover:bg-nearblack hover:text-white disabled:opacity-40"
                         >
                           Send
+                        </button>
+                      )}
+                      {inv.status === "sent" && (
+                        <button
+                          type="button"
+                          disabled={busyId === inv.id || !inv.client_email}
+                          title={
+                            !inv.client_email
+                              ? "Add a client email before resending"
+                              : "Re-email the client with the current PDF — e.g. after creating a payment link"
+                          }
+                          onClick={() => runAction(inv.id, "resend")}
+                          className="border border-nearblack px-2 py-1 text-caption text-nearblack transition-colors hover:bg-nearblack hover:text-white disabled:opacity-40"
+                        >
+                          Resend
                         </button>
                       )}
                       {(inv.status === "draft" || inv.status === "sent") && (

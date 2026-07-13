@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
+import { closeBriefItem } from "@/lib/daily-brief-close";
 import type { ApproveInvoiceInput, ApproveInvoiceResponse, InvoiceWithIntake } from "@/types/round-supplier-invoice-intake";
 
 export const runtime = "nodejs";
@@ -156,6 +157,22 @@ export async function POST(
 
   const typedInvoice = invoice as InvoiceWithIntake;
   const warnings: string[] = [];
+
+  // BUILD-SPEC.md r27 item 10 — Daily Brief self-close. Only meaningful
+  // for an Aria-flagged invoice (source='aria'), which is the only kind
+  // that raises a daily_brief_items row at all (POST /api/projects/[id]/
+  // invoices' own insert, title+link_href reconstructed identically
+  // here) — a manually-created invoice never had one to close, and
+  // closeBriefItem is a no-op (0 rows matched) in that case anyway.
+  // Best-effort, never blocks the approve, which already committed above.
+  if (typedInvoice.source === "aria") {
+    await closeBriefItem(
+      supabase,
+      "invoice",
+      `/projects/${typedInvoice.project_id}/invoices`,
+      `Aria flagged a supplier invoice — ${typedInvoice.supplier} #${typedInvoice.invoice_number}`
+    );
+  }
 
   // Resolve the affected item (for the library-cost sync below) while
   // applying the cost_line/item match's own actual_paid_ex_gst credit.

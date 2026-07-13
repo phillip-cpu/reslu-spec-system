@@ -13,6 +13,7 @@ import type {
 } from "@/types";
 import { AttentionPanel } from "./AttentionPanel";
 import { PipelineDashboard } from "./PipelineDashboard";
+import { UnlinkedInvoicesPanel } from "./UnlinkedInvoicesPanel";
 import { LeadsBoard } from "./LeadsBoard";
 import { LeadsList } from "./LeadsList";
 import { AddLeadComposer } from "./AddLeadComposer";
@@ -162,6 +163,8 @@ export function LeadsWorkspace() {
       />
 
       {summary && <PipelineDashboard summary={summary} />}
+
+      <UnlinkedInvoicesPanel />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">

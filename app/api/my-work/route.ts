@@ -4,7 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import { groupMyWorkItems } from "@/lib/my-work";
 import { computeInsuranceStatus } from "@/lib/insurance";
 import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
-import { deriveOrderBy, formatOrderByWorksDate, type OrderByContactInput, type OrderByItemInput, type WorksDateSource } from "@/lib/order-by";
+import { deriveOrderBy, formatOrderByWorksDate, missingLeadTimes, type OrderByContactInput, type OrderByItemInput, type WorksDateSource } from "@/lib/order-by";
 import { FALLBACK_CPD_DEFAULTS, computeCpdYearWindow, formatPoints, isBehindPace, sumPoints } from "@/lib/cpd";
 import { isBookingRequestFollowupDue } from "@/lib/trade-booking";
 import { isProposalFollowupDue } from "@/lib/proposals";
@@ -597,6 +597,45 @@ export async function GET() {
             due: group.earliest_order_by,
             href: `/projects/${group.project_id}?tab=ffe&focus=ordering_due-${group.first_item_id}`,
             meta: "Ordering due",
+          });
+        }
+      }
+
+      // ---- 13. QA fix round (r27) item 12 — "wire the dead attention
+      // aggregator": the missing_lead_times half of GET /api/projects/
+      // [id]/attention, which had zero callers anywhere in the app. This
+      // reuses the SAME itemRows source #9 already fetched above —
+      // lib/order-by.ts's missingLeadTimes() is a pure function over
+      // that exact input, no second items query needed. One rollup line
+      // per project with >=1 unordered item missing lead_time_weeks.
+      // See MyWorkItemKind's own comment (types/phase-12a-b.ts) for why
+      // ordering_due itself isn't ALSO re-derived through this route —
+      // source #9 above already covers it, this is additive for the
+      // genuinely-uncovered half only. `due` is always null (a
+      // data-hygiene nudge, not a deadline) — lands in "No date".
+      const missingLeadTimeItems = missingLeadTimes(itemRows);
+      if (missingLeadTimeItems.length > 0) {
+        const missingByProject = new Map<string, { count: number; first_item_id: string }>();
+        for (const m of missingLeadTimeItems) {
+          const existing = missingByProject.get(m.project_id);
+          if (existing) existing.count += 1;
+          else missingByProject.set(m.project_id, { count: 1, first_item_id: m.item_id });
+        }
+        const { data: missingProjects } = await supabase
+          .from("projects")
+          .select("id,name,alias")
+          .in("id", [...missingByProject.keys()]);
+        const missingProjectById = new Map((missingProjects ?? []).map((p) => [p.id, p]));
+        for (const [projectId, group] of missingByProject) {
+          const project = missingProjectById.get(projectId);
+          items.push({
+            kind: "missing_lead_time",
+            id: `missing-lead-time-${projectId}`,
+            title: `${group.count} item${group.count === 1 ? "" : "s"} missing a lead time`,
+            project: project ? { id: project.id, name: project.name, alias: project.alias } : null,
+            due: null,
+            href: `/projects/${projectId}?tab=ffe&focus=ordering_due-${group.first_item_id}`,
+            meta: "Ordering",
           });
         }
       }

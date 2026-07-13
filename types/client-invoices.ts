@@ -27,6 +27,12 @@ export interface ClientInvoiceLineItem {
 export interface ClientInvoice {
   id: string;
   project_id: string | null;
+  /** QA fix round (r27) item 7, migration 054. Nullable — only ever set
+   * when this invoice was drafted project_id-null off a lead-only
+   * accepted proposal (POST /api/proposal/[token]/accept); left set as
+   * history after POST /api/leads/[id]/create-project backfills
+   * project_id. See that column's own migration comment. */
+  lead_id?: string | null;
   invoice_number: string;
   kind: ClientInvoiceKind;
   client_name: string;
@@ -51,6 +57,16 @@ export interface ClientInvoice {
 
 /** GET /api/projects/[id]/client-invoices response. */
 export interface ClientInvoicesListResponse {
+  invoices: ClientInvoice[];
+}
+
+/** GET /api/client-invoices/unlinked response — QA fix round (r27)
+ * item 7's "Unlinked invoices" list (components/leads/
+ * UnlinkedInvoicesPanel.tsx, on the admin-only /leads page). Every
+ * non-deleted client_invoices row with project_id still null, whether
+ * or not it carries a lead_id — a manually-created orphan (no lead at
+ * all) must be just as visible as a lead-originated one. */
+export interface UnlinkedClientInvoicesResponse {
   invoices: ClientInvoice[];
 }
 

@@ -43,6 +43,18 @@ const SOURCE_LABEL: Record<DailyBriefSource, string> = {
   invoice: "Invoice",
   manual: "Manual",
   aria: "Aria",
+  // QA fix round (r27) item 14 — "proposal" was already a valid
+  // daily_brief_items.source value (migration 051 widened the DB CHECK
+  // constraint for POST /api/proposal/[token]/accept's own "Proposal
+  // accepted — {residence}" attention row) but this map — the actual
+  // label a Daily Brief row renders — never got the matching entry, so
+  // an accepted-proposal item rendered with no source pill at all
+  // (Record<DailyBriefSource, string> is exhaustive; this was silently
+  // missing rather than a build error only because lib/daily-brief.ts's
+  // own DailyBriefSource union hadn't been widened to include it either
+  // — see that file's own comment on the same gap, fixed alongside
+  // this one).
+  proposal: "Proposal",
 };
 
 interface ProjectOption {

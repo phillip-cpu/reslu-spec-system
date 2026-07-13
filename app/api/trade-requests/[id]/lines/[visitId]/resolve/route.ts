@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { rollupPhaseDatesForGroup } from "@/lib/phase-rollup";
 import { sendOrQueue } from "@/lib/visit-emails";
 import { computeShiftDeltaDays } from "@/lib/trade-booking";
+import { closeBriefItem } from "@/lib/daily-brief-close";
 import type { ResolveTradeLineInput, ResolveTradeLineResponse, TradeBookingRequestLine } from "@/types/round-grouped-trade-booking";
 
 export const runtime = "nodejs";
@@ -133,6 +134,17 @@ export async function POST(
       return NextResponse.json({ error: updateError.message }, { status: 500 });
     }
 
+    // BUILD-SPEC.md r27 item 10 — Daily Brief self-close. The trade's
+    // suggestion is what raised the attention item in the first place
+    // (POST /api/trade-request/[token]/respond's 'suggest' branch,
+    // source='trade', link_href `/trade-requests/{requestId}?focus=
+    // line-{visitId}` — see that route's own insert). Accepting the
+    // shift is a genuine resolution of that suggestion, so close it;
+    // link_href already uniquely keys this one line, no title match
+    // needed. Best-effort (closeBriefItem never throws) — never blocks
+    // the accept itself, which already committed above.
+    await closeBriefItem(supabase, "trade", `/trade-requests/${requestId}?focus=line-${visitId}`);
+
     let shiftOffer: ResolveTradeLineResponse["shift_offer"] = null;
     if (linkedTask) {
       await supabase
@@ -161,8 +173,38 @@ export async function POST(
       }
     }
 
+    // BUILD-SPEC.md r27 item 2 — the trade never heard back once Phillip
+    // accepted THEIR counter-date: this branch updated the line/board_task
+    // silently and just offered the shift-items ripple to the admin. Send
+    // a short confirmation, mirroring the keep_reply branch's send exactly
+    // (same template/transport/log — trade-booking-reply.html is generic
+    // "message + view your dates", not reply-specific despite the name).
+    let email_sent = false;
+    let email_skip_reason: string | undefined;
+    const { data: acceptContact } = bookingRequest.contact_id
+      ? await supabase.from("contacts").select("id,company,email").eq("id", bookingRequest.contact_id).maybeSingle()
+      : { data: null };
+    if (!acceptContact?.email) {
+      email_skip_reason = "No recipient email on file";
+    } else {
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://spec.reslu.com.au";
+      const requestLink = `${appUrl}/trade-request/${bookingRequest.token}`;
+      const confirmedMessage = `Confirmed — we've locked in ${visit.suggested_start} for ${linkedTask?.title ?? "this task"}. Thanks for letting us know.`;
+      const result = await sendOrQueue(supabase, {
+        recordType: "trade_booking_request",
+        recordId: requestId,
+        template: "trade-booking-reply",
+        to: [acceptContact.email],
+        subject: `RESLU · confirmed: ${linkedTask?.title ?? "your site visit dates"}`,
+        mergeData: { company: acceptContact.company, message: confirmedMessage, request_link: requestLink },
+        visitDatetime: new Date().toISOString(),
+      });
+      email_sent = result.action === "sent";
+      if (!email_sent) email_skip_reason = result.reason;
+    }
+
     const line = await currentLine();
-    return NextResponse.json({ line, shift_offer: shiftOffer } as ResolveTradeLineResponse);
+    return NextResponse.json({ line, shift_offer: shiftOffer, email_sent, email_skip_reason } as ResolveTradeLineResponse);
   }
 
   if (body.action === "keep_reply") {
@@ -182,6 +224,12 @@ export async function POST(
     if (updateError) {
       return NextResponse.json({ error: updateError.message }, { status: 500 });
     }
+
+    // BUILD-SPEC.md r27 item 10 — same self-close as the accept_shift
+    // branch above: "keep original + reply" is the OTHER way of
+    // resolving the trade's suggestion, so it closes the exact same
+    // attention item.
+    await closeBriefItem(supabase, "trade", `/trade-requests/${requestId}?focus=line-${visitId}`);
 
     let email_sent = false;
     let email_skip_reason: string | undefined;

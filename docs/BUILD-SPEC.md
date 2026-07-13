@@ -142,3 +142,22 @@ Phillip 2026-07-13. Mini can't be reached from Vercel → mini heartbeats OUT; d
 5. Silence checker: /api/health/check route (cron — vercel.json is PROTECTED: document the cron line for CC, e.g. every 10 min) compares timestamps → fires push/notifications (dedupe: one alert per incident, not per check).
 6. MCP tools (mini side talks through these): post_heartbeat, report_channel_status, get_pending_diagnostics, complete_diagnostic(id, report). Documented in docs/ARIA.md.
 7. docs/MINI-HEALTH-HANDOFF.md for Claude Code: launchd plist + curl heartbeat script spec (payload fields, bearer auth same as Aria MCP), channel-status reporting from OpenClaw, diagnostics runner loop (poll get_pending_diagnostics; repair = restart WhatsApp bridge, verify session, check softwareupdate -l; report back), VAPID keygen one-liner, env vars, cron line for vercel.json.
+
+## QA fix round (r27)
+
+From the 5-scenario code audit + live browser lap 2026-07-13. Priorities in order:
+1. LIVE BUG — selection seed: board checkbox selection + "Book selected → trade" must seed GroupBookPanel with the selected task lines (currently the panel ignores the seed and only lists trade-mapped tasks; picking a contact with no mapped tasks shows empty). Selected lines appear checked with their inline date fields regardless of trade mapping (the reassign-on-send warning already exists — reuse). Send request DISABLED until ≥1 line checked AND a trade chosen.
+2. Trade notified when Phillip ACCEPTS his counter-date: resolve route accept_shift branch must sendOrQueue a confirmation (mirror keep_reply branch's send, template consistent with booking emails).
+3. Ripple shifts not silent: shift-items route — for each reconfirm_visit_ids visit (other trades' confirmed visits whose dates moved) insert a dedupe-guarded daily_brief_items attention row 'Dates moved — {trade}, {task}: reconfirm' + push via sendPushToAdmins. (Auto-email stays manual — Phillip approves each reconfirm send; the system just refuses to let him forget.)
+4. Day-before reminders for CONFIRMED visits: trade-reminders cron currently filters status IN (unconfirmed,tentative) — include confirmed visits (dedupe via email_sends as usual). A confirmed trade must get his day-before nudge.
+5. Brief link rides the CONFIRMATION email: add ensureBriefToken + {{brief_link}} to the booking-time confirmation mergeData in both lead routes (POST /api/leads and PATCH /api/leads/[id]), so short-notice visits still deliver the questionnaire.
+6. Proposal → project carry: create-project route, when the lead has an accepted proposal, seeds the project with (a) proposal reference stored on project, (b) SOW draft lines from content.scope_sections (section title → SOW section, bullets → lines, per existing sow schema), (c) brief_answers copied onto project notes/overview field (find the right home). Additive, skippable if absent.
+7. Orphaned deposit invoices: migration 054 adds client_invoices.lead_id nullable FK; accept route sets it; create-project backfills project_id on any lead's invoices; Invoices tab (or Office) gains an 'Unlinked invoices' list showing project_id-null rows.
+8. Stripe recovery: client invoice send route/UI — allow creating the payment link and RE-SENDING an updated invoice (resend route with email_sends dupe guard + 'updated invoice' subject); prevent the dead-end ordering.
+9. Proposal prefill: creating a proposal from a lead substitutes client names, address/residence, date into letter/vision/scope placeholders ({{client name}} etc.) server-side at create time; brief_answers surfaced in a side panel in the editor for reference while writing.
+10. Daily Brief self-close: resolving a trade suggestion (resolve route), approving/rejecting a supplier invoice, and proposal-accept related items mark their corresponding daily_brief_items row done (match by source/link dedupe key).
+11. Supplier invoice push: Aria intake insert also fires sendPushToAdmins + notifications row.
+12. Wire the dead attention aggregator: surface /api/projects/[id]/attention (ordering_due + missing_lead_times) as a board banner chip + My Work source (respecting the exhaustive KIND_LABEL gotcha).
+13. Single-visit booking (book-visit route) email goes through sendOrQueue (dedupe, Adelaide window, email_sends log) instead of raw gmail sendTeamEmail; keep sender identity as-is.
+14. DailyBrief.tsx source-label map: add missing 'proposal' label.
+Middleware/vercel.json untouched (CC list: health cron line, visit-emails cron investigation, Aria wake, mini scripts).

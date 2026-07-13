@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { rollupPhaseDatesForGroup } from "@/lib/phase-rollup";
+import { sendPushToAdmins } from "@/lib/push";
 import type { ShiftItemsInput, ShiftItemsResponse, ShiftedTaskResult } from "@/types/board-v3-2";
 
 const MS_PER_DAY = 86_400_000;
@@ -225,6 +226,84 @@ export async function POST(
     await rollupPhaseDatesForGroup(supabase, group.id);
   } catch (rollupError) {
     console.error("rollupPhaseDatesForGroup failed after shift-items POST:", rollupError);
+  }
+
+  // BUILD-SPEC.md r27 item 3 — a ripple shift used to move OTHER
+  // trades' already-confirmed visits silently: the client-side
+  // ReconfirmAffordance only shows up if someone happens to be looking
+  // at this phase's timeline right now. For every visit this shift just
+  // flagged in reconfirmVisitIds, insert a dedupe-guarded daily_brief_
+  // items attention row + admin push so Phillip can't forget to send
+  // the actual reconfirm (still a manual, explicit send — this route
+  // never emails the trade itself). Dedupe follows the same "existing
+  // OPEN row with the same source+link_href" pattern as the r20 respond
+  // route's own daily_brief_items insert (this file's sibling), so a
+  // second shift affecting the same visit before staff resolves the
+  // first attention item doesn't pile up duplicates. Best-effort —
+  // never fails the shift itself, which already committed above.
+  if (reconfirmVisitIds.length > 0) {
+    try {
+      const [{ data: reconfirmVisits }, { data: reconfirmTasks }] = await Promise.all([
+        supabase
+          .from("trade_visits")
+          .select("id,contact_id,booking_request_id")
+          .in("id", reconfirmVisitIds),
+        supabase
+          .from("board_tasks")
+          .select("id,title,visit_id")
+          .in("id", reconfirmTaskIds),
+      ]);
+      const contactIds = [...new Set((reconfirmVisits ?? []).map((v) => v.contact_id).filter((c): c is string => !!c))];
+      const contactsById = new Map<string, { id: string; company: string }>();
+      if (contactIds.length > 0) {
+        const { data: contacts } = await supabase.from("contacts").select("id,company").in("id", contactIds);
+        for (const c of contacts ?? []) contactsById.set(c.id, c);
+      }
+      const taskByVisitId = new Map((reconfirmTasks ?? []).map((t) => [t.visit_id as string, t]));
+
+      for (const visit of reconfirmVisits ?? []) {
+        const task = taskByVisitId.get(visit.id);
+        const tradeName = (visit.contact_id && contactsById.get(visit.contact_id)?.company) || "Trade";
+        const taskTitle = task?.title ?? "a task";
+        const attentionTitle = `Dates moved — ${tradeName}, ${taskTitle}: reconfirm`;
+        // Grouped bookings (r20) have a real trade-request page to deep
+        // link into; a one-off single-visit booking (r15) doesn't, so
+        // that case falls back to the board task itself — same
+        // `board?focus=board_task-<id>` shape app/api/my-work/route.ts
+        // already uses for board-task attention links.
+        const attentionLinkHref = visit.booking_request_id
+          ? `/trade-requests/${visit.booking_request_id}?focus=line-${visit.id}`
+          : `/projects/${phase.project_id}/board?focus=board_task-${task?.id ?? ""}`;
+
+        const { data: existingOpenAttention } = await supabase
+          .from("daily_brief_items")
+          .select("id")
+          .eq("source", "trade")
+          .eq("link_href", attentionLinkHref)
+          .eq("status", "open")
+          .maybeSingle();
+        if (existingOpenAttention) continue;
+
+        await supabase.from("daily_brief_items").insert({
+          title: attentionTitle,
+          source: "trade",
+          link_href: attentionLinkHref,
+          status: "open",
+          created_by_kind: "system",
+          project_id: phase.project_id,
+        });
+        await supabase.from("notifications").insert({
+          user_id: null,
+          kind: "trade_dates_moved",
+          title: "Dates moved — reconfirm needed",
+          body: attentionTitle,
+          link_href: attentionLinkHref,
+        });
+        await sendPushToAdmins("trade_dates_moved", "Dates moved — reconfirm needed", attentionTitle, attentionLinkHref);
+      }
+    } catch (attentionError) {
+      console.error("shift-items: failed to write reconfirm attention rows:", attentionError);
+    }
   }
 
   return NextResponse.json({

@@ -263,24 +263,41 @@ export function GroupBookPanel({
   // Default selection on a (re)resolved contact — one-shot per contact,
   // same discipline as the r20 version of this effect. Single-item seed
   // (per-item "Book trade" — BUILD-SPEC.md item 3) checks EVERY eligible
-  // task for that contact; a multi-id seed (action bar) checks only the
-  // seeded ids that actually belong to this contact; no seed at all
-  // (blank/manual contact pick) starts with nothing checked.
+  // task for that contact; a multi-id seed (action bar) checks every
+  // seeded id that's eligible AT ALL on the project — not just the ones
+  // that already happen to share the resolved contact (BUILD-SPEC.md r27
+  // item 1 fix: the previous version filtered the multi-id branch through
+  // `eligibleTasksForContact` alone, so any selected line whose existing
+  // contact_id differed from (or was absent from) the resolved trade was
+  // silently dropped from the selection — it never appeared checked, and
+  // since it only lived in the collapsed "+ Add more lines" section, it
+  // effectively vanished. Seeded lines must show up checked with their
+  // date fields regardless of trade mapping, per this round's live bug
+  // report). No seed at all (blank/manual contact pick) starts with
+  // nothing checked.
   useEffect(() => {
     if (!contactId || defaultsAppliedForContact === contactId) return;
     setDefaultsAppliedForContact(contactId);
 
     const ids = seedTaskIds ?? [];
     const eligibleIds = new Set(eligibleTasksForContact.map((t) => t.id));
+    const allEligibleIds = new Set(allTasks.filter((t) => t.phase_id).map((t) => t.id));
     let initialSelection: Set<string>;
     if (ids.length === 1 && eligibleTasksForContact.some((t) => t.id === ids[0])) {
       initialSelection = new Set(eligibleIds);
     } else if (ids.length > 0) {
-      initialSelection = new Set(ids.filter((id) => eligibleIds.has(id)));
+      initialSelection = new Set(ids.filter((id) => allEligibleIds.has(id)));
     } else {
       initialSelection = new Set();
     }
     setSelectedTaskIds(initialSelection);
+
+    // A multi-id seed that reaches outside the resolved contact's own
+    // tasks needs "+ Add more lines" open by default, or the now-checked
+    // rows would be invisible under the collapsed section.
+    if (ids.some((id) => !eligibleIds.has(id) && allEligibleIds.has(id))) {
+      setShowMoreLines(true);
+    }
 
     // Seed the date drafts for every task now in view (checked or not)
     // from its own stored works dates, so the inputs show real values
@@ -549,7 +566,7 @@ export function GroupBookPanel({
             <button
               type="button"
               onClick={send}
-              disabled={saving || !contactId}
+              disabled={saving || !contactId || selectedTaskIds.size === 0}
               className="w-full bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal disabled:opacity-60"
             >
               {saving ? "Sending…" : "Send request"}

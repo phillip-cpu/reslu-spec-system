@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { ASSET_BUCKET, slugFilename } from "@/lib/storage";
 import { validateUploadBytes } from "@/lib/file-sniff";
+import { sendPushToAdmins } from "@/lib/push";
 import type { CreateInvoiceResponse, Invoice, InvoiceMatchType, InvoiceStatus } from "@/types";
 import type { InvoiceSource, InvoiceWithIntake, SupplierInvoiceExtracted } from "@/types/round-supplier-invoice-intake";
 
@@ -344,6 +345,32 @@ export async function POST(
         created_by_kind: "aria",
         project_id: projectId,
       });
+    }
+
+    // BUILD-SPEC.md r27 item 11 — "Supplier invoice push: Aria intake
+    // insert also fires sendPushToAdmins + notifications row." Same
+    // shape as every other r26 trigger site (r20 respond route, r23
+    // accept route, health incident routes): insert a notifications row
+    // (user_id null = all-admins) THEN sendPushToAdmins with the
+    // identical fields — see lib/push.ts's own doc comment on that
+    // call-site convention. Deliberately a fresh notification on EVERY
+    // Aria-flagged invoice, not the dedupe-guarded notifyAdminsOnce()
+    // (that helper is for a recurring "still open?" incident condition
+    // — a health channel down, a missed cron; each flagged invoice here
+    // is a genuinely new, distinct event, same reasoning the r20/r23
+    // trigger sites already document for themselves). Best-effort —
+    // never blocks the invoice creation, which already committed above.
+    try {
+      await supabase.from("notifications").insert({
+        user_id: null,
+        kind: "supplier_invoice_flagged",
+        title: briefTitle,
+        body: null,
+        link_href: briefLink,
+      });
+      await sendPushToAdmins("supplier_invoice_flagged", briefTitle, "", briefLink);
+    } catch (pushError) {
+      console.error("projects/[id]/invoices: push notify failed (non-fatal)", pushError);
     }
   }
 

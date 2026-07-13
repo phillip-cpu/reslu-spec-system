@@ -12,7 +12,7 @@ import {
   sendOrQueue,
   suburbFrom,
 } from "@/lib/visit-emails";
-import { buildLeadVisitCalendarAssets } from "@/lib/lead-brief";
+import { buildLeadVisitCalendarAssets, ensureBriefToken, briefUrlFor } from "@/lib/lead-brief";
 import type { LeadWithBriefFields } from "@/types/round-lead-flow";
 
 export const runtime = "nodejs";
@@ -248,6 +248,15 @@ export async function PATCH(
             DEFAULT_PHILLIP_PHONE
           );
 
+          // BUILD-SPEC.md r27 item 5 — see POST /api/leads' own identical
+          // comment on this pair: the confirmation email now also carries
+          // {{brief_link}} so a short-notice visit (booked inside the
+          // reminder sweep's 1-2 day window) still delivers the
+          // questionnaire link somewhere. ensureBriefToken() is a no-op
+          // read when this lead already has a token (e.g. a reschedule).
+          const briefToken = await ensureBriefToken(service, typedLead.id, typedLead.brief_token);
+          const briefLink = briefUrlFor(briefToken);
+
           await sendOrQueue(service, {
             recordType: "lead",
             recordId: typedLead.id,
@@ -261,6 +270,7 @@ export async function PATCH(
               visit_time: formatVisitTime(visitDatetime),
               suburb: suburbFrom(typedLead.site_visit_location || typedLead.location),
               calendar_link: calendarLink,
+              brief_link: briefLink,
             },
             visitDatetime,
             attachments: [icsAttachment],

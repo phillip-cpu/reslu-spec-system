@@ -40,6 +40,7 @@ import {
 import { ContactPicker } from "@/components/shared/ContactPicker";
 import { GroupBookPanel } from "./GroupBookPanel";
 import { MilestoneDiaryPrompt } from "./MilestoneDiaryPrompt";
+import { AttentionBanner } from "./AttentionBanner";
 // Board v3.3 — shared with GanttChart.tsx's own identical "Dates
 // changed — re-send confirmation?" affordance, not duplicated here.
 import { ReconfirmAffordance } from "@/components/gantt/ReconfirmAffordance";
@@ -1002,6 +1003,12 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
           {error}
         </p>
       )}
+
+      {/* QA fix round (r27) item 12 — "wire the dead attention
+          aggregator" board half. See AttentionBanner's own header
+          comment for the full story (GET /api/projects/[id]/attention
+          had zero callers before this round). */}
+      <AttentionBanner projectId={projectId} />
 
       {/* Booking selection v2 (r24) — board-wide selection action bar.
           Appears whenever at least one row/card-edge checkbox is ticked

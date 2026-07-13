@@ -47,6 +47,13 @@ const KIND_LABEL: Record<MyWorkItem["kind"], string> = {
   // (Record<MyWorkItemKind, string> requires every kind to have one),
   // per the "ordering_due" bug-fix precedent noted above.
   proposal_followup: "Proposal follow-up",
+  // QA fix round (r27) item 12 — "wire the dead attention aggregator"
+  // (GET /api/my-work source #13, types/phase-12a-b.ts's own
+  // MyWorkItemKind comment has the full story). Additive entry, same
+  // shape as every other kind here — omitting it is the exact same
+  // TS2741 build error the "ordering_due"/"proposal_followup" comments
+  // above both already flag for this Record.
+  missing_lead_time: "Lead time",
 };
 
 /** project is null for leads (pre-project), Office tasks (global board), AND the CPD nudge (no project concept at all) — this small lookup picks the right fallback chip label for each, replacing what used to be a two-way ternary before cpd_nudge existed. */

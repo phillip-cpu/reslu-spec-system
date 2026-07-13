@@ -57,10 +57,26 @@ export interface PatchBoardTaskV33Response {
 // vs "booked — email not sent: {reason}" without a second round-trip.
 // ------------------------------------------------------------
 
+// QA fix round (r27) item 13 — this route now sends via
+// lib/visit-emails.ts's sendOrQueue (Resend transport, same dedupe/
+// window/email_sends-logging discipline every other visit email
+// already gets) instead of a raw lib/gmail/send.ts sendTeamEmail call.
+// "no_gmail_config" is replaced by "no_resend_config" (sendOrQueue's
+// own "RESEND_API_KEY not set" skip reason); "queued"/"duplicate" are
+// new, mapping sendOrQueue's own SendOrQueueAction values 1:1 — a
+// booking made outside the 7am-7pm Adelaide window now queues rather
+// than sending immediately (this route's own doc comment above has the
+// full window-gating rationale), and a duplicate send (the same visit
+// datetime already confirmed) is now guarded rather than silently
+// re-sent. "no_contact"/"no_contact_email" are unchanged — those are
+// this route's own pre-send checks, not sendOrQueue's concern.
 export type BookVisitEmailSkipReason =
-  | "no_gmail_config"
+  | "no_resend_config"
   | "no_contact"
-  | "no_contact_email";
+  | "no_contact_email"
+  | "queued"
+  | "duplicate"
+  | "send_failed";
 
 /** POST /api/board-tasks/[id]/book-visit response, Board v3.3-flavoured — BookVisitResponse (types/board-cockpit.ts) plus this round's email outcome fields. */
 export interface BookVisitV33Response {

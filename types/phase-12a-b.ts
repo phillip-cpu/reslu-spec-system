@@ -259,7 +259,22 @@ export type MyWorkItemKind =
   // not the ungated shape source #11 happens to use). `due` is always
   // set (sent_at's date), so this kind always lands in "overdue", never
   // "no_date" — same shape as trade_booking_followup above.
-  | "proposal_followup";
+  | "proposal_followup"
+  // QA fix round (r27) item 12 — "wire the dead attention aggregator":
+  // GET /api/projects/[id]/attention derives two groups
+  // (ordering_due + missing_lead_times) but had ZERO callers anywhere
+  // in the app. ordering_due is already independently covered by
+  // source #9 above (its own cross-project deriveOrderBy() call), so
+  // wiring THIS kind for it too would be a redundant duplicate line —
+  // missing_lead_times, by contrast, had no surface at all. See
+  // app/api/my-work/route.ts source #13, which reuses source #9's
+  // ALREADY-FETCHED unordered-items rows (lib/order-by.ts's
+  // missingLeadTimes() is a pure function over the same input, no
+  // second query) — one rollup line per project with >=1 unordered
+  // item missing a lead_time_weeks value. Admin-gated, same as
+  // ordering_due. `due` is always null (a data-hygiene nudge, not a
+  // deadline) — lands in "No date", same as cpd_nudge.
+  | "missing_lead_time";
 
 /**
  * One row in the My Work feed, normalised across five very different
