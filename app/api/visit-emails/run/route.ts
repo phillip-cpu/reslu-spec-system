@@ -13,6 +13,7 @@ import {
   sendOrQueue,
   suburbFrom,
 } from "@/lib/visit-emails";
+import { flushPendingProposalSends } from "@/lib/proposal-emails";
 import { briefUrlFor, buildLeadVisitCalendarAssets, ensureBriefToken } from "@/lib/lead-brief";
 import { reportError } from "@/lib/report-error";
 import type { VisitEmailsRunResult } from "@/types/visit-emails";
@@ -150,6 +151,19 @@ async function handle(request: NextRequest) {
       { error: err instanceof Error ? err.message : "Flush failed" },
       { status: 500 }
     );
+  }
+
+  // Proposal-sent emails share this same daily flush entry point (see
+  // lib/proposal-emails.ts's flushPendingProposalSends doc comment) —
+  // a failure here must not skip the reminder sweep below, same
+  // "one record's problem doesn't cost every other record" contract
+  // as the per-lead try/catch further down.
+  let proposalsFlushed;
+  try {
+    proposalsFlushed = await flushPendingProposalSends(supabase, now);
+  } catch (err) {
+    await reportError("proposal-emails", err);
+    proposalsFlushed = { sent: 0, skipped: 0, failed: 0, stillPending: 0 };
   }
 
   const reminders = { sent: 0, queued: 0, skipped: 0 };
@@ -296,7 +310,7 @@ async function handle(request: NextRequest) {
     else reminders.skipped++;
   }
 
-  const body: VisitEmailsRunResult = { flushed, reminders };
+  const body: VisitEmailsRunResult = { flushed, reminders, proposalsFlushed };
   return NextResponse.json(body);
 }
 

@@ -99,4 +99,5 @@ export interface EmailSendsResponse {
 export interface VisitEmailsRunResult {
   flushed: { sent: number; skipped: number; failed: number; stillPending: number };
   reminders: { sent: number; queued: number; skipped: number };
+  proposalsFlushed: { sent: number; skipped: number; failed: number; stillPending: number };
 }

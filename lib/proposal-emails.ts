@@ -164,6 +164,83 @@ export async function sendProposalEmail(
   }
 }
 
+export interface FlushPendingProposalResult {
+  sent: number;
+  skipped: number;
+  failed: number;
+  stillPending: number;
+}
+
+/**
+ * Flushes every due ('pending', scheduled_for <= now) 'proposal-sent'
+ * email_sends row — this template's own equivalent of
+ * lib/visit-emails.ts's flushPendingSends(), scoped to record_type=
+ * 'proposal' so it never touches that module's (or any other domain's)
+ * rows. QA fix round (r27): a proposal sent outside the 7am-7pm
+ * Adelaide window was queued 'pending' here but nothing ever flushed
+ * it — flushPendingSends() picked it up instead, choked on the
+ * unmapped template name, and left it stuck forever. Called from the
+ * same daily cron as that function (app/api/visit-emails/run/route.ts)
+ * since that's already this codebase's one "flush pending client
+ * emails" entry point.
+ */
+export async function flushPendingProposalSends(
+  supabase: SupabaseClient,
+  now: Date = new Date()
+): Promise<FlushPendingProposalResult> {
+  const result: FlushPendingProposalResult = { sent: 0, skipped: 0, failed: 0, stillPending: 0 };
+
+  if (!isWithinSendWindow(now)) {
+    return result;
+  }
+
+  const { data: rows, error } = await supabase
+    .from("email_sends")
+    .select("*")
+    .eq("record_type", "proposal")
+    .eq("template", "proposal-sent")
+    .eq("status", "pending")
+    .lte("scheduled_for", now.toISOString());
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  for (const row of rows ?? []) {
+    const detail = (row.detail ?? {}) as VisitEmailMergeData & { subject?: string };
+    const to = String(row.to_email)
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    try {
+      const html = merge(await loadProposalSentTemplate(), detail);
+      const sendResult = await sendViaResend({
+        to,
+        subject: detail.subject ?? "RESLU — your fee proposal",
+        html,
+      });
+      if (sendResult.skipped) {
+        await supabase.from("email_sends").update({ status: "skipped" }).eq("id", row.id);
+        result.skipped++;
+        continue;
+      }
+      await supabase
+        .from("email_sends")
+        .update({ status: "sent", sent_at: now.toISOString() })
+        .eq("id", row.id);
+      result.sent++;
+    } catch (err) {
+      await reportError("proposal-emails", err);
+      result.failed++;
+      result.stillPending++;
+      // Leave status = 'pending' — retried on the next in-window run.
+    }
+  }
+
+  return result;
+}
+
 /** Most recent email_sends row for this proposal's 'proposal-sent' template — used by both the resend route's dupe guard and the Builder UI's status chip. */
 export async function latestProposalSentRow(
   supabase: SupabaseClient,

@@ -651,10 +651,20 @@ export async function flushPendingSends(
     return result;
   }
 
+  // Scoped to the templates this module actually knows how to render
+  // (TEMPLATE_FILES' keys) — email_sends is a SHARED table (see e.g.
+  // lib/proposal-emails.ts's own 'proposal-sent' rows) and an
+  // unscoped query here previously picked up other domains' pending
+  // rows too, crashing loadTemplate() on an unmapped template name
+  // (path.join(..., undefined)) and leaving that row stuck 'pending'
+  // forever, erroring on every subsequent run. Bug found + fixed QA
+  // round (r27) — see lib/proposal-emails.ts's own flushPendingProposalSends
+  // for that domain's equivalent flush.
   const { data: rows, error } = await supabase
     .from("email_sends")
     .select("*")
     .eq("status", "pending")
+    .in("template", Object.keys(TEMPLATE_FILES))
     .lte("scheduled_for", now.toISOString());
 
   if (error) {
