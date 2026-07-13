@@ -5,6 +5,7 @@ import { groupMyWorkItems } from "@/lib/my-work";
 import { computeInsuranceStatus } from "@/lib/insurance";
 import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
 import { deriveOrderBy, formatOrderByWorksDate, missingLeadTimes, type OrderByContactInput, type OrderByItemInput, type WorksDateSource } from "@/lib/order-by";
+import { isDoneColumnName } from "@/lib/board-constants";
 import { FALLBACK_CPD_DEFAULTS, computeCpdYearWindow, formatPoints, isBehindPace, sumPoints } from "@/lib/cpd";
 import { isBookingRequestFollowupDue } from "@/lib/trade-booking";
 import { isProposalFollowupDue } from "@/lib/proposals";
@@ -166,6 +167,17 @@ export async function GET() {
     const columnById = new Map((columns ?? []).map((c) => [c.id, c]));
 
     for (const t of taskRows) {
+      // Phillip, 13 Jul 2026: board_tasks has no completed_at column —
+      // "done" is purely which column a task sits in (same convention
+      // lib/board-constants.ts's own group-summary chips already use).
+      // Without this check a task moved to a Done-named column sat in
+      // My Work forever, its own `meta` chip literally reading "Done"
+      // right next to it — confusing since board_task carries no
+      // checkbox at all (only office_task/design_task do), so there
+      // was no way to make it disappear short of leaving the assignee.
+      const columnName = columnById.get(t.column_id)?.name;
+      if (columnName && isDoneColumnName(columnName)) continue;
+
       const project = projectById.get(t.project_id);
       items.push({
         kind: "board_task",
@@ -182,7 +194,7 @@ export async function GET() {
         due: t.due_date,
         due_time: t.due_time,
         href: `/projects/${t.project_id}/board?focus=board_task-${t.id}`,
-        meta: columnById.get(t.column_id)?.name ?? null,
+        meta: columnName ?? null,
       });
     }
   }
