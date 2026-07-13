@@ -1008,3 +1008,48 @@ doing a coding-agent repair session** — it's the mini's own
 plain-script repair loop; an actual Claude Code session on the
 codebase only ever runs when Phillip explicitly starts one himself,
 entirely outside this queue.
+
+## Bunnings product scraping — fixed, read the actual code next time (14 Jul 2026)
+
+You (or whoever diagnosed this before you) reported the item scraper
+failing on `bunnings.com.au` and prescribed curl_cffi/Playwright plus
+watching for a `.product-price` DOM selector. **That diagnosis
+described an architecture this codebase doesn't have** — worth
+flagging plainly, because it's exactly the kind of miss this note
+exists to prevent: `lib/scraper/` has never used a headless browser at
+all, just a plain server-side `fetch()` (`lib/scraper/guard.ts`'s
+`fetchSafely()`) plus regex/JSON-LD extraction
+(`lib/scraper/extract.ts`) — no Playwright, no Puppeteer, nothing in
+`package.json` for either. Before diagnosing an infra problem in this
+repo, actually read the relevant `lib/` file first — a generically
+plausible-sounding explanation ("headless browser fingerprinting") can
+be completely wrong about what this specific app does, the way it was
+here.
+
+The real fix (already shipped, `lib/scraper/extract.ts`): Bunnings
+pages carry neither a JSON-LD `Product` block nor an `og:price` meta
+tag, so the two generic structured-data passes always fell through to
+the low-confidence text-price regex. But the page IS plain-fetchable —
+no browser, no login needed. Bunnings server-renders a Next.js
+`__NEXT_DATA__` script tag carrying the exact React Query result the
+client hydrates from: a `product-retail-price` query (`data.value`, a
+clean float, already in dollars) and a `retail-product` query
+(`data.images[].url`, full-res CDN URLs). `extractBunningsNextData()`
+parses that directly, gated by hostname (`isBunningsUrl()`) so no
+other supplier site's extraction path is touched. Verified against
+real downloaded Bunnings HTML before shipping — pulled the exact live
+price with a plain `curl` and a desktop `User-Agent`, nothing more.
+
+**Nothing changes in how you trigger a scrape.** `create_item`'s
+`product_url` field already runs this automatically; a Bunnings link
+pasted there (or set via an item update) now just returns real
+price/images instead of failing. `wilbrad.com.au` (the other site
+`get_materials_needing_aria`'s doc comment names above) is UNCHANGED —
+still needs the manual `submit_material_price` fallback for materials,
+and item scraping from Wilbrad still goes through the generic chain
+(no Wilbrad-specific parser exists yet). Dimensions are deliberately
+NOT auto-filled from Bunnings — its width/height/depth labels don't
+map cleanly onto this schema's width/height/length/depth per product
+category (a plank's "depth" is actually its cut length; a cabinet's
+genuinely isn't) — guessing wrong would silently corrupt a field, so
+that's left for a human to enter, same as it already was.
