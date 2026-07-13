@@ -543,12 +543,97 @@ function extractDocuments(html: string, baseUrl: string): DetectedDocument[] {
 }
 
 // ------------------------------------------------------------
+// Bunnings (bunnings.com.au) — site-specific extraction.
+// Confirmed by direct inspection (14 Jul 2026): Bunnings product pages
+// carry neither a JSON-LD Product block nor a product:price:amount/
+// og:price:amount meta tag, so the two generic structured-data passes
+// above always fall through to the low-confidence text-price regex /
+// raw <img> scan for this one site. The page IS plain-fetchable with
+// no browser though (Aria's headless-browser-fingerprint-blocking
+// diagnosis doesn't match what this pipeline actually does, or what
+// Bunnings actually returns to a plain GET) — Bunnings server-renders
+// a Next.js `__NEXT_DATA__` script tag carrying the exact same React
+// Query result the client hydrates from, including a
+// `product-retail-price` query (data.value, a clean float, already in
+// dollars) and a `retail-product` query (data.images[].url, full-res
+// CDN URLs). Parsed first, ahead of the generic chain in
+// extractFromHtml below, since it's the most structured source
+// available for this specific site — not a general per-site plugin
+// system (only one site needs this today; see this file's own header
+// comment on why a real HTML parser isn't available here either).
+// Deliberately does NOT attempt dimensions: Bunnings' own dimension
+// object uses width/height/depth keys whose real-world meaning varies
+// by product category (for timber, "depth" is actually the cut
+// length; for a cabinet it would be genuine depth) — guessing wrong
+// would silently corrupt a field, worse than leaving it for the
+// existing best-effort text fallback (dimensionsFromText, unaffected
+// by this block) to maybe pick up instead.
+// ------------------------------------------------------------
+
+function isBunningsUrl(pageUrl: string): boolean {
+  try {
+    return /(^|\.)bunnings\.com\.au$/i.test(new URL(pageUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+interface BunningsNextDataQuery {
+  queryKey?: unknown[];
+  state?: { data?: unknown };
+}
+
+function extractBunningsNextData(html: string): { price: number | null; images: string[] } {
+  const result: { price: number | null; images: string[] } = { price: null, images: [] };
+  const m = /<script id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i.exec(html);
+  if (!m) return result;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(m[1]);
+  } catch {
+    return result;
+  }
+
+  const queries = (
+    parsed as {
+      props?: { pageProps?: { dehydratedState?: { queries?: BunningsNextDataQuery[] } } };
+    }
+  )?.props?.pageProps?.dehydratedState?.queries;
+  if (!Array.isArray(queries)) return result;
+
+  for (const q of queries) {
+    const key = Array.isArray(q.queryKey) ? q.queryKey[0] : undefined;
+    const data = q.state?.data;
+    if (!data || typeof data !== "object") continue;
+
+    if (key === "product-retail-price") {
+      const value = (data as { value?: unknown }).value;
+      const n = typeof value === "number" ? value : Number(value);
+      if (Number.isFinite(n) && n >= MIN_PRICE && n <= MAX_PRICE) result.price = n;
+    } else if (key === "retail-product") {
+      const images = (data as { images?: unknown }).images;
+      if (Array.isArray(images)) {
+        for (const img of images) {
+          const url = (img as { url?: unknown })?.url;
+          if (typeof url === "string" && url) result.images.push(url);
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+// ------------------------------------------------------------
 // Public entry point
 // ------------------------------------------------------------
 
 /**
  * Extracts price, images, and detected PDF documents from a product
  * page's HTML. Priority order (per BUILD-SPEC.md):
+ *   0. Site-specific (currently just Bunnings — see
+ *      extractBunningsNextData's own header comment)
  *   1. JSON-LD Product (offers.price, image)
  *   2. OpenGraph / product meta tags (og:image, product:price:amount)
  *   3. Fallback: <img> collection + price regex on visible text
@@ -557,19 +642,27 @@ function extractDocuments(html: string, baseUrl: string): DetectedDocument[] {
  */
 export function extractFromHtml(html: string, pageUrl: string): ExtractResult {
   try {
+    // 0. Site-specific — see extractBunningsNextData's own header
+    // comment for why this runs ahead of the generic chain.
+    const bunnings = isBunningsUrl(pageUrl)
+      ? extractBunningsNextData(html)
+      : { price: null as number | null, images: [] as string[] };
+
     const ldBlocks = extractJsonLdBlocks(html);
     const products: JsonLdProduct[] = [];
     for (const block of ldBlocks) findProductNodes(block, products);
 
-    let price: number | null = null;
-    let priceConfidence: ExtractResult["priceConfidence"] = "none";
-    let images: string[] = [];
+    let price: number | null = bunnings.price;
+    let priceConfidence: ExtractResult["priceConfidence"] = bunnings.price !== null ? "high" : "none";
+    let images: string[] = [...bunnings.images];
 
     // 1. JSON-LD
-    const ldPrice = priceFromJsonLd(products);
-    if (ldPrice !== null) {
-      price = ldPrice;
-      priceConfidence = "high";
+    if (price === null) {
+      const ldPrice = priceFromJsonLd(products);
+      if (ldPrice !== null) {
+        price = ldPrice;
+        priceConfidence = "high";
+      }
     }
     const ldImages = imagesFromJsonLd(products)
       .map((i) => absolutise(i, pageUrl))
