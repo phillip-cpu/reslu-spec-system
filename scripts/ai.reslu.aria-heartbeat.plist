@@ -3,21 +3,11 @@
 <!--
   Step 12 aria_queue heartbeat schedule (Mac mini).
 
-  Frequent by design — the whole point of a heartbeat is a cheap,
-  regular check that costs nothing when idle. StartInterval=120 (2
-  min) is a reasonable starting cadence; tighten or loosen once
-  wake_aria() is actually finished and you can see real behaviour.
-  Same ai.reslu.* LaunchAgent convention as
-  ai.reslu.email-ingest.plist (Step 8).
+  Checks aria_queue for pending items every 5 minutes. If any are
+  found, injects a system event via `openclaw system event --mode now`
+  to wake Aria immediately. Zero pending = exit 0, zero cost.
 
-  Uses plain python3 (stdlib only, no venv needed — see
-  aria_heartbeat.py's own header) rather than the
-  .venv-email-ingest interpreter that script needs for its
-  talon/pdftotext dependencies.
-
-  Install (does NOT run until you load it — validate with a manual
-  `python3 scripts/aria_heartbeat.py` run first, and finish
-  wake_aria() before enabling on a schedule):
+  Install:
     cp scripts/ai.reslu.aria-heartbeat.plist ~/Library/LaunchAgents/
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.reslu.aria-heartbeat.plist
     launchctl kickstart -p gui/$(id -u)/ai.reslu.aria-heartbeat   # optional: run once now
@@ -31,13 +21,13 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
+        <string>/opt/homebrew/bin/python3</string>
         <string>/Users/vale/reslu-spec-system/scripts/aria_heartbeat.py</string>
     </array>
 
-    <!-- 2-minute cadence — cheap enough to run often, see header note. -->
+    <!-- 5-minute cadence — cheap count check costs zero tokens when queue is empty. -->
     <key>StartInterval</key>
-    <integer>120</integer>
+    <integer>300</integer>
 
     <key>StandardOutPath</key>
     <string>/Users/vale/.openclaw/workspace/vault/agent-openclaw/daily/aria-heartbeat.log</string>
@@ -49,6 +39,7 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <!-- openclaw lives in /opt/homebrew/bin -->
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>

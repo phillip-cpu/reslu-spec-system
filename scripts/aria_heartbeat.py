@@ -82,15 +82,48 @@ def get_pending_queue_count(supabase_url: str, service_role_key: str) -> int:
 
 def wake_aria(pending_count: int) -> None:
     """
-    STUB — finish this on the Mac mini, where OpenClaw/Aria's actual
-    invocation mechanism is visible. Whatever this becomes, it should
-    NOT itself claim queue rows (that's get_aria_queue, the Step 2 MCP
-    tool, Aria's own job once she's awake) — this function's only
-    responsibility is triggering her to start, given there is
-    confirmed work waiting.
+    Inject a system event on the OpenClaw main session and trigger an
+    immediate heartbeat wake via `openclaw system event --mode now`.
+
+    This is the local-only invocation path — the Gateway runs on this
+    machine (port 18789, no auth token required for loopback calls), so
+    a plain subprocess call is enough. The event lands as a System: line
+    in the next agent prompt, which tells Aria there is confirmed work
+    waiting. She then calls get_aria_queue herself to claim and process
+    the rows — this function's only job is the nudge, not the claiming.
     """
-    print(f"[aria-heartbeat] {pending_count} pending item(s) — wake mechanism not yet wired on this machine.")
-    sys.exit(1)
+    import subprocess
+
+    text = (
+        f"[aria-heartbeat] {pending_count} pending aria_queue item(s) detected. "
+        "Please run get_aria_queue and process them now."
+    )
+    try:
+        result = subprocess.run(
+            ["openclaw", "system", "event", "--text", text, "--mode", "now", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            print(f"[aria-heartbeat] woke Aria — {pending_count} pending item(s).")
+            sys.exit(0)
+        else:
+            print(
+                f"[aria-heartbeat] openclaw system event failed (rc={result.returncode}): "
+                f"{result.stderr.strip() or result.stdout.strip()}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    except FileNotFoundError:
+        print(
+            "[aria-heartbeat] 'openclaw' not found in PATH — is it installed at /opt/homebrew/bin/openclaw?",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except subprocess.TimeoutExpired:
+        print("[aria-heartbeat] openclaw system event timed out after 30s.", file=sys.stderr)
+        sys.exit(1)
 
 
 def main() -> None:
