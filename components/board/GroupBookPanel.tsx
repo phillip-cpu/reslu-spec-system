@@ -433,6 +433,14 @@ export function GroupBookPanel({
     }
   }
 
+  const selectedMissingDateCount = [...selectedTaskIds].filter((id) => {
+    const task = allTasks.find((candidate) => candidate.id === id);
+    const draft = draftFor(
+      task ?? ({ id, booking_date: null, booking_end_date: null } as GroupableTask)
+    );
+    return !draft.start || !draft.end;
+  }).length;
+
   function TaskRow({ task }: { task: GroupableTask }) {
     const draft = draftFor(task);
     const checked = selectedTaskIds.has(task.id);
@@ -616,23 +624,33 @@ export function GroupBookPanel({
             {error && <p className="border border-red-700/40 bg-red-50 px-3 py-2 text-body text-red-700">{error}</p>}
 
             {contactId && selectedTaskIds.size > 0 && (
-              <div className="border border-sand bg-offwhite px-3 py-2 text-caption text-charcoal/70">
-                Ready to send {selectedTaskIds.size} booking line{selectedTaskIds.size === 1 ? "" : "s"} to{" "}
-                <span className="text-nearblack">{contacts.find((c) => c.id === contactId)?.company ?? "the selected trade"}</span>
-                {contactEmails.get(contactId) ? ` at ${contactEmails.get(contactId)}` : ". No email address is currently on file."}
+              <div className={`border px-3 py-2 text-caption ${selectedMissingDateCount > 0 ? "border-amber-700/40 bg-amber-50 text-amber-800" : "border-sand bg-offwhite text-charcoal/70"}`}>
+                {selectedMissingDateCount > 0 ? (
+                  <>
+                    {selectedMissingDateCount} selected line{selectedMissingDateCount === 1 ? "" : "s"} still need{selectedMissingDateCount === 1 ? "s" : ""} a start and end date above.
+                  </>
+                ) : (
+                  <>
+                    Ready to send {selectedTaskIds.size} booking line{selectedTaskIds.size === 1 ? "" : "s"} to{" "}
+                    <span className="text-nearblack">{contacts.find((c) => c.id === contactId)?.company ?? "the selected trade"}</span>
+                    {contactEmails.get(contactId) ? ` at ${contactEmails.get(contactId)}` : ". No email address is currently on file."}
+                  </>
+                )}
               </div>
             )}
 
             <button
               type="button"
               onClick={send}
-              disabled={saving || !contactId || selectedTaskIds.size === 0}
+              disabled={saving || !contactId || selectedTaskIds.size === 0 || selectedMissingDateCount > 0}
               className="w-full bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal disabled:opacity-60"
             >
               {saving
                 ? "Creating booking and sending email…"
                 : selectedTaskIds.size > 0
-                  ? `Send ${selectedTaskIds.size} booking line${selectedTaskIds.size === 1 ? "" : "s"}`
+                  ? selectedMissingDateCount > 0
+                    ? `Add dates to ${selectedMissingDateCount} line${selectedMissingDateCount === 1 ? "" : "s"}`
+                    : `Send ${selectedTaskIds.size} booking line${selectedTaskIds.size === 1 ? "" : "s"}`
                   : "Send booking request"}
             </button>
           </div>
