@@ -42,7 +42,7 @@
 import { pipeline, env, type FeatureExtractionPipeline } from "@huggingface/transformers";
 
 const MODEL = "Supabase/gte-small";
-const BATCH_SIZE = 32; // Conservative — real in-process inference, not a network call; keeps memory bounded per batch in a serverless function.
+const BATCH_SIZE = 8;
 
 env.cacheDir = "/tmp/hf-cache";
 
@@ -50,7 +50,10 @@ let pipelinePromise: Promise<FeatureExtractionPipeline> | null = null;
 
 function getPipeline(): Promise<FeatureExtractionPipeline> {
   if (!pipelinePromise) {
-    pipelinePromise = pipeline("feature-extraction", MODEL) as Promise<FeatureExtractionPipeline>;
+    // Vercel's default Node function memory is not large enough for the fp32
+    // model once ONNX has allocated its working buffers. The model repository
+    // ships a q8 ONNX build with the same 384-dimensional output contract.
+    pipelinePromise = pipeline("feature-extraction", MODEL, { dtype: "q8" }) as Promise<FeatureExtractionPipeline>;
   }
   return pipelinePromise;
 }
