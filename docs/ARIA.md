@@ -737,7 +737,7 @@ A separate subsystem from everything above: a work queue you poll instead of bei
 
 Kinds you'll see: `price_request` (a material's automated price refresh failed, needs manual lookup — use `submit_material_price`), `trade_reminder`, `lead_flag`, `approval_needed` (a Step 10 entity match landed in the 0.60-0.90 confidence band, or a Step 11 fact failed the verification gate — see below), `email_proposal` (a Step 11 proposal ready for Phillip's review — surface it to him, don't approve it yourself without his say-so), and `daily_review` / `weekly_review` (the proactive operating cadence described below).
 
-**Heartbeat**: `scripts/aria_heartbeat.py` (Mac mini) checks pending rows plus abandoned `picked_up` rows older than 15 minutes via bare REST count queries. Zero rows costs zero tokens and invokes no model. Work waiting triggers `openclaw system event --mode now`, which wakes the main session with instructions to claim the batch. The supplied launchd plist runs this check every five minutes and survives reboots.
+**Heartbeat**: `scripts/aria_heartbeat.py` (Mac mini) checks pending rows plus abandoned `picked_up` rows older than 15 minutes via bare REST count queries. Zero rows costs zero tokens and invokes no model. Work waiting triggers `openclaw system event --mode now`, which wakes the main session with instructions to claim the batch. The supplied launchd plist runs this check every five minutes and survives reboots. After a successful event, a local 20-minute cooldown suppresses duplicate wake events while the current session is working; an empty queue clears that cooldown immediately, and a failed event is retried on the next five-minute check.
 
 ### Proactive operating loop
 

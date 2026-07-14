@@ -13,7 +13,10 @@ The count check costs zero tokens and invokes no model when there is no
 work. Pending rows AND abandoned picked_up rows older than the queue's
 15-minute visibility timeout are counted, matching the database claim
 function exactly. When work exists the script injects a trusted system
-event into OpenClaw and wakes Aria immediately.
+event into OpenClaw and wakes Aria immediately. A successful wake starts
+a 20-minute local cooldown so the five-minute launchd check cannot keep
+injecting duplicate events into a session that is already working. An
+empty queue clears the cooldown immediately.
 
 Only stdlib (urllib) — no new dependency for a single cheap HTTP call,
 matching this whole build's "don't add a dependency you don't need"
@@ -32,6 +35,10 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
+
+
+WAKE_COOLDOWN = timedelta(minutes=20)
+DEFAULT_STATE_PATH = Path.home() / ".openclaw" / "aria-heartbeat-state.json"
 
 
 def load_env_file(path: Path) -> None:
@@ -98,7 +105,65 @@ def get_actionable_queue_count(supabase_url: str, service_role_key: str) -> int:
     return pending + abandoned
 
 
-def wake_aria(pending_count: int) -> None:
+def heartbeat_state_path() -> Path:
+    """Return the local wake-state path, with an override for tests/ops."""
+    configured = os.environ.get("ARIA_HEARTBEAT_STATE_PATH")
+    return Path(configured).expanduser() if configured else DEFAULT_STATE_PATH
+
+
+def _last_successful_wake(path: Path) -> datetime | None:
+    try:
+        payload = json.loads(path.read_text())
+        value = payload.get("last_successful_wake_at")
+        if not isinstance(value, str):
+            return None
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
+        # Missing/corrupt state must never suppress a real wake.
+        return None
+
+
+def wake_cooldown_remaining(path: Path, now: datetime | None = None) -> timedelta:
+    """How long until another successful wake may be injected."""
+    last_wake = _last_successful_wake(path)
+    if last_wake is None:
+        return timedelta(0)
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return max(timedelta(0), WAKE_COOLDOWN - (current - last_wake))
+
+
+def record_successful_wake(
+    path: Path,
+    pending_count: int,
+    now: datetime | None = None,
+) -> None:
+    """Atomically persist the last successful OpenClaw wake."""
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    temporary.write_text(
+        json.dumps(
+            {
+                "last_successful_wake_at": current.isoformat(),
+                "pending_count": pending_count,
+            }
+        )
+    )
+    temporary.replace(path)
+
+
+def clear_wake_state(path: Path) -> None:
+    """Reset throttling once the queue is empty so new work wakes promptly."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def wake_aria(pending_count: int) -> bool:
     """
     Inject a system event on the OpenClaw main session and trigger an
     immediate heartbeat wake via `openclaw system event --mode now`.
@@ -129,23 +194,23 @@ def wake_aria(pending_count: int) -> None:
         )
         if result.returncode == 0:
             print(f"[aria-heartbeat] woke Aria — {pending_count} pending item(s).")
-            sys.exit(0)
+            return True
         else:
             print(
                 f"[aria-heartbeat] openclaw system event failed (rc={result.returncode}): "
                 f"{result.stderr.strip() or result.stdout.strip()}",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            return False
     except FileNotFoundError:
         print(
             "[aria-heartbeat] 'openclaw' not found in PATH — is it installed at /opt/homebrew/bin/openclaw?",
             file=sys.stderr,
         )
-        sys.exit(1)
+        return False
     except subprocess.TimeoutExpired:
         print("[aria-heartbeat] openclaw system event timed out after 30s.", file=sys.stderr)
-        sys.exit(1)
+        return False
 
 
 def main() -> None:
@@ -163,12 +228,28 @@ def main() -> None:
         print(f"[aria-heartbeat] Queue count check failed: {exc}", file=sys.stderr)
         sys.exit(2)
 
+    state_path = heartbeat_state_path()
     if pending == 0:
         # Zero rows = exit, no model invoked, zero token cost — the
-        # entire point of this script.
-        sys.exit(0)
+        # entire point of this script. Clearing the successful-wake
+        # state lets the next genuinely new item wake Aria immediately.
+        clear_wake_state(state_path)
+        return
 
-    wake_aria(pending)
+    cooldown = wake_cooldown_remaining(state_path)
+    if cooldown > timedelta(0):
+        minutes = max(1, int((cooldown.total_seconds() + 59) // 60))
+        print(
+            f"[aria-heartbeat] {pending} pending item(s); wake already sent — "
+            f"retry available in about {minutes} minute(s)."
+        )
+        return
+
+    if wake_aria(pending):
+        record_successful_wake(state_path, pending)
+        return
+
+    sys.exit(1)
 
 
 if __name__ == "__main__":
