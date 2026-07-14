@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import type { ContactPickerOption } from "@/types/board-cockpit";
 import type { DocumentPackChoices } from "@/types/trade-doc-pack";
 import type { GroupableTask, CreateTradeBookingRequestResponse } from "@/types/round-grouped-trade-booking";
@@ -87,15 +88,18 @@ interface DateDraft {
 export function GroupBookPanel({
   projectId,
   seedTaskIds,
+  onCreated,
   onClose,
 }: {
   projectId: string;
   /** Task ids to seed this panel's selection with — see this file's own header comment for the two calling shapes (multi-id "selected rows" vs single-id "per-item Book trade"). Omit/empty for a blank panel (contact picker only, nothing pre-checked). */
   seedTaskIds?: string[];
+  onCreated?: () => void;
   onClose: () => void;
 }) {
   const [contacts, setContacts] = useState<ContactPickerOption[]>([]);
   const [contactCategories, setContactCategories] = useState<ContactCategoryLookup[]>([]);
+  const [contactEmails, setContactEmails] = useState<Map<string, string | null>>(new Map());
   const [allTasks, setAllTasks] = useState<GroupableTask[]>([]);
   const [presets, setPresets] = useState<ExportPresetRow[]>([]);
   const [plansAvailability, setPlansAvailability] = useState<PlansAvailability>({ hasPlans: false, latestLabel: null });
@@ -117,6 +121,7 @@ export function GroupBookPanel({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CreateTradeBookingRequestResponse | null>(null);
+  const [copyNotice, setCopyNotice] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -129,9 +134,10 @@ export function GroupBookPanel({
     ])
       .then(([contactsBody, boardBody, presetsBody, filesBody, sowBody]) => {
         if (cancelled) return;
-        const rawContacts: (ContactPickerOption & { category?: string | null })[] = contactsBody.contacts ?? [];
+        const rawContacts: (ContactPickerOption & { category?: string | null; email?: string | null })[] = contactsBody.contacts ?? [];
         setContacts(rawContacts);
         setContactCategories(rawContacts.map((c) => ({ id: c.id, category: c.category ?? null })));
+        setContactEmails(new Map(rawContacts.map((c) => [c.id, c.email ?? null])));
         setPresets(presetsBody.presets ?? []);
 
         type BoardTaskRow = {
@@ -407,11 +413,23 @@ export function GroupBookPanel({
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Could not send the request.");
-      setResult(json);
+      setResult(json as CreateTradeBookingRequestResponse);
+      onCreated?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not send the request.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function copyBookingLink() {
+    if (!result) return;
+    const url = `${window.location.origin}/trade-request/${result.request.token}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopyNotice("Booking link copied.");
+    } catch {
+      setCopyNotice("Could not copy automatically — open the status page to copy it.");
     }
   }
 
@@ -467,19 +485,53 @@ export function GroupBookPanel({
         </div>
 
         {result ? (
-          <div className="mt-3 space-y-2">
-            <p className="border border-sand bg-cream px-3 py-2 text-body text-charcoal">
-              {result.email_sent
-                ? `Request sent to ${contacts.find((c) => c.id === contactId)?.company ?? "the trade"} — ${result.visit_ids.length} line${result.visit_ids.length === 1 ? "" : "s"}.`
-                : `Request created (${result.visit_ids.length} line${result.visit_ids.length === 1 ? "" : "s"}) — email not sent: ${result.email_skip_reason ?? "unknown reason"}.`}
-            </p>
+          <div className="mt-4 space-y-3">
+            <div className="border border-sand bg-offwhite px-4 py-4">
+              <p className="label-caps">
+                {result.email_action === "sent"
+                  ? "Booking request sent"
+                  : result.email_action === "queued"
+                    ? "Booking request queued"
+                    : "Booking created — email needs attention"}
+              </p>
+              <p className="mt-2 text-subhead text-nearblack">
+                {contacts.find((c) => c.id === contactId)?.company ?? "Trade"}
+              </p>
+              <p className="mt-1 text-body text-charcoal/70">
+                {result.visit_ids.length} booking line{result.visit_ids.length === 1 ? "" : "s"}
+                {contactId && contactEmails.get(contactId) ? ` · ${contactEmails.get(contactId)}` : ""}
+              </p>
+              <p className="mt-3 text-body text-charcoal/70">
+                {result.email_action === "sent"
+                  ? "Resend accepted the email. The status page will now show delivery, booking-page opens and the trade's response."
+                  : result.email_action === "queued"
+                    ? `The email is safely queued${result.email_scheduled_for ? ` for ${new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Adelaide", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }).format(new Date(result.email_scheduled_for))}` : ""}.`
+                    : result.email_skip_reason ?? "The email has not been sent."}
+              </p>
+            </div>
+            {copyNotice && <p className="border border-[#dcd6cc] bg-nearwhite px-3 py-2 text-caption text-charcoal">{copyNotice}</p>}
             {result.skipped.length > 0 && (
               <p className="border border-[#dcd6cc] bg-nearwhite px-3 py-2 text-caption text-charcoal/70">
                 {result.skipped.length} task{result.skipped.length === 1 ? "" : "s"} skipped (already in an open request, or not found).
               </p>
             )}
-            <button type="button" onClick={onClose} className="w-full bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal">
-              Close
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Link
+                href={`/trade-requests/${result.request.id}`}
+                className="bg-nearblack px-4 py-2 text-center text-subhead text-white hover:bg-charcoal"
+              >
+                View delivery & response
+              </Link>
+              <button
+                type="button"
+                onClick={copyBookingLink}
+                className="border border-nearblack px-4 py-2 text-subhead text-nearblack hover:bg-nearblack hover:text-white"
+              >
+                Copy booking link
+              </button>
+            </div>
+            <button type="button" onClick={onClose} className="w-full text-caption text-charcoal/60 underline hover:text-nearblack">
+              Close and return to board
             </button>
           </div>
         ) : loading ? (
@@ -563,13 +615,25 @@ export function GroupBookPanel({
 
             {error && <p className="border border-red-700/40 bg-red-50 px-3 py-2 text-body text-red-700">{error}</p>}
 
+            {contactId && selectedTaskIds.size > 0 && (
+              <div className="border border-sand bg-offwhite px-3 py-2 text-caption text-charcoal/70">
+                Ready to send {selectedTaskIds.size} booking line{selectedTaskIds.size === 1 ? "" : "s"} to{" "}
+                <span className="text-nearblack">{contacts.find((c) => c.id === contactId)?.company ?? "the selected trade"}</span>
+                {contactEmails.get(contactId) ? ` at ${contactEmails.get(contactId)}` : ". No email address is currently on file."}
+              </div>
+            )}
+
             <button
               type="button"
               onClick={send}
               disabled={saving || !contactId || selectedTaskIds.size === 0}
               className="w-full bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal disabled:opacity-60"
             >
-              {saving ? "Sending…" : "Send request"}
+              {saving
+                ? "Creating booking and sending email…"
+                : selectedTaskIds.size > 0
+                  ? `Send ${selectedTaskIds.size} booking line${selectedTaskIds.size === 1 ? "" : "s"}`
+                  : "Send booking request"}
             </button>
           </div>
         )}

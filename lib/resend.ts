@@ -26,6 +26,9 @@
 export interface ResendSendResult {
   skipped: boolean;
   reason?: string;
+  /** Resend's durable email id. Stored on email_sends so signed
+   * delivery/open/bounce webhooks can be attached to the exact send. */
+  providerMessageId?: string;
 }
 
 /** Resend's attachment shape: base64-encoded file content + filename.
@@ -100,5 +103,9 @@ export async function sendViaResend({
     const text = await res.text().catch(() => "");
     throw new Error(`Resend send failed (${res.status}): ${text.slice(0, 300)}`);
   }
-  return { skipped: false };
+  const responseBody = (await res.json().catch(() => ({}))) as { id?: unknown };
+  return {
+    skipped: false,
+    ...(typeof responseBody.id === "string" ? { providerMessageId: responseBody.id } : {}),
+  };
 }

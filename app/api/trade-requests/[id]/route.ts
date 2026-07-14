@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import type { TradeBookingRequestDetail, TradeBookingRequestLine } from "@/types/round-grouped-trade-booking";
+import {
+  countTradeBookingLines,
+  deriveTradeBookingProgress,
+  tradeBookingEmailEvidenceFromRow,
+} from "@/lib/trade-booking-progress";
 
 export const runtime = "nodejs";
 
@@ -36,7 +41,7 @@ export async function GET(
     return NextResponse.json({ error: "Request not found" }, { status: 404 });
   }
 
-  const [{ data: project }, { data: contact }, { data: visits }] = await Promise.all([
+  const [{ data: project }, { data: contact }, { data: visits }, { data: latestEmail }] = await Promise.all([
     supabase.from("projects").select("id,name").eq("id", bookingRequest.project_id).maybeSingle(),
     bookingRequest.contact_id
       ? supabase.from("contacts").select("id,company,contact_name,email").eq("id", bookingRequest.contact_id).maybeSingle()
@@ -46,6 +51,15 @@ export async function GET(
       .select("id,phase_id,start_date,end_date,status,line_status,suggested_start,suggested_end,response_note,deleted_at")
       .eq("booking_request_id", id)
       .is("deleted_at", null),
+    supabase
+      .from("email_sends")
+      .select("*")
+      .eq("record_type", "trade_booking_request")
+      .eq("record_id", id)
+      .eq("template", "trade-booking-request")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
   ]);
 
   const visitRows = visits ?? [];
@@ -87,6 +101,8 @@ export async function GET(
     };
   });
 
+  const email = tradeBookingEmailEvidenceFromRow(latestEmail as Record<string, unknown> | null);
+  const counts = countTradeBookingLines(lines);
   const detail: TradeBookingRequestDetail = {
     request: bookingRequest,
     project: project ? { id: project.id, name: project.name } : null,
@@ -94,6 +110,13 @@ export async function GET(
       ? { id: contact.id, company: contact.company, contact_name: contact.contact_name, email: contact.email }
       : null,
     lines,
+    email,
+    counts,
+    progress: deriveTradeBookingProgress({
+      request: bookingRequest,
+      email,
+      counts,
+    }),
   };
 
   return NextResponse.json(detail);

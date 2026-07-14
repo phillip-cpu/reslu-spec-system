@@ -66,17 +66,6 @@ export async function POST(
     );
   }
 
-  const { data: claimed, error: claimError } = await supabase.rpc("claim_trade_request_resend", {
-    p_request_id: id,
-    p_guard_ms: DUPLICATE_GUARD_MS,
-  });
-  if (claimError) {
-    return NextResponse.json({ error: claimError.message }, { status: 500 });
-  }
-  if (!claimed) {
-    return NextResponse.json({ error: "This request was just resent — please wait a moment." }, { status: 429 });
-  }
-
   const [{ data: project }, { data: contact }, { data: visits }] = await Promise.all([
     supabase.from("projects").select("id,name,address").eq("id", bookingRequest.project_id).maybeSingle(),
     bookingRequest.contact_id
@@ -102,6 +91,36 @@ export async function POST(
   }
   if (!contact.email) {
     return NextResponse.json({ error: "This contact has no email on file." }, { status: 400 });
+  }
+
+  const { data: latestSend } = await supabase
+    .from("email_sends")
+    .select("status,scheduled_for")
+    .eq("record_type", "trade_booking_request")
+    .eq("record_id", id)
+    .eq("template", "trade-booking-request")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (latestSend?.status === "pending") {
+    return NextResponse.json(
+      { error: "This booking email is already queued and has not been lost." },
+      { status: 409 }
+    );
+  }
+
+  // Claim only after every recoverable validation above has passed.
+  // A missing email address must not consume the two-minute resend
+  // guard and then block the user immediately after they fix it.
+  const { data: claimed, error: claimError } = await supabase.rpc("claim_trade_request_resend", {
+    p_request_id: id,
+    p_guard_ms: DUPLICATE_GUARD_MS,
+  });
+  if (claimError) {
+    return NextResponse.json({ error: claimError.message }, { status: 500 });
+  }
+  if (!claimed) {
+    return NextResponse.json({ error: "This request was just resent — please wait a moment." }, { status: 429 });
   }
 
   const visitIds = outstandingVisits.map((v) => v.id);
@@ -145,8 +164,18 @@ export async function POST(
     visitDatetime: new Date().toISOString(),
   });
 
+  if (result.action === "sent" && !bookingRequest.sent_at) {
+    await supabase
+      .from("trade_booking_requests")
+      .update({ sent_at: result.sentAt ?? new Date().toISOString() })
+      .eq("id", id)
+      .is("sent_at", null);
+  }
+
   return NextResponse.json({
     email_sent: result.action === "sent",
+    email_action: result.action,
+    email_scheduled_for: result.scheduledFor,
     email_skip_reason: result.action === "sent" ? undefined : result.reason,
   });
 }

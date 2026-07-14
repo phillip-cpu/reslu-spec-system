@@ -41,6 +41,7 @@ import { ContactPicker } from "@/components/shared/ContactPicker";
 import { GroupBookPanel } from "./GroupBookPanel";
 import { MilestoneDiaryPrompt } from "./MilestoneDiaryPrompt";
 import { AttentionBanner } from "./AttentionBanner";
+import { TradeBookingStatusPanel } from "./TradeBookingStatusPanel";
 // Board v3.3 — shared with GanttChart.tsx's own identical "Dates
 // changed — re-send confirmation?" affordance, not duplicated here.
 import { ReconfirmAffordance } from "@/components/gantt/ReconfirmAffordance";
@@ -202,6 +203,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   // this repair) — flagged here, and in this round's own docs/API.md
   // section, so it isn't mistaken for live code again.
   const [groupBookSeed, setGroupBookSeed] = useState<string[] | null>(null);
+  const [bookingRefreshKey, setBookingRefreshKey] = useState(0);
   // Booking selection v2 (r24) — row/card-edge checkboxes on both board
   // views (StackedColumnSection's "board rows" and GroupRows' "phase-
   // card item rows" — BUILD-SPEC.md item 1). Board-level (not per-view)
@@ -1010,6 +1012,8 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
           had zero callers before this round). */}
       <AttentionBanner projectId={projectId} />
 
+      <TradeBookingStatusPanel projectId={projectId} refreshKey={bookingRefreshKey} />
+
       {/* Booking selection v2 (r24) — board-wide selection action bar.
           Appears whenever at least one row/card-edge checkbox is ticked
           (StackedColumnSection's board rows or GroupRows' phase-card
@@ -1158,6 +1162,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
         <GroupBookPanel
           projectId={projectId}
           seedTaskIds={groupBookSeed}
+          onCreated={() => setBookingRefreshKey((value) => value + 1)}
           onClose={() => {
             setGroupBookSeed(null);
             setSelectedTaskIds(new Set());

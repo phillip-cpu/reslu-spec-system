@@ -382,6 +382,7 @@ const RESEND_REPLY_TO = "phillip@reslu.com.au";
 export interface ResendSendResult {
   skipped: boolean;
   reason?: string;
+  providerMessageId?: string;
 }
 
 export function isResendConfigured(): boolean {
@@ -484,6 +485,9 @@ export type SendOrQueueAction = "sent" | "queued" | "skipped" | "duplicate";
 export interface SendOrQueueResult {
   action: SendOrQueueAction;
   reason?: string;
+  providerMessageId?: string;
+  scheduledFor?: string;
+  sentAt?: string;
 }
 
 /**
@@ -518,6 +522,19 @@ export async function sendOrQueue(
   const now = input.now ?? new Date();
 
   if (to.length === 0) {
+    await supabase.from("email_sends").insert({
+      record_type: recordType,
+      record_id: recordId,
+      template,
+      to_email: "",
+      status: "skipped",
+      detail: {
+        ...mergeData,
+        subject,
+        visit_datetime: visitDatetime,
+        reason: "No recipient email on file",
+      },
+    });
     return { action: "skipped", reason: "No recipient email on file" };
   }
 
@@ -565,16 +582,21 @@ export async function sendOrQueue(
   }
 
   if (!isWithinSendWindow(now)) {
+    const scheduledFor = nextAdelaide7am(now).toISOString();
     await supabase.from("email_sends").insert({
       record_type: recordType,
       record_id: recordId,
       template,
       to_email: to.join(", "),
       status: "pending",
-      scheduled_for: nextAdelaide7am(now).toISOString(),
+      scheduled_for: scheduledFor,
       detail,
     });
-    return { action: "queued", reason: "Outside 7am-7pm Adelaide window" };
+    return {
+      action: "queued",
+      reason: "Outside 7am-7pm Adelaide window",
+      scheduledFor,
+    };
   }
 
   try {
@@ -597,9 +619,14 @@ export async function sendOrQueue(
       to_email: to.join(", "),
       status: "sent",
       sent_at: now.toISOString(),
+      provider_message_id: result.providerMessageId ?? null,
       detail,
     });
-    return { action: "sent" };
+    return {
+      action: "sent",
+      sentAt: now.toISOString(),
+      providerMessageId: result.providerMessageId,
+    };
   } catch (err) {
     await reportError("visit-emails", err);
     // A real send failure (not a config no-op) — queue for the next
@@ -698,8 +725,19 @@ export async function flushPendingSends(
       }
       await supabase
         .from("email_sends")
-        .update({ status: "sent", sent_at: now.toISOString() })
+        .update({
+          status: "sent",
+          sent_at: now.toISOString(),
+          provider_message_id: sendResult.providerMessageId ?? null,
+        })
         .eq("id", row.id);
+      if (row.record_type === "trade_booking_request") {
+        await supabase
+          .from("trade_booking_requests")
+          .update({ status: "sent", sent_at: now.toISOString() })
+          .eq("id", row.record_id)
+          .is("sent_at", null);
+      }
       result.sent++;
     } catch (err) {
       await reportError("visit-emails", err);

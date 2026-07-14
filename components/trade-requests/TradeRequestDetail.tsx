@@ -3,26 +3,8 @@
 import { useEffect, useState } from "react";
 import type { TradeBookingRequestDetail, TradeBookingRequestLine } from "@/types/round-grouped-trade-booking";
 import { formatShortDateAU, formatDateRangeAU } from "@/lib/gantt-window";
+import { BookingDeliveryTimeline, BookingProgressPill } from "./BookingProgress";
 
-/**
- * Grouped trade booking round (r20) — admin detail view for one
- * trade_booking_requests row. Fetches GET /api/trade-requests/[id] on
- * mount, renders every line with its state, and surfaces the two
- * admin actions BUILD-SPEC.md item 5 describes for a 'date_suggested'
- * line: "Accept new date + shift timeline" and "Keep original +
- * reply" — both POST /api/trade-requests/[id]/lines/[visitId]/resolve.
- * A resend button (item 6) is shown whenever the request is still
- * `status = 'sent'` (nothing left to resend once every line has been
- * responded to).
- *
- * The "shift timeline" half of accept_shift is a SEPARATE, explicit
- * follow-up click — this component never auto-calls shift-items. When
- * the resolve response carries a `shift_offer`, a small inline banner
- * appears offering to also shift the rest of that phase's tasks by the
- * same delta, via a plain POST to the EXISTING, unmodified
- * /api/phases/[id]/shift-items route (BUILD-SPEC.md: "do NOT
- * reimplement ripple math") — dismissible without shifting anything.
- */
 export function TradeRequestDetail({ requestId }: { requestId: string }) {
   const [detail, setDetail] = useState<TradeBookingRequestDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -31,21 +13,26 @@ export function TradeRequestDetail({ requestId }: { requestId: string }) {
   const [shiftOffer, setShiftOffer] = useState<{ phase_id: string; delta_days: number } | null>(null);
   const [resending, setResending] = useState(false);
 
-  async function load() {
-    setLoading(true);
+  async function load(showSpinner = true) {
+    if (showSpinner) setLoading(true);
     try {
-      const res = await fetch(`/api/trade-requests/${requestId}`);
-      if (!res.ok) throw new Error("Could not load this request.");
+      const res = await fetch(`/api/trade-requests/${requestId}`, { cache: "no-store" });
+      if (!res.ok) throw new Error("Could not load this booking request.");
       setDetail(await res.json());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load this request.");
+      setError(err instanceof Error ? err.message : "Could not load this booking request.");
     } finally {
-      setLoading(false);
+      if (showSpinner) setLoading(false);
     }
   }
 
   useEffect(() => {
-    load();
+    const initial = window.setTimeout(() => void load(), 0);
+    const interval = window.setInterval(() => load(false), 60_000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(interval);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestId]);
 
@@ -58,11 +45,11 @@ export function TradeRequestDetail({ requestId }: { requestId: string }) {
         body: JSON.stringify(body),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Could not update this line.");
+      if (!res.ok) throw new Error(json.error ?? "Could not update this booking line.");
       if (json.shift_offer) setShiftOffer(json.shift_offer);
-      await load();
+      await load(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update this line.");
+      setError(err instanceof Error ? err.message : "Could not update this booking line.");
     }
   }
 
@@ -89,35 +76,109 @@ export function TradeRequestDetail({ requestId }: { requestId: string }) {
     try {
       const res = await fetch(`/api/trade-requests/${requestId}/resend`, { method: "POST" });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Could not resend.");
-      setNotice(json.email_sent ? "Follow-up email sent." : `Not sent: ${json.email_skip_reason ?? "unknown reason"}.`);
+      if (!res.ok) throw new Error(json.error ?? "Could not resend the email.");
+      setNotice(
+        json.email_action === "sent"
+          ? "Follow-up email sent. Delivery tracking has restarted for this send."
+          : json.email_action === "queued"
+            ? "Follow-up email queued for the next permitted sending window."
+            : `Email not sent: ${json.email_skip_reason ?? "unknown reason"}.`
+      );
+      await load(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not resend.");
+      setError(err instanceof Error ? err.message : "Could not resend the email.");
     } finally {
       setResending(false);
     }
   }
 
-  if (loading) return <p className="text-body text-charcoal/50">Loading…</p>;
+  async function copyBookingLink() {
+    if (!detail) return;
+    const url = `${window.location.origin}/trade-request/${detail.request.token}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setNotice("Booking link copied.");
+    } catch {
+      setError("Could not copy the booking link automatically.");
+    }
+  }
+
+  if (loading) return <p className="text-body text-charcoal/50">Loading booking status…</p>;
   if (error && !detail) return <p className="border border-red-700/40 bg-red-50 px-3 py-2 text-body text-red-700">{error}</p>;
   if (!detail) return null;
 
+  const canResend =
+    detail.counts.outstanding > 0 &&
+    detail.request.status === "sent" &&
+    detail.email?.status !== "pending";
+
   return (
-    <div className="max-w-2xl space-y-4">
-      <div className="border border-[#dcd6cc] bg-offwhite px-4 py-3">
-        <p className="label-caps">{detail.project?.name ?? "Project"}</p>
-        <p className="mt-1 text-subhead text-nearblack">{detail.contact?.company ?? "Trade"}</p>
-        <p className="mt-1 text-caption text-charcoal/60">
-          Status: {detail.request.status}
-          {detail.request.sent_at ? ` · sent ${detail.request.sent_at.slice(0, 10)}` : ""}
-        </p>
-      </div>
+    <div className="max-w-5xl space-y-5">
+      <section className="border border-[#dcd6cc] bg-offwhite px-5 py-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="label-caps">{detail.project?.name ?? "Project"}</p>
+            <h2 className="mt-1 font-display text-section text-nearblack">
+              {detail.contact?.company ?? "Trade booking"}
+            </h2>
+            <p className="mt-1 text-body text-charcoal/60">
+              {detail.contact?.email ?? "No trade email address on file"} · {detail.counts.total} booking line{detail.counts.total === 1 ? "" : "s"}
+            </p>
+          </div>
+          <BookingProgressPill progress={detail.progress} />
+        </div>
+        <p className="mt-4 max-w-2xl text-body text-charcoal/70">{detail.progress.explanation}</p>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          {canResend && (
+            <button
+              type="button"
+              onClick={resend}
+              disabled={resending}
+              className="bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal disabled:opacity-60"
+            >
+              {resending ? "Resending…" : "Resend to trade"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={copyBookingLink}
+            className="border border-nearblack px-4 py-2 text-subhead text-nearblack hover:bg-nearblack hover:text-white"
+          >
+            Copy booking link
+          </button>
+          <a
+            href={`/trade-request/${detail.request.token}?preview=1`}
+            target="_blank"
+            rel="noreferrer"
+            className="border border-[#c9c2b4] px-4 py-2 text-subhead text-charcoal hover:border-nearblack hover:text-nearblack"
+          >
+            Preview trade view
+          </a>
+        </div>
+      </section>
 
       {notice && <p className="border border-sand bg-cream px-3 py-2 text-body text-charcoal">{notice}</p>}
       {error && <p className="border border-red-700/40 bg-red-50 px-3 py-2 text-body text-red-700">{error}</p>}
 
+      {detail.email?.status === "sent" && !detail.email.provider_message_id && (
+        <p className="border border-[#dcd6cc] bg-nearwhite px-3 py-2 text-caption text-charcoal/60">
+          This email was sent before provider delivery tracking was enabled. Its booking-page open and trade response are still tracked.
+        </p>
+      )}
+
+      <section>
+        <div className="mb-2 flex items-end justify-between gap-3">
+          <div>
+            <p className="label-caps">Delivery & response</p>
+            <p className="mt-1 text-caption text-charcoal/50">Delivery means the recipient&apos;s mail server accepted the email; it is not proof of a human read.</p>
+          </div>
+        </div>
+        <BookingDeliveryTimeline detail={detail} />
+      </section>
+
       {shiftOffer && (
-        <div className="flex items-center justify-between gap-3 border border-sand bg-cream px-3 py-2 text-body text-charcoal">
+        <div className="flex flex-wrap items-center justify-between gap-3 border border-sand bg-cream px-4 py-3 text-body text-charcoal">
           <span>
             Shift the rest of this phase&apos;s tasks by {shiftOffer.delta_days > 0 ? "+" : ""}
             {shiftOffer.delta_days} day{Math.abs(shiftOffer.delta_days) === 1 ? "" : "s"}?
@@ -133,25 +194,30 @@ export function TradeRequestDetail({ requestId }: { requestId: string }) {
         </div>
       )}
 
-      {detail.request.status === "sent" && (
-        <button
-          type="button"
-          onClick={resend}
-          disabled={resending}
-          className="border border-nearblack px-3 py-1.5 text-caption text-nearblack hover:bg-nearblack hover:text-white disabled:opacity-60"
-        >
-          {resending ? "Resending…" : "Resend request"}
-        </button>
-      )}
-
-      <div className="space-y-2">
-        {detail.lines.map((line) => (
-          <LineCard key={line.id} line={line} onResolve={(body) => resolveLine(line.id, body)} />
-        ))}
-      </div>
+      <section>
+        <div className="mb-2 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <p className="label-caps">Booking lines</p>
+            <p className="mt-1 text-caption text-charcoal/50">
+              {detail.counts.accepted} confirmed · {detail.counts.date_suggested} date suggested · {detail.counts.outstanding} awaiting response
+            </p>
+          </div>
+        </div>
+        <div className="space-y-2">
+          {detail.lines.map((line) => (
+            <LineCard key={line.id} line={line} onResolve={(body) => resolveLine(line.id, body)} />
+          ))}
+        </div>
+      </section>
     </div>
   );
 }
+
+const lineStatusLabels: Record<TradeBookingRequestLine["line_status"], string> = {
+  proposed: "Awaiting trade",
+  accepted: "Confirmed",
+  date_suggested: "New date suggested",
+};
 
 function LineCard({
   line,
@@ -166,24 +232,26 @@ function LineCard({
       : formatDateRangeAU(line.start_date, line.end_date);
 
   return (
-    <div className="border border-[#dcd6cc] px-4 py-3">
-      <div className="flex items-center justify-between">
-        <p className="text-body text-nearblack">{line.task_title}</p>
-        <span className="label-caps text-charcoal/50">{line.line_status.replace("_", " ")}</span>
+    <div id={`line-${line.id}`} className="border border-[#dcd6cc] bg-offwhite px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-body text-nearblack">{line.task_title}</p>
+          <p className="mt-1 text-caption text-charcoal/60">{dateLabel} · {line.phase_name}</p>
+        </div>
+        <span className="label-caps text-charcoal/60">{lineStatusLabels[line.line_status]}</span>
       </div>
-      <p className="mt-1 text-caption text-charcoal/60">{dateLabel}</p>
 
       {line.line_status === "date_suggested" && (
-        <div className="mt-2 border border-[#c9c2b4] bg-nearwhite px-3 py-2">
-          <p className="text-caption text-charcoal/60">
-            Suggested:{" "}
+        <div className="mt-3 border border-[#c9c2b4] bg-nearwhite px-3 py-3">
+          <p className="text-body text-nearblack">
+            Trade suggested{" "}
             {line.suggested_start &&
               (line.suggested_end && line.suggested_end !== line.suggested_start
                 ? formatDateRangeAU(line.suggested_start, line.suggested_end)
                 : formatShortDateAU(line.suggested_start))}
           </p>
-          {line.response_note && <p className="mt-1 text-caption text-charcoal/50">&quot;{line.response_note}&quot;</p>}
-          <div className="mt-2 flex gap-2">
+          {line.response_note && <p className="mt-1 text-caption text-charcoal/60">&quot;{line.response_note}&quot;</p>}
+          <div className="mt-3 flex flex-wrap gap-2">
             <button
               type="button"
               onClick={() => onResolve({ action: "accept_shift" })}

@@ -26,9 +26,58 @@ export interface TradeBookingRequestRow {
   status: TradeBookingRequestStatus;
   sent_at: string | null;
   responded_at: string | null;
+  viewed_at: string | null;
+  last_resend_at?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export type TradeBookingRequestStage =
+  | "not_sent"
+  | "queued"
+  | "sent"
+  | "delivered"
+  | "email_open_detected"
+  | "email_link_clicked"
+  | "link_opened"
+  | "partial_response"
+  | "responded"
+  | "delivery_problem";
+
+export interface TradeBookingProgress {
+  stage: TradeBookingRequestStage;
+  label: string;
+  explanation: string;
+  tone: "neutral" | "positive" | "warning" | "danger";
+}
+
+export interface TradeBookingEmailEvidence {
+  id: string;
+  to_email: string;
+  status: "pending" | "sent" | "skipped";
+  scheduled_for: string | null;
+  sent_at: string | null;
+  created_at: string;
+  provider_message_id: string | null;
+  provider_status: string | null;
+  provider_last_event_at: string | null;
+  delivered_at: string | null;
+  opened_at: string | null;
+  clicked_at: string | null;
+  bounced_at: string | null;
+  failed_at: string | null;
+  delivery_delayed_at: string | null;
+  complained_at: string | null;
+  suppressed_at: string | null;
+  reason: string | null;
+}
+
+export interface TradeBookingLineCounts {
+  total: number;
+  accepted: number;
+  date_suggested: number;
+  outstanding: number;
 }
 
 // ------------------------------------------------------------
@@ -70,6 +119,8 @@ export interface CreateTradeBookingRequestResponse {
   visit_ids: string[];
   skipped: CreateTradeBookingRequestSkippedTask[];
   email_sent: boolean;
+  email_action: "sent" | "queued" | "skipped" | "duplicate";
+  email_scheduled_for?: string;
   email_skip_reason?: string;
 }
 
@@ -99,6 +150,21 @@ export interface TradeBookingRequestDetail {
   project: { id: string; name: string } | null;
   contact: { id: string; company: string; contact_name: string | null; email: string | null } | null;
   lines: TradeBookingRequestLine[];
+  email: TradeBookingEmailEvidence | null;
+  counts: TradeBookingLineCounts;
+  progress: TradeBookingProgress;
+}
+
+export interface ProjectTradeBookingSummary {
+  request: TradeBookingRequestRow;
+  contact: { id: string; company: string; email: string | null } | null;
+  email: TradeBookingEmailEvidence | null;
+  counts: TradeBookingLineCounts;
+  progress: TradeBookingProgress;
+}
+
+export interface ProjectTradeBookingResponse {
+  requests: ProjectTradeBookingSummary[];
 }
 
 // ------------------------------------------------------------

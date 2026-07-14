@@ -86,6 +86,17 @@ export interface EmailSendRow {
   status: VisitEmailStatus;
   scheduled_for: string | null;
   sent_at: string | null;
+  provider_message_id: string | null;
+  provider_status: string | null;
+  provider_last_event_at: string | null;
+  delivered_at: string | null;
+  opened_at: string | null;
+  clicked_at: string | null;
+  bounced_at: string | null;
+  failed_at: string | null;
+  delivery_delayed_at: string | null;
+  complained_at: string | null;
+  suppressed_at: string | null;
   detail: VisitEmailDetail;
   created_at: string;
 }

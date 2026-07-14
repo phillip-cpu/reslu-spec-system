@@ -47,10 +47,14 @@ export const metadata: Metadata = {
 
 export default async function TradeRequestPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ token: string }>;
+  searchParams: Promise<{ preview?: string | string[] }>;
 }) {
   const { token } = await params;
+  const query = await searchParams;
+  const isAdminPreview = query.preview === "1";
 
   const headerList = await headers();
   const forwardedFor = headerList.get("x-forwarded-for");
@@ -69,6 +73,17 @@ export default async function TradeRequestPage({
     .maybeSingle();
   if (!bookingRequest) {
     notFound();
+  }
+
+  // Phase 3A delivery trail: a real token-page load is durable proof
+  // that the booking link was reached. Admin previews explicitly use
+  // ?preview=1 and do not contaminate this client-engagement evidence.
+  if (!isAdminPreview && !bookingRequest.viewed_at) {
+    await supabase
+      .from("trade_booking_requests")
+      .update({ viewed_at: new Date().toISOString() })
+      .eq("id", bookingRequest.id)
+      .is("viewed_at", null);
   }
 
   const [{ data: project }, { data: contact }, { data: lineRows }] = await Promise.all([

@@ -3,14 +3,117 @@ import { createClient } from "@/lib/supabase/server";
 import { sendOrQueue } from "@/lib/visit-emails";
 import { buildTaskRowsHtml } from "@/lib/trade-booking";
 import { documentPackMentionLine } from "@/lib/trade-doc-pack";
+import {
+  countTradeBookingLines,
+  deriveTradeBookingProgress,
+  tradeBookingEmailEvidenceFromRow,
+} from "@/lib/trade-booking-progress";
 import type {
   CreateTradeBookingRequestInput,
   CreateTradeBookingRequestResponse,
   CreateTradeBookingRequestSkippedTask,
+  ProjectTradeBookingResponse,
+  ProjectTradeBookingSummary,
+  TradeBookingRequestRow,
 } from "@/types/round-grouped-trade-booking";
 import type { DocumentPackChoices } from "@/types/trade-doc-pack";
 
 export const runtime = "nodejs";
+
+/**
+ * GET /api/projects/[id]/trade-requests
+ *
+ * Compact, durable booking trail for the project board. The same
+ * canonical progress helper powers this list and the full request
+ * detail, preventing one screen from saying "sent" while another says
+ * "queued" for the same email evidence.
+ */
+export async function GET(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id: projectId } = await params;
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { data: requestRows, error: requestError } = await supabase
+    .from("trade_booking_requests")
+    .select("*")
+    .eq("project_id", projectId)
+    .order("created_at", { ascending: false })
+    .limit(12);
+  if (requestError) {
+    return NextResponse.json({ error: requestError.message }, { status: 500 });
+  }
+
+  const requests = (requestRows ?? []) as TradeBookingRequestRow[];
+  if (requests.length === 0) {
+    const empty: ProjectTradeBookingResponse = { requests: [] };
+    return NextResponse.json(empty);
+  }
+
+  const requestIds = requests.map((row) => row.id);
+  const contactIds = [
+    ...new Set(requests.map((row) => row.contact_id).filter((id): id is string => !!id)),
+  ];
+  const [{ data: contactRows }, { data: visitRows }, { data: emailRows }] = await Promise.all([
+    contactIds.length
+      ? supabase.from("contacts").select("id,company,email").in("id", contactIds)
+      : Promise.resolve({ data: [] as { id: string; company: string; email: string | null }[] }),
+    supabase
+      .from("trade_visits")
+      .select("booking_request_id,line_status")
+      .in("booking_request_id", requestIds)
+      .is("deleted_at", null),
+    supabase
+      .from("email_sends")
+      .select("*")
+      .eq("record_type", "trade_booking_request")
+      .eq("template", "trade-booking-request")
+      .in("record_id", requestIds)
+      .order("created_at", { ascending: false }),
+  ]);
+
+  const contactById = new Map((contactRows ?? []).map((row) => [row.id, row]));
+  const linesByRequest = new Map<string, { line_status: string | null }[]>();
+  for (const row of visitRows ?? []) {
+    if (!row.booking_request_id) continue;
+    const existing = linesByRequest.get(row.booking_request_id) ?? [];
+    existing.push({ line_status: row.line_status });
+    linesByRequest.set(row.booking_request_id, existing);
+  }
+  const latestEmailByRequest = new Map<string, Record<string, unknown>>();
+  for (const rawRow of emailRows ?? []) {
+    const row = rawRow as Record<string, unknown>;
+    const recordId = typeof row.record_id === "string" ? row.record_id : null;
+    if (recordId && !latestEmailByRequest.has(recordId)) {
+      latestEmailByRequest.set(recordId, row);
+    }
+  }
+
+  const summaries: ProjectTradeBookingSummary[] = requests.map((bookingRequest) => {
+    const email = tradeBookingEmailEvidenceFromRow(latestEmailByRequest.get(bookingRequest.id));
+    const counts = countTradeBookingLines(linesByRequest.get(bookingRequest.id) ?? []);
+    const contact = bookingRequest.contact_id ? contactById.get(bookingRequest.contact_id) ?? null : null;
+    return {
+      request: bookingRequest,
+      contact: contact
+        ? { id: contact.id, company: contact.company, email: contact.email }
+        : null,
+      email,
+      counts,
+      progress: deriveTradeBookingProgress({ request: bookingRequest, email, counts }),
+    };
+  });
+
+  const response: ProjectTradeBookingResponse = { requests: summaries };
+  return NextResponse.json(response);
+}
 
 /**
  * POST /api/projects/[id]/trade-requests
@@ -26,9 +129,9 @@ export const runtime = "nodejs";
  * There is no separate "save as draft, send later" step in this round
  * — this ONE route call both assembles and sends the request (the
  * panel's "Send" button is this route's only caller). `status` is
- * written straight to 'sent' with `sent_at = now()`; 'draft' exists in
- * the CHECK constraint for schema completeness / a future staged-save
- * UI, but nothing in this round ever creates a row that stays 'draft'.
+ * issued straight away. `sent_at` is now stamped only after Resend has
+ * actually accepted the email; a queued/skipped attempt keeps it null
+ * and its durable email_sends row explains why.
  *
  * body: CreateTradeBookingRequestInput — { contact_id, task_ids,
  * document_pack? }. Each task_id is validated independently and
@@ -193,7 +296,7 @@ export async function POST(
       project_id: projectId,
       contact_id: body.contact_id,
       status: "sent",
-      sent_at: new Date().toISOString(),
+      sent_at: null,
       created_by: user.id,
     })
     .select()
@@ -270,49 +373,54 @@ export async function POST(
 
   // ---- The email — item 3: ONE email, existing visit-emails
   // machinery (sendOrQueue/email_sends/Adelaide window). ----
-  let email_sent = false;
-  let email_skip_reason: string | undefined;
-  if (!contact.email) {
-    email_skip_reason = "No recipient email on file";
-  } else {
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://spec.reslu.com.au";
-    const requestLink = `${appUrl}/trade-request/${bookingRequest.token}`;
-    const hasPack = documentPack
-      ? documentPack.include_plans || documentPack.include_sow || "schedule_categories" in documentPack
-      : false;
-    const result = await sendOrQueue(supabase, {
-      recordType: "trade_booking_request",
-      recordId: bookingRequest.id,
-      template: "trade-booking-request",
-      to: [contact.email],
-      subject: `RESLU · site visit dates — ${project.name}`,
-      mergeData: {
-        company: contact.company,
-        project_name: project.name,
-        project_address: project.address ?? "",
-        task_rows: buildTaskRowsHtml(emailLines),
-        request_link: requestLink,
-        attachments_note: hasPack ? documentPackMentionLine() : "",
-      },
-      // No single "visit datetime" for a grouped request — the
-      // request's own token is unique per send, so this is only ever
-      // this call's own dedupe key (see sendOrQueue's own doc comment);
-      // real double-send protection for THIS route is the request's
-      // own row (created fresh above, never re-used on a re-POST) —
-      // re-sending the SAME request is POST /api/trade-requests/[id]/resend,
-      // a separate, explicitly-guarded route (item 6).
-      visitDatetime: bookingRequest.created_at,
-    });
-    email_sent = result.action === "sent";
-    if (!email_sent) email_skip_reason = result.reason;
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://spec.reslu.com.au";
+  const requestLink = `${appUrl}/trade-request/${bookingRequest.token}`;
+  const hasPack = documentPack
+    ? documentPack.include_plans || documentPack.include_sow || "schedule_categories" in documentPack
+    : false;
+  const emailResult = await sendOrQueue(supabase, {
+    recordType: "trade_booking_request",
+    recordId: bookingRequest.id,
+    template: "trade-booking-request",
+    to: contact.email ? [contact.email] : [],
+    subject: `RESLU · site visit dates — ${project.name}`,
+    mergeData: {
+      company: contact.company,
+      project_name: project.name,
+      project_address: project.address ?? "",
+      task_rows: buildTaskRowsHtml(emailLines),
+      request_link: requestLink,
+      attachments_note: hasPack ? documentPackMentionLine() : "",
+    },
+    // No single "visit datetime" for a grouped request — the
+    // request's own token is unique per send, so this is only ever
+    // this call's own dedupe key (see sendOrQueue's own doc comment);
+    // real double-send protection for THIS route is the request's
+    // own row (created fresh above, never re-used on a re-POST) —
+    // re-sending the SAME request is POST /api/trade-requests/[id]/resend,
+    // a separate, explicitly-guarded route (item 6).
+    visitDatetime: bookingRequest.created_at,
+  });
+
+  let finalBookingRequest = bookingRequest;
+  if (emailResult.action === "sent") {
+    const { data: stamped } = await supabase
+      .from("trade_booking_requests")
+      .update({ sent_at: emailResult.sentAt ?? new Date().toISOString() })
+      .eq("id", bookingRequest.id)
+      .select()
+      .single();
+    if (stamped) finalBookingRequest = stamped;
   }
 
   const response: CreateTradeBookingRequestResponse = {
-    request: bookingRequest,
+    request: finalBookingRequest,
     visit_ids: visitIds,
     skipped,
-    email_sent,
-    email_skip_reason,
+    email_sent: emailResult.action === "sent",
+    email_action: emailResult.action,
+    email_scheduled_for: emailResult.scheduledFor,
+    email_skip_reason: emailResult.action === "sent" ? undefined : emailResult.reason,
   };
   return NextResponse.json(response, { status: 201 });
 }
