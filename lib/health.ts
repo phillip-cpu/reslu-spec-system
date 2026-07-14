@@ -4,21 +4,16 @@ import type { SpecHealthSummary } from "@/types/health-push";
 
 // ============================================================
 // RESLU Spec System — Health + web push (r26)
-// BUILD-SPEC.md item 4's "Spec card": "each cron's last success from
-// email_sends/daily brief tables where derivable, failed email sends
-// count, aria_queue stuck >24h, needs_aria backlog count."
+// BUILD-SPEC.md item 4's "Spec card": monitored job executions, failed
+// email sends, aria_queue stuck >24h, and the needs_aria backlog.
 //
 // STUDY FINDING (this round's own final report has the full write-up):
-// email_sends only carries record_type in ('lead','client_event',
-// 'client_invoice','trade_booking_request','proposal') — NOT every
-// cron in vercel.json writes to it (the Second Brain triage/extract/
-// match/propose crons and /api/digest/flush write nowhere this app can
-// read a "last success" from without touching a protected/read-only
-// file). "Where derivable" is read literally: only the crons whose
-// last-success timestamp is actually reconstructable from email_sends
-// or daily_brief_items are covered below; the rest are a documented gap
-// (see this round's final report), not silently faked with an
-// unrelated timestamp.
+// A cron run is not the same as one of its optional side effects. In
+// particular, visit-emails can complete successfully on a day when no
+// message is due. Phase 2 records its run in system_job_runs so Health
+// does not falsely report that valid no-op as "never ran". The older
+// Daily Brief monitor remains derived from daily_brief_items until that
+// route adopts the same execution log.
 // ============================================================
 
 type ServiceClient = ReturnType<typeof createServiceRoleClient>;
@@ -33,42 +28,66 @@ interface CronDef {
   expectedIntervalHours: number;
 }
 
-// Only the crons genuinely derivable from email_sends/daily_brief_items
-// — see this file's header comment.
-const DERIVABLE_CRONS: CronDef[] = [
+const MONITORED_CRONS: CronDef[] = [
   {
     key: "visit_emails",
     label: "Visit emails (confirmations/reminders)",
-    expectedIntervalHours: 24,
+    expectedIntervalHours: 1,
   },
   {
     key: "brief_generate",
     label: "Daily Brief generation",
     expectedIntervalHours: 24,
   },
+  {
+    key: "aria_daily_review_enqueue",
+    label: "Aria daily proactive review",
+    expectedIntervalHours: 24,
+  },
+  {
+    key: "aria_weekly_review_enqueue",
+    label: "Aria weekly synthesis",
+    expectedIntervalHours: 168,
+  },
 ];
 
-async function lastVisitEmailSuccessAt(supabase: ServiceClient): Promise<string | null> {
-  // /api/visit-emails/run's own two templates — see lib/visit-emails.ts.
-  // A 'sent' row is the cron's own definition of a successful send;
-  // 'skipped'/'pending' rows don't count as a success.
-  const { data } = await supabase
-    .from("email_sends")
-    .select("sent_at")
-    .in("template", ["visit-confirmation", "visit-reminder"])
-    .eq("status", "sent")
-    .order("sent_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  return (data?.sent_at as string | undefined) ?? null;
+type JobRunStatus = "succeeded" | "degraded" | "failed";
+
+interface CronExecution {
+  lastRunAt: string | null;
+  lastSuccessAt: string | null;
+  status: JobRunStatus | null;
+  error: string | null;
+}
+
+async function latestJobExecution(supabase: ServiceClient, jobKey: string): Promise<CronExecution> {
+  const [{ data: latest }, { data: latestSuccess }] = await Promise.all([
+    supabase
+      .from("system_job_runs")
+      .select("status,finished_at,error")
+      .eq("job_key", jobKey)
+      .order("finished_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("system_job_runs")
+      .select("finished_at")
+      .eq("job_key", jobKey)
+      .eq("status", "succeeded")
+      .order("finished_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+
+  return {
+    lastRunAt: (latest?.finished_at as string | undefined) ?? null,
+    lastSuccessAt: (latestSuccess?.finished_at as string | undefined) ?? null,
+    status: (latest?.status as JobRunStatus | undefined) ?? null,
+    error: (latest?.error as string | undefined) ?? null,
+  };
 }
 
 async function lastBriefGenerateSuccessAt(supabase: ServiceClient): Promise<string | null> {
-  // GET /api/brief/generate?send=1 (the cron entry, vercel.json) is the
-  // only writer of fresh daily_brief_items rows on its own daily
-  // cadence — a system-created row's created_at is the best available
-  // proxy for "the generator last ran successfully" without touching
-  // that route itself (read-don't-edit, prior round).
   const { data } = await supabase
     .from("daily_brief_items")
     .select("created_at")
@@ -79,10 +98,23 @@ async function lastBriefGenerateSuccessAt(supabase: ServiceClient): Promise<stri
   return (data?.created_at as string | undefined) ?? null;
 }
 
-async function cronLastSuccessAt(supabase: ServiceClient, key: string): Promise<string | null> {
-  if (key === "visit_emails") return lastVisitEmailSuccessAt(supabase);
-  if (key === "brief_generate") return lastBriefGenerateSuccessAt(supabase);
-  return null;
+async function cronExecution(supabase: ServiceClient, key: string): Promise<CronExecution> {
+  if (key === "brief_generate") {
+    const lastSuccessAt = await lastBriefGenerateSuccessAt(supabase);
+    return {
+      lastRunAt: lastSuccessAt,
+      lastSuccessAt,
+      status: lastSuccessAt ? "succeeded" : null,
+      error: null,
+    };
+  }
+  return latestJobExecution(supabase, key);
+}
+
+function cronExecutionLevel(execution: CronExecution, expectedIntervalHours: number) {
+  if (execution.status === "failed") return "red" as const;
+  if (execution.status === "degraded") return "amber" as const;
+  return cronHealthLevel(execution.lastRunAt, expectedIntervalHours);
 }
 
 /**
@@ -140,13 +172,16 @@ async function needsAriaBacklogCount(supabase: ServiceClient): Promise<number> {
 export async function computeSpecHealth(supabase: ServiceClient): Promise<SpecHealthSummary> {
   const [crons, failedEmailSends7d, stuckAriaQueue, needsAriaBacklog] = await Promise.all([
     Promise.all(
-      DERIVABLE_CRONS.map(async (def) => {
-        const lastSuccessAt = await cronLastSuccessAt(supabase, def.key);
+      MONITORED_CRONS.map(async (def) => {
+        const execution = await cronExecution(supabase, def.key);
         return {
           key: def.key,
           label: def.label,
-          last_success_at: lastSuccessAt,
-          level: cronHealthLevel(lastSuccessAt, def.expectedIntervalHours),
+          last_run_at: execution.lastRunAt,
+          last_success_at: execution.lastSuccessAt,
+          last_status: execution.status,
+          last_error: execution.error,
+          level: cronExecutionLevel(execution, def.expectedIntervalHours),
         };
       })
     ),

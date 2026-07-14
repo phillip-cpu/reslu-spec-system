@@ -54,7 +54,15 @@
     },
     {
       "path": "/api/visit-emails/run",
-      "schedule": "45 21 * * *"
+      "schedule": "15 * * * *"
+    },
+    {
+      "path": "/api/aria-queue/routines/daily_review",
+      "schedule": "15 21 * * *"
+    },
+    {
+      "path": "/api/aria-queue/routines/weekly_review",
+      "schedule": "30 21 * * 0"
     },
     {
       "path": "/api/health/check",

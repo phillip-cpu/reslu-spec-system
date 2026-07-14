@@ -735,15 +735,29 @@ A separate subsystem from everything above: a work queue you poll instead of bei
 
 `aria_queue` is how the rest of the app tells you something needs attention, without you having to poll six different endpoints. `get_aria_queue({ limit? })` atomically claims up to 20 pending rows (oldest first) — a picked-up row you never resolved gets re-exposed after 15 minutes, so a crash mid-batch doesn't lose work. Always call `resolve_queue_item({ id, status: 'done' | 'failed', note? })` once you've handled (or given up on) a claimed row — an unresolved row just sits picked-up until the timeout re-exposes it, which is wasted work, not a safety net.
 
-Kinds you'll see: `price_request` (a material's automated price refresh failed, needs manual lookup — use `submit_material_price`), `trade_reminder`, `lead_flag`, `approval_needed` (a Step 10 entity match landed in the 0.60-0.90 confidence band, or a Step 11 fact failed the verification gate — see below), and `email_proposal` (a Step 11 proposal ready for Phillip's review — surface it to him, don't approve it yourself without his say-so, see the gate section below).
+Kinds you'll see: `price_request` (a material's automated price refresh failed, needs manual lookup — use `submit_material_price`), `trade_reminder`, `lead_flag`, `approval_needed` (a Step 10 entity match landed in the 0.60-0.90 confidence band, or a Step 11 fact failed the verification gate — see below), `email_proposal` (a Step 11 proposal ready for Phillip's review — surface it to him, don't approve it yourself without his say-so), and `daily_review` / `weekly_review` (the proactive operating cadence described below).
 
-**Heartbeat**: `scripts/aria_heartbeat.py` (Mac mini) checks the pending count via a bare REST count query — zero rows costs zero tokens, no model ever gets invoked for an empty queue. The queue-check half is complete; the actual "wake you up" mechanism is a stub in that script someone needs to finish on this machine, since it depends on exactly how you get invoked here.
+**Heartbeat**: `scripts/aria_heartbeat.py` (Mac mini) checks pending rows plus abandoned `picked_up` rows older than 15 minutes via bare REST count queries. Zero rows costs zero tokens and invokes no model. Work waiting triggers `openclaw system event --mode now`, which wakes the main session with instructions to claim the batch. The supplied launchd plist runs this check every five minutes and survives reboots.
+
+### Proactive operating loop
+
+Vercel inserts a deduplicated `daily_review` queue item each Adelaide morning and a `weekly_review` item each Monday morning. The Mac-mini heartbeat wakes you for them exactly like an event-generated queue item. For each routine:
+
+1. Call `get_context_snapshot` first.
+2. Search the relevant projects, leads, emails and `memory` notes before deciding.
+3. Act autonomously on safe internal work: analysis, brief items, tasks and drafts.
+4. Keep sends, publishing, approvals, deletions, financial changes and client commitments behind human approval.
+5. Save only genuinely reusable, source-attributed learnings with `add_brain_note`, then resolve the queue item with sources checked, actions taken and approvals still required.
+
+This is the normal observe → retrieve → decide → act safely → record/learn loop. A routine is not permission to bypass any existing approval gate.
 
 ### Search — `search` / `get_context_snapshot` / `index_rebuild`
 
-`search({ query, entity_type?, limit?, response_format? })` is hybrid full-text + semantic search across projects, leads, items, diary/portal updates, and SOW documents — one call instead of the 6-8 round-trips it used to take to find something by name or description. Full-text catches exact codes (product names, AS/NZS references) semantic search alone can miss; semantic catches paraphrases/related concepts full-text alone can miss. Scope with `entity_type` when you already know what you're looking for.
+`search({ query, entity_type?, limit?, response_format? })` is hybrid full-text + semantic search across projects, leads, items, diary/portal updates, SOW documents, inbound/sent email history and durable memory notes. Full-text catches exact codes (product names, AS/NZS references) semantic search alone can miss; semantic catches paraphrases/related concepts full-text alone can miss. Scope with `entity_type` (`project`, `lead`, `item`, `diary`, `sow`, `email`, or `memory`) when you already know what you're looking for.
 
-`get_context_snapshot({ project_id? })` is a compact workspace snapshot — active projects, active leads, pending queue count by kind, recent diary one-liners — designed to replace loading everything individually at the start of a session. Pass `project_id` to instead get one project expanded (its items with current price + lead time).
+`get_context_snapshot({ project_id? })` is a compact workspace snapshot — active projects/leads, actionable queue count by kind, pending change proposals, recent emails, recent diary one-liners and recent durable memory references. Pass `project_id` to instead get one project expanded with its items, real pending-proposal count and recent matched emails.
+
+`add_brain_note({ title, body, tags?, source?, source_ref?, confidence? })` stores a durable learning or explicit decision. It is not for transient reminders or guesses. Preserve provenance and an honest confidence score; use `index_rebuild({ entity_type: 'memory' })` if it must become searchable immediately instead of waiting for the daily reindex.
 
 `index_rebuild({ entity_type? })` forces a fresh reindex rather than waiting for the daily cron — useful after a bulk import or to confirm search reflects a just-made change immediately.
 

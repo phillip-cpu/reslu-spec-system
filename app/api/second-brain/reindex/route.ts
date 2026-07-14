@@ -8,12 +8,16 @@ import {
   contentForItem,
   contentForDiary,
   contentForSow,
+  contentForEmail,
+  contentForMemory,
   type ContentEntityType,
   type IndexableProject,
   type IndexableLead,
   type IndexableItem,
   type IndexablePortalUpdate,
   type IndexableSowDocument,
+  type IndexableEmail,
+  type IndexableBrainNote,
 } from "@/lib/second-brain/content-for";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -24,16 +28,15 @@ export const runtime = "nodejs";
  * the manual-trigger and future index_rebuild (Step 12) MCP tool target.
  *
  * RESLU Second Brain, Step 5 (docs/RESLU-second-brain-build-brief.md).
- * Populates workspace_index (migration 035, Step 4) from 5 tables:
+ * Populates workspace_index (migration 035, Step 4) from the core CRM
+ * records plus email history and durable brain_notes:
  * projects, leads, items, portal_updates ("diary" — the brief assumed
  * a diary_entries table that doesn't exist), and sow_documents joined
  * through sow_sections/sow_lines (the brief assumed a single
  * sow_entries table that also doesn't exist — see lib/second-brain/
- * content-for.ts's header for both corrections). 'email'/'skill'/
- * 'memory' entity types (migration 035's check constraint allows them)
- * are out of scope here — email doesn't exist until Step 8, and
- * skill/memory are filesystem-based with no Supabase table and no way
- * for this Vercel function to reach Aria's Mac-mini filesystem anyway.
+ * content-for.ts's header for both corrections). Local OpenClaw
+ * `skill` files remain out of scope because Vercel
+ * cannot reach Aria's Mac-mini filesystem.
  *
  * Auth mirrors app/api/digest/flush + app/api/leads/queue-sync exactly:
  * Bearer CRON_SECRET (real cron entry) or an authenticated team session
@@ -51,7 +54,7 @@ export const runtime = "nodejs";
  * fire.
  */
 
-const ALL_ENTITY_TYPES: ContentEntityType[] = ["project", "lead", "item", "diary", "sow"];
+const ALL_ENTITY_TYPES: ContentEntityType[] = ["project", "lead", "item", "diary", "sow", "email", "memory"];
 const PAGE_SIZE = 500;
 const TIME_BUDGET_MS = 4 * 60 * 1000; // 4 minutes — comfortable margin under Vercel's 300s default.
 
@@ -184,12 +187,60 @@ async function fetchSowPage(supabase: SupabaseClient, offset: number): Promise<R
   });
 }
 
+async function fetchEmailPage(supabase: SupabaseClient, offset: number): Promise<Row[]> {
+  const { data, error } = await supabase
+    .from("emails")
+    .select("id,from_addr,subject,received_at,direction,clean_text,triage_label,status,matched_project_id")
+    .order("id")
+    .range(offset, offset + PAGE_SIZE - 1);
+  if (error) throw new Error(`emails fetch failed: ${error.message}`);
+  const emails = (data ?? []) as Omit<IndexableEmail, "attachment_text">[];
+  if (emails.length === 0) return [];
+
+  const { data: attachments, error: attachmentsError } = await supabase
+    .from("email_attachments")
+    .select("email_id,filename,extracted_text")
+    .in("email_id", emails.map((email) => email.id));
+  if (attachmentsError) throw new Error(`email_attachments fetch failed: ${attachmentsError.message}`);
+
+  const attachmentsByEmail = new Map<string, string[]>();
+  for (const attachment of attachments ?? []) {
+    if (!attachment.extracted_text) continue;
+    const current = attachmentsByEmail.get(attachment.email_id) ?? [];
+    current.push(`${attachment.filename || "Attachment"}: ${attachment.extracted_text}`);
+    attachmentsByEmail.set(attachment.email_id, current);
+  }
+
+  return emails.map((email) => ({
+    id: email.id,
+    ...contentForEmail({
+      ...email,
+      attachment_text: attachmentsByEmail.get(email.id)?.join("\n\n") ?? null,
+    }),
+  }));
+}
+
+async function fetchMemoryPage(supabase: SupabaseClient, offset: number): Promise<Row[]> {
+  const { data, error } = await supabase
+    .from("brain_notes")
+    .select("id,title,body,tags,source,source_ref,confidence,created_at")
+    .order("id")
+    .range(offset, offset + PAGE_SIZE - 1);
+  if (error) throw new Error(`brain_notes fetch failed: ${error.message}`);
+  return (data as IndexableBrainNote[]).map((note) => ({
+    id: note.id,
+    ...contentForMemory(note),
+  }));
+}
+
 const FETCHERS: Record<ContentEntityType, (supabase: SupabaseClient, offset: number) => Promise<Row[]>> = {
   project: fetchProjectPage,
   lead: fetchLeadPage,
   item: fetchItemPage,
   diary: fetchDiaryPage,
   sow: fetchSowPage,
+  email: fetchEmailPage,
+  memory: fetchMemoryPage,
 };
 
 async function fetchLiveIds(supabase: SupabaseClient, entityType: ContentEntityType): Promise<Set<string>> {

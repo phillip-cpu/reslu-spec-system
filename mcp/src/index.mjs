@@ -1188,6 +1188,29 @@ const TOOLS = [
         body: JSON.stringify({ title, source: "aria", link_href, project_id }),
       }),
   },
+  {
+    name: "add_brain_note",
+    description:
+      "Store a durable, source-attributed business learning in Second Brain. Use this for reusable decisions, patterns, preferences or lessons—not transient reminders or unsupported guesses. Always include source/source_ref when available and an honest confidence score. The note becomes searchable after the next reindex (or call index_rebuild with entity_type='memory'). This is an internal knowledge write only; it never changes a client/project/financial record.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short, specific learning or decision title" },
+        body: { type: "string", description: "What was learned, why it matters, and any conditions/expiry" },
+        tags: { type: "array", items: { type: "string" }, description: "Optional search tags" },
+        source: { type: "string", description: "Origin type, e.g. client_meeting, email, project_review, phillip" },
+        source_ref: { type: "string", description: "Optional URL, record id, email id or dated file reference" },
+        confidence: { type: "number", minimum: 0, maximum: 1, description: "0-1 confidence; omit only for explicit human decisions" },
+      },
+      required: ["title", "body"],
+      additionalProperties: false,
+    },
+    handler: async (body) =>
+      apiFetch("/api/second-brain/notes", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+  },
   // ------------------------------------------------------------
   // RESLU Second Brain, Step 2 (docs/RESLU-second-brain-build-brief.md).
   // aria_queue (migration 033) is Aria's own work queue — events other
@@ -1305,11 +1328,11 @@ const TOOLS = [
   {
     name: "index_rebuild",
     description:
-      "Manually trigger a workspace_index reindex (Step 5's indexer) — normally runs on its own daily cron, use this to force a fresh run (e.g. after a bulk data import, or to confirm search results reflect a just-made change without waiting for the schedule). Optional entity_type scopes the rebuild to just one kind (project/lead/item/diary/sow) instead of everything.",
+      "Manually trigger a workspace_index reindex — normally runs on its own daily cron. Use this to force fresh search results after a bulk import or a new durable learning. Optional entity_type scopes the rebuild to one kind (project/lead/item/diary/sow/email/memory) instead of everything.",
     inputSchema: {
       type: "object",
       properties: {
-        entity_type: { type: "string", enum: ["project", "lead", "item", "diary", "sow"], description: "Optional — scope to one entity type" },
+        entity_type: { type: "string", enum: ["project", "lead", "item", "diary", "sow", "email", "memory"], description: "Optional — scope to one entity type" },
       },
       additionalProperties: false,
     },
@@ -1329,12 +1352,12 @@ const TOOLS = [
   {
     name: "search",
     description:
-      "Hybrid search (full-text + semantic) across projects, leads, items, diary/portal updates, and SOW documents — one call instead of separate list/get round-trips. Full-text catches exact codes (product names, AS/NZS references) that semantic search alone can miss; semantic catches paraphrases/related concepts full-text alone can miss. Use entity_type to scope to one kind (project/lead/item/diary/sow) when you already know what you're looking for. response_format 'concise' (default) returns a <=140-char snippet per result; 'detailed' returns the full indexed content.",
+      "Hybrid search (full-text + semantic) across projects, leads, items, diary/portal updates, SOW documents, inbound emails and durable memory notes. Use it before deciding or drafting so current records and prior decisions inform the answer. Full-text catches exact codes; semantic search catches paraphrases. Use entity_type to scope to project/lead/item/diary/sow/email/memory. response_format 'concise' (default) returns a <=140-char snippet per result; 'detailed' returns the full indexed content.",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string", description: "Search text" },
-        entity_type: { type: "string", enum: ["project", "lead", "item", "diary", "sow"], description: "Optional — scope to one entity type" },
+        entity_type: { type: "string", enum: ["project", "lead", "item", "diary", "sow", "email", "memory"], description: "Optional — scope to one entity type" },
         limit: { type: "number", description: "Max results, default 8, capped at 30" },
         response_format: { type: "string", enum: ["concise", "detailed"], description: "Default concise" },
       },
@@ -1356,7 +1379,7 @@ const TOOLS = [
   {
     name: "get_context_snapshot",
     description:
-      "Compact workspace snapshot: active projects (id, name, status, flags, item_count, last diary one-liner), active leads (id, name, stage, days_since_contact), pending aria_queue count by kind, 5 most recent diary/portal-update one-liners. IDs + names + counts + one-liners ONLY — use search or a project's own tools for full detail. Pass project_id to instead get ONE project expanded: its items with current price + lead time, open_proposals (always 0 until the email-proposal pipeline ships), recent_emails (always [] until that pipeline ships).",
+      "Compact workspace snapshot for proactive review: active projects, active leads, actionable aria_queue items (including abandoned claims), pending change proposals, recent emails, recent diary updates and durable memory references. IDs + names + counts + one-liners only — use search or record tools for detail. Pass project_id to expand one project with its items, real open-proposal count and recent matched emails.",
     inputSchema: {
       type: "object",
       properties: {

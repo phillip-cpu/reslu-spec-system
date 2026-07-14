@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """
 RESLU Second Brain, Step 12 (docs/RESLU-second-brain-build-brief.md)
 — the aria_queue heartbeat script (Mac mini).
@@ -7,19 +9,11 @@ RESLU Second Brain, Step 12 (docs/RESLU-second-brain-build-brief.md)
 HEAD/count -> zero rows = exit, no model. Rows exist = wake Aria with
 the batch."
 
-This script is COMPLETE for the check-and-exit half — the count check
-below costs zero tokens and involves no model call whatsoever, which
-is the entire point (idle polling must be free). The "wake Aria with
-the batch" half is deliberately left as a stub: how an already-running
-agent actually gets invoked (an OpenClaw CLI command, an API call, a
-file dropped into its workspace vault, something else) depends on
-this exact machine's own OpenClaw/Aria setup, which this script has
-zero visibility into from where it was written. WAKE_ARIA() below is
-the one function that needs finishing on the Mac mini itself, by
-whichever session has that visibility (see Step 8's own precedent —
-the email-ingest pipeline was built the same way, here for the parts
-buildable/testable from a sandbox, finished on the mini for the parts
-that aren't).
+The count check costs zero tokens and invokes no model when there is no
+work. Pending rows AND abandoned picked_up rows older than the queue's
+15-minute visibility timeout are counted, matching the database claim
+function exactly. When work exists the script injects a trusted system
+event into OpenClaw and wakes Aria immediately.
 
 Only stdlib (urllib) — no new dependency for a single cheap HTTP call,
 matching this whole build's "don't add a dependency you don't need"
@@ -35,7 +29,9 @@ import json
 import os
 import sys
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlencode
 
 
 def load_env_file(path: Path) -> None:
@@ -57,14 +53,19 @@ def env(*names: str) -> str | None:
     return None
 
 
-def get_pending_queue_count(supabase_url: str, service_role_key: str) -> int:
+def _queue_count_url(supabase_url: str, **filters: str) -> str:
+    query = urlencode({"select": "id", "limit": "0", **filters})
+    return f"{supabase_url}/rest/v1/aria_queue?{query}"
+
+
+def _queue_count(supabase_url: str, service_role_key: str, **filters: str) -> int:
     """
     Cheap REST count — Supabase/PostgREST returns the total row count
     in the Content-Range response header when sent a Prefer:
     count=exact header, without ever transferring row data. limit=0
     keeps the response body itself empty too.
     """
-    url = f"{supabase_url}/rest/v1/aria_queue?select=id&status=eq.pending&limit=0"
+    url = _queue_count_url(supabase_url, **filters)
     req = urllib.request.Request(
         url,
         headers={
@@ -78,6 +79,23 @@ def get_pending_queue_count(supabase_url: str, service_role_key: str) -> int:
         # Format: "0-0/42" or "*/0" for an empty result.
         total = content_range.split("/")[-1]
         return int(total) if total.isdigit() else 0
+
+
+def get_actionable_queue_count(supabase_url: str, service_role_key: str) -> int:
+    """Count every row the database claim function can claim right now."""
+    abandoned_before = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
+    pending = _queue_count(
+        supabase_url,
+        service_role_key,
+        status="eq.pending",
+    )
+    abandoned = _queue_count(
+        supabase_url,
+        service_role_key,
+        status="eq.picked_up",
+        picked_up_at=f"lt.{abandoned_before}",
+    )
+    return pending + abandoned
 
 
 def wake_aria(pending_count: int) -> None:
@@ -96,7 +114,11 @@ def wake_aria(pending_count: int) -> None:
 
     text = (
         f"[aria-heartbeat] {pending_count} pending aria_queue item(s) detected. "
-        "Please run get_aria_queue and process them now."
+        "Please claim them with get_aria_queue. Before acting, call get_context_snapshot "
+        "and search the relevant Second Brain records. Work autonomously on safe internal "
+        "tasks and drafts; keep sends, publishing, approvals, deletions, financial changes "
+        "and client commitments behind human approval. Resolve every claimed item with a "
+        "source-aware note describing what was checked and done."
     )
     try:
         result = subprocess.run(
@@ -136,7 +158,7 @@ def main() -> None:
         sys.exit(2)
 
     try:
-        pending = get_pending_queue_count(supabase_url, service_role_key)
+        pending = get_actionable_queue_count(supabase_url, service_role_key)
     except Exception as exc:  # noqa: BLE001 — a heartbeat failing to check is not worth crashing loudly over.
         print(f"[aria-heartbeat] Queue count check failed: {exc}", file=sys.stderr)
         sys.exit(2)

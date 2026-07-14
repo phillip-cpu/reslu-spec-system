@@ -3,7 +3,7 @@
 <!--
   Step 12 aria_queue heartbeat schedule (Mac mini).
 
-  Checks aria_queue for pending items every 5 minutes. If any are
+  Checks aria_queue for pending or abandoned claimable items every 5 minutes. If any are
   found, injects a system event via `openclaw system event --mode now`
   to wake Aria immediately. Zero pending = exit 0, zero cost.
 
@@ -35,7 +35,7 @@
     <string>/Users/vale/.openclaw/workspace/vault/agent-openclaw/daily/aria-heartbeat-errors.log</string>
 
     <key>RunAtLoad</key>
-    <false/>
+    <true/>
 
     <key>EnvironmentVariables</key>
     <dict>

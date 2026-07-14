@@ -39,17 +39,15 @@ every batch.
 |---|---|---|
 | Fetch mail, strip signatures, pdftotext/ocrmypdf, hard-rule skip | Script, no model | `scripts/email_ingest.py` (Mac mini, Step 8) |
 | Queue polling, verification gate, diffing, dedupe | Script, no model | `lib/second-brain/verification-gate.ts`, the propose/match routes' own diff logic (Steps 10-11) |
-| Embeddings (workspace_index + search queries) | OpenAI `text-embedding-3-small` | `lib/second-brain/embeddings.ts`, from Vercel (Steps 5-6) |
+| Embeddings (workspace_index + search queries) | Supabase `gte-small` (384 dimensions), run in-process | `lib/second-brain/embeddings.ts`, from Vercel (migration 045) |
 | Triage labels (batched) | Claude Haiku 4.5 | `lib/second-brain/triage.ts` (Step 9) |
 | Extraction (facts + vision transcription) | Claude Sonnet 5 | `lib/second-brain/extraction.ts` (Step 9) |
 | Entity match adjudication (only when trigram+embedding don't produce a clear winner) | Claude Sonnet 5 | `lib/second-brain/matching.ts` (Step 10) |
-| Ollama (local, Mac mini) | Not used by anything shipped in Steps 1-12 | The brief scoped this to "enum-constrained classification only" — nothing built so far needed a classification step cheap/local enough to justify it over Haiku |
+| Ollama (local, Mac mini) | Background tasks outside the Vercel pipeline | Managed by the Mac mini's `ai.reslu.local-runner` launchd job; it does not replace the approval-gated email extraction pipeline |
 
-All three Claude/OpenAI wrappers (`claude.ts`, `embeddings.ts`) are plain
-`fetch()` — no `@anthropic-ai/sdk` or heavier `openai` SDK dependency
-anywhere in this repo, a deliberate choice matching this codebase's existing
-minimal-dependency style (`lib/scraper/` does the same for its one external
-HTTP need).
+Claude calls use the repo's lightweight wrapper. Embeddings use
+`@huggingface/transformers` because `gte-small` runs locally inside the
+Vercel function rather than through an OpenAI endpoint.
 
 ## The verification gate contract
 
@@ -97,4 +95,8 @@ as a normal proposal, and `items` is never touched.
 | 10 | Entity matching | `app/api/second-brain/{match,matches/[id]/correct}`, `lib/second-brain/matching.ts`, `supabase/migrations/039` |
 | 11 | Proposals + approval | `app/api/second-brain/{propose,proposals/[id]/{approve,reject}}`, `lib/second-brain/verification-gate.ts`, `supabase/migrations/040` |
 | 12 | Polish (this doc, truncation guard, `index_rebuild`, heartbeat) | `mcp/src/index.mjs`, `scripts/aria_heartbeat.py` |
-| 13 | Visualizer | Optional, not built |
+| 13 | Visualizer | `app/brain`, `app/api/second-brain/brain-data` |
+
+## Phase 2 proactive loop
+
+Phase 2 extends the indexed sources to `email` and `memory` (`brain_notes`), returns current emails/proposals/memory references in `get_context_snapshot`, and adds source-attributed `add_brain_note`. A daily and weekly zero-model cron place routine work in `aria_queue`; the five-minute Mac-mini heartbeat wakes Aria only when claimable work exists. Aria then retrieves context, searches source records, completes safe internal work, preserves the existing human gates for external/high-impact actions, and records durable learnings.

@@ -11,27 +11,21 @@ Phillip will just say: "read docs/CC-TONIGHT.md and do it."
 3. Run migration 054 (052/053 appear live already — verify). Commit ALL current work
    including docs/BUILD-SPEC.md (it was lost once; it must be in git).
 4. vercel.json: add the health cron line — {"path":"/api/health/check","schedule":"*/10 * * * *"}.
-5. INVESTIGATE: Health page shows visit-emails cron (confirmations/reminders) as never-run.
-   Check the vercel.json entry, the route auth, and Vercel cron logs. Clients may have
-   missed reminder emails.
+5. [FIXED LOCALLY IN PHASE 2 — DEPLOY/MIGRATION PENDING] Health no longer infers a
+   visit-email cron run from an optional sent email. `system_job_runs` records every
+   completion, including a valid no-op; the visit job now runs hourly so failed queued
+   sends do not wait a day for retry. Apply migration 055 before deploying this code.
 6. VAPID keys for web push: keygen one-liner + env vars (NEXT_PUBLIC_VAPID_PUBLIC_KEY,
    VAPID_PRIVATE_KEY) per docs/MINI-HEALTH-HANDOFF.md §6. Add to Vercel, redeploy.
 7. On the mini, per docs/MINI-HEALTH-HANDOFF.md: install launchd heartbeat script,
    channel-status reporting (each WhatsApp group + email poller + calendar →
    report_channel_status), and the diagnostics runner loop (poll get_pending_diagnostics —
    there's one pending request from Phillip already waiting to complete).
-8. [ROOT CAUSE FOUND 14 Jul — Phillip's own words: "I've had to force her to
-   clear those, it wasn't automated." Confirmed in code: `scripts/aria_heartbeat.py`'s
-   `wake_aria()` is a literal stub — it just prints a message and `sys.exit(1)`. The
-   count-check half genuinely works (zero-cost when queue is empty, per the script's
-   own doc comment); NOTHING has ever actually invoked Aria when work is waiting.
-   Every queue drain so far has been Phillip manually prompting her, not the heartbeat.
-   THIS is the task: finish `wake_aria()` on the mini itself — it needs to know how
-   OpenClaw actually gets invoked there (CLI command? local API? file drop into a
-   workspace vault?), which only whoever has hands on that machine can supply; not
-   fixable from a sandbox. Once wired, wire the launchd job to run it on a real
-   interval (e.g. every 5 min) unattended, surviving reboots — that's the second half
-   of this same item, unchanged from Fable's original wording below.] Verify the Aria
+8. [ROOT CAUSE FIXED IN COMMIT 6989b31; PHASE 2 HARDENING LOCAL — DEPLOY PENDING]
+   Phillip had to force Aria to clear the queue because the original `wake_aria()` was
+   a stub. It now calls `openclaw system event --mode now`, and the launchd job runs
+   every 5 minutes. Phase 2 also counts abandoned picked-up rows and creates proactive
+   daily/weekly review items. After deploy + Mac-mini pull, verify the Aria
    wake loop end-to-end: aria_queue stuck count was 232 → 56 today,
    so something is draining; make sure it keeps running unattended (launchd, not a
    terminal session), incl. after reboots.

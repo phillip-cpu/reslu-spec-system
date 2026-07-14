@@ -16,6 +16,7 @@ import {
 import { flushPendingProposalSends } from "@/lib/proposal-emails";
 import { briefUrlFor, buildLeadVisitCalendarAssets, ensureBriefToken } from "@/lib/lead-brief";
 import { reportError } from "@/lib/report-error";
+import { recordJobRun } from "@/lib/job-runs";
 import type { VisitEmailsRunResult } from "@/types/visit-emails";
 
 export const runtime = "nodejs";
@@ -61,9 +62,10 @@ interface ProjectRow {
  *      (migration 048), deliberately no longer sharing one "tomorrow"
  *      date:
  *        - LEAD site visits: docs/RESLU-lead-flow-brief.md build task 4
- *          calls for a reminder "48 hours before the visit." This is a
- *          once-daily cron (see the vercel.json line below), so an
- *          exact 48h-out sweep is impossible — the honest approximation
+ *          calls for a reminder "48 hours before the visit." This is an
+ *          hourly idempotent cron (see vercel.json), but the data model
+ *          stores a visit time rather than a separate reminder schedule,
+ *          so the honest approximation
  *          is "the Adelaide calendar day two days from today"
  *          (`addDaysToDateString(adelaideToday, 2)`), which lands
  *          anywhere from ~36h to ~60h before the visit depending what
@@ -80,7 +82,7 @@ interface ProjectRow {
  *          says "the day before," and nothing in this round's
  *          instructions asks that to change.
  *      Both use sendOrQueue()'s same guard (see lib/visit-emails.ts's
- *      doc comment) to stay idempotent across repeated daily cron
+ *      doc comment) to stay idempotent across repeated hourly cron
  *      runs — a visit already reminded for its CURRENT date/time is a
  *      silent 'duplicate' no-op, not a second email. A cancelled visit
  *      (site_visit_date cleared, or the client_event soft-deleted)
@@ -96,26 +98,12 @@ interface ProjectRow {
  * here is held to that same admin gate rather than "any signed-in
  * team member".
  *
- * vercel.json cron line for CC to add (out of this round's edit
- * boundary — see README.md "Site-visit lifecycle emails" section for
- * the full write-up):
- *   { "path": "/api/visit-emails/run", "schedule": "45 21 * * *" }
- * 21:45 UTC = 07:15 ACST (South Australia standard time, winter) — a
- * few minutes after the 7am window opens, so both reminder sweeps
- * (lead site visits ~2 days out, client_events the day before) and any
- * overnight-queued pending sends flush promptly once sending is
- * allowed. Unchanged by the lead flow round (048) — still one daily
- * cron line covering both windows, since both are computed from the
- * SAME `now` inside one `handle()` call. DST CAVEAT (same limitation
- * already documented on every other fixed-UTC cron line in this codebase, e.g. README.md's
- * "Daily Brief cron" section): this fires at 08:15 ACDT during South
- * Australia's daylight-saving window (roughly October-April), not
- * 7:15am, since Vercel Cron always runs in UTC with no DST adjustment.
- * Low-stakes here — sendOrQueue()/flushPendingSends() both re-check the
- * Adelaide window themselves at send time regardless of when the cron
- * fires, so a run landing an hour "late" during DST still only ever
- * sends inside 7am-7pm Adelaide; the only visible effect is reminders
- * landing slightly later than 7:15am local during DST months.
+ * vercel.json runs this route at minute 15 every hour. That gives a
+ * transient failure another attempt within about an hour instead of
+ * waiting until the next day. sendOrQueue()/flushPendingSends() still
+ * enforce the Adelaide 7am-7pm delivery window and the dedupe guard,
+ * so the higher check frequency cannot create duplicate or overnight
+ * messages.
  */
 async function handle(request: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
@@ -141,16 +129,20 @@ async function handle(request: NextRequest) {
   // RLS is permissive team_all everywhere anyway, so this carries no
   // extra exposure).
   const supabase = createServiceRoleClient();
-  const now = new Date();
+  const startedAt = new Date();
+  const now = startedAt;
+  const errors: string[] = [];
 
   let flushed;
   try {
     flushed = await flushPendingSends(supabase, now);
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Flush failed" },
-      { status: 500 }
-    );
+    const message = err instanceof Error ? err.message : "Visit-email flush failed";
+    await reportError("visit-emails", err);
+    errors.push(message);
+    // Continue into the reminder sweeps: a broken pending-row flush
+    // must not prevent a newly-due client from receiving a reminder.
+    flushed = { sent: 0, skipped: 0, failed: 1, stillPending: 0 };
   }
 
   // Proposal-sent emails share this same daily flush entry point (see
@@ -163,6 +155,7 @@ async function handle(request: NextRequest) {
     proposalsFlushed = await flushPendingProposalSends(supabase, now);
   } catch (err) {
     await reportError("proposal-emails", err);
+    errors.push(err instanceof Error ? err.message : "Proposal-email flush failed");
     proposalsFlushed = { sent: 0, skipped: 0, failed: 0, stillPending: 0 };
   }
 
@@ -177,7 +170,7 @@ async function handle(request: NextRequest) {
   const { start, end } = adelaideDayRangeUtc(tomorrow);
 
   // ---- Lead site visits ----
-  const { data: leadRows } = await supabase
+  const { data: leadRows, error: leadRowsError } = await supabase
     .from("leads")
     .select(
       "id,first_name,surname_project,email,site_visit_date,site_visit_location,location,brief_token,visit_ics_sequence"
@@ -186,6 +179,12 @@ async function handle(request: NextRequest) {
     .not("site_visit_date", "is", null)
     .gte("site_visit_date", leadStart.toISOString())
     .lt("site_visit_date", leadEnd.toISOString());
+
+  if (leadRowsError) {
+    const error = new Error(`Lead reminder query failed: ${leadRowsError.message}`);
+    await reportError("visit-emails", error);
+    errors.push(error.message);
+  }
 
   for (const lead of (leadRows ?? []) as LeadReminderRow[]) {
     if (!lead.email || !lead.site_visit_date) {
@@ -247,26 +246,38 @@ async function handle(request: NextRequest) {
       else reminders.skipped++;
     } catch (err) {
       await reportError("visit-emails", err);
+      errors.push(err instanceof Error ? err.message : `Lead reminder failed for ${lead.id}`);
       reminders.skipped++;
     }
   }
 
   // ---- Client events (UNCHANGED — still "tomorrow"; see header comment) ----
-  const { data: eventRows } = await supabase
+  const { data: eventRows, error: eventRowsError } = await supabase
     .from("client_events")
     .select("id,project_id,starts_at,location")
     .is("deleted_at", null)
     .gte("starts_at", start.toISOString())
     .lt("starts_at", end.toISOString());
 
+  if (eventRowsError) {
+    const error = new Error(`Client-event reminder query failed: ${eventRowsError.message}`);
+    await reportError("visit-emails", error);
+    errors.push(error.message);
+  }
+
   const typedEvents = (eventRows ?? []) as ClientEventReminderRow[];
   const projectIds = [...new Set(typedEvents.map((e) => e.project_id))];
-  const { data: projectRows } = projectIds.length
+  const { data: projectRows, error: projectRowsError } = projectIds.length
     ? await supabase
         .from("projects")
         .select("id,name,client_name,client_email,client_secondary_email")
         .in("id", projectIds)
-    : { data: [] as ProjectRow[] };
+    : { data: [] as ProjectRow[], error: null };
+  if (projectRowsError) {
+    const error = new Error(`Reminder project query failed: ${projectRowsError.message}`);
+    await reportError("visit-emails", error);
+    errors.push(error.message);
+  }
   const projectById = new Map((projectRows ?? []).map((p) => [p.id, p as ProjectRow]));
 
   for (const event of typedEvents) {
@@ -289,28 +300,50 @@ async function handle(request: NextRequest) {
     // in first_name and leaves last_name blank rather than guessing.
     const [firstName, ...rest] = project.client_name.split(" ");
     const visitDatetime = event.starts_at;
-    const result = await sendOrQueue(supabase, {
-      recordType: "client_event",
-      recordId: event.id,
-      template: "visit-reminder",
-      to,
-      subject: `Your site visit tomorrow — ${formatVisitDate(visitDatetime)}`,
-      mergeData: {
-        first_name: firstName || project.client_name,
-        last_name: rest.join(" "),
-        visit_date: formatVisitDate(visitDatetime),
-        visit_time: formatVisitTime(visitDatetime),
-        suburb: suburbFrom(event.location),
-      },
-      visitDatetime,
-      now,
-    });
-    if (result.action === "sent") reminders.sent++;
-    else if (result.action === "queued") reminders.queued++;
-    else reminders.skipped++;
+    try {
+      const result = await sendOrQueue(supabase, {
+        recordType: "client_event",
+        recordId: event.id,
+        template: "visit-reminder",
+        to,
+        subject: `Your site visit tomorrow — ${formatVisitDate(visitDatetime)}`,
+        mergeData: {
+          first_name: firstName || project.client_name,
+          last_name: rest.join(" "),
+          visit_date: formatVisitDate(visitDatetime),
+          visit_time: formatVisitTime(visitDatetime),
+          suburb: suburbFrom(event.location),
+        },
+        visitDatetime,
+        now,
+      });
+      if (result.action === "sent") reminders.sent++;
+      else if (result.action === "queued") reminders.queued++;
+      else reminders.skipped++;
+    } catch (err) {
+      await reportError("visit-emails", err);
+      errors.push(err instanceof Error ? err.message : `Client-event reminder failed for ${event.id}`);
+      reminders.skipped++;
+    }
   }
 
-  const body: VisitEmailsRunResult = { flushed, reminders, proposalsFlushed };
+  const degraded =
+    errors.length > 0 || flushed.failed > 0 || proposalsFlushed.failed > 0;
+  const body: VisitEmailsRunResult = {
+    ok: !degraded,
+    status: degraded ? "degraded" : "succeeded",
+    flushed,
+    reminders,
+    proposalsFlushed,
+    errors,
+  };
+  await recordJobRun(supabase, {
+    jobKey: "visit_emails",
+    status: body.status,
+    startedAt,
+    summary: { flushed, reminders, proposalsFlushed },
+    error: errors.join(" | ") || null,
+  });
   return NextResponse.json(body);
 }
 

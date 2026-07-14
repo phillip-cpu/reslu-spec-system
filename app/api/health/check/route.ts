@@ -130,7 +130,7 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // ---- 3. Derivable cron staleness ----
+  // ---- 3. Monitored scheduled-job health ----
   // Reuses lib/health.ts's computeSpecHealth (also used by the Health
   // page itself) rather than re-deriving cron last-success separately —
   // it fetches a couple of extra counts (aria_queue/materials) this
@@ -139,13 +139,37 @@ export async function GET(request: NextRequest) {
   const specHealth = await computeSpecHealth(service);
   for (const cron of specHealth.crons) {
     const kind = `cron_missed:${cron.key}`;
+    const degradedKind = `cron_degraded:${cron.key}`;
+    if (cron.last_status === "degraded") {
+      const { deduped } = await notifyAdminsOnce(
+        degradedKind,
+        `Scheduled job needs attention — ${cron.label}`,
+        [cron.last_error, cron.last_run_at ? `Run: ${cron.last_run_at}.` : null]
+          .filter(Boolean)
+          .join(" ") || "The latest run completed with one or more partial failures.",
+        "/health"
+      );
+      if (!deduped) incidents.push(degradedKind);
+      await resolveOpenIncident(kind);
+      resolved.push(kind);
+    } else {
+      await resolveOpenIncident(degradedKind);
+      resolved.push(degradedKind);
+    }
+
     if (cron.level === "red") {
       const { deduped } = await notifyAdminsOnce(
         kind,
-        `Cron missed — ${cron.label}`,
-        cron.last_success_at
-          ? `Last success was ${cron.last_success_at}.`
-          : "No successful run has ever been recorded.",
+        cron.last_status === "failed"
+          ? `Scheduled job failed — ${cron.label}`
+          : `Scheduled job missed — ${cron.label}`,
+        cron.last_status === "failed"
+          ? [cron.last_error, cron.last_run_at ? `Run: ${cron.last_run_at}.` : null]
+              .filter(Boolean)
+              .join(" ") || "The latest run failed."
+          : cron.last_success_at
+            ? `Last success was ${cron.last_success_at}.`
+            : "No successful run has ever been recorded.",
         "/health"
       );
       if (!deduped) incidents.push(kind);

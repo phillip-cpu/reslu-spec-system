@@ -3,12 +3,8 @@ import type { SpecHealthSummary } from "@/types/health-push";
 
 /**
  * Health + web push round (r26), BUILD-SPEC.md item 4: "Spec card
- * (each cron's last success from email_sends/daily brief tables where
- * derivable, failed email sends count, aria_queue stuck >24h,
- * needs_aria backlog count)." See lib/health.ts's computeSpecHealth
- * for the exact derivation + its own "where derivable" scope note —
- * not every vercel.json cron has a reconstructable last-success here,
- * documented rather than faked.
+ * (monitored job runs, failed email sends, aria_queue stuck >24h,
+ * needs_aria backlog count). See lib/health.ts's computeSpecHealth.
  */
 export function SpecHealthCard({ summary }: { summary: SpecHealthSummary }) {
   return (
@@ -17,13 +13,31 @@ export function SpecHealthCard({ summary }: { summary: SpecHealthSummary }) {
 
       <div className="space-y-2">
         {summary.crons.map((cron) => (
-          <div key={cron.key} className="flex items-center justify-between gap-2">
-            <span className="text-body text-charcoal">{cron.label}</span>
+          <div key={cron.key} className="flex items-start justify-between gap-2">
+            <div>
+              <span className="text-body text-charcoal">{cron.label}</span>
+              {cron.last_error ? (
+                <p className="mt-0.5 max-w-md text-caption text-[#7A1F1F]">{cron.last_error}</p>
+              ) : null}
+            </div>
             <div className="flex items-center gap-2">
               <span className="text-caption text-charcoal/50">
-                {cron.last_success_at ? new Date(cron.last_success_at).toLocaleString("en-AU") : "never"}
+                {cron.last_run_at ? new Date(cron.last_run_at).toLocaleString("en-AU") : "never"}
               </span>
-              <HealthPill level={cron.level} label={cron.level === "green" ? "OK" : cron.level === "amber" ? "Late" : "Missed"} />
+              <HealthPill
+                level={cron.level}
+                label={
+                  cron.last_status === "failed"
+                    ? "Failed"
+                    : cron.last_status === "degraded"
+                      ? "Warning"
+                      : cron.level === "green"
+                        ? "OK"
+                        : cron.level === "amber"
+                          ? "Late"
+                          : "Missed"
+                }
+              />
             </div>
           </div>
         ))}

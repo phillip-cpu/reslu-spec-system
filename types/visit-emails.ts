@@ -97,7 +97,10 @@ export interface EmailSendsResponse {
 
 /** GET/POST /api/visit-emails/run response. */
 export interface VisitEmailsRunResult {
+  ok: boolean;
+  status: "succeeded" | "degraded";
   flushed: { sent: number; skipped: number; failed: number; stillPending: number };
   reminders: { sent: number; queued: number; skipped: number };
   proposalsFlushed: { sent: number; skipped: number; failed: number; stillPending: number };
+  errors: string[];
 }

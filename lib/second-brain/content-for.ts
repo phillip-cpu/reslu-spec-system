@@ -11,14 +11,12 @@
  * tables (sow_documents -> sow_sections -> sow_lines), not a single
  * `sow_entries` table.
  *
- * Only the 5 entity types with real data today are handled — 'email'
- * doesn't exist until a later step, and 'skill'/'memory' are
- * filesystem-based concepts with no Supabase table and no way for a
- * Vercel function to reach Aria's local Mac-mini filesystem anyway;
- * out of scope here, not silently ignored.
+ * Phase 2 also indexes inbound/sent email history and durable brain_notes. Local
+ * OpenClaw skill files still cannot be reached from Vercel and remain
+ * outside this index.
  */
 
-export type ContentEntityType = "project" | "lead" | "item" | "diary" | "sow";
+export type ContentEntityType = "project" | "lead" | "item" | "diary" | "sow" | "email" | "memory";
 
 export type IndexableProject = {
   id: string;
@@ -69,6 +67,30 @@ export type IndexableSowDocument = {
   revision_label: string | null;
   project_name: string;
   sections: { heading: string | null; lines: string[] }[];
+};
+
+export type IndexableEmail = {
+  id: string;
+  from_addr: string;
+  subject: string | null;
+  received_at: string;
+  direction: "inbound" | "sent";
+  clean_text: string | null;
+  attachment_text: string | null;
+  triage_label: string | null;
+  status: string;
+  matched_project_id: string | null;
+};
+
+export type IndexableBrainNote = {
+  id: string;
+  title: string;
+  body: string;
+  tags: string[];
+  source: string;
+  source_ref: string | null;
+  confidence: number | null;
+  created_at: string;
 };
 
 function joinFields(fields: (string | number | null | undefined)[]): string {
@@ -130,5 +152,40 @@ export function contentForSow(s: IndexableSowDocument): { title: string; content
   return {
     title,
     content: joinFields([title, sectionText]),
+  };
+}
+
+export function contentForEmail(email: IndexableEmail): { title: string; content: string } {
+  const title = email.subject || "(no subject)";
+  return {
+    title,
+    content: joinFields([
+      title,
+      `From ${email.from_addr}`,
+      `Received ${email.received_at}`,
+      `Direction ${email.direction}`,
+      email.triage_label ? `Triage ${email.triage_label}` : null,
+      `Status ${email.status}`,
+      email.matched_project_id ? `Project ${email.matched_project_id}` : null,
+      // Keep the index useful without feeding an unbounded email chain
+      // into a single embedding record. The full source remains in emails.
+      email.clean_text?.slice(0, 12_000),
+      email.attachment_text?.slice(0, 12_000),
+    ]),
+  };
+}
+
+export function contentForMemory(note: IndexableBrainNote): { title: string; content: string } {
+  return {
+    title: note.title,
+    content: joinFields([
+      note.title,
+      note.body,
+      note.tags.length ? `Tags ${note.tags.join(", ")}` : null,
+      `Source ${note.source}`,
+      note.source_ref ? `Source reference ${note.source_ref}` : null,
+      note.confidence != null ? `Confidence ${note.confidence}` : null,
+      `Recorded ${note.created_at}`,
+    ]),
   };
 }

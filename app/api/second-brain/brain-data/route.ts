@@ -30,9 +30,8 @@ function describeCron(schedule: string): string {
  *
  * RESLU Second Brain, Step 13 (docs/RESLU-second-brain-build-brief.md).
  * Serves the /brain visualizer's live data — real per-entity-type
- * counts (workspace_index scope: project/lead/item/diary/sow, plus
- * emails read directly from the emails table since Step 5 never
- * indexed those into workspace_index) and the real cron schedule
+ * counts for the searchable CRM, email and durable-memory sources and
+ * the real cron schedule
  * (imported from vercel.json, bundled at build time — reading it via
  * fs at request time isn't a reliable pattern on Vercel's serverless
  * runtime for an arbitrary repo file).
@@ -53,7 +52,7 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const [{ count: itemCount }, { count: projectCount }, { count: leadCount }, { count: diaryCount }, { count: sowCount }, { count: emailCount }] =
+  const [{ count: itemCount }, { count: projectCount }, { count: leadCount }, { count: diaryCount }, { count: sowCount }, { count: emailCount }, { count: memoryCount }] =
     await Promise.all([
       supabase.from("items").select("id", { count: "exact", head: true }).is("deleted_at", null),
       supabase.from("projects").select("id", { count: "exact", head: true }).is("deleted_at", null),
@@ -61,18 +60,20 @@ export async function GET() {
       supabase.from("portal_updates").select("id", { count: "exact", head: true }).is("deleted_at", null),
       supabase.from("sow_documents").select("id", { count: "exact", head: true }).is("deleted_at", null),
       supabase.from("emails").select("id", { count: "exact", head: true }),
+      supabase.from("brain_notes").select("id", { count: "exact", head: true }),
     ]);
 
   const { data: openProposals } = await supabase.from("change_proposals").select("entity_id").eq("status", "pending");
   const flaggedItemIds = new Set((openProposals ?? []).map((p) => p.entity_id));
 
-  const [{ data: items }, { data: projects }, { data: leads }, { data: diary }, { data: sow }, { data: emails }] = await Promise.all([
+  const [{ data: items }, { data: projects }, { data: leads }, { data: diary }, { data: sow }, { data: emails }, { data: memoryNotes }] = await Promise.all([
     supabase.from("items").select("id,name,project_id,updated_at").is("deleted_at", null),
     supabase.from("projects").select("id,name,updated_at").is("deleted_at", null),
     supabase.from("leads").select("id,first_name,surname_project,updated_at").is("deleted_at", null),
     supabase.from("portal_updates").select("id,title,project_id,created_at").is("deleted_at", null),
     supabase.from("sow_documents").select("id,revision_label,project_id,created_at").is("deleted_at", null),
     supabase.from("emails").select("id,subject,received_at,status").order("received_at", { ascending: false }).limit(500),
+    supabase.from("brain_notes").select("id,title,created_at").order("created_at", { ascending: false }).limit(500),
   ]);
 
   const itemRecords: BrainRecord[] = (items ?? [])
@@ -118,8 +119,13 @@ export async function GET() {
     .filter((e) => isRecent(e.received_at))
     .map((e) => ({ id: e.id, name: e.subject ?? "(no subject)", flagged: false, recentAt: e.received_at, recordUrl: null }));
 
+  const memoryRecords: BrainRecord[] = (memoryNotes ?? [])
+    .filter((note) => isRecent(note.created_at))
+    .map((note) => ({ id: note.id, name: note.title, flagged: false, recentAt: note.created_at, recordUrl: null }));
+
   const rawClusters: BrainCluster[] = [
     { entityType: "email", label: "EMAILS", totalCount: emailCount ?? 0, records: emailRecords },
+    { entityType: "memory", label: "MEMORY", totalCount: memoryCount ?? 0, records: memoryRecords },
     { entityType: "item", label: "ITEMS", totalCount: itemCount ?? 0, records: itemRecords },
     { entityType: "project", label: "JOBS", totalCount: projectCount ?? 0, records: projectRecords },
     { entityType: "diary_sow", label: "DIARY + SOW", totalCount: (diaryCount ?? 0) + (sowCount ?? 0), records: diarySowRecords },

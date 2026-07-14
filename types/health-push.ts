@@ -88,7 +88,10 @@ export interface SpecHealthSummary {
   crons: {
     key: string;
     label: string;
+    last_run_at: string | null;
     last_success_at: string | null;
+    last_status: "succeeded" | "degraded" | "failed" | null;
+    last_error: string | null;
     level: HealthPillLevel;
   }[];
   failed_email_sends_7d: number;
