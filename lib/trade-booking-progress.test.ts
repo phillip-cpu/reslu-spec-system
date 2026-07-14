@@ -39,7 +39,9 @@ function email(patch: Partial<TradeBookingEmailEvidence>): TradeBookingEmailEvid
 
 test("queued is distinct from sent", () => {
   const progress = deriveTradeBookingProgress({
-    request,
+    // Legacy rows stamped request.sent_at before the email pipeline
+    // actually sent. The latest durable email attempt must win.
+    request: { ...request, sent_at: "2026-07-14T00:00:30.000Z" },
     email: email({ status: "pending", sent_at: null, scheduled_for: "2026-07-14T21:30:00.000Z" }),
     counts,
   });

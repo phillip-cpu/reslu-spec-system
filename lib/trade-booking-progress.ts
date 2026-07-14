@@ -40,10 +40,10 @@ export function deriveTradeBookingProgress({
     stage = "email_open_detected";
   } else if (email?.delivered_at) {
     stage = "delivered";
-  } else if (email?.status === "sent" || request.sent_at) {
-    stage = "sent";
   } else if (email?.status === "pending") {
     stage = "queued";
+  } else if (email?.status === "sent" || request.sent_at) {
+    stage = "sent";
   } else {
     stage = "not_sent";
   }
