@@ -30,7 +30,7 @@
     },
     {
       "path": "/api/second-brain/reindex",
-      "schedule": "30 15 * * *"
+      "schedule": "30 * * * *"
     },
     {
       "path": "/api/second-brain/triage",

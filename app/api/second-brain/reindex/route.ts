@@ -24,7 +24,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 export const runtime = "nodejs";
 
 /**
- * GET /api/second-brain/reindex — Vercel Cron entry point (daily), also
+ * GET /api/second-brain/reindex — Vercel Cron entry point (hourly), also
  * the manual-trigger and future index_rebuild (Step 12) MCP tool target.
  *
  * RESLU Second Brain, Step 5 (docs/RESLU-second-brain-build-brief.md).
@@ -44,6 +44,12 @@ export const runtime = "nodejs";
  * costs nothing to support now, and is what Step 12's index_rebuild
  * tool will call.
  *
+ * Email indexing is deliberately limited to one changed 500-row page
+ * per invocation. In-process ONNX inference stays below Vercel's memory
+ * limit with eight texts per batch, and the hourly schedule advances the
+ * backlog without risking a five-minute timeout. Already-indexed pages
+ * are hash-checked and skipped quickly on the next run.
+ *
  * Chunking: an optional ?cursor= (JSON: {phase, entityTypeIndex,
  * offset}) lets a run that exceeds TIME_BUDGET_MS self-invoke and
  * continue rather than hit Vercel's function timeout. At this app's
@@ -54,7 +60,7 @@ export const runtime = "nodejs";
  * fire.
  */
 
-const ALL_ENTITY_TYPES: ContentEntityType[] = ["project", "lead", "item", "diary", "sow", "email", "memory"];
+const ALL_ENTITY_TYPES: ContentEntityType[] = ["project", "lead", "item", "diary", "sow", "memory", "email"];
 const PAGE_SIZE = 500;
 const TIME_BUDGET_MS = 4 * 60 * 1000; // 4 minutes — comfortable margin under Vercel's 300s default.
 
@@ -369,6 +375,18 @@ export async function GET(request: NextRequest) {
           embedded += result.embedded;
           skipped += result.skipped;
           offset += PAGE_SIZE;
+
+          if (entityType === "email" && result.embedded > 0) {
+            return NextResponse.json({
+              phase: "index",
+              continued: true,
+              reason: "email_page_budget",
+              embedded,
+              skipped,
+              deleted,
+            });
+          }
+
           if (page.length < PAGE_SIZE) {
             entityTypeIndex++;
             offset = 0;

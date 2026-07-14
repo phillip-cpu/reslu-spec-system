@@ -42,7 +42,7 @@
 import { pipeline, env, type FeatureExtractionPipeline } from "@huggingface/transformers";
 
 const MODEL = "Supabase/gte-small";
-const BATCH_SIZE = 32;
+const BATCH_SIZE = 8;
 
 env.cacheDir = "/tmp/hf-cache";
 
