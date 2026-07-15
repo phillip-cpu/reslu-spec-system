@@ -842,6 +842,15 @@ hasn't been initialised yet. `client_activity` is the last 5
 has no `project_id` column of its own), newest first. **Aria-relevant**
 (read-only project status snapshot).
 
+### GET /api/projects/[id]/data-quality
+Auth: admin. Body: none. Read-only response: `ProjectDataQualityResponse`
+with critical/warning/info counts, affected-record count, pricing
+coverage (`priced_item_pct`, known and quoted value ex GST), and compact
+actionable issues across register hygiene, pricing, procurement and the
+trade programme. It reuses the same `deriveOrderBy()` policy as the
+Pricing & Procurement view; it never edits an item, task or booking.
+Pricing/procurement sensitivity is why the entire route is admin-only.
+
 ### PATCH /api/projects/[id]/document-status
 Auth: session (NOT admin-gated). Body: `{ kind, status }` where
 `kind ∈ plans | council | engineering | scope_of_works | other` and
@@ -1406,11 +1415,15 @@ stages), `?q=` (search across surname_project/first_name/location/
 email/phone), `?since=` (ISO timestamp — only leads created at/after
 this time; this is exactly what a lead-monitor automation should poll),
 `?summary=1` (also returns a `summary: LeadsDashboardSummary` block —
-`{ total_pipeline_value, stages: [{ stage, count, value,
-avg_days_in_stage }] }` — computed over the WHOLE pipeline, independent
+`{ total_pipeline_value, future_nurture_count, stages: [{ stage, count,
+value, included_in_pipeline, avg_days_in_stage }] }` — computed over the
+WHOLE pipeline, independent
 of any `?stage`/`?q` filter applied to the `leads` array itself, so the
 dashboard strip never appears to change just because the list below it
-is filtered), `?limit=`/`?offset=` (Phase 14A pagination — default 500,
+is filtered). `value` is a stage's contribution to active pipeline value,
+so it is always zero when `included_in_pipeline` is false; this explicitly
+keeps `Potential Future Lead` as future nurture rather than live pipeline.
+`?limit=`/`?offset=` (Phase 14A pagination — default 500,
 max 2000; response also carries `total`/`limit`/`offset`; NEVER applied
 to the `?summary=1` whole-pipeline aggregate, only to the `leads` array
 itself). Response: `{ leads: Lead[] }` or `{ leads, summary }`.

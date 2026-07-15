@@ -4,6 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import { Header } from "@/components/layout/Header";
 import { ProjectTabs } from "@/components/projects/ProjectTabs";
 import { ProjectOverview } from "@/components/projects/ProjectOverview";
+import { ProjectDataQualityPanel } from "@/components/projects/ProjectDataQualityPanel";
 import { ProjectWorkspace } from "@/components/items/ProjectWorkspace";
 import { MondayBoardPicker } from "@/components/items/MondayBoardPicker";
 import { ExportDialogTrigger } from "@/components/projects/ExportDialogTrigger";
@@ -154,7 +155,10 @@ export default async function ProjectPage({
             initialView={initialFfeView}
           />
         ) : (
-          <ProjectOverview projectId={id} isAdmin={isAdmin} />
+          <div className="space-y-6">
+            {isAdmin && <ProjectDataQualityPanel projectId={id} />}
+            <ProjectOverview projectId={id} isAdmin={isAdmin} />
+          </div>
         )}
       </main>
     </>

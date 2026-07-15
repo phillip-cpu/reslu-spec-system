@@ -1330,11 +1330,16 @@ export interface LeadsAttentionResponse {
   site_visits_upcoming: Lead[];
 }
 
-/** Per-stage aggregate for the pipeline dashboard strip. */
+/** Per-stage aggregate for the pipeline dashboard strip. `value` is
+ * the stage's contribution to ACTIVE pipeline value, not the raw sum
+ * of every stored construction_value. It is therefore always zero for
+ * Unable/Lost/Complete/Potential Future stages. Individual lead values
+ * remain stored and visible on their own records. */
 export interface LeadStageSummary {
   stage: LeadStage;
   count: number;
   value: number;
+  included_in_pipeline: boolean;
   avg_days_in_stage: number | null;
 }
 
@@ -1342,6 +1347,7 @@ export interface LeadStageSummary {
  * when `?summary=1` — see docs/API.md. */
 export interface LeadsDashboardSummary {
   total_pipeline_value: number;
+  future_nurture_count: number;
   stages: LeadStageSummary[];
 }
 

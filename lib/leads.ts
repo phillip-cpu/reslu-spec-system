@@ -21,7 +21,7 @@ import {
   type LeadStage,
   type LeadStageEvent,
   type LeadStageSummary,
-} from "@/types";
+} from "../types/index.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -205,19 +205,27 @@ export function buildDashboardSummary(
   leads: Lead[],
   allEvents: LeadStageEvent[],
   now: Date = new Date()
-): { total_pipeline_value: number; stages: LeadStageSummary[] } {
+): { total_pipeline_value: number; future_nurture_count: number; stages: LeadStageSummary[] } {
   const stages: LeadStageSummary[] = LEAD_STAGES.map((stage) => {
     const inStage = leads.filter((l) => l.stage === stage);
+    const includedInPipeline = isActiveStage(stage);
     return {
       stage,
       count: inStage.length,
-      value: inStage.reduce((sum, l) => sum + (l.construction_value ?? 0), 0),
+      // Stage values use the same active-pipeline policy as the total.
+      // This prevents an inactive chip/API consumer from presenting a
+      // Potential Future Lead value as live pipeline by accident.
+      value: includedInPipeline
+        ? inStage.reduce((sum, l) => sum + (l.construction_value ?? 0), 0)
+        : 0,
+      included_in_pipeline: includedInPipeline,
       avg_days_in_stage: avgDaysInStage(stage, leads, allEvents, now),
     };
   });
 
   return {
     total_pipeline_value: totalPipelineValue(leads),
+    future_nurture_count: leads.filter((lead) => lead.stage === "Potential Future Lead").length,
     stages,
   };
 }

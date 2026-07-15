@@ -352,8 +352,11 @@ To stop the app, go back to Terminal and press `Ctrl + C`.
   of the page (follow-ups due, proposals sent 4+ days with no
   follow-up, proposals never sent after 7+ days, site visits in the
   next 7 days), and a **pipeline dashboard** strip shows total active
-  pipeline value plus a per-stage count/value/avg-days-in-stage chip
-  row. New tables: `leads`, `lead_stage_events` (append-only, populated
+  pipeline value plus active-stage count/value/avg-days-in-stage chips.
+  `Potential Future Lead` is shown separately as **future nurture** and,
+  like Unable/Lost/Complete, contributes zero to every pipeline tally
+  while retaining its individual indicative construction value on the
+  lead record. New tables: `leads`, `lead_stage_events` (append-only, populated
   by a DB trigger on every stage change — migration `014_leads.sql`);
   `projects` gained `lead_id`. Leads are the first data in this app
   called out as needing stronger-than-usual protection ("admin-only,

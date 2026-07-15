@@ -122,11 +122,16 @@ export function LeadsBoard({ leads, onMoveStage, onOpen }: Props) {
         );
       })}
 
-      {/* Muted stages — Unable to Contact / Lead Lost / Complete /
-          Potential Future Lead — collapsed at the bottom with counts,
-          each independently expandable on click. */}
+      {/* Everything below this divider is deliberately outside the
+          active pipeline. Potential Future Lead remains a future-
+          nurture record, while the other rows are closed outcomes. */}
       <div className="space-y-2 border-t border-[#dcd6cc] pt-4">
-        <p className="label-caps !text-charcoal/40">Inactive stages</p>
+        <div>
+          <p className="label-caps !text-charcoal/40">Future nurture and closed</p>
+          <p className="mt-1 text-caption text-charcoal/50">
+            These leads are excluded from active pipeline value.
+          </p>
+        </div>
         {mutedStages.map((stage) => {
           const stageLeads = leadsByStage.get(stage) ?? [];
           const expanded = expandedMuted.has(stage);
@@ -153,8 +158,13 @@ export function LeadsBoard({ leads, onMoveStage, onOpen }: Props) {
                 className="flex w-full items-center gap-2 px-3 py-2 text-left"
               >
                 <span className="text-caption text-charcoal/40">{expanded ? "▾" : "▸"}</span>
-                <span className="label-caps !text-charcoal/40">
-                  {stage} · {stageLeads.length}
+                <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="label-caps !text-charcoal/40">
+                    {stage} · {stageLeads.length}
+                  </span>
+                  {stage === "Potential Future Lead" && (
+                    <span className="text-caption text-sand">Future nurture · excluded</span>
+                  )}
                 </span>
               </button>
               {expanded && (
