@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getUserRole } from "@/lib/auth";
+import { compactProjectDataQuality } from "@/lib/project-data-quality";
 import { loadProjectDataQuality } from "@/lib/project-data-quality-server";
 import { createClient } from "@/lib/supabase/server";
 
@@ -14,7 +15,7 @@ export const runtime = "nodejs";
  * booking or board task.
  */
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id: projectId } = await params;
@@ -32,7 +33,9 @@ export async function GET(
   }
 
   try {
-    return NextResponse.json(await loadProjectDataQuality(supabase, projectId));
+    const report = await loadProjectDataQuality(supabase, projectId);
+    const concise = new URL(request.url).searchParams.get("response_format") === "concise";
+    return NextResponse.json(concise ? compactProjectDataQuality(report) : report);
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Could not load project health" },

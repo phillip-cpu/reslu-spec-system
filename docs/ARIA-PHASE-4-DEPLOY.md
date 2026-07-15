@@ -29,8 +29,12 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
 Then verify in a fresh OpenClaw session:
 
 ```text
-Call get_project_health with no project_id. Report only the number of active projects, critical issues and warnings. Do not create, edit or send anything.
+Call get_project_health with no project_id. If pagination.has_more is true, keep calling it with pagination.next_offset until every page is checked. Report the number and names of all active projects, critical issues and warnings. Confirm truncated is not true. Do not create, edit or send anything.
 ```
+
+Phase 4.1 makes the company scan concise by default while retaining every
+issue code and count. Full issue detail remains available by calling
+`get_project_health` with one `project_id` and `response_format: "detailed"`.
 
 ## Merge into OpenClaw standing instructions
 

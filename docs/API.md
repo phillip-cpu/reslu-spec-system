@@ -850,13 +850,19 @@ actionable issues across register hygiene, pricing, procurement and the
 trade programme. It reuses the same `deriveOrderBy()` policy as the
 Pricing & Procurement view; it never edits an item, task or booking.
 Pricing/procurement sensitivity is why the entire route is admin-only.
+Optional query `response_format=concise` retains summary, essential
+pricing coverage and every issue code/severity/count while omitting verbose
+detail and samples.
 
 ### GET /api/projects/data-quality
-Auth: admin. Body: none. Company-wide read-only Project Health feed for
-every active project. Response: `{ summary, projects, errors,
-generated_at }`; each project embeds the exact same report produced by
-`GET /api/projects/[id]/data-quality`. This is the `get_project_health`
-MCP tool's no-argument target and never mutates project data.
+Auth: admin. Body: none. Paginated, company-wide read-only Project Health
+feed for active projects. Query: `response_format=concise|detailed`,
+`offset` (default 0), `limit` (default 10, maximum 25). Response:
+`{ summary, projects, errors, pagination, response_format, generated_at }`.
+The MCP tool defaults to concise so every issue code/count for the page fits
+inside its response safety cap; callers follow `pagination.next_offset`
+until `has_more` is false. Detailed mode embeds the same report produced by
+`GET /api/projects/[id]/data-quality`. This route never mutates project data.
 
 ### GET /api/aria-actions/sync
 Auth: admin session or `Authorization: Bearer ${CRON_SECRET}`. Phase 4

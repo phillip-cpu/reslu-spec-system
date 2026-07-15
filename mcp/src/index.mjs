@@ -1380,7 +1380,7 @@ const TOOLS = [
   {
     name: "get_project_health",
     description:
-      "Read the same Project Health diagnostics shown to admins in Spec. Omit project_id for every active project, or pass one project UUID for its full report. This is read-only: use it to investigate and propose corrections, never treat a warning as permission to change project data. Phase 4 already creates/refreshes deduplicated Office tasks for critical issues and upcoming unconfirmed trade visits.",
+      "Read Project Health diagnostics from Spec. Omit project_id for a concise, paginated company-wide scan that includes every issue code and count without MCP truncation; keep requesting next_offset while has_more is true. Pass one project UUID with response_format=detailed for samples and full pricing coverage. This is read-only: use it to investigate and propose corrections, never treat a warning as permission to change project data. Phase 4 already creates/refreshes deduplicated Office tasks for critical issues and upcoming unconfirmed trade visits.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1388,15 +1388,33 @@ const TOOLS = [
           type: "string",
           description: "Optional project UUID. Omit for the company-wide active-project feed.",
         },
+        response_format: {
+          type: "string",
+          enum: ["concise", "detailed"],
+          description: "Defaults to concise for the company feed and detailed for one project.",
+        },
+        offset: {
+          type: "number",
+          description: "Company feed offset. Default 0; use pagination.next_offset while has_more is true.",
+        },
+        limit: {
+          type: "number",
+          description: "Company feed page size. Default 10, capped at 25.",
+        },
       },
       additionalProperties: false,
     },
-    handler: async ({ project_id } = {}) =>
-      apiFetch(
+    handler: async ({ project_id, response_format, offset, limit } = {}) => {
+      const format = response_format ?? (project_id ? "detailed" : "concise");
+      const params = new URLSearchParams({ response_format: format });
+      if (!project_id && Number.isFinite(offset)) params.set("offset", String(offset));
+      if (!project_id && Number.isFinite(limit)) params.set("limit", String(limit));
+      return apiFetch(
         project_id
-          ? `/api/projects/${encodeURIComponent(project_id)}/data-quality`
-          : "/api/projects/data-quality"
-      ),
+          ? `/api/projects/${encodeURIComponent(project_id)}/data-quality?${params}`
+          : `/api/projects/data-quality?${params}`
+      );
+    },
   },
   {
     name: "get_context_snapshot",

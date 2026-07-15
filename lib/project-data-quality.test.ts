@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deriveProjectDataQuality } from "./project-data-quality.ts";
+import {
+  compactProjectDataQuality,
+  deriveProjectDataQuality,
+} from "./project-data-quality.ts";
 import type { ProjectDataQualityInput } from "../types/data-quality.ts";
 
 function baseInput(): ProjectDataQualityInput {
@@ -140,4 +143,24 @@ test("affected record count is not capped by the three displayed samples", () =>
 
   assert.equal(issue?.samples.length, 3);
   assert.equal(report.summary.affected_records, 5);
+});
+
+test("compact company feed keeps every issue without verbose samples", () => {
+  const input = baseInput();
+  input.items = [
+    item({ quantity: 0, supplier: null, lead_time_weeks: null }),
+    item({ id: "item-2", item_code: "DR-02", price_trade: null }),
+  ];
+
+  const full = deriveProjectDataQuality(input);
+  const compact = compactProjectDataQuality(full);
+
+  assert.deepEqual(
+    compact.issues.map((issue) => issue.code),
+    full.issues.map((issue) => issue.code)
+  );
+  assert.equal(compact.summary.warning, full.summary.warning);
+  assert.equal(compact.pricing.total_items, 2);
+  assert.ok(!("samples" in compact.issues[0]));
+  assert.ok(!("detail" in compact.issues[0]));
 });

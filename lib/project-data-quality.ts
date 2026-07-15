@@ -11,6 +11,7 @@ import type {
   DataQualityItemInput,
   DataQualitySeverity,
   ProjectDataQualityInput,
+  ProjectDataQualityCompactResponse,
   ProjectDataQualityIssue,
   ProjectDataQualityResponse,
   ProjectPricingCoverage,
@@ -372,5 +373,30 @@ export function deriveProjectDataQuality(input: ProjectDataQualityInput): Projec
     },
     pricing: pricingCoverage(items),
     issues,
+  };
+}
+
+/**
+ * Preserve all project and issue counts while dropping verbose detail that is
+ * already available from the single-project endpoint. This prevents the
+ * company-wide MCP response from hiding later projects behind its global
+ * response safety cap.
+ */
+export function compactProjectDataQuality(
+  report: ProjectDataQualityResponse
+): ProjectDataQualityCompactResponse {
+  return {
+    project_id: report.project_id,
+    summary: report.summary,
+    pricing: {
+      total_items: report.pricing.total_items,
+      priced_item_pct: report.pricing.priced_item_pct,
+      unpriced_items: report.pricing.unpriced_items,
+    },
+    issues: report.issues.map(({ code, severity, count }) => ({
+      code,
+      severity,
+      count,
+    })),
   };
 }

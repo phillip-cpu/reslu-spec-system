@@ -51,6 +51,23 @@ export interface ProjectDataQualityResponse {
   issues: ProjectDataQualityIssue[];
 }
 
+/**
+ * Small enough for Aria's company-wide MCP scan while retaining every
+ * actionable rule. Detail and samples remain available by requesting one
+ * project with response_format=detailed.
+ */
+export interface ProjectDataQualityCompactResponse {
+  project_id: string;
+  summary: ProjectDataQualityResponse["summary"];
+  pricing: Pick<
+    ProjectPricingCoverage,
+    "total_items" | "priced_item_pct" | "unpriced_items"
+  >;
+  issues: Array<
+    Pick<ProjectDataQualityIssue, "code" | "severity" | "count">
+  >;
+}
+
 export interface DataQualityItemInput {
   id: string;
   item_code: string;

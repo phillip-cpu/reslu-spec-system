@@ -761,7 +761,7 @@ Potential Future Lead is a separate nurture lane. It remains excluded from activ
 
 `get_context_snapshot({ project_id? })` is a compact workspace snapshot — active projects/leads, actionable queue count by kind, pending change proposals, recent emails, recent diary one-liners and recent durable memory references. Pass `project_id` to instead get one project expanded with its items, real pending-proposal count and recent matched emails.
 
-`get_project_health({ project_id? })` is the read-only operational risk feed. Omit `project_id` for every active project or pass one UUID for the same full report shown in the admin Project Health panel. It includes critical/warning issue counts, compact pricing coverage and actionable issue samples. It never edits a project, booking, item or task.
+`get_project_health({ project_id?, response_format?, offset?, limit? })` is the read-only operational risk feed. Omit `project_id` for a concise company-wide page containing every issue code/count for each returned project. Always follow `pagination.next_offset` until `has_more` is false; this keeps the scan complete without hitting the MCP response cap. Pass one UUID with `response_format: "detailed"` for the same full report and issue samples shown in the admin Project Health panel. It never edits a project, booking, item or task.
 
 `add_brain_note({ title, body, tags?, source?, source_ref?, confidence? })` stores a durable learning or explicit decision. It is not for transient reminders or guesses. Preserve provenance and an honest confidence score; use `index_rebuild({ entity_type: 'memory' })` if it must become searchable immediately instead of waiting for the daily reindex.
 
