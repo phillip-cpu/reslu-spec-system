@@ -15,6 +15,7 @@ import { BankDetailsSettings } from "@/components/settings/BankDetailsSettings";
 import { CpdDefaultsSettings } from "@/components/settings/CpdDefaultsSettings";
 import { EmailSignaturesSettings } from "@/components/settings/EmailSignaturesSettings";
 import { PushSettings } from "@/components/settings/PushSettings";
+import { SettingsGroup, SettingsJumpNav } from "@/components/settings/SettingsGroup";
 import { getSignaturePeople } from "@/lib/email-signatures";
 import { FALLBACK_PHASE_TEMPLATE, FALLBACK_PHASE_TASK_TEMPLATES } from "@/lib/phase-template";
 import { FALLBACK_DESIGN_TASK_TEMPLATES } from "@/lib/design-task-templates";
@@ -187,7 +188,14 @@ export default async function SettingsPage() {
   return (
     <>
       <Header title="Settings" />
-      <main className="flex-1 space-y-12 px-8 py-8">
+      <main className="flex-1 space-y-6 px-4 py-6 md:px-8 md:py-8">
+        <SettingsJumpNav />
+        <SettingsGroup
+          id="project-setup"
+          title="Projects & templates"
+          description="Categories, phase defaults, design tasks and trade mappings."
+          defaultOpen
+        >
         <section>
           <h2 className="mb-1 text-subhead text-nearblack">Categories</h2>
           <p className="mb-4 text-body text-charcoal/60">
@@ -272,6 +280,14 @@ export default async function SettingsPage() {
           <ExportPresetSettings initialPresets={exportPresets} categories={categories} canEdit={isAdmin} />
         </section>
 
+        </SettingsGroup>
+
+        <SettingsGroup
+          id="people-business"
+          title="People & business"
+          description="CPD, invoicing details and team access."
+        >
+
         <section>
           {/* CPD tracker round — BUILD-SPEC.md "CPD point tracker".
               Studio-wide annual target + licence-year start month;
@@ -331,6 +347,14 @@ export default async function SettingsPage() {
           />
         </section>
 
+        </SettingsGroup>
+
+        <SettingsGroup
+          id="communications"
+          title="Communications"
+          description="Email signatures and browser notifications."
+        >
+
         {/* Email signatures round (r22) — BUILD-SPEC.md "Email
             signatures page". Team-visible, no admin gate (item 5: "no
             secrets, visible to all users") — every team member can copy
@@ -369,6 +393,14 @@ export default async function SettingsPage() {
           <PushSettings />
         </section>
 
+        </SettingsGroup>
+
+        <SettingsGroup
+          id="connections-system"
+          title="Connections & system"
+          description="External services, shortcuts and operational diagnostics."
+        >
+
         <section>
           <h2 className="mb-1 text-subhead text-nearblack">Integrations</h2>
           <p className="mb-4 text-body text-charcoal/60">
@@ -398,6 +430,7 @@ export default async function SettingsPage() {
             <SystemHealth errors={recentErrors} />
           </section>
         )}
+        </SettingsGroup>
       </main>
     </>
   );

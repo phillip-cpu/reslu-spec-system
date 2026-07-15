@@ -9,6 +9,7 @@ import { AddToCalendarMenu } from "@/components/shared/AddToCalendarMenu";
 import type { InviteeOption } from "@/types/phase-small-round";
 import type { StandardItemIdsInput } from "@/types/round-d";
 import { LeadNotes } from "@/components/leads/LeadNotes";
+import { LeadMeetings } from "@/components/leads/LeadMeetings";
 import { LeadAttachments } from "@/components/leads/LeadAttachments";
 import { StandardItemsChecklist } from "@/components/projects/StandardItemsChecklist";
 import { VisitEmailStatusChips } from "@/components/shared/VisitEmailStatusChips";
@@ -344,6 +345,10 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
               </p>
             )}
             <LeadNotes leadId={lead.id} onError={setNotesError} />
+          </div>
+
+          <div className="border-t border-[#dcd6cc] pt-4">
+            <LeadMeetings leadId={lead.id} />
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">

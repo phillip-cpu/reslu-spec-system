@@ -50,11 +50,10 @@ export async function GET(request: NextRequest) {
   const wantsAll = new URL(request.url).searchParams.get("all") === "1";
   const showAll = isAdmin && wantsAll;
 
-  const { data: defaultsRow } = await supabase
-    .from("app_settings")
-    .select("value")
-    .eq("key", "cpd_defaults")
-    .maybeSingle();
+  const [{ data: defaultsRow }, { data: currentProfile }] = await Promise.all([
+    supabase.from("app_settings").select("value").eq("key", "cpd_defaults").maybeSingle(),
+    supabase.from("profiles").select("id,full_name").eq("id", userId).maybeSingle(),
+  ]);
   const defaults = (defaultsRow?.value as CpdDefaults | undefined) ?? FALLBACK_CPD_DEFAULTS;
   const window = computeCpdYearWindow(new Date(), defaults.year_start_month);
 
@@ -91,7 +90,17 @@ export async function GET(request: NextRequest) {
     )
   );
 
-  const body: CpdListResponse = { entries, defaults, window, is_admin: isAdmin, all: showAll };
+  const body: CpdListResponse = {
+    entries,
+    defaults,
+    window,
+    current_user: {
+      id: userId,
+      full_name: currentProfile?.full_name?.trim() || "My",
+    },
+    is_admin: isAdmin,
+    all: showAll,
+  };
   return NextResponse.json(body);
 }
 

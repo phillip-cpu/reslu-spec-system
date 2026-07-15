@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { bucketFor } from "@/lib/my-work";
+import { computeSpecHealth } from "@/lib/health";
+import { channelPillLevel, heartbeatAgeLevel, overallHealthLevel } from "@/lib/health-status";
+import type { HealthChannel, HealthHeartbeat, HealthPillLevel } from "@/types/health-push";
 
 export const runtime = "nodejs";
 
@@ -155,8 +158,40 @@ export async function GET() {
     }
   }
 
+  let healthLevel: HealthPillLevel = "green";
+  if (isAdmin) {
+    try {
+      const service = createServiceRoleClient();
+      const [{ data: heartbeat }, { data: channels }, specHealth] = await Promise.all([
+        service.from("health_heartbeats").select("*").order("created_at", { ascending: false }).limit(1).maybeSingle(),
+        service.from("health_channels").select("*").order("channel", { ascending: true }),
+        computeSpecHealth(service),
+      ]);
+      const latestHeartbeat = (heartbeat as HealthHeartbeat | null) ?? null;
+      const heartbeatMinutes = latestHeartbeat
+        ? (Date.now() - new Date(latestHeartbeat.created_at).getTime()) / 60_000
+        : Infinity;
+      const levels: HealthPillLevel[] = [
+        heartbeatAgeLevel(heartbeatMinutes),
+        ...((channels ?? []) as HealthChannel[]).map((channel) =>
+          channelPillLevel(channel.status, channel.session_valid)
+        ),
+        ...specHealth.crons.map((cron) => cron.level),
+      ];
+      healthLevel = overallHealthLevel(levels, {
+        openclawUp: latestHeartbeat?.openclaw_up,
+        failedEmailSends: specHealth.failed_email_sends_7d,
+        stuckAriaQueue: specHealth.aria_queue_stuck,
+      });
+    } catch {
+      // A failed health read is itself unknown/degraded, never green.
+      healthLevel = "amber";
+    }
+  }
+
   return NextResponse.json({
     leads_followups: leadsFollowups,
     my_work_due: myWorkDue,
+    health_level: healthLevel,
   });
 }

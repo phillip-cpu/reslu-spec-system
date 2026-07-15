@@ -47,6 +47,24 @@ scope and operational source of truth.
 8. Add a project Finance/Xero panel and a company-level exceptions
    report. No Xero data changes are possible in X1.
 
+## Security baseline
+
+Xero's developer-partner security requirements are a release gate for
+every Xero phase. In addition to least-privilege OAuth and encrypted
+server-side tokens, RESLU must:
+
+- strictly limit operational access to Xero data and keep an auditable
+  record of connection, sync and approval activity;
+- keep signing secrets, certificates and tokens outside the web root,
+  source control, browser code, Aria workspace files and application logs;
+- use isolated managed hosting and HTTPS for every authenticated page and
+  API callback;
+- maintain a public privacy policy covering the accounting data processed;
+- review the implementation against current platform security guidance and
+  the OWASP Top 10 before the X1 production connection;
+- maintain an incident path that can notify Xero immediately if a breach or
+  possible exposure involves Xero data, tokens, keys or certificates.
+
 ## Synchronisation
 
 - Initial bounded backfill, then incremental sync by Xero update time.
@@ -110,4 +128,4 @@ variables when X1 begins.
 - [Xero Payments endpoint](https://developer.xero.com/documentation/api/accounting/payments)
 - [Xero webhooks](https://developer.xero.com/documentation/guides/webhooks/overview/)
 - [Xero rate limits](https://developer.xero.com/documentation/best-practices/api-call-efficiencies/rate-limits)
-
+- [Xero security requirements for developer partners](https://developer.xero.com/partner/security-requirements-for-developer-partners)

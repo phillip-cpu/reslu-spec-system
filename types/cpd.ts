@@ -60,6 +60,7 @@ export interface CpdListResponse {
   entries: CpdEntry[];
   defaults: CpdDefaults;
   window: CpdYearWindow;
+  current_user: CpdEntryProfile;
   is_admin: boolean;
   all: boolean;
 }

@@ -8,7 +8,7 @@ import { VisitStatusLabel } from "./VisitBar";
 
 /**
  * Mobile bottom sheet — BUILD-SPEC "Mobile: tap a visit bar -> bottom
- * sheet showing visit details + a staff 'confirm on behalf' button".
+ * sheet showing visit details + a staff 'mark confirmed' button".
  * Simplest possible implementation: a conditionally-rendered fixed
  * inset-x-0 bottom-0 panel, no external sheet/drawer library. Shown
  * from GanttChart.tsx when a visit dot is tapped on a narrow viewport.
@@ -29,7 +29,7 @@ export function VisitBottomSheet({
   // after a successful confirm, never blocks it.
   const [insuranceWarning, setInsuranceWarning] = useState<string | null>(null);
 
-  async function confirmOnBehalf() {
+  async function markConfirmed() {
     setConfirming(true);
     setError(null);
     setInsuranceWarning(null);
@@ -75,11 +75,11 @@ export function VisitBottomSheet({
           {visit.status !== "confirmed" && (
             <button
               type="button"
-              onClick={confirmOnBehalf}
+              onClick={markConfirmed}
               disabled={confirming}
               className="flex-1 bg-nearblack px-4 py-3 text-subhead text-white hover:bg-charcoal disabled:opacity-60"
             >
-              {confirming ? "Confirming…" : "Confirm on behalf of trade"}
+              {confirming ? "Confirming…" : "Mark confirmed"}
             </button>
           )}
           <button

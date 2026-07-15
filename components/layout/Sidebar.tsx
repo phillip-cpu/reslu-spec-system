@@ -1,72 +1,26 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import clsx from "clsx";
+import {
+  normalizeSidebarOrder,
+  projectShortcutLabel,
+  visibleSidebarItems,
+} from "@/lib/navigation";
+import type { HealthPillLevel } from "@/types/health-push";
+import type { NavigationPreferencesResponse, RecentProjectShortcut } from "@/types/navigation";
 
-const NAV_ITEMS = [
-  { label: "My Work", href: "/my-work", badgeKey: "my_work_due" as const },
-  { label: "Projects", href: "/" },
-  // Phase 12a-B — BUILD-SPEC.md §"Phase 12a — My Work": "one page that
-  // answers 'what do I do today'". Team-visible (every signed-in user
-  // has their own feed; the admin-only lead-follow-ups source is gated
-  // inside GET /api/my-work itself, not at this nav/page level).
-  // Fix round B: carries a badge key ("my_work_due") — see
-  // BUILD-SPEC.md §"Sidebar notification badges".
-  // Phase 13 — BUILD-SPEC.md §"13 Office": global Office board (not
-  // per-project) — business housekeeping, department groups. Placed
-  // right after My Work (both are "what needs doing" surfaces, above
-  // Projects' client-work surfaces) and before Search, mirroring how
-  // My Work itself slotted in right after Projects in Phase 12a-B.
-  { label: "Office", href: "/office" },
-  { label: "Search", href: "/search" },
-  { label: "Library", href: "/library" },
-  // CPD tracker round — BUILD-SPEC.md "CPD point tracker". Team-visible
-  // (every signed-in user tracks their own CPD entries; the admin-only
-  // "All team" view is gated inside the page/API, not here — same
-  // pattern as My Work's admin-only sources). Placed between Library
-  // and Address Book per this round's own placement judgement call —
-  // both neighbours are reference/directory-style pages rather than
-  // "what needs doing" surfaces (My Work/Office), so a personal
-  // record-keeping page reads naturally in this cluster.
-  { label: "CPD", href: "/cpd" },
-  { label: "Address Book", href: "/contacts" },
-  // Week 10: admin-only (leads are "admin-only, financial-adjacent"
-  // per BUILD-SPEC.md) — filtered out below for non-admins. This is
-  // the first NAV_ITEMS entry that needs role-awareness; every prior
-  // item here is team-visible. Fix round B: badge key "leads_followups"
-  // (also admin-gated server-side — GET /api/badges returns 0 for
-  // non-admins regardless, this is belt-and-braces with the nav filter).
-  { label: "Leads", href: "/leads", adminOnly: true, badgeKey: "leads_followups" as const },
-  // Health + web push round (r26) — BUILD-SPEC.md item 4: "Health page
-  // (sidebar entry 'Health')". Admin-only, same gating shape as Leads
-  // right above (this app's other top-level admin-only nav entry) —
-  // see app/(dashboard)/health/page.tsx's own header comment for why.
-  // No badge — health incidents surface via push notifications, not a
-  // sidebar count.
-  { label: "Health", href: "/health", adminOnly: true },
-  { label: "Settings", href: "/settings" },
-  // Phillip 8 Jul: external link to the RESLU journal/blog CMS (Sanity
-  // Studio). Renders as a plain <a target="_blank"> below — external
-  // items never match pathname-active logic and carry no badge.
-  {
-    label: "Blog",
-    href: "https://www.sanity.io/@owfkpTTv2/studio/ugc40fkuw499wo2h5ljfl4ir/default/structure/journal;F9yzAmOGUc9wBOLNgbeWAB",
-    external: true as const,
-  },
-];
+type BadgeCounts = {
+  leads_followups: number;
+  my_work_due: number;
+  health_level: HealthPillLevel;
+};
 
-type BadgeCounts = { leads_followups: number; my_work_due: number };
+const POLL_MS = 3 * 60 * 1000;
 
-const POLL_MS = 3 * 60 * 1000; // ~3 min, per BUILD-SPEC.md §"Sidebar notification badges"
-
-/**
- * Small red count pill — hidden entirely at 0 (BUILD-SPEC.md: "Zero
- * when none (badge hidden)"). Sharp corners, no border-radius, per the
- * brand guide.
- */
 function BadgePill({ count }: { count: number }) {
   if (count <= 0) return null;
   return (
@@ -75,98 +29,149 @@ function BadgePill({ count }: { count: number }) {
     </span>
   );
 }
+function HealthDot({ level }: { level: HealthPillLevel }) {
+  const label = level === "green" ? "Healthy" : level === "amber" ? "Needs attention" : "Problem detected";
+  return (
+    <span
+      aria-label={`System health: ${label}`}
+      title={`System health: ${label}`}
+      className={clsx(
+        "h-2.5 w-2.5 shrink-0 border border-white/30",
+        level === "green" && "bg-[#4c6b4f]",
+        level === "amber" && "bg-[#C9971E]",
+        level === "red" && "bg-[#B23A3A]"
+      )}
+    />
+  );
+}
 
 /**
- * Fix round B — BUILD-SPEC.md §"Sidebar notification badges": "Sidebar
- * entries gain count badges (small red pill, right-aligned): Leads =
- * follow-ups due count (admin only); My Work = my items due today +
- * overdue. Lightweight GET /api/badges endpoint returning both counts
- * in one call; sidebar polls every ~3 min + refreshes on navigation."
- *
- * Sidebar was already a client component (usePathname), so the badge
- * state/polling lives directly in it rather than needing a separate
- * client subcomponent wrapper.
+ * Dashboard navigation with per-user ordering and deterministic MRU project
+ * shortcuts. The three boxes update only when a project is actually visited;
+ * they never auto-animate or change beneath the user while idle.
  */
 export function Sidebar({ isAdmin = false }: { isAdmin?: boolean }) {
   const pathname = usePathname();
-  const [badges, setBadges] = useState<BadgeCounts>({ leads_followups: 0, my_work_due: 0 });
-
-  // Site capture + mobile QoL round (r21), BUILD-SPEC.md item 7 —
-  // "on small screens the left nav auto-collapses after a nav tap
-  // (and starts collapsed), hamburger reopens; desktop unchanged."
-  // `open` only ever matters below the `md` breakpoint (768px, this
-  // codebase's only configured breakpoint set — see tailwind.config.ts,
-  // which adds no custom `screens`): the <aside> below carries
-  // `md:translate-x-0` unconditionally, which — because Tailwind's
-  // responsive variants are emitted inside a `@media` block AFTER the
-  // bare utility in the generated stylesheet — always wins on a
-  // matching (desktop-width) viewport regardless of `open`, so desktop
-  // behaviour is untouched by this state existing at all. Starts
-  // `false` (collapsed) so a phone loading any dashboard page for the
-  // first time shows content full-width with just the hamburger, per
-  // the brief's "start collapsed" requirement — this is NOT
-  // conditioned on an actual viewport-width check (no
-  // matchMedia/useEffect gate) precisely because that would need a
-  // client-only re-render after mount and risk a flash of the
-  // desktop-open state first; `false` is simply always correct on
-  // desktop too (md:translate-x-0 overrides it), so there is no
-  // "wrong on desktop" case to guard against.
+  const [badges, setBadges] = useState<BadgeCounts>({
+    leads_followups: 0,
+    my_work_due: 0,
+    health_level: "amber",
+  });
+  const [sidebarOrder, setSidebarOrder] = useState(() => normalizeSidebarOrder([], isAdmin));
+  const [recentProjects, setRecentProjects] = useState<RecentProjectShortcut[]>([]);
+  const [arranging, setArranging] = useState(false);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
 
+  const itemById = useMemo(
+    () => new Map(visibleSidebarItems(isAdmin).map((item) => [item.id, item])),
+    [isAdmin]
+  );
+  const orderedItems = sidebarOrder.map((id) => itemById.get(id)).filter(Boolean);
+
   function closeOnMobile() {
-    // Cheap no-op on desktop (see above) — always safe to call
-    // unconditionally from every nav Link's onClick.
     setOpen(false);
   }
 
   useEffect(() => {
     let cancelled = false;
+    const projectMatch = pathname.match(/^\/projects\/([0-9a-f-]{36})(?:\/|$)/i);
+    const request = projectMatch
+      ? fetch("/api/navigation-preferences", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ visited_project_id: projectMatch[1] }),
+        })
+      : fetch("/api/navigation-preferences", { cache: "no-store" });
 
+    request
+      .then(async (response) => {
+        if (!response.ok) return null;
+        return (await response.json()) as NavigationPreferencesResponse;
+      })
+      .then((body) => {
+        if (!body || cancelled) return;
+        setSidebarOrder(normalizeSidebarOrder(body.sidebar_order, isAdmin));
+        setRecentProjects(body.recent_projects ?? []);
+      })
+      .catch(() => {
+        // Preferences are a convenience; default navigation remains usable.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname, isAdmin]);
+
+  useEffect(() => {
+    let cancelled = false;
     async function loadBadges() {
       try {
-        const res = await fetch("/api/badges");
-        if (!res.ok || cancelled) return;
-        const body = await res.json();
+        const response = await fetch("/api/badges", { cache: "no-store" });
+        if (!response.ok || cancelled) return;
+        const body = await response.json();
         if (cancelled) return;
         setBadges({
           leads_followups: Number(body.leads_followups) || 0,
           my_work_due: Number(body.my_work_due) || 0,
+          health_level: ["green", "amber", "red"].includes(body.health_level)
+            ? body.health_level
+            : "amber",
         });
       } catch {
-        // Non-fatal — badges just stay at their last known value.
+        // Keep the last-known counts/health when the lightweight poll fails.
       }
     }
-
-    loadBadges();
-    const interval = setInterval(loadBadges, POLL_MS);
+    void loadBadges();
+    const interval = window.setInterval(loadBadges, POLL_MS);
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      window.clearInterval(interval);
     };
-    // Refreshes on every route change (pathname dependency) in addition
-    // to the ~3 min poll, per the build spec.
   }, [pathname]);
+
+  async function persistOrder(next: string[]) {
+    const normalized = normalizeSidebarOrder(next, isAdmin);
+    setSidebarOrder(normalized);
+    try {
+      await fetch("/api/navigation-preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sidebar_order: normalized }),
+      });
+    } catch {
+      // Optimistic order remains for this session; the next load restores the server value.
+    }
+  }
+
+  function moveItem(id: string, delta: number) {
+    const index = sidebarOrder.indexOf(id);
+    const target = index + delta;
+    if (index < 0 || target < 0 || target >= sidebarOrder.length) return;
+    const next = [...sidebarOrder];
+    [next[index], next[target]] = [next[target], next[index]];
+    void persistOrder(next);
+  }
+
+  function dropBefore(targetId: string) {
+    if (!draggingId || draggingId === targetId) return;
+    const next = sidebarOrder.filter((id) => id !== draggingId);
+    const target = next.indexOf(targetId);
+    next.splice(target < 0 ? next.length : target, 0, draggingId);
+    setDraggingId(null);
+    void persistOrder(next);
+  }
 
   return (
     <>
-      {/* Hamburger — mobile-only (md:hidden), fixed so it's reachable
-          regardless of scroll position. Brand styling: sharp corners
-          (global — see tailwind.config.ts borderRadius override),
-          near-black fill, sand accent line, matching the sidebar's own
-          palette rather than introducing a new one. Toggles the same
-          `open` state the overlay/close button below also drive. */}
       <button
         type="button"
         aria-label={open ? "Close menu" : "Open menu"}
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setOpen((value) => !value)}
         className="fixed left-4 top-4 z-50 flex h-11 w-11 items-center justify-center border border-sand bg-nearblack text-white md:hidden"
       >
-        <span className="sr-only">{open ? "Close menu" : "Open menu"}</span>
         {open ? (
-          <span aria-hidden className="text-subhead leading-none">
-            ✕
-          </span>
+          <span aria-hidden className="text-subhead leading-none">✕</span>
         ) : (
           <span aria-hidden className="flex flex-col gap-1">
             <span className="block h-0.5 w-5 bg-white" />
@@ -176,16 +181,7 @@ export function Sidebar({ isAdmin = false }: { isAdmin?: boolean }) {
         )}
       </button>
 
-      {/* Backdrop — mobile-only, only rendered while open. Click closes,
-          same interaction contract as this codebase's other overlays
-          (e.g. components/items/ImagePickerModal.tsx's backdrop). */}
-      {open && (
-        <div
-          aria-hidden
-          onClick={() => setOpen(false)}
-          className="fixed inset-0 z-30 bg-nearblack/50 md:hidden"
-        />
-      )}
+      {open && <div aria-hidden onClick={() => setOpen(false)} className="fixed inset-0 z-30 bg-nearblack/50 md:hidden" />}
 
       <aside
         className={clsx(
@@ -196,57 +192,104 @@ export function Sidebar({ isAdmin = false }: { isAdmin?: boolean }) {
       >
         <div className="px-6 py-8">
           <Link href="/" aria-label="Back to dashboard" onClick={closeOnMobile}>
-            <Image
-              src="/reslu-logo-white.png"
-              alt="RESLU"
-              width={100}
-              height={44}
-              priority
-              className="h-11 w-auto"
-            />
+            <Image src="/reslu-logo-white.png" alt="RESLU" width={100} height={44} priority className="h-11 w-auto" />
           </Link>
           <p className="label-caps mt-3 text-sand">Spec System</p>
         </div>
 
         <nav className="flex-1 px-3">
-          {NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin).map((item) => {
+          {orderedItems.map((item, index) => {
+            if (!item) return null;
             const active =
-              item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
+              item.id === "projects"
+                ? pathname === "/" || pathname.startsWith("/projects/")
+                : !item.external && pathname.startsWith(item.href);
             const badgeCount = item.badgeKey ? badges[item.badgeKey] : 0;
-            if ("external" in item && item.external) {
-              return (
-                <a
-                  key={item.href}
-                  href={item.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={closeOnMobile}
-                  className="flex items-center gap-2 px-3 py-2.5 text-subhead text-white/70 transition-colors hover:text-white hover:bg-charcoal/60"
-                >
-                  <span>{item.label}</span>
-                  <span className="text-white/40">↗</span>
-                </a>
-              );
-            }
+
             return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={closeOnMobile}
+              <div
+                key={item.id}
+                draggable={arranging}
+                onDragStart={() => setDraggingId(item.id)}
+                onDragOver={(event) => arranging && event.preventDefault()}
+                onDrop={() => dropBefore(item.id)}
                 className={clsx(
-                  "flex items-center gap-2 px-3 py-2.5 text-subhead transition-colors",
-                  active ? "bg-charcoal text-white" : "text-white/70 hover:text-white hover:bg-charcoal/60"
+                  "mb-px flex min-h-10 items-center gap-1 transition-colors",
+                  active ? "bg-charcoal text-white" : "text-white/70 hover:bg-charcoal/60 hover:text-white",
+                  arranging && "cursor-grab border border-white/10"
                 )}
               >
-                <span>{item.label}</span>
-                <BadgePill count={badgeCount} />
-              </Link>
+                {item.external ? (
+                  <a
+                    href={item.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={closeOnMobile}
+                    className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2.5 text-subhead"
+                  >
+                    <span>{item.label}</span><span className="text-white/40">↗</span>
+                  </a>
+                ) : (
+                  <Link
+                    href={item.href}
+                    onClick={closeOnMobile}
+                    className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2.5 text-subhead"
+                  >
+                    <span className="truncate">{item.label}</span>
+                    {item.id === "health" && <HealthDot level={badges.health_level} />}
+                    <BadgePill count={badgeCount} />
+                  </Link>
+                )}
+
+                {item.id === "projects" && !arranging && recentProjects.length > 0 && (
+                  <div className="mr-2 flex shrink-0 gap-1" aria-label="Recent projects">
+                    {recentProjects.map((project) => (
+                      <Link
+                        key={project.id}
+                        href={`/projects/${project.id}`}
+                        title={project.name}
+                        aria-label={`Open recent project ${project.name}`}
+                        onClick={closeOnMobile}
+                        className="flex h-6 w-6 items-center justify-center border border-white/30 bg-white/10 text-[9px] font-semibold text-white hover:border-sand hover:text-sand"
+                      >
+                        {projectShortcutLabel(project.name)}
+                      </Link>
+                    ))}
+                  </div>
+                )}
+
+                {arranging && (
+                  <div className="mr-1 flex shrink-0">
+                    <button
+                      type="button"
+                      aria-label={`Move ${item.label} up`}
+                      disabled={index === 0}
+                      onClick={() => moveItem(item.id, -1)}
+                      className="px-1.5 py-2 text-caption text-white/60 hover:text-white disabled:opacity-20"
+                    >↑</button>
+                    <button
+                      type="button"
+                      aria-label={`Move ${item.label} down`}
+                      disabled={index === orderedItems.length - 1}
+                      onClick={() => moveItem(item.id, 1)}
+                      className="px-1.5 py-2 text-caption text-white/60 hover:text-white disabled:opacity-20"
+                    >↓</button>
+                  </div>
+                )}
+              </div>
             );
           })}
         </nav>
 
-        <div className="px-6 py-6 text-caption text-white/40">
-          RESLU Spec System v0.1
+        <div className="border-t border-white/10 px-3 py-4">
+          <button
+            type="button"
+            onClick={() => setArranging((value) => !value)}
+            className="w-full border border-white/20 px-3 py-2 text-left text-caption text-white/60 hover:border-white/50 hover:text-white"
+          >
+            {arranging ? "Done arranging" : "Arrange menu"}
+          </button>
+          <p className="mt-4 px-3 text-caption text-white/30">RESLU Spec System v0.1</p>
         </div>
       </aside>
     </>

@@ -138,6 +138,11 @@ export function CpdWorkspace() {
           <p className="text-body text-charcoal/50">Loading…</p>
         ) : (
           <>
+            <p className="label-caps mb-2 text-charcoal/50">
+              {mine.current_user.full_name === "My"
+                ? "My CPD"
+                : `${mine.current_user.full_name}${mine.current_user.full_name.endsWith("s") ? "'" : "'s"} CPD`}
+            </p>
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <p className="text-subhead text-nearblack">
                 {formatPoints(pointsToDate)} / {formatPoints(target)} points

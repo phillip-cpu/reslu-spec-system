@@ -1,19 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { computeInsuranceStatus, insuranceWarningForBooking } from "@/lib/insurance";
+import { queueTradeCalendarSync } from "@/lib/trade-calendar-sync";
 
 /**
  * POST /api/visits/[id]/confirm
- * Staff "confirm on behalf of trade" — team session, no admin gate
+ * Staff "mark confirmed" — team session, no admin gate
  * (scheduling data, not financial, same reasoning as every other
  * phases/visits route). Sets status='confirmed', confirmed_at=now(),
  * confirmed_by='staff'. No body required. Response:
  * { visit, insurance_warning }.
  *
- * Used from the mobile bottom-sheet (components/gantt/VisitBottomSheet.tsx)
- * and the phase edit panel's per-visit row, for the common case where
- * staff already know a trade has verbally confirmed and just need to
- * record it without waiting on the trade to open their link.
+ * Used when RESLU receives confirmation directly (phone, in person or
+ * otherwise) and needs to record it without pretending the trade used
+ * the email response page.
  *
  * Fix Round A — Trade insurance tracker: insurance_warning mirrors
  * POST /api/projects/[id]/visits' same field — computed from the
@@ -37,7 +37,7 @@ export async function POST(
 
   const { data: existing } = await supabase
     .from("trade_visits")
-    .select("id,contact_id")
+    .select("id,project_id,contact_id,booking_request_id,start_date,end_date,arrival_slot,arrival_time")
     .eq("id", id)
     .is("deleted_at", null)
     .maybeSingle();
@@ -45,11 +45,20 @@ export async function POST(
     return NextResponse.json({ error: "Visit not found" }, { status: 404 });
   }
 
+  const confirmedAt = new Date().toISOString();
   const { data: visit, error } = await supabase
     .from("trade_visits")
     .update({
       status: "confirmed",
-      confirmed_at: new Date().toISOString(),
+      ...(existing.booking_request_id
+        ? {
+            line_status: "accepted",
+            suggested_start: null,
+            suggested_end: null,
+            response_note: null,
+          }
+        : {}),
+      confirmed_at: confirmedAt,
       confirmed_by: "staff",
     })
     .eq("id", id)
@@ -60,6 +69,36 @@ export async function POST(
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  // A grouped request is complete once every line has a staff/trade
+  // response. This mirrors the public response route, so My Work no
+  // longer shows a follow-up after RESLU records the final direct
+  // confirmation.
+  if (existing.booking_request_id) {
+    const { data: remaining } = await supabase
+      .from("trade_visits")
+      .select("id")
+      .eq("booking_request_id", existing.booking_request_id)
+      .eq("line_status", "proposed")
+      .is("deleted_at", null)
+      .limit(1);
+    if ((remaining ?? []).length === 0) {
+      await supabase
+        .from("trade_booking_requests")
+        .update({ status: "responded", responded_at: confirmedAt })
+        .eq("id", existing.booking_request_id)
+        .eq("status", "sent");
+    }
+  }
+
+  // Booking itself is the source of truth for the reminder. Clearing
+  // any linked board-card due date prevents a directly confirmed visit
+  // continuing to appear as outstanding work.
+  await supabase
+    .from("board_tasks")
+    .update({ due_date: null, due_time: null })
+    .eq("visit_id", id)
+    .is("deleted_at", null);
 
   let insurance_warning: string | null = null;
   if (existing.contact_id) {
@@ -77,5 +116,28 @@ export async function POST(
     insurance_warning = insuranceWarningForBooking(status);
   }
 
-  return NextResponse.json({ visit, insurance_warning });
+  const [{ data: project }, { data: contact }] = await Promise.all([
+    supabase.from("projects").select("name").eq("id", existing.project_id).maybeSingle(),
+    existing.contact_id
+      ? supabase.from("contacts").select("company").eq("id", existing.contact_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+  ]);
+  let calendar_sync_queued = false;
+  let calendar_warning: string | null = null;
+  try {
+    calendar_sync_queued = await queueTradeCalendarSync(supabase, {
+      visit_id: existing.id,
+      project_id: existing.project_id,
+      contact_id: existing.contact_id,
+      title: `${project?.name ?? "Project"} — ${contact?.company ?? "Trade visit"}`,
+      start_date: existing.start_date,
+      end_date: existing.end_date,
+      arrival_slot: existing.arrival_slot,
+      arrival_time: existing.arrival_time,
+    });
+  } catch (calendarError) {
+    calendar_warning = calendarError instanceof Error ? calendarError.message : "Calendar sync could not be queued";
+  }
+
+  return NextResponse.json({ visit, insurance_warning, calendar_sync_queued, calendar_warning });
 }

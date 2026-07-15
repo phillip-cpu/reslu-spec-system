@@ -43,13 +43,19 @@ export function LeadNotes({ leadId, onError }: Props) {
 
   useEffect(() => {
     let active = true;
-    fetch(`/api/leads/${leadId}/notes`)
-      .then((r) => r.json())
-      .then((d) => active && setNotes(d.notes ?? []))
-      .catch(() => {})
-      .finally(() => active && setLoading(false));
+    function load() {
+      fetch(`/api/leads/${leadId}/notes`)
+        .then((r) => r.json())
+        .then((d) => active && setNotes(d.notes ?? []))
+        .catch(() => {})
+        .finally(() => active && setLoading(false));
+    }
+    load();
+    const eventName = `lead-notes-updated:${leadId}`;
+    window.addEventListener(eventName, load);
     return () => {
       active = false;
+      window.removeEventListener(eventName, load);
     };
   }, [leadId]);
 

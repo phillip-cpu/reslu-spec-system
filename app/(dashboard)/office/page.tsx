@@ -2,6 +2,9 @@ import { createClient } from "@/lib/supabase/server";
 import { Header } from "@/components/layout/Header";
 import { OfficeBoard } from "@/components/office/OfficeBoard";
 import { FollowupApprovalInbox } from "@/components/office/FollowupApprovalInbox";
+import { AriaActivityPanel } from "@/components/office/AriaActivityPanel";
+import { getUserRole } from "@/lib/auth";
+import { loadAriaActivity } from "@/lib/aria-activity";
 import type { OfficeGroupWithTasks, OfficeTaskWithRefs, OfficeAssigneeSummary, OfficeSubtask } from "@/types/phase-13";
 import type { AriaFollowupDraft } from "@/types/aria-followups";
 
@@ -21,6 +24,7 @@ import type { AriaFollowupDraft } from "@/types/aria-followups";
  */
 export default async function OfficePage() {
   const supabase = await createClient();
+  const info = await getUserRole(supabase);
 
   const {
     data: { user },
@@ -61,6 +65,8 @@ export default async function OfficePage() {
     .select("*,lead:leads(id,first_name,surname_project,stage,follow_up_date)")
     .eq("status", "pending")
     .order("created_at", { ascending: false });
+
+  const ariaActivity = info?.role === "admin" ? await loadAriaActivity(supabase) : null;
 
   const teamById = new Map((team ?? []).map((p) => [p.id, p]));
 
@@ -103,6 +109,7 @@ export default async function OfficePage() {
       <Header title="Office" subtitle="Business housekeeping — marketing, ads, ops, systems, and Phillip's queue." />
       <main className="flex-1 px-8 py-8">
         <FollowupApprovalInbox initialDrafts={(followupDrafts ?? []) as AriaFollowupDraft[]} />
+        {ariaActivity && <AriaActivityPanel initialData={ariaActivity} />}
         <OfficeBoard
           initialGroups={groupsWithTasks}
           team={team ?? []}

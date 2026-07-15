@@ -115,3 +115,15 @@ export function channelPillLevel(
   if (sessionValid === false) return "amber";
   return "green";
 }
+
+/** Worst visible status for the compact sidebar dot. */
+export function overallHealthLevel(
+  levels: HealthPillLevel[],
+  options: { openclawUp?: boolean | null; failedEmailSends?: number; stuckAriaQueue?: number } = {}
+): HealthPillLevel {
+  if (options.openclawUp === false || (options.stuckAriaQueue ?? 0) > 0 || levels.includes("red")) {
+    return "red";
+  }
+  if ((options.failedEmailSends ?? 0) > 0 || levels.includes("amber")) return "amber";
+  return "green";
+}

@@ -738,6 +738,45 @@ const TOOLS = [
     handler: async ({ project_id }) => apiFetch(`/api/projects/${project_id}/site-captures`),
   },
   {
+    name: "get_lead_meeting_recording",
+    description:
+      "Fetch one lead meeting recording queued as meeting_transcription. Returns a short-lived private audio URL and marks pending work as processing. Download and transcribe with local Whisper only; do not send messages or add anything to lead notes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        recording_id: { type: "string", description: "lead_meeting_recordings UUID from the queue payload" },
+      },
+      required: ["recording_id"],
+      additionalProperties: false,
+    },
+    handler: async ({ recording_id }) =>
+      apiFetch(`/api/lead-meetings/${encodeURIComponent(recording_id)}/transcription`),
+  },
+  {
+    name: "complete_lead_meeting_transcription",
+    description:
+      "Complete or fail a lead meeting transcription. On success provide the verbatim transcript plus a concise factual summary, action items and decisions. This writes only the meeting record; Phillip explicitly chooses whether to copy the summary into lead notes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        recording_id: { type: "string" },
+        status: { type: "string", enum: ["done", "failed"] },
+        transcript: { type: "string", description: "Required when status=done" },
+        summary: { type: "string" },
+        action_items: { type: "array", items: { type: "string" } },
+        decisions: { type: "array", items: { type: "string" } },
+        failure_note: { type: "string", description: "Required failure context when status=failed" },
+      },
+      required: ["recording_id", "status"],
+      additionalProperties: false,
+    },
+    handler: async ({ recording_id, ...body }) =>
+      apiFetch(`/api/lead-meetings/${encodeURIComponent(recording_id)}/transcription`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+  },
+  {
     name: "list_contacts",
     description:
       "List Address Book contacts (trades & suppliers) — team-visible, not financial. Optional filters: q (search), category.",

@@ -12,6 +12,7 @@ export function TradeRequestDetail({ requestId }: { requestId: string }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [shiftOffer, setShiftOffer] = useState<{ phase_id: string; delta_days: number } | null>(null);
   const [resending, setResending] = useState(false);
+  const [confirmingVisitId, setConfirmingVisitId] = useState<string | null>(null);
 
   async function load(showSpinner = true) {
     if (showSpinner) setLoading(true);
@@ -100,6 +101,26 @@ export function TradeRequestDetail({ requestId }: { requestId: string }) {
       setNotice("Booking link copied.");
     } catch {
       setError("Could not copy the booking link automatically.");
+    }
+  }
+
+  async function markConfirmed(visitId: string) {
+    setConfirmingVisitId(visitId);
+    setError(null);
+    try {
+      const res = await fetch(`/api/visits/${visitId}/confirm`, { method: "POST" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "Could not confirm this visit.");
+      setNotice(
+        json.calendar_warning
+          ? `Visit marked confirmed. Calendar warning: ${json.calendar_warning}`
+          : "Visit marked confirmed."
+      );
+      await load(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not confirm this visit.");
+    } finally {
+      setConfirmingVisitId(null);
     }
   }
 
@@ -205,7 +226,13 @@ export function TradeRequestDetail({ requestId }: { requestId: string }) {
         </div>
         <div className="space-y-2">
           {detail.lines.map((line) => (
-            <LineCard key={line.id} line={line} onResolve={(body) => resolveLine(line.id, body)} />
+            <LineCard
+              key={line.id}
+              line={line}
+              onResolve={(body) => resolveLine(line.id, body)}
+              onConfirm={() => markConfirmed(line.id)}
+              confirming={confirmingVisitId === line.id}
+            />
           ))}
         </div>
       </section>
@@ -222,9 +249,13 @@ const lineStatusLabels: Record<TradeBookingRequestLine["line_status"], string> =
 function LineCard({
   line,
   onResolve,
+  onConfirm,
+  confirming,
 }: {
   line: TradeBookingRequestLine;
   onResolve: (body: Record<string, unknown>) => void;
+  onConfirm: () => void;
+  confirming: boolean;
 }) {
   const dateLabel =
     line.start_date === line.end_date
@@ -238,7 +269,19 @@ function LineCard({
           <p className="text-body text-nearblack">{line.task_title}</p>
           <p className="mt-1 text-caption text-charcoal/60">{dateLabel} · {line.phase_name}</p>
         </div>
-        <span className="label-caps text-charcoal/60">{lineStatusLabels[line.line_status]}</span>
+        <div className="flex items-center gap-2">
+          <span className="label-caps text-charcoal/60">{lineStatusLabels[line.line_status]}</span>
+          {line.line_status === "proposed" && (
+            <button
+              type="button"
+              onClick={onConfirm}
+              disabled={confirming}
+              className="border border-nearblack px-3 py-1.5 text-caption text-nearblack hover:bg-nearblack hover:text-white disabled:opacity-50"
+            >
+              {confirming ? "Confirming…" : "Mark confirmed"}
+            </button>
+          )}
+        </div>
       </div>
 
       {line.line_status === "date_suggested" && (
