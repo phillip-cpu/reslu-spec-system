@@ -299,7 +299,7 @@ export function deriveProjectDataQuality(input: ProjectDataQualityInput): Projec
     severity: "critical",
     area: "programme",
     title: "Trade visits are past due and unconfirmed",
-    detail: `${plural(overdueVisits.length, "visit")} have passed without a confirmed booking state.`,
+    detail: `${plural(overdueVisits.length, "visit")} ${overdueVisits.length === 1 ? "has" : "have"} passed without a confirmed booking state.`,
     entities: visitRefs(overdueVisits),
   });
   seeds.push({
@@ -307,7 +307,7 @@ export function deriveProjectDataQuality(input: ProjectDataQualityInput): Projec
     severity: "warning",
     area: "programme",
     title: "Upcoming trade visits are not confirmed",
-    detail: `${plural(upcomingVisits.length, "visit")} start within ${UPCOMING_TRADE_WINDOW_DAYS} days.`,
+    detail: `${plural(upcomingVisits.length, "visit")} ${upcomingVisits.length === 1 ? "starts" : "start"} within ${UPCOMING_TRADE_WINDOW_DAYS} days.`,
     entities: visitRefs(upcomingVisits),
   });
 
@@ -334,7 +334,7 @@ export function deriveProjectDataQuality(input: ProjectDataQualityInput): Projec
     severity: "warning",
     area: "programme",
     title: "Future work is marked In Progress",
-    detail: `${plural(futureInProgress.length, "task")} start more than ${FUTURE_IN_PROGRESS_GRACE_DAYS} days from now but are already in progress.`,
+    detail: `${plural(futureInProgress.length, "task")} ${futureInProgress.length === 1 ? "starts" : "start"} more than ${FUTURE_IN_PROGRESS_GRACE_DAYS} days from now but ${futureInProgress.length === 1 ? "is" : "are"} already in progress.`,
     entities: taskRefs(futureInProgress),
   });
 
@@ -347,7 +347,7 @@ export function deriveProjectDataQuality(input: ProjectDataQualityInput): Projec
     severity: "critical",
     area: "programme",
     title: "Future work is marked complete",
-    detail: `${plural(completedFutureTasks.length, "task")} have a future works date but sit in a completed column.`,
+    detail: `${plural(completedFutureTasks.length, "task")} ${completedFutureTasks.length === 1 ? "has" : "have"} a future works date but ${completedFutureTasks.length === 1 ? "sits" : "sit"} in a completed column.`,
     entities: taskRefs(completedFutureTasks),
   });
 

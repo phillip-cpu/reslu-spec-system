@@ -144,7 +144,7 @@ export function ProjectDataQualityPanel({ projectId }: { projectId: string }) {
           <p className="text-section font-display text-nearblack">
             {formatMoney(data.pricing.known_value_ex_gst)}
           </p>
-          <p className="text-caption text-charcoal/50">Known value ex GST</p>
+          <p className="text-caption text-charcoal/50">FF&amp;E known value ex GST</p>
         </div>
         <div className="border border-[#e5e0d6] bg-nearwhite p-3">
           <p className="text-section font-display text-nearblack">{data.summary.affected_records}</p>
