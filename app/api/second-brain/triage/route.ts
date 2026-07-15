@@ -57,7 +57,26 @@ export async function GET(request: NextRequest) {
   let usage: Record<string, unknown> = {};
 
   try {
-    const batchResult = await triageEmails(emails as TriageInput[]);
+    const { data: attachments, error: attachmentError } = await supabase
+      .from("email_attachments")
+      .select("email_id,filename,extracted_text")
+      .in("email_id", emails.map((email) => email.id));
+    if (attachmentError) throw new Error(`attachment fetch failed: ${attachmentError.message}`);
+
+    const attachmentContextByEmail = new Map<string, string[]>();
+    for (const attachment of attachments ?? []) {
+      const existing = attachmentContextByEmail.get(attachment.email_id) ?? [];
+      const filename = attachment.filename || "Unnamed attachment";
+      const text = attachment.extracted_text?.trim().slice(0, 2500);
+      existing.push(text ? `${filename}: ${text}` : filename);
+      attachmentContextByEmail.set(attachment.email_id, existing);
+    }
+
+    const triageBatch: TriageInput[] = emails.map((email) => ({
+      ...email,
+      attachment_context: attachmentContextByEmail.get(email.id)?.join("\n") ?? null,
+    }));
+    const batchResult = await triageEmails(triageBatch);
     usage = batchResult.usage;
 
     const resultByEmailId = new Map(batchResult.results.map((r) => [r.email_id, r]));

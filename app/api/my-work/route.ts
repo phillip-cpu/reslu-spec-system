@@ -3,13 +3,12 @@ import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { groupMyWorkItems } from "@/lib/my-work";
 import { computeInsuranceStatus } from "@/lib/insurance";
-import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
+import { resolveExportPresets } from "@/lib/export-presets";
 import { deriveOrderBy, formatOrderByWorksDate, missingLeadTimes, type OrderByContactInput, type OrderByItemInput, type WorksDateSource } from "@/lib/order-by";
 import { isDoneColumnName } from "@/lib/board-constants";
 import { FALLBACK_CPD_DEFAULTS, computeCpdYearWindow, formatPoints, isBehindPace, sumPoints } from "@/lib/cpd";
 import { isBookingRequestFollowupDue } from "@/lib/trade-booking";
 import { isProposalFollowupDue } from "@/lib/proposals";
-import type { ExportPresetRow } from "@/types/round-export-batch";
 import type { CpdDefaults } from "@/types/cpd";
 import type { MyWorkItem, MyWorkResponse } from "@/types/phase-12a-b";
 
@@ -506,7 +505,7 @@ export async function GET() {
           .not("booking_date", "is", null),
       ]);
 
-      const presets = (presetSetting?.value as ExportPresetRow[] | undefined) ?? FALLBACK_EXPORT_PRESETS;
+      const presets = resolveExportPresets(presetSetting?.value);
 
       const orderingSources: WorksDateSource[] = [
         ...((allVisits ?? []) as { id: string; project_id: string; contact_id: string | null; start_date: string }[]).map(

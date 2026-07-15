@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
+import { resolveExportPresets } from "@/lib/export-presets";
 import { suggestTradeTag } from "@/lib/sow-trade-tags";
 import type { SowDocument } from "@/types";
-import type { ExportPresetRow } from "@/types/round-export-batch";
 import type { SowLineWithTrade, SuggestTradeTagsResponse } from "@/types/sow-trade-tags";
 
 /**
@@ -78,7 +77,7 @@ export async function POST(
     return NextResponse.json({ error: sectionsError.message }, { status: 500 });
   }
 
-  const presets = (presetsRow?.value as ExportPresetRow[] | undefined) ?? FALLBACK_EXPORT_PRESETS;
+  const presets = resolveExportPresets(presetsRow?.value);
   const presetNames = presets.map((p) => p.name);
 
   const untaggedLines: SowLineWithTrade[] = [];

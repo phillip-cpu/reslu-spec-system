@@ -7,11 +7,10 @@ import {
   TRAILING_TEMPLATE_GROUPS,
   roomSectionTemplate,
 } from "@/lib/sow-templates";
-import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
+import { resolveExportPresets } from "@/lib/export-presets";
 import { suggestTradeTag } from "@/lib/sow-trade-tags";
 import type { SowDocument, SowSectionWithLines } from "@/types";
 import type { ApplyTemplateInput, ApplyTemplateResponse } from "@/types/phase-12a-a";
-import type { ExportPresetRow } from "@/types/round-export-batch";
 
 /**
  * POST /api/projects/[id]/sow/[sowId]/from-template
@@ -142,9 +141,7 @@ export async function POST(
     .select("value")
     .eq("key", "export_presets")
     .maybeSingle();
-  const presetNames = (
-    (presetsRow?.value as ExportPresetRow[] | undefined) ?? FALLBACK_EXPORT_PRESETS
-  ).map((p) => p.name);
+  const presetNames = resolveExportPresets(presetsRow?.value).map((p) => p.name);
 
   // Existing sections' max sort, so appended template sections land
   // after anything already there rather than colliding sort values.

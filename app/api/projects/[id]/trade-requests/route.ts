@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { queueTradeCalendarSync } from "@/lib/trade-calendar-sync";
 import { sendOrQueue } from "@/lib/visit-emails";
 import { buildTaskRowsHtml } from "@/lib/trade-booking";
 import { documentPackMentionLine } from "@/lib/trade-doc-pack";
@@ -336,6 +337,22 @@ export async function POST(
         .select("id")
         .maybeSingle();
       if (!updateError && updated) {
+        await supabase
+          .from("board_tasks")
+          .update({ due_date: null, due_time: null })
+          .eq("id", task.id);
+        try {
+          await queueTradeCalendarSync(supabase, {
+            visit_id: updated.id,
+            project_id: projectId,
+            contact_id: body.contact_id,
+            title: task.title,
+            start_date: task.booking_date,
+            end_date: task.booking_end_date,
+          });
+        } catch (calendarError) {
+          console.error("grouped trade request: could not queue RESLU calendar sync", calendarError);
+        }
         visitIds.push(updated.id);
         emailLines.push({ task_title: task.title, start_date: task.booking_date!, end_date: task.booking_end_date! });
       }
@@ -362,7 +379,22 @@ export async function POST(
       skipped.push({ task_id: task.id, reason: "not_found" });
       continue;
     }
-    await supabase.from("board_tasks").update({ visit_id: newVisit.id }).eq("id", task.id);
+    await supabase
+      .from("board_tasks")
+      .update({ visit_id: newVisit.id, due_date: null, due_time: null })
+      .eq("id", task.id);
+    try {
+      await queueTradeCalendarSync(supabase, {
+        visit_id: newVisit.id,
+        project_id: projectId,
+        contact_id: body.contact_id,
+        title: task.title,
+        start_date: task.booking_date,
+        end_date: task.booking_end_date,
+      });
+    } catch (calendarError) {
+      console.error("grouped trade request: could not queue RESLU calendar sync", calendarError);
+    }
     visitIds.push(newVisit.id);
     emailLines.push({ task_title: task.title, start_date: task.booking_date!, end_date: task.booking_end_date! });
   }

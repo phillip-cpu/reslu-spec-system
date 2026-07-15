@@ -69,6 +69,27 @@ export async function GET(request: NextRequest) {
 
       const { result } = await extractEmail(supabase, email, (attachments ?? []) as ExtractionAttachment[]);
 
+      if (result.supplier_invoice) {
+        const { error: queueError } = await supabase.from("aria_queue").upsert(
+          {
+            kind: "invoice_candidate",
+            dedupe_key: `invoice_candidate:${email.id}`,
+            source: "second-brain-extraction",
+            payload: {
+              action: "review_supplier_invoice",
+              source_email_id: email.id,
+              from_addr: email.from_addr,
+              subject: email.subject,
+              candidate: result.supplier_invoice,
+              instruction:
+                "Match this invoice candidate to the correct RESLU project and specification context, then call propose_supplier_invoice. Do not approve, apply, mark paid, or alter project financials.",
+            },
+          },
+          { onConflict: "dedupe_key", ignoreDuplicates: true }
+        );
+        if (queueError) throw new Error(`invoice review queue failed: ${queueError.message}`);
+      }
+
       const { error: updateError } = await supabase
         .from("emails")
         .update({ extraction: result, status: "extracted", processed_at: new Date().toISOString() })

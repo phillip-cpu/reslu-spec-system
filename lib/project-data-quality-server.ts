@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
+import { resolveExportPresets } from "@/lib/export-presets";
 import {
   deriveOrderBy,
   type OrderByContactInput,
@@ -14,7 +14,6 @@ import type {
   DataQualityVisitInput,
   ProjectDataQualityResponse,
 } from "@/types/data-quality";
-import type { ExportPresetRow } from "@/types/round-export-batch";
 
 export function adelaideDateKey(now = new Date()): string {
   const parts = new Intl.DateTimeFormat("en-AU", {
@@ -127,8 +126,7 @@ export async function loadProjectDataQuality(
     lead_time_weeks: item.lead_time_weeks,
     ordered_at: item.ordered_at,
   }));
-  const presets =
-    (presetResult.data?.value as ExportPresetRow[] | undefined) ?? FALLBACK_EXPORT_PRESETS;
+  const presets = resolveExportPresets(presetResult.data?.value);
   const orderBy = deriveOrderBy(
     orderItems,
     presets,

@@ -13,8 +13,9 @@ const ROUTINES: Record<RoutineKind, { objective: string; steps: string[] }> = {
     objective: "Proactively identify today's operational risks, commitments and useful next actions.",
     steps: [
       "Call get_context_snapshot and get_project_health before deciding what matters.",
-      "Review the Phase 4 action-sync summary in this queue payload. Critical Project Health and booking-delivery exceptions are already represented by deduplicated internal Office tasks; investigate them without creating duplicates.",
+      "Review the Phase 5 action-sync summary in this queue payload in order: priority.today, priority.this_week, then priority.monitor. Critical Project Health and booking-delivery exceptions are already represented by deduplicated internal Office tasks; investigate them without creating duplicates.",
       "Use Second Brain search for the projects, leads, emails or prior decisions relevant to each issue.",
+      "Process followup_draft and invoice_candidate queue items separately. Follow-up copy must be submitted to the Office approval inbox and never sent before the followup_approved item exists. Invoice candidates may only become proposed supplier invoices awaiting human approval.",
       "Create safe internal brief items or drafts where useful. Aria may propose project-data corrections and client/trade replies, but must not apply, send, publish, approve, delete or change financial/client commitments without human approval.",
       "Store only durable new lessons with add_brain_note, including source and confidence.",
       "Resolve this queue item with a concise note listing sources checked, actions taken and approvals still needed.",
@@ -24,7 +25,7 @@ const ROUTINES: Record<RoutineKind, { objective: string; steps: string[] }> = {
     objective: "Synthesize the past week into decisions, patterns, risks and the coming week's priorities.",
     steps: [
       "Call get_context_snapshot and get_project_health, then search Second Brain across projects, leads, emails and memory notes for the week's material changes.",
-      "Check for contradictions, stale assumptions, unresolved approvals, overdue follow-ups and recurring operational failures.",
+      "Check for contradictions, stale assumptions, unresolved approvals, overdue follow-ups and recurring operational failures. Rank the output as Today, This week and Monitor using the Phase 5 action-sync priority lanes.",
       "Review 30/60/90 Potential Future Lead reminders separately from active pipeline. They remain excluded from pipeline value; draft a check-in only when useful and never send or change stage without approval.",
       "Create an internal weekly brief and safe internal tasks without duplicating Phase 4 Office actions; external communications, publishing, ad-budget changes, financial actions, project-data corrections and deletions require human approval.",
       "Consolidate genuinely reusable knowledge with add_brain_note and preserve provenance.",
@@ -122,7 +123,7 @@ export async function GET(
 
     const payload = {
       ...basePayload,
-      phase_4_action_sync: actions ?? { error: actionError },
+      phase_5_action_sync: actions ?? { error: actionError },
     };
     const { error: payloadError } = await service
       .from("aria_queue")
@@ -145,7 +146,7 @@ export async function GET(
     summary: {
       queued: !!data,
       period: periodKey,
-      phase_4: actions,
+      phase_5: actions,
     },
     error: warnings.join("; ") || null,
   });
@@ -154,7 +155,7 @@ export async function GET(
     queued: !!data,
     kind,
     period: periodKey,
-    phase_4: actions,
+    phase_5: actions,
     warning: warnings.join("; ") || null,
   });
 }

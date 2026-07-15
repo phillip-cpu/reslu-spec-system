@@ -735,7 +735,7 @@ A separate subsystem from everything above: a work queue you poll instead of bei
 
 `aria_queue` is how the rest of the app tells you something needs attention, without you having to poll six different endpoints. `get_aria_queue({ limit? })` atomically claims up to 20 pending rows (oldest first) — a picked-up row you never resolved gets re-exposed after 15 minutes, so a crash mid-batch doesn't lose work. Always call `resolve_queue_item({ id, status: 'done' | 'failed', note? })` once you've handled (or given up on) a claimed row — an unresolved row just sits picked-up until the timeout re-exposes it, which is wasted work, not a safety net.
 
-Kinds you'll see: `price_request` (a material's automated price refresh failed, needs manual lookup — use `submit_material_price`), `trade_reminder` (including a Phase 4 grouped-booking delivery failure/delay), `lead_flag` (including a Phase 4 30/60/90 Potential Future Lead review), `approval_needed` (a Step 10 entity match landed in the 0.60-0.90 confidence band, or a Step 11 fact failed the verification gate — see below), `email_proposal` (a Step 11 proposal ready for Phillip's review — surface it to him, don't approve it yourself without his say-so), and `daily_review` / `weekly_review` (the proactive operating cadence described below).
+Kinds you'll see: `price_request` (a material's automated price refresh failed, needs manual lookup — use `submit_material_price`), `trade_reminder` (including a grouped-booking delivery failure/delay), `lead_flag` (including a 30/60/90 Potential Future Lead review), `approval_needed` (a Step 10 entity match landed in the 0.60-0.90 confidence band, or a Step 11 fact failed the verification gate — see below), `email_proposal` (a Step 11 proposal ready for Phillip's review — surface it to him, don't approve it yourself without his say-so), `invoice_candidate` (review and propose only), `calendar_sync` (upsert a trade visit in the dedicated RESLU Google Calendar without inviting anyone), `followup_draft` (prepare copy and submit it to Office), `followup_approved` (Phillip approved the exact stored copy for one send), and `daily_review` / `weekly_review` (the proactive operating cadence described below).
 
 **Heartbeat**: `scripts/aria_heartbeat.py` (Mac mini) checks pending rows plus abandoned `picked_up` rows older than 15 minutes via bare REST count queries. Zero rows costs zero tokens and invokes no model. Work waiting triggers `openclaw system event --mode now`, which wakes the main session with instructions to claim the batch. The supplied launchd plist runs this check every five minutes and survives reboots. After a successful event, a local 20-minute cooldown suppresses duplicate wake events while the current session is working; an empty queue clears that cooldown immediately, and a failed event is retried on the next five-minute check.
 
@@ -751,7 +751,11 @@ Vercel inserts a deduplicated `daily_review` queue item each Adelaide morning an
 
 This is the normal observe → retrieve → decide → act safely → record/learn loop. A routine is not permission to bypass any existing approval gate.
 
-Phase 4 runs a zero-model action sync when a new routine row is inserted. It creates or refreshes one internal Office task per critical Project Health issue, upcoming unconfirmed booking group, and unresolved grouped-booking email delivery problem. The description carries a stable automation key so repeated reviews update the same open task rather than flooding the board. Completing a task does not change the underlying project record; if a critical project issue is still present on a later review, the action can be raised again. Aria may investigate and propose a correction, but only a human applies it.
+Phase 5 runs a zero-model action sync when a new routine row is inserted. Its payload ranks evidence into `priority.today`, `priority.this_week` and `priority.monitor`. It creates or refreshes one internal Office task per critical Project Health issue and unresolved grouped-booking email delivery problem, and raises deduplicated draft/invoice review work. The description carries a stable automation key so repeated reviews update the same open task rather than flooding the board. Completing a task does not change the underlying project record; if a critical project issue is still present on a later review, the action can be raised again. Aria may investigate and propose a correction, but only a human applies it.
+
+For `followup_draft`, search the lead, related email and memory context, then call `submit_followup_draft`. That creates a card in Office; it does not send or change the lead. Only Phillip's **Approve & send** action creates `followup_approved`. Send that exact subject/body once through the RESLU business email, call `complete_followup_send`, then resolve both queue items. Never treat a draft existing, a due date, or routine instructions as approval.
+
+For `calendar_sync`, use the `stable_uid` in the payload to create or update one event in the dedicated RESLU Google Calendar. Do not add attendees and do not send the trade/client a calendar message. Resolve with the Google event id. The Spec System keeps Google credentials off Vercel; this operation deliberately stays in Aria's existing calendar integration on the Mac mini.
 
 Potential Future Lead is a separate nurture lane. It remains excluded from active pipeline value and receives one review at the current 30/60/90-day checkpoint. Re-entering that stage starts a fresh cycle. Aria may search the history and draft a check-in, but must not send it or change the stage without approval.
 
@@ -910,10 +914,12 @@ pipeline's own gate was — by reading `POST /api/projects/[id]/invoices`
 (what this tool calls) and confirming it does one thing, an INSERT, full
 stop.
 
-**When to use it**: Second Brain's email pipeline (the same triage/
-extraction machinery described above) flags a likely supplier invoice
-on an email that's ALREADY been ingested and triaged — an attachment/PDF
-plus amount and invoice-number-shaped text. Read the attachment, work
+**When to use it**: Second Brain now has a dedicated
+`supplier_invoice` triage/extraction path and a conservative 90-day
+backfill detector. Either path raises a deduplicated `invoice_candidate`
+queue item for an email that's ALREADY been ingested — an invoice-named
+attachment/PDF or invoice language plus amount/invoice-number-shaped
+text. Read the email and attachment, work
 out:
 
 - Which project this belongs to (job hints — address, job number, a
@@ -968,13 +974,12 @@ propose_supplier_invoice({
   to pass a storage path; there's no parameter for it. `source_email_id`
   is enough for a human to go find the original PDF if they need to see
   it — a future round may wire this up properly.
-- **You never approve, and you never need to check back** — unlike the
-  `draft_proposal` flow above, there's no `resolve_queue_item` step here
-  either, because proposing an invoice was never a queue item to begin
-  with (it's a direct, always-safe INSERT triggered straight from your
-  own email-triage pass, not something staged for Phillip to hand you
-  first). Just propose what you find and move on; the Invoice queue UI
-  is where a human takes it from there.
+- **You never approve**. After `propose_supplier_invoice` succeeds,
+  resolve the originating `invoice_candidate` queue item with the new
+  draft invoice id. The Invoice queue UI is where a human takes it from
+  there. If the source is not genuinely an invoice or no project can be
+  identified safely, resolve it with that explanation rather than
+  inventing a financial match.
 
 ## Health monitoring (Health + web push round, r26)
 

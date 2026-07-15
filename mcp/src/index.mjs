@@ -1266,6 +1266,50 @@ const TOOLS = [
         body: JSON.stringify(body),
       }),
   },
+  {
+    name: "submit_followup_draft",
+    description:
+      "Save an email draft for Phillip's approval after claiming a followup_draft queue item. This tool cannot send, approve, change the lead stage or clear the follow-up date. Search the lead, relevant emails and memory first; then submit grounded copy. The draft appears in Office with explicit Approve & send / Reject controls.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        lead_id: { type: "string" },
+        source_queue_id: { type: "string", description: "The claimed followup_draft aria_queue id" },
+        dedupe_key: { type: "string", description: "Use payload.draft_dedupe_key exactly" },
+        recipient_email: { type: "string", description: "Must match the lead's current email" },
+        subject: { type: "string" },
+        body: { type: "string", description: "Plain-text email body, ready for review" },
+        context_summary: { type: "string", description: "Short source list or reasoning for Phillip" },
+      },
+      required: ["lead_id", "source_queue_id", "dedupe_key", "recipient_email", "subject", "body"],
+      additionalProperties: false,
+    },
+    handler: async (body) =>
+      apiFetch("/api/aria-followups", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+  },
+  {
+    name: "complete_followup_send",
+    description:
+      "Record the outcome after handling a followup_approved queue item. Only an explicit Office approval creates that queue item. Send the exact approved copy once through the RESLU business email first, then mark sent; use failed with a clear note if sending did not complete.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "aria_followup_drafts id from the approved queue payload" },
+        status: { type: "string", enum: ["sent", "failed"] },
+        note: { type: "string", description: "Message id or failure detail" },
+      },
+      required: ["id", "status"],
+      additionalProperties: false,
+    },
+    handler: async ({ id, ...body }) =>
+      apiFetch(`/api/aria-followups/${encodeURIComponent(id)}/complete`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+  },
   // ------------------------------------------------------------
   // Fee proposal phase round (r23) — BUILD-SPEC.md §"Fee proposal phase
   // (r23)" item 5: "MCP tools get_proposal, set_proposal_draft (updates

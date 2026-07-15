@@ -304,14 +304,26 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
                 className={inputClass}
               />
             </label>
-            <label className="block">
-              <span className={labelClass}>Phone</span>
-              <input
-                value={draft.phone ?? ""}
-                onChange={(e) => setField("phone", e.target.value || null)}
-                className={inputClass}
-              />
-            </label>
+            <div>
+              <label className="block">
+                <span className={labelClass}>Phone</span>
+                <input
+                  type="tel"
+                  inputMode="tel"
+                  value={draft.phone ?? ""}
+                  onChange={(e) => setField("phone", e.target.value || null)}
+                  className={inputClass}
+                />
+              </label>
+              {draft.phone && (
+                <a
+                  href={`tel:${draft.phone.replace(/[^\d+]/g, "")}`}
+                  className="mt-1.5 inline-flex w-full items-center justify-center border border-nearblack px-3 py-2 text-caption text-nearblack sm:hidden"
+                >
+                  Call {draft.first_name?.trim() || "lead"}
+                </a>
+              )}
+            </div>
             <label className="block sm:col-span-2">
               <span className={labelClass}>Location</span>
               <input
@@ -320,6 +332,18 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
                 className={inputClass}
               />
             </label>
+          </div>
+
+          {/* Notes stay directly beneath the lead's contact details so
+              the composer is visible before the historical record and
+              before the longer scheduling/value sections. */}
+          <div className="border-t border-[#dcd6cc] pt-4">
+            {notesError && (
+              <p className="mb-2 border border-red-700/40 bg-red-50 px-3 py-2 text-caption text-red-700">
+                {notesError}
+              </p>
+            )}
+            <LeadNotes leadId={lead.id} onError={setNotesError} />
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
@@ -451,21 +475,6 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
               (POST /api/leads/intake, migration 042) — renders nothing
               for leads without attachments. */}
           <LeadAttachments leadId={lead.id} />
-
-          {/* Migration 030 round: leads.notes free-text editing is
-              retired from this panel — the attributed, timestamped
-              lead_notes feed below is now the only editable notes
-              surface (display migrated into the feed; see
-              components/leads/LeadNotes.tsx and
-              GET/POST /api/leads/[id]/notes). */}
-          <div className="border-t border-[#dcd6cc] pt-4">
-            {notesError && (
-              <p className="mb-2 border border-red-700/40 bg-red-50 px-3 py-2 text-caption text-red-700">
-                {notesError}
-              </p>
-            )}
-            <LeadNotes leadId={lead.id} onError={setNotesError} />
-          </div>
 
           {/* Lead flow round (048) — read-only render of the client's
               submitted pre-visit questionnaire (emails/brief/project-

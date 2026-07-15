@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 import { computeInsuranceStatus, insuranceWarningForBooking } from "@/lib/insurance";
 import { rollupPhaseDatesForGroup } from "@/lib/phase-rollup";
+import { queueTradeCalendarSync } from "@/lib/trade-calendar-sync";
 import { sendOrQueue } from "@/lib/visit-emails";
 import { formatArrival } from "@/lib/trade-visits";
 import { hasAnyDocumentPackChoice, documentPackMentionLine } from "@/lib/trade-doc-pack";
@@ -242,7 +243,7 @@ export async function POST(
 
   const { data: task } = await supabase
     .from("board_tasks")
-    .select("id,project_id,visit_id")
+    .select("id,title,project_id,visit_id")
     .eq("id", taskId)
     .is("deleted_at", null)
     .single();
@@ -434,7 +435,13 @@ export async function POST(
 
   const { data: updatedTask, error: updateError } = await supabase
     .from("board_tasks")
-    .update({ visit_id: visitId, booking_date: bookingStart, booking_end_date: bookingEnd })
+    .update({
+      visit_id: visitId,
+      booking_date: bookingStart,
+      booking_end_date: bookingEnd,
+      due_date: null,
+      due_time: null,
+    })
     .eq("id", taskId)
     .select()
     .single();
@@ -454,6 +461,21 @@ export async function POST(
     await rollupPhaseDatesForGroup(supabase, updatedTask.phase_group_id);
   } catch (rollupError) {
     console.error("rollupPhaseDatesForGroup failed after book-visit POST:", rollupError);
+  }
+
+  try {
+    await queueTradeCalendarSync(supabase, {
+      visit_id: visitId,
+      project_id: task.project_id,
+      contact_id: visitContactId,
+      title: task.title,
+      start_date: bookingStart,
+      end_date: bookingEnd,
+      arrival_slot: visitArrivalSlot,
+      arrival_time: visitArrivalTime,
+    });
+  } catch (calendarError) {
+    console.error("book-visit POST: could not queue RESLU calendar sync", calendarError);
   }
 
   // Board v3.3 — item 2: send the trade's confirmation email now,

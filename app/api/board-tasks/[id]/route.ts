@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { isBookedColumnName } from "@/lib/board-constants";
 import { rollupPhaseDatesForGroup } from "@/lib/phase-rollup";
+import { queueTradeCalendarSync } from "@/lib/trade-calendar-sync";
 import type { PatchBoardTaskV33Input } from "@/types/board-v3-3";
 
 const EDITABLE_FIELDS = new Set([
@@ -109,7 +111,7 @@ export async function PATCH(
 
   const { data: existing } = await supabase
     .from("board_tasks")
-    .select("id,project_id,column_id,phase_group_id,visit_id,booking_date,booking_end_date")
+    .select("id,title,project_id,column_id,phase_group_id,visit_id,contact_id,booking_date,booking_end_date")
     .eq("id", id)
     .is("deleted_at", null)
     .single();
@@ -124,10 +126,11 @@ export async function PATCH(
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  let targetColumn: { id: string; name: string } | null = null;
   if (body.column_id && body.column_id !== existing.column_id) {
     const { data: column } = await supabase
       .from("board_columns")
-      .select("id")
+      .select("id,name")
       .eq("id", body.column_id)
       .eq("project_id", existing.project_id)
       .single();
@@ -137,6 +140,7 @@ export async function PATCH(
         { status: 400 }
       );
     }
+    targetColumn = column;
   }
 
   if (body.phase_group_id) {
@@ -225,6 +229,14 @@ export async function PATCH(
     }
   }
 
+  // A due date is the reminder to get this card booked. Once the card
+  // enters a real Booked/Re-booked status, clear that reminder at the
+  // source so My Work clears immediately. Works dates remain separate.
+  if (targetColumn && isBookedColumnName(targetColumn.name)) {
+    update.due_date = null;
+    update.due_time = null;
+  }
+
   if (Object.keys(update).length === 0 && body.assignee_ids === undefined) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
   }
@@ -273,6 +285,16 @@ export async function PATCH(
           .is("deleted_at", null);
         if (visit.status === "confirmed") {
           reconfirmVisitIds.push(visit.id);
+        }
+        if (task.booking_date) {
+          await queueTradeCalendarSync(supabase, {
+            visit_id: visit.id,
+            project_id: existing.project_id,
+            contact_id: existing.contact_id,
+            title: existing.title,
+            start_date: task.booking_date,
+            end_date: task.booking_end_date ?? task.booking_date,
+          });
         }
       }
     } catch (visitSyncError) {

@@ -307,6 +307,16 @@ export function isDoneColumnName(columnName: string): boolean {
   return SUMMARY_DONE_COLUMN_NAMES.has(columnName.trim().toLowerCase());
 }
 
+/**
+ * A real booked status, excluding the common "Not Booked" waiting
+ * column. Entering this state completes the reminder that the card's
+ * due_date represented, while its separate works dates remain intact.
+ */
+export function isBookedColumnName(columnName: string): boolean {
+  const value = columnName.trim().toLowerCase();
+  return /\bbooked\b/.test(value) && !/\b(?:not|un)\s*-?\s*booked\b/.test(value);
+}
+
 export interface GroupSummarySourceTask {
   /** Whether this task is a sub-item (has a non-null parent_task_id) — excluded from both the total and the done tally, per spec. */
   isSubItem: boolean;

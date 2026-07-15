@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
-import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
+import { resolveExportPresets } from "@/lib/export-presets";
 import { deriveOrderBy, missingLeadTimes, type OrderByContactInput, type OrderByItemInput, type WorksDateSource } from "@/lib/order-by";
-import type { ExportPresetRow } from "@/types/round-export-batch";
 import type { OrderByResponse, OrderByRow } from "@/types/order-by";
 
 export const runtime = "nodejs";
@@ -89,7 +88,7 @@ export async function GET(
   }
 
   const items = (itemRows ?? []) as OrderByItemInput[];
-  const presets = (presetSetting?.value as ExportPresetRow[] | undefined) ?? FALLBACK_EXPORT_PRESETS;
+  const presets = resolveExportPresets(presetSetting?.value);
 
   if (items.length === 0) {
     const body: OrderByResponse = { rows: [], missing_lead_time_item_ids: [] };

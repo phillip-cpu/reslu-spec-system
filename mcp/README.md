@@ -79,6 +79,9 @@ Every tool is a thin wrapper over an existing REST route — see `docs/API.md` f
 | `get_needs_attention` | `GET /api/leads/attention` | The four needs-attention groups — poll this for the lead-monitor/nurturer automations. |
 | `list_invoices` | `GET /api/projects/[id]/invoices` | Admin-only, financial. Filter: `status`. |
 | `create_invoice` | `POST /api/projects/[id]/invoices` | Admin-only, financial. Use after parsing a supplier invoice email/PDF. |
+| `propose_supplier_invoice` | `POST /api/projects/[id]/invoices` | Creates an Aria-sourced draft only. A human still approves/applies it in the Invoice queue. |
+| `submit_followup_draft` | `POST /api/aria-followups` | Saves exact lead follow-up copy to the Office approval inbox; cannot send or change the lead. |
+| `complete_followup_send` | `POST /api/aria-followups/[id]/complete` | Records sent/failed only after an explicit Office approval created the approved queue item. |
 | `post_client_update` | `POST /api/projects/[id]/client-updates/posts` | Creates a **draft** — does not publish to the client portal. |
 | `draft_diary_entry` | `GET`/`POST /api/projects/[id]/client-updates/posts/[postId]/aria-draft` | Two modes: call without `title`/`body_richtext` to FETCH a draft's rough notes + photo captions; call WITH both to SUBMIT polished copy (sets `status: 'pending_approval'`). Never publishes — see `docs/ARIA.md`'s "Diary workflow" section. |
 | `list_site_photos` | `GET /api/projects/[id]/site-photos` | The project's internal gallery (published + unpublished), for referencing captions/photos when drafting a diary entry. Read-only. |

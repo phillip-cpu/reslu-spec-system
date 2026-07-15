@@ -18,14 +18,13 @@ import { PushSettings } from "@/components/settings/PushSettings";
 import { getSignaturePeople } from "@/lib/email-signatures";
 import { FALLBACK_PHASE_TEMPLATE, FALLBACK_PHASE_TASK_TEMPLATES } from "@/lib/phase-template";
 import { FALLBACK_DESIGN_TASK_TEMPLATES } from "@/lib/design-task-templates";
-import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
+import { resolveExportPresets } from "@/lib/export-presets";
 import { BANK_DETAILS_SETTINGS_KEY } from "@/lib/bank-details";
 import { FALLBACK_CPD_DEFAULTS } from "@/lib/cpd";
 import { DESIGN_PHASE_TEMPLATE } from "@/types/phase-12b";
 import type { AppSettingsPhaseTemplateRow } from "@/types/phase-fix-a";
 import type { PhaseTaskTemplatesMap } from "@/types/board-cockpit";
 import type { DesignTaskTemplatesMap } from "@/types/round-c";
-import type { ExportPresetRow } from "@/types/round-export-batch";
 import type { InvoiceBankDetails } from "@/types/client-invoices";
 import type { CpdDefaults } from "@/types/cpd";
 
@@ -117,7 +116,7 @@ export default async function SettingsPage() {
     .select("value")
     .eq("key", "export_presets")
     .maybeSingle();
-  const exportPresets = (exportPresetsRow?.value as ExportPresetRow[] | undefined) ?? FALLBACK_EXPORT_PRESETS;
+  const exportPresets = resolveExportPresets(exportPresetsRow?.value);
 
   // Client invoicing round (BUILD-SPEC.md "Phillip's ideas list — 6
   // July 2026" item 5) — bank transfer details shown on every client

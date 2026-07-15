@@ -29,7 +29,7 @@ import {
 } from "@/lib/order-by";
 import { computeAttentionGroups } from "@/lib/leads";
 import { computeInsuranceStatus } from "@/lib/insurance";
-import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
+import { resolveExportPresets } from "@/lib/export-presets";
 import {
   buildBookingCandidates,
   buildInsuranceCandidates,
@@ -41,7 +41,6 @@ import {
   type DailyBriefSource,
   type ExistingBriefItemForDedupe,
 } from "@/lib/daily-brief";
-import type { ExportPresetRow } from "@/types/round-export-batch";
 import type { Lead, LeadStageEvent } from "@/types";
 
 export interface GenerateDailyBriefResult {
@@ -156,7 +155,7 @@ export async function generateDailyBrief(
         .not("booking_date", "is", null),
     ]);
 
-    const presets = (presetSetting?.value as ExportPresetRow[] | undefined) ?? FALLBACK_EXPORT_PRESETS;
+    const presets = resolveExportPresets(presetSetting?.value);
 
     const orderingSources: WorksDateSource[] = [
       ...((allVisits ?? []) as { id: string; project_id: string; contact_id: string | null; start_date: string }[]).map((v) => ({

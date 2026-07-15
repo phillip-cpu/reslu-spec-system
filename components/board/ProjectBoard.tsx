@@ -36,6 +36,7 @@ import {
   computeGroupWorksDateRange,
   suggestStatusColumnName,
   isDoneColumnName,
+  isBookedColumnName,
 } from "@/lib/board-constants";
 import { ContactPicker } from "@/components/shared/ContactPicker";
 import { GroupBookPanel } from "./GroupBookPanel";
@@ -568,6 +569,13 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     patch: Record<string, unknown>,
     refUpdate: Partial<BoardTaskV3>
   ) {
+    if ("column_id" in patch) {
+      const target = columnById.get(patch.column_id as string);
+      if (target && isBookedColumnName(target.name)) {
+        patch = { ...patch, due_date: null, due_time: null };
+        refUpdate = { ...refUpdate, due_date: null, due_time: null };
+      }
+    }
     const prevColumns = columns;
     const prevGroups = groups;
     applyTaskPatch(task.id, { ...patch, ...refUpdate } as Partial<BoardTaskV3>);
@@ -776,11 +784,17 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     }
 
     const prev = columns;
+    const targetIsBooked = isBookedColumnName(destColumn.name);
+    const movePatch = {
+      column_id: targetColumnId,
+      sort: nextSort,
+      ...(targetIsBooked ? { due_date: null, due_time: null } : {}),
+    };
     setColumns((cur) =>
       cur.map((c) => {
         if (c.id === sourceColumn!.id && c.id === destColumn.id) {
           const withoutDragged = c.tasks.filter((t) => t.id !== taskId);
-          const updated = { ...task, column_id: targetColumnId, sort: nextSort };
+          const updated = { ...task, ...movePatch };
           const list = [...withoutDragged];
           list.splice(index, 0, updated);
           return { ...c, tasks: list };
@@ -789,7 +803,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
           return { ...c, tasks: c.tasks.filter((t) => t.id !== taskId) };
         }
         if (c.id === destColumn.id) {
-          const updated = { ...task, column_id: targetColumnId, sort: nextSort };
+          const updated = { ...task, ...movePatch };
           const list = [...c.tasks];
           list.splice(index, 0, updated);
           return { ...c, tasks: list };
@@ -799,7 +813,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     );
     setError(null);
     try {
-      await patchTask(task, { column_id: targetColumnId, sort: nextSort });
+      await patchTask(task, movePatch);
     } catch (err) {
       setColumns(prev);
       setError(err instanceof Error ? err.message : "Could not move card.");

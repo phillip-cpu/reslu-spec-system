@@ -29,13 +29,14 @@ export const EXTRACTION_MODEL = "claude-sonnet-5";
 
 const EXTRACTION_SYSTEM_PROMPT = `You are the extraction step for RESLU, an interior design and design-build studio in Adelaide, South Australia. You are given ONE actionable email (already triaged as worth extracting from) — its cleaned body text, and optionally one or more attachments (images or PDF documents) that arrived with it.
 
-Extract every price fact, lead-time fact, job/project mention, item/product mention, and requested action you can find, following the exact schema given by the extract_email tool. Rules:
+Extract every price fact, lead-time fact, job/project mention, item/product mention, requested action, and supplier invoice candidate you can find, following the exact schema given by the extract_email tool. Rules:
 
 - EVERY fact (price_facts, lead_time_facts, job_mentions, item_mentions, actions_requested) MUST carry a source_quote — an EXACT, VERBATIM substring copied character-for-character from the email body text or from an attachment. Do not paraphrase, summarise, or reconstruct a quote from memory — copy it directly. A fact with no genuine verbatim quote to point to should not be included at all.
 - If an attachment is included, ALSO transcribe the relevant text/prices/lead-times you can read from it into attachment_transcriptions, one entry per attachment you were given (identified by the attachment_id provided), so that facts sourced from that attachment can have a source_quote that matches something on record. Transcribe accurately — this transcription itself becomes the "source of truth" your own source_quotes for that attachment will be checked against.
 - Never invent a project/job name, item name, price, or lead time that isn't genuinely present in the text or attachment. If nothing extractable is present, return empty arrays — do not force a fact to justify calling the tool.
 - confidence is your overall confidence (0.0-1.0) in this extraction as a whole, not per-fact.
 - Currency defaults to AUD unless the text says otherwise. gst_inclusive should be your best read of whether the stated price includes GST — if genuinely ambiguous, use null rather than guessing.
+- When the message or attachment is an invoice, tax invoice, credit note, or payment request issued by a supplier/trade, populate supplier_invoice. This is only a review candidate: never infer that it is approved or paid. Do not also turn the invoice total into a price_fact; price_facts are product/service price intelligence, while supplier_invoice records the financial document itself.
 
 Call the extract_email tool exactly once.`;
 
@@ -70,6 +71,39 @@ const EXTRACTION_TOOL: ClaudeTool = {
         items: FACT_WITH_QUOTE({ item_text: { type: "string" }, value_weeks: { type: "number" } }),
       },
       actions_requested: { type: "array", items: FACT_WITH_QUOTE({ description: { type: "string" } }) },
+      supplier_invoice: {
+        anyOf: [
+          {
+            type: "object",
+            properties: {
+              supplier: { type: "string" },
+              abn: { type: ["string", "null"] },
+              invoice_number: { type: ["string", "null"] },
+              invoice_date: { type: ["string", "null"] },
+              amount_ex_gst: { type: ["number", "null"] },
+              gst: { type: ["number", "null"] },
+              total: { type: "number" },
+              job_hints: { type: ["string", "null"] },
+              line_hints: { type: ["string", "null"] },
+              source_quote: { type: "string" },
+            },
+            required: [
+              "supplier",
+              "abn",
+              "invoice_number",
+              "invoice_date",
+              "amount_ex_gst",
+              "gst",
+              "total",
+              "job_hints",
+              "line_hints",
+              "source_quote"
+            ],
+            additionalProperties: false,
+          },
+          { type: "null" },
+        ],
+      },
       attachment_transcriptions: {
         type: "array",
         items: {
@@ -81,7 +115,7 @@ const EXTRACTION_TOOL: ClaudeTool = {
       },
       confidence: { type: "number", minimum: 0, maximum: 1 },
     },
-    required: ["job_mentions", "item_mentions", "price_facts", "lead_time_facts", "actions_requested", "attachment_transcriptions", "confidence"],
+    required: ["job_mentions", "item_mentions", "price_facts", "lead_time_facts", "actions_requested", "supplier_invoice", "attachment_transcriptions", "confidence"],
     additionalProperties: false,
   },
 };
@@ -109,6 +143,18 @@ export type ExtractionResult = {
   }[];
   lead_time_facts: { item_text: string; value_weeks: number; source_quote: string }[];
   actions_requested: { description: string; source_quote: string }[];
+  supplier_invoice: {
+    supplier: string;
+    abn: string | null;
+    invoice_number: string | null;
+    invoice_date: string | null;
+    amount_ex_gst: number | null;
+    gst: number | null;
+    total: number;
+    job_hints: string | null;
+    line_hints: string | null;
+    source_quote: string;
+  } | null;
   attachment_transcriptions: { attachment_id: string; text: string }[];
   confidence: number;
 };

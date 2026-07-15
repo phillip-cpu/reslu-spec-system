@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
-import { FALLBACK_EXPORT_PRESETS, cleanPresetRow } from "@/lib/export-presets";
+import { cleanPresetRow, resolveExportPresets } from "@/lib/export-presets";
 import type { ExportPresetRow, PutExportPresetsInput } from "@/types/round-export-batch";
 
 /**
@@ -34,7 +34,7 @@ export async function GET() {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const presets = (data?.value as ExportPresetRow[] | undefined) ?? FALLBACK_EXPORT_PRESETS;
+  const presets = resolveExportPresets(data?.value);
   return NextResponse.json({ presets });
 }
 
@@ -84,13 +84,14 @@ export async function PUT(request: NextRequest) {
     cleaned.push(clean);
   }
 
+  const resolved = resolveExportPresets(cleaned);
   const { error } = await supabase
     .from("app_settings")
-    .upsert({ key: "export_presets", value: cleaned, updated_at: new Date().toISOString() }, { onConflict: "key" });
+    .upsert({ key: "export_presets", value: resolved, updated_at: new Date().toISOString() }, { onConflict: "key" });
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ presets: cleaned });
+  return NextResponse.json({ presets: resolved });
 }

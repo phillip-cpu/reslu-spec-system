@@ -13,6 +13,7 @@ import { callClaude, type ClaudeTool } from "@/lib/second-brain/claude";
 export const TRIAGE_MODEL = "claude-haiku-4-5";
 
 export const TRIAGE_LABELS = [
+  "supplier_invoice",
   "supplier_quote",
   "price_update",
   "lead_time_update",
@@ -29,9 +30,11 @@ export const NON_ACTIONABLE_LABELS: TriageLabel[] = ["fyi", "noise"];
 
 const TRIAGE_SYSTEM_PROMPT = `You are the mail triage step for RESLU, an interior design and design-build studio based in Adelaide, South Australia. RESLU runs full-service residential and light-commercial projects: initial client leads, design development, a spec register of specified FF&E items (furniture, fixtures, fittings — tapware, tiles, joinery hardware, appliances, stone, and similar), a scope-of-works document per project, and construction-phase trade coordination (site visits, bookings, confirmations). The studio deals daily with suppliers (tile houses, tapware brands, joinery/cabinetry makers, stone yards, appliance distributors) and trades (plumbers, electricians, carpenters, tilers) as well as directly with clients.
 
-You will be given a batch of inbound emails (each with an id, sender address, subject, and cleaned body text — quoted reply history and email signatures have already been stripped before you see them, so do not expect to see prior thread context or sign-offs). For every email in the batch, assign exactly one label from the fixed list below, plus a confidence score from 0.0 (pure guess) to 1.0 (certain).
+You will be given a batch of inbound emails (each with an id, sender address, subject, cleaned body text, and an attachment summary when files are present — quoted reply history and email signatures have already been stripped before you see them, so do not expect to see prior thread context or sign-offs). For every email in the batch, assign exactly one label from the fixed list below, plus a confidence score from 0.0 (pure guess) to 1.0 (certain).
 
 Label definitions, each with the kind of email you should expect to see:
+
+- "supplier_invoice" — a supplier or trade has issued an invoice, tax invoice, credit note, or payment request for goods or work supplied to RESLU or one of its jobs. Typical signals are an invoice number, invoice date, amount due/total, ABN, payment terms, or an attached file named invoice. This is a charge to be matched and reviewed, not a price being proposed. Distinct from supplier_quote: a quote asks whether RESLU wants to proceed; an invoice records money now owing (or credited) after an order, supply, or service. Never treat an invoice as approved or paid merely because it arrived.
 
 - "supplier_quote" — a trade or supplier has sent a formal quote, quotation, or costed proposal in response to a request RESLU made. Examples: a joinery workshop quoting a costed price for a custom vanity unit; a tapware distributor replying to a pricing enquiry with a line-itemed quote; a tiler quoting labour + supply for a bathroom. The defining feature is that specific dollar figures are being PROPOSED for a SPECIFIC job, usually in direct response to something RESLU asked for. Distinct from price_update below — a supplier_quote is a new, one-off costed proposal tied to a particular project or request, not a blanket notice about an existing product line's price changing for everyone.
 
@@ -49,7 +52,7 @@ Label definitions, each with the kind of email you should expect to see:
 
 - "noise" — newsletters, marketing blasts, automated system notifications, out-of-office auto-replies, spam, or anything from an obviously automated/noreply sender that carries no project-relevant content whatsoever. Note that the mail-ingest pipeline that runs BEFORE this triage step already hard-rule-skips the most obvious cases (clear newsletters, auto-replies, noreply senders) before you ever see them — so what reaches you here will mostly be borderline or ambiguous cases, not obvious bulk spam.
 
-Only supplier_quote, price_update, lead_time_update, client_rfi, and approval typically warrant the extraction step that runs after triage. follow_up sometimes does, if it happens to restate a concrete fact worth recording. fyi and noise never proceed to extraction — be decisive and use these two labels confidently rather than defaulting to a "safer-sounding" actionable label out of caution when an email is genuinely just informational or noise. Getting this triage step right matters: a false negative here (labelling something actionable as fyi/noise) means a real price change, lead-time change, or client request silently never reaches anyone's attention; a false positive (over-labelling routine mail as actionable) wastes the more expensive extraction step downstream on nothing.
+supplier_invoice, supplier_quote, price_update, lead_time_update, client_rfi, and approval typically warrant the extraction step that runs after triage. follow_up sometimes does, if it happens to restate a concrete fact worth recording. fyi and noise never proceed to extraction — be decisive and use these two labels confidently rather than defaulting to a "safer-sounding" actionable label out of caution when an email is genuinely just informational or noise. Getting this triage step right matters: a false negative here (labelling something actionable as fyi/noise) means a real invoice, price change, lead-time change, or client request silently never reaches anyone's attention; a false positive (over-labelling routine mail as actionable) wastes the more expensive extraction step downstream on nothing.
 
 Worked examples, covering the distinctions that are easiest to get wrong:
 
@@ -57,7 +60,7 @@ Example 1 — supplier_quote vs price_update. Email A: "Hi, following up on your
 
 Example 2 — client_rfi vs approval vs follow_up. Email A: "Hi, quick question — is the Taj Mahal quartzite still the one we picked for the kitchen island, or did we end up going with something else? Can't remember and want to check before the stonemason comes out." This is client_rfi — a client asking a question that needs an answer, not confirming or approving anything. Email B: "Thanks for sending that through — yes, happy to go ahead with the quote as is, please proceed." This is approval — explicit, affirmative sign-off on something specific that was proposed. Email C: "Hi, just following up on my email from last week about the tile delay — haven't heard back, can you let me know where things are at?" This is follow_up — it restates a prior request without adding new information itself; if the ORIGINAL "tile delay" email is also in this batch, that original email would likely be lead_time_update or client_rfi depending on who sent it, but this particular follow-up reply is just a nudge.
 
-Example 3 — fyi vs noise vs a real update. Email A: "Hi all, just letting you know I'll be out of office Thursday and Friday, back Monday. My colleague Sam can help with anything urgent." This is fyi — informational, courtesy notice, nothing to extract or act on (note this is a manually-sent heads-up from a real colleague, not an automated out-of-office auto-reply, which the ingest pipeline would already have hard-rule-skipped before you saw it). Email B: "You're receiving this because you're subscribed to our trade newsletter. This month: new stone slab arrivals, industry news, and upcoming trade shows..." This would be noise if it somehow reached you (most such newsletters are filtered before triage, so seeing one here is a borderline case worth confidently labelling noise rather than something softer). Email C: "Reminder: your invoice #4521 for $3,200 is now 14 days overdue. Please arrange payment." — this is NOT fyi despite sounding routine; it's an actionable notice with a concrete dollar figure and a request, closer to client_rfi/approval territory depending on who it's addressed to and how RESLU's own workflow treats it — the point of this example is that "sounds routine" is not the same test as "is genuinely informational with nothing to act on or extract"; read for concrete facts and requests, not just tone.
+Example 3 — fyi vs noise vs a real invoice. Email A: "Hi all, just letting you know I'll be out of office Thursday and Friday, back Monday. My colleague Sam can help with anything urgent." This is fyi — informational, courtesy notice, nothing to extract or act on (note this is a manually-sent heads-up from a real colleague, not an automated out-of-office auto-reply, which the ingest pipeline would already have hard-rule-skipped before you saw it). Email B: "You're receiving this because you're subscribed to our trade newsletter. This month: new stone slab arrivals, industry news, and upcoming trade shows..." This would be noise if it somehow reached you. Email C: "Reminder: your invoice #4521 for $3,200 is now 14 days overdue. Please arrange payment." This is supplier_invoice — it carries a concrete invoice number, amount and payment action, even though its tone sounds routine.
 
 Example 4 — lead_time_update vs price_update vs supplier_quote, when a single email touches more than one topic. Suppliers frequently combine several updates in one message, and you must pick the single label that best captures the PRIMARY, most actionable content — not just the first sentence. Email: "Hi Phillip, two things from us this week. First, just a reminder our showroom is closed for stocktake next Monday and Tuesday. Second and more importantly — the marble benchtop slab you ordered for the Alley project has been delayed at the quarry and won't arrive until early September, about 5 weeks later than originally quoted. We'll keep you posted. Cheers, the team at Ironside Stone." The showroom closure is a minor fyi-level aside; the substantive, actionable content is the delay notice for a specific ordered item on a specific project — this should be labelled lead_time_update, not fyi, because the primary content is a concrete lead-time fact worth extracting (item: marble benchtop slab, project: Alley, new timing: early September, delay: ~5 weeks). When a message mixes a throwaway aside with one substantive fact, always label for the substantive fact.
 
@@ -100,14 +103,20 @@ const TRIAGE_TOOL: ClaudeTool = {
   },
 };
 
-export type TriageInput = { id: string; from_addr: string; subject: string | null; clean_text: string | null };
+export type TriageInput = {
+  id: string;
+  from_addr: string;
+  subject: string | null;
+  clean_text: string | null;
+  attachment_context?: string | null;
+};
 export type TriageResult = { email_id: string; label: TriageLabel; confidence: number };
 
 export async function triageEmails(batch: TriageInput[]): Promise<{ results: TriageResult[]; usage: Record<string, unknown> }> {
   const batchText = batch
     .map(
       (e) =>
-        `<email id="${e.id}">\nFrom: ${e.from_addr}\nSubject: ${e.subject ?? "(no subject)"}\n\n${e.clean_text ?? "(no body text)"}\n</email>`
+        `<email id="${e.id}">\nFrom: ${e.from_addr}\nSubject: ${e.subject ?? "(no subject)"}\nAttachments: ${e.attachment_context ?? "(none)"}\n\n${e.clean_text ?? "(no body text)"}\n</email>`
     )
     .join("\n\n");
 

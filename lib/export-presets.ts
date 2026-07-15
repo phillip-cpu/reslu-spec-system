@@ -32,6 +32,11 @@ import type { ExportPresetRow } from "@/types/round-export-batch";
 export const FALLBACK_EXPORT_PRESETS: ExportPresetRow[] = [
   { name: "Plumber", prefixes: ["TW", "SW"] },
   { name: "Electrician", prefixes: ["LI", "EL"] },
+  {
+    name: "Joiner",
+    prefixes: ["HD"],
+    contact_categories: ["Joiner", "Joinery", "Cabinet Maker", "Cabinetry"],
+  },
 ];
 
 /** Trims/validates one preset row — shared by the PUT route's validation and the settings editor's optimistic-add path. */
@@ -77,6 +82,47 @@ export function cleanPresetRow(row: {
   const result: ExportPresetRow = { name, prefixes: [...new Set(prefixes)] };
   if (cleanedCategories.length > 0) result.contact_categories = cleanedCategories;
   return result;
+}
+
+const CABINET_PRESET_PATTERN = /\b(joiner|joinery|cabinet|cabinetry)\b/i;
+
+/**
+ * Cabinet hardware (HD) is a client/joiner quality-reference schedule,
+ * even when RESLU is not assigning or purchasing every individual
+ * hinge/runner. Preserve that coverage in every preset configuration.
+ */
+export function resolveExportPresets(value: unknown): ExportPresetRow[] {
+  const configured = Array.isArray(value)
+    ? value.map((row) => cleanPresetRow(row as Record<string, unknown>)).filter((row): row is ExportPresetRow => !!row)
+    : [];
+  const source = configured.length > 0 ? configured : FALLBACK_EXPORT_PRESETS;
+  const resolved = source.map((preset) => ({
+    ...preset,
+    prefixes: [...preset.prefixes],
+    ...(preset.contact_categories
+      ? { contact_categories: [...preset.contact_categories] }
+      : {}),
+  }));
+  const cabinetIndex = resolved.findIndex((preset) =>
+    CABINET_PRESET_PATTERN.test(
+      [preset.name, ...(preset.contact_categories ?? [])].join(" ")
+    )
+  );
+
+  if (cabinetIndex >= 0) {
+    const preset = resolved[cabinetIndex];
+    preset.prefixes = [...new Set([...preset.prefixes, "HD"])];
+    return resolved;
+  }
+
+  return [
+    ...resolved,
+    {
+      name: "Joiner",
+      prefixes: ["HD"],
+      contact_categories: ["Joiner", "Joinery", "Cabinet Maker", "Cabinetry"],
+    },
+  ];
 }
 
 /**

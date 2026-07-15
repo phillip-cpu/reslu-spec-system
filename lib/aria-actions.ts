@@ -1,13 +1,21 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { automationMarker, futureNurtureMilestone } from "@/lib/aria-action-rules";
-import { daysSince } from "@/lib/leads";
+import {
+  automationMarker,
+  futureNurtureMilestone,
+  projectHealthPriority,
+  type AriaPriorityLane,
+} from "@/lib/aria-action-rules";
+import { isLikelySupplierInvoice } from "@/lib/invoice-candidates";
+import { daysSince, isActiveStage, isFollowUpDue } from "@/lib/leads";
 import {
   adelaideDateKey,
   loadProjectDataQuality,
 } from "@/lib/project-data-quality-server";
 import type { ProjectDataQualityIssue } from "@/types/data-quality";
+import type { LeadStage } from "@/types";
 
 const SORT_STEP = 1000;
+const INVOICE_CANDIDATE_BATCH = 25;
 const ACTIONABLE_WARNING_CODES = new Set(["trade_confirmation_due"]);
 
 type OfficeTaskResult = "created" | "refreshed" | "handled";
@@ -29,6 +37,7 @@ interface OfficeAutomationContext {
 }
 
 export interface AriaActionSyncSummary {
+  priority: Record<AriaPriorityLane, string[]>;
   projects_scanned: number;
   project_health: {
     actionable_issues: number;
@@ -52,6 +61,15 @@ export interface AriaActionSyncSummary {
     due: number;
     office_tasks_created: number;
     office_tasks_refreshed: number;
+    queue_items_raised: number;
+  };
+  followup_drafts: {
+    due: number;
+    queue_items_raised: number;
+  };
+  invoice_candidates: {
+    checked: number;
+    found: number;
     queue_items_raised: number;
   };
   errors: string[];
@@ -211,7 +229,16 @@ function deliveryProblem(
 
 async function raiseQueueItem(
   supabase: SupabaseClient,
-  input: { kind: "lead_flag" | "trade_reminder"; payload: Record<string, unknown>; key: string; source: string }
+  input: {
+    kind:
+      | "lead_flag"
+      | "trade_reminder"
+      | "followup_draft"
+      | "invoice_candidate";
+    payload: Record<string, unknown>;
+    key: string;
+    source: string;
+  }
 ): Promise<boolean> {
   const { data, error } = await supabase
     .from("aria_queue")
@@ -245,6 +272,7 @@ export async function syncAriaActions(
   const context = await loadOfficeContext(supabase);
 
   const summary: AriaActionSyncSummary = {
+    priority: { today: [], this_week: [], monitor: [] },
     projects_scanned: 0,
     project_health: {
       actionable_issues: 0,
@@ -264,7 +292,12 @@ export async function syncAriaActions(
       office_tasks_refreshed: 0,
       queue_items_raised: 0,
     },
+    followup_drafts: { due: 0, queue_items_raised: 0 },
+    invoice_candidates: { checked: 0, found: 0, queue_items_raised: 0 },
     errors,
+  };
+  const addPriority = (lane: AriaPriorityLane, label: string) => {
+    if (!summary.priority[lane].includes(label)) summary.priority[lane].push(label);
   };
 
   const { data: projects, error: projectsError } = await supabase
@@ -302,6 +335,13 @@ export async function syncAriaActions(
       action_codes: actionIssues.map((issue) => issue.code),
     });
     summary.project_health.actionable_issues += actionIssues.length;
+
+    for (const issue of report.issues) {
+      addPriority(
+        projectHealthPriority(issue.severity, issue.code),
+        `${project.name}: ${issue.title} (${issue.count})`
+      );
+    }
 
     for (const issue of actionIssues) {
       try {
@@ -381,6 +421,7 @@ export async function syncAriaActions(
         const contact = request.contact_id ? contactById.get(request.contact_id) : null;
         const projectName = project?.name ?? "Project";
         const company = contact?.company ?? String(row.to_email || "Trade");
+        addPriority("today", `${projectName}: booking email ${label} — ${company}`);
         try {
           const action = await ensureOfficeTask(supabase, context, {
             key: `trade-delivery:${request.id}`,
@@ -461,6 +502,7 @@ export async function syncAriaActions(
         const leadName =
           [lead.first_name, lead.surname_project].filter(Boolean).join(" ") || "Future lead";
         const entryKey = `future-nurture:${lead.id}:${enteredAt}`;
+        addPriority("this_week", `${leadName}: ${milestone}-day future-lead review`);
         try {
           const action = await ensureOfficeTask(supabase, context, {
             key: `${entryKey}:${milestone}`,
@@ -504,6 +546,161 @@ export async function syncAriaActions(
             `Future nurture/${lead.id}: ${error instanceof Error ? error.message : "task error"}`
           );
         }
+      }
+    }
+  }
+
+  const { data: followupLeads, error: followupError } = await supabase
+    .from("leads")
+    .select("id,first_name,surname_project,email,stage,follow_up_date")
+    .not("email", "is", null)
+    .not("follow_up_date", "is", null)
+    .lte("follow_up_date", today)
+    .is("deleted_at", null);
+  if (followupError) {
+    errors.push(`Lead follow-ups: ${followupError.message}`);
+  } else {
+    for (const lead of followupLeads ?? []) {
+      if (
+        !lead.email?.trim() ||
+        !isFollowUpDue(lead.follow_up_date, now) ||
+        !isActiveStage(lead.stage as LeadStage)
+      ) {
+        continue;
+      }
+      summary.followup_drafts.due += 1;
+      const leadName =
+        [lead.first_name, lead.surname_project].filter(Boolean).join(" ") || "Lead";
+      addPriority("today", `${leadName}: follow-up due ${lead.follow_up_date}`);
+      try {
+        if (
+          await raiseQueueItem(supabase, {
+            kind: "followup_draft",
+            payload: {
+              action: "prepare_lead_followup_draft",
+              lead_id: lead.id,
+              lead_name: leadName,
+              recipient_email: lead.email.trim().toLowerCase(),
+              stage: lead.stage,
+              follow_up_date: lead.follow_up_date,
+              draft_dedupe_key: `lead-followup:${lead.id}:${lead.follow_up_date}`,
+              instruction:
+                "Search Second Brain and the lead record for current context. Prepare a concise, personal RESLU follow-up and call submit_followup_draft. Do not send it, change the lead stage, or change the follow-up date; Phillip must approve the exact draft in Office.",
+            },
+            key: `followup_draft:${lead.id}:${lead.follow_up_date}`,
+            source: "aria-action-sync",
+          })
+        ) {
+          summary.followup_drafts.queue_items_raised += 1;
+        }
+      } catch (error) {
+        errors.push(
+          `Lead follow-up/${lead.id}: ${error instanceof Error ? error.message : "queue error"}`
+        );
+      }
+    }
+  }
+
+  const invoiceCutoff = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000).toISOString();
+  const { data: candidateEmails, error: candidateEmailError } = await supabase
+    .from("emails")
+    .select("id,from_addr,subject,clean_text,received_at,triage_label")
+    .eq("direction", "inbound")
+    .gte("received_at", invoiceCutoff)
+    .order("received_at", { ascending: false })
+    .limit(500);
+  if (candidateEmailError) {
+    errors.push(`Invoice candidates: ${candidateEmailError.message}`);
+  } else {
+    const emailIds = (candidateEmails ?? []).map((email) => email.id);
+    const [{ data: invoiceAttachments, error: invoiceAttachmentError }, { data: existingInvoices, error: existingInvoiceError }] =
+      await Promise.all([
+        emailIds.length
+          ? supabase
+              .from("email_attachments")
+              .select("email_id,filename,extracted_text")
+              .in("email_id", emailIds)
+          : Promise.resolve({ data: [] as { email_id: string; filename: string | null; extracted_text: string | null }[], error: null }),
+        emailIds.length
+          ? supabase
+              .from("invoices")
+              .select("source_email_id")
+              .in("source_email_id", emailIds)
+          : Promise.resolve({ data: [] as { source_email_id: string | null }[], error: null }),
+      ]);
+    if (invoiceAttachmentError) errors.push(`Invoice attachments: ${invoiceAttachmentError.message}`);
+    if (existingInvoiceError) errors.push(`Existing invoices: ${existingInvoiceError.message}`);
+
+    if (!invoiceAttachmentError && !existingInvoiceError) {
+      const attachmentsByEmail = new Map<
+        string,
+        { filenames: string[]; texts: string[] }
+      >();
+      for (const attachment of invoiceAttachments ?? []) {
+        const values = attachmentsByEmail.get(attachment.email_id) ?? {
+          filenames: [],
+          texts: [],
+        };
+        if (attachment.filename) values.filenames.push(attachment.filename);
+        if (attachment.extracted_text) values.texts.push(attachment.extracted_text);
+        attachmentsByEmail.set(attachment.email_id, values);
+      }
+      const alreadyProposed = new Set(
+        (existingInvoices ?? [])
+          .map((invoice) => invoice.source_email_id)
+          .filter((id): id is string => Boolean(id))
+      );
+
+      for (const email of candidateEmails ?? []) {
+        summary.invoice_candidates.checked += 1;
+        if (alreadyProposed.has(email.id)) continue;
+        const attachmentEvidence = attachmentsByEmail.get(email.id);
+        if (
+          !isLikelySupplierInvoice({
+            subject: email.subject,
+            clean_text: email.clean_text,
+            attachment_filenames: attachmentEvidence?.filenames,
+            attachment_texts: attachmentEvidence?.texts,
+          })
+        ) {
+          continue;
+        }
+        summary.invoice_candidates.found += 1;
+        if (summary.invoice_candidates.queue_items_raised >= INVOICE_CANDIDATE_BATCH) {
+          continue;
+        }
+        try {
+          if (
+            await raiseQueueItem(supabase, {
+              kind: "invoice_candidate",
+              payload: {
+                action: "review_supplier_invoice",
+                source_email_id: email.id,
+                from_addr: email.from_addr,
+                subject: email.subject,
+                received_at: email.received_at,
+                attachment_filenames: attachmentEvidence?.filenames ?? [],
+                triage_label: email.triage_label,
+                instruction:
+                  "Read the ingested email and its attachments, match it to the correct RESLU project and specification context, then call propose_supplier_invoice. Do not approve, apply, mark paid, or alter project financials.",
+              },
+              key: `invoice_candidate:${email.id}`,
+              source: "aria-action-sync",
+            })
+          ) {
+            summary.invoice_candidates.queue_items_raised += 1;
+          }
+        } catch (error) {
+          errors.push(
+            `Invoice candidate/${email.id}: ${error instanceof Error ? error.message : "queue error"}`
+          );
+        }
+      }
+      if (summary.invoice_candidates.found > 0) {
+        addPriority(
+          "today",
+          `Supplier invoice candidates: ${summary.invoice_candidates.found} need review`
+        );
       }
     }
   }

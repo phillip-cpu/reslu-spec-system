@@ -1,7 +1,9 @@
 import { createClient } from "@/lib/supabase/server";
 import { Header } from "@/components/layout/Header";
 import { OfficeBoard } from "@/components/office/OfficeBoard";
+import { FollowupApprovalInbox } from "@/components/office/FollowupApprovalInbox";
 import type { OfficeGroupWithTasks, OfficeTaskWithRefs, OfficeAssigneeSummary, OfficeSubtask } from "@/types/phase-13";
+import type { AriaFollowupDraft } from "@/types/aria-followups";
 
 /**
  * /office — Phase 13 Office board (BUILD-SPEC.md §"13 Office",
@@ -54,6 +56,12 @@ export default async function OfficePage() {
       : Promise.resolve({ data: [] as OfficeSubtask[] }),
   ]);
 
+  const { data: followupDrafts } = await supabase
+    .from("aria_followup_drafts")
+    .select("*,lead:leads(id,first_name,surname_project,stage,follow_up_date)")
+    .eq("status", "pending")
+    .order("created_at", { ascending: false });
+
   const teamById = new Map((team ?? []).map((p) => [p.id, p]));
 
   const assigneesByTask = new Map<string, OfficeAssigneeSummary[]>();
@@ -94,6 +102,7 @@ export default async function OfficePage() {
     <>
       <Header title="Office" subtitle="Business housekeeping — marketing, ads, ops, systems, and Phillip's queue." />
       <main className="flex-1 px-8 py-8">
+        <FollowupApprovalInbox initialDrafts={(followupDrafts ?? []) as AriaFollowupDraft[]} />
         <OfficeBoard
           initialGroups={groupsWithTasks}
           team={team ?? []}
