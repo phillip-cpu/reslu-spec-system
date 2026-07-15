@@ -5,7 +5,11 @@ import {
   projectHealthPriority,
   type AriaPriorityLane,
 } from "@/lib/aria-action-rules";
-import { isLikelySupplierInvoice } from "@/lib/invoice-candidates";
+import {
+  invoiceCandidateAttachmentHashes,
+  invoiceCandidateDedupeKey,
+  isLikelySupplierInvoice,
+} from "@/lib/invoice-candidates";
 import { daysSince, isActiveStage, isFollowUpDue } from "@/lib/leads";
 import {
   adelaideDateKey,
@@ -618,9 +622,18 @@ export async function syncAriaActions(
         emailIds.length
           ? supabase
               .from("email_attachments")
-              .select("email_id,filename,extracted_text")
+              .select("email_id,filename,mime,extracted_text,content_sha256")
               .in("email_id", emailIds)
-          : Promise.resolve({ data: [] as { email_id: string; filename: string | null; extracted_text: string | null }[], error: null }),
+          : Promise.resolve({
+              data: [] as {
+                email_id: string;
+                filename: string | null;
+                mime: string | null;
+                extracted_text: string | null;
+                content_sha256: string | null;
+              }[],
+              error: null,
+            }),
         emailIds.length
           ? supabase
               .from("invoices")
@@ -634,15 +647,29 @@ export async function syncAriaActions(
     if (!invoiceAttachmentError && !existingInvoiceError) {
       const attachmentsByEmail = new Map<
         string,
-        { filenames: string[]; texts: string[] }
+        {
+          filenames: string[];
+          texts: string[];
+          attachments: {
+            filename: string | null;
+            mime: string | null;
+            content_sha256: string | null;
+          }[];
+        }
       >();
       for (const attachment of invoiceAttachments ?? []) {
         const values = attachmentsByEmail.get(attachment.email_id) ?? {
           filenames: [],
           texts: [],
+          attachments: [],
         };
         if (attachment.filename) values.filenames.push(attachment.filename);
         if (attachment.extracted_text) values.texts.push(attachment.extracted_text);
+        values.attachments.push({
+          filename: attachment.filename,
+          mime: attachment.mime,
+          content_sha256: attachment.content_sha256,
+        });
         attachmentsByEmail.set(attachment.email_id, values);
       }
       const alreadyProposed = new Set(
@@ -684,7 +711,12 @@ export async function syncAriaActions(
                 instruction:
                   "Read the ingested email and its attachments, match it to the correct RESLU project and specification context, then call propose_supplier_invoice. Do not approve, apply, mark paid, or alter project financials.",
               },
-              key: `invoice_candidate:${email.id}`,
+              key: invoiceCandidateDedupeKey(
+                email.id,
+                invoiceCandidateAttachmentHashes(
+                  attachmentEvidence?.attachments ?? []
+                )
+              ),
               source: "aria-action-sync",
             })
           ) {

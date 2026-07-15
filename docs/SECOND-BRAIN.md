@@ -37,7 +37,7 @@ every batch.
 
 | Task | Model / runner | Where |
 |---|---|---|
-| Fetch mail, strip signatures, pdftotext/ocrmypdf, hard-rule skip | Script, no model | `scripts/email_ingest.py` (Mac mini, Step 8) |
+| Fetch three RESLU mailboxes, strip signatures, pdftotext/ocrmypdf, transactional-aware skip | Script, no model | `scripts/email_ingest.py` (Mac mini, Step 8; `docs/EMAIL-INGEST-REPAIR.md`) |
 | Queue polling, verification gate, diffing, dedupe | Script, no model | `lib/second-brain/verification-gate.ts`, the propose/match routes' own diff logic (Steps 10-11) |
 | Embeddings (workspace_index + search queries) | Supabase `gte-small` (384 dimensions), run in-process | `lib/second-brain/embeddings.ts`, from Vercel (migration 045) |
 | Triage labels (batched) | Claude Haiku 4.5 | `lib/second-brain/triage.ts` (Step 9) |
@@ -90,7 +90,7 @@ as a normal proposal, and `items` is never touched.
 | 5 | Indexer | `app/api/second-brain/reindex`, `lib/second-brain/{content-for,embeddings}.ts` |
 | 6 | Hybrid search | `supabase/migrations/036`, `app/api/second-brain/search` |
 | 7 | Context snapshot | `app/api/me/context` |
-| 8 | Email ingest (Mac mini) | `scripts/email_ingest.py` |
+| 8 | Three-mailbox email ingest (Mac mini) | `scripts/email_ingest.py`, migration `059`, `docs/EMAIL-INGEST-REPAIR.md` |
 | 9 | Triage + extraction | `app/api/second-brain/{triage,extract}`, `lib/second-brain/{triage,extraction,claude}.ts`, `supabase/migrations/037-038` |
 | 10 | Entity matching | `app/api/second-brain/{match,matches/[id]/correct}`, `lib/second-brain/matching.ts`, `supabase/migrations/039` |
 | 11 | Proposals + approval | `app/api/second-brain/{propose,proposals/[id]/{approve,reject}}`, `lib/second-brain/verification-gate.ts`, `supabase/migrations/040` |

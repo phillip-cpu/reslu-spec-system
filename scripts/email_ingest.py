@@ -4,7 +4,7 @@
 # (Second Brain — docs/SECOND-BRAIN.md §"Step 8").
 #
 # Runs on Aria's Mac mini ONLY (not Vercel): it needs real mailbox
-# access (Gmail API, aria@reslu.com.au) and local binaries
+# access (Gmail API for aria@, phillip@ and tenille@reslu.com.au) and local binaries
 # (pdftotext, ocrmypdf, tesseract) that don't exist in the serverless
 # runtime — which is why this half of Step 8 was built here rather
 # than as a Vercel API route. The `emails` / `email_attachments`
@@ -15,8 +15,11 @@
 # scripts/ai.reslu.email-ingest.plist. The brief says "cron"; this
 # machine schedules with launchd exclusively, so a StartInterval=600
 # LaunchAgent is the local equivalent):
-#   1. Fetch new mail via the Gmail API (same OAuth refresh-token flow
-#      as lib/gmail/send.ts). Dedupe on the RFC Message-ID header.
+#   1. Fetch received + sent mail from all three already-authorised
+#      RESLU Gmail accounts. OAuth comes from OpenClaw's per-account
+#      token files + shared gmail/credentials.json, never copied env
+#      secrets. Dedupe on RFC Message-ID across mailboxes and preserve
+#      every mailbox/Gmail-id reference on the canonical email row.
 #   2. Pick the best body part; HTML -> markdown (html2text); strip
 #      quoted replies + signatures (talon if importable, else
 #      email_reply_parser + a light signature scrubber). Store as
@@ -28,9 +31,10 @@
 #      Image attachments (jpg/png/…) have no text layer, so content
 #      images above a size threshold are flagged needs_vision=true for
 #      Step 9's vision pass; small decorative logos are left alone.
-#   4. Hard-rule skip (newsletters / auto-replies / noreply senders)
-#      -> status='skipped'. Everything else is left at status='new'
-#      for Step 9 (triage) to pick up.
+#   4. Hard-rule skip newsletters / auto-replies / ordinary noreply
+#      notifications, but RETAIN transactional automated emails with
+#      invoice/receipt/order evidence (e.g. Bunnings donotreply).
+#      Everything else is left at status='new' for Step 9 triage.
 #
 # Scope note: triage, extraction, and project matching are Steps 9-10.
 # This script never sets triage_label / matched_project_id / etc.
@@ -46,13 +50,16 @@
 # Env (loaded from ../.env.local, same loader style as
 # scripts/import-monday-leads.mjs; shell env wins if already set):
 #   SUPABASE_URL | NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
-#   GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, ARIA_GMAIL_REFRESH_TOKEN,
-#   GMAIL_TOKEN_URI (optional)
+#   OPENCLAW_WORKSPACE (optional; defaults ~/.openclaw/workspace)
+#   GMAIL_CREDENTIALS_FILE (optional path override)
+#   ARIA_GMAIL_TOKEN_FILE, PHILLIP_GMAIL_TOKEN_FILE,
+#   TENILLE_GMAIL_TOKEN_FILE (optional per-account path overrides)
 #
 # Usage (run from anywhere; env is read relative to this file):
 #   .venv-email-ingest/bin/python scripts/email_ingest.py            # normal pass
 #   ... scripts/email_ingest.py --limit 20                           # cap fetched msgs (acceptance)
-#   ... scripts/email_ingest.py --lookback-days 3                    # Gmail newer_than window
+#   ... scripts/email_ingest.py --lookback-days 3                    # all 3 accounts
+#   ... scripts/email_ingest.py --mailbox phillip@reslu.com.au       # one account
 #   ... scripts/email_ingest.py --dry-run                            # fetch+process, write nothing
 #   ... scripts/email_ingest.py --selftest                           # offline: run pure fns on samples
 # ============================================================
@@ -61,11 +68,13 @@ import argparse
 import base64
 import email
 import hashlib
+import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.header import decode_header, make_header
 from email.message import Message
@@ -89,6 +98,12 @@ ASSET_BUCKET = "assets"  # mirrors lib/storage.ts
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
 DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token"
 HTTP_TIMEOUT = 30
+
+EXPECTED_MAILBOXES = (
+    ("aria@reslu.com.au", "aria-gmail/token.json", "ARIA_GMAIL_TOKEN_FILE"),
+    ("phillip@reslu.com.au", "phillip-gmail/token.json", "PHILLIP_GMAIL_TOKEN_FILE"),
+    ("tenille@reslu.com.au", "tenille-gmail/token.json", "TENILLE_GMAIL_TOKEN_FILE"),
+)
 
 
 # ------------------------------------------------------------------
@@ -116,6 +131,56 @@ def env(*names: str) -> str | None:
         if v:
             return v
     return None
+
+
+@dataclass(frozen=True)
+class MailboxConfig:
+    address: str
+    token_file: Path
+
+
+@dataclass(frozen=True)
+class GmailMessage:
+    mailbox: str
+    gmail_id: str
+    raw: bytes
+    message_id: str
+    direction: str
+
+
+def openclaw_workspace() -> Path:
+    return Path(
+        env("OPENCLAW_WORKSPACE") or str(Path.home() / ".openclaw" / "workspace")
+    ).expanduser()
+
+
+def gmail_credentials_file() -> Path:
+    configured = env("GMAIL_CREDENTIALS_FILE")
+    return (
+        Path(configured).expanduser()
+        if configured
+        else openclaw_workspace() / "gmail" / "credentials.json"
+    )
+
+
+def mailbox_configs(selected: list[str] | None = None) -> list[MailboxConfig]:
+    wanted = {address.lower() for address in selected or []}
+    known = {address for address, _, _ in EXPECTED_MAILBOXES}
+    unknown = wanted - known
+    if unknown:
+        raise SystemExit(
+            "Unknown mailbox selection: " + ", ".join(sorted(unknown))
+        )
+
+    workspace = openclaw_workspace()
+    result = []
+    for address, relative_path, override_env in EXPECTED_MAILBOXES:
+        if wanted and address not in wanted:
+            continue
+        override = env(override_env)
+        token_file = Path(override).expanduser() if override else workspace / relative_path
+        result.append(MailboxConfig(address=address, token_file=token_file))
+    return result
 
 
 # ------------------------------------------------------------------
@@ -221,36 +286,72 @@ def estimate_tokens(text: str) -> int:
 # ------------------------------------------------------------------
 # Hard-rule skip (Step 8.4)
 # ------------------------------------------------------------------
-_NOREPLY = re.compile(
+_AUTOMATED_SENDER = re.compile(
     r"(no[._-]?reply|do[._-]?not[._-]?reply|donotreply|notification|"
     r"mailer-daemon|postmaster|bounce)",
     re.IGNORECASE,
 )
+_BOUNCE_SENDER = re.compile(r"(mailer-daemon|postmaster|bounce)", re.IGNORECASE)
+_TRANSACTIONAL_SUBJECT = re.compile(
+    r"\b(invoice|tax invoice|credit note|receipt|remittance|statement|"
+    r"order confirmation|online order|purchase order|payment confirmation)\b",
+    re.IGNORECASE,
+)
+_DOCUMENT_EXTENSIONS = (".pdf", ".csv", ".xlsx", ".xls", ".docx")
+
+
+def has_business_document_attachment(msg: Message) -> bool:
+    for part in msg.walk():
+        filename = decode_hdr(part.get_filename())
+        mime = (part.get_content_type() or "").lower()
+        if filename and filename.lower().endswith(_DOCUMENT_EXTENSIONS):
+            return True
+        if mime in (
+            "application/pdf",
+            "text/csv",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ):
+            return True
+    return False
+
+
+def is_transactional_business_email(msg: Message, subject: str) -> bool:
+    return bool(_TRANSACTIONAL_SUBJECT.search(subject or "")) or has_business_document_attachment(msg)
 
 
 def should_skip(msg: Message, from_addr: str, subject: str) -> str | None:
     """Return a short reason string if this email should be skipped,
     else None."""
-    # noreply / automated senders
-    if _NOREPLY.search(from_addr or ""):
+    # Bounces and out-of-office replies are never business evidence.
+    if _BOUNCE_SENDER.search(from_addr or ""):
+        return "bounce sender"
+    subj = (subject or "").strip().lower()
+    if subj.startswith(("out of office", "automatic reply", "auto:", "autoreply")):
+        return "out-of-office subject"
+
+    # Transactional automated mail is common supplier evidence. A Bunnings
+    # invoice from donotreply@orders.bunnings.com.au must reach triage, while
+    # an ordinary no-reply notification can still be dropped here.
+    transactional = is_transactional_business_email(msg, subject)
+    if _AUTOMATED_SENDER.search(from_addr or "") and not transactional:
         return "noreply sender"
     # RFC 3834 auto-replies / auto-generated
     auto = (msg.get("Auto-Submitted") or "").lower()
-    if auto and auto != "no":
+    if auto and auto != "no" and not transactional:
         return f"auto-submitted:{auto}"
     if msg.get("X-Autoreply") or msg.get("X-Autorespond"):
         return "auto-reply header"
     prec = (msg.get("Precedence") or "").lower()
-    if prec in ("bulk", "list", "auto_reply", "junk"):
+    if prec in ("bulk", "list", "auto_reply", "junk") and not transactional:
         return f"precedence:{prec}"
     # newsletters / bulk lists
-    if msg.get("List-Unsubscribe") or msg.get("List-Id"):
+    if (msg.get("List-Unsubscribe") or msg.get("List-Id")) and not transactional:
         return "mailing list"
-    if msg.get("X-Campaign") or msg.get("X-Mailgun-Sid") or msg.get("X-Mailchimp-Id"):
+    if (
+        msg.get("X-Campaign") or msg.get("X-Mailgun-Sid") or msg.get("X-Mailchimp-Id")
+    ) and not transactional:
         return "bulk campaign"
-    subj = (subject or "").strip().lower()
-    if subj.startswith(("out of office", "automatic reply", "auto:", "autoreply")):
-        return "out-of-office subject"
     return None
 
 
@@ -384,30 +485,78 @@ def extract_pdf(path: str, known_items: set[str]) -> dict:
 # ------------------------------------------------------------------
 # Gmail API
 # ------------------------------------------------------------------
-def gmail_access_token() -> str:
-    cid = env("GMAIL_CLIENT_ID")
-    secret = env("GMAIL_CLIENT_SECRET")
-    refresh = env("ARIA_GMAIL_REFRESH_TOKEN")
-    token_uri = env("GMAIL_TOKEN_URI") or DEFAULT_TOKEN_URI
-    if not (cid and secret and refresh):
-        raise SystemExit(
-            "Gmail not configured: set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, "
-            "ARIA_GMAIL_REFRESH_TOKEN in .env.local (rotated values — see "
-            ".env.local.example)."
+def read_json_file(path: Path, label: str) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"{label} file not found: {path}") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"{label} file is unreadable: {path}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{label} file must contain a JSON object: {path}")
+    return data
+
+
+def oauth_client_config(credentials_file: Path) -> dict:
+    data = read_json_file(credentials_file, "Gmail credentials")
+    nested = data.get("installed") or data.get("web") or data
+    if not isinstance(nested, dict):
+        raise RuntimeError(f"Gmail credentials file has no installed/web client: {credentials_file}")
+    return nested
+
+
+def gmail_access_token(mailbox: MailboxConfig, credentials_file: Path) -> str:
+    """Refresh one mailbox using its existing OpenClaw token file.
+
+    The scheduled worker deliberately does not use GMAIL_CLIENT_SECRET or
+    ARIA_GMAIL_REFRESH_TOKEN from .env.local. Those legacy values belong to
+    the app's Gmail send helper and caused the production ingest outage when
+    the copied client secret became invalid. The already-authorised token
+    files are the mailbox source of truth here.
+    """
+    token_data = read_json_file(mailbox.token_file, f"{mailbox.address} token")
+    client = oauth_client_config(credentials_file)
+    client_id = client.get("client_id") or token_data.get("client_id")
+    client_secret = client.get("client_secret") or token_data.get("client_secret")
+    refresh_token = token_data.get("refresh_token")
+    token_uri = token_data.get("token_uri") or client.get("token_uri") or DEFAULT_TOKEN_URI
+    if not (client_id and client_secret and refresh_token):
+        raise RuntimeError(
+            f"{mailbox.address} OAuth files are missing client_id, client_secret or refresh_token"
         )
-    r = requests.post(
+
+    response = requests.post(
         token_uri,
         data={
-            "client_id": cid,
-            "client_secret": secret,
-            "refresh_token": refresh,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
             "grant_type": "refresh_token",
         },
         timeout=HTTP_TIMEOUT,
     )
-    if not r.ok:
-        raise SystemExit(f"Gmail token exchange failed ({r.status_code}): {r.text[:200]}")
-    return r.json()["access_token"]
+    if not response.ok:
+        try:
+            detail = response.json().get("error_description") or response.json().get("error")
+        except Exception:
+            detail = "token refresh rejected"
+        raise RuntimeError(
+            f"{mailbox.address} token refresh failed ({response.status_code}): {detail}"
+        )
+    access_token = response.json().get("access_token")
+    if not access_token:
+        raise RuntimeError(f"{mailbox.address} token refresh returned no access token")
+    return access_token
+
+
+def gmail_profile_email(token: str) -> str:
+    response = requests.get(
+        f"{GMAIL_API}/profile",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=HTTP_TIMEOUT,
+    )
+    response.raise_for_status()
+    return str(response.json().get("emailAddress") or "").strip().lower()
 
 
 def gmail_list_message_ids(token: str, query: str, limit: int) -> list[str]:
@@ -428,14 +577,25 @@ def gmail_list_message_ids(token: str, query: str, limit: int) -> list[str]:
     return ids[:limit]
 
 
-def gmail_fetch_raw(token: str, gmail_id: str) -> bytes:
+def gmail_fetch_raw(token: str, gmail_id: str) -> tuple[bytes, set[str]]:
     r = requests.get(
         f"{GMAIL_API}/messages/{gmail_id}",
         headers={"Authorization": f"Bearer {token}"},
         params={"format": "raw"}, timeout=HTTP_TIMEOUT,
     )
     r.raise_for_status()
-    return base64.urlsafe_b64decode(r.json()["raw"])
+    payload = r.json()
+    return (
+        base64.urlsafe_b64decode(payload["raw"]),
+        {str(label).upper() for label in payload.get("labelIds", [])},
+    )
+
+
+def gmail_direction(labels: set[str]) -> str:
+    # An archived inbound message has neither INBOX nor SENT; it is still
+    # inbound. A self-addressed message can carry both labels and should be
+    # treated inbound so it remains eligible for Second Brain triage.
+    return "sent" if "SENT" in labels and "INBOX" not in labels else "inbound"
 
 
 # ------------------------------------------------------------------
@@ -447,10 +607,10 @@ class Supabase:
         self.key = key
         self.h = {"apikey": key, "Authorization": f"Bearer {key}"}
 
-    def existing_message_ids(self, message_ids: list[str]) -> set[str]:
+    def existing_emails(self, message_ids: list[str]) -> dict[str, dict]:
         if not message_ids:
-            return set()
-        found = set()
+            return {}
+        found = {}
         # chunk to keep the in.(...) filter URL a sane length
         for i in range(0, len(message_ids), 50):
             chunk = message_ids[i:i + 50]
@@ -458,12 +618,45 @@ class Supabase:
             r = requests.get(
                 f"{self.url}/rest/v1/emails",
                 headers=self.h,
-                params={"select": "message_id", "message_id": f"in.({quoted})"},
+                params={
+                    "select": "id,message_id,direction,ingested_mailboxes,gmail_refs",
+                    "message_id": f"in.({quoted})",
+                },
                 timeout=HTTP_TIMEOUT,
             )
             r.raise_for_status()
-            found.update(row["message_id"] for row in r.json())
+            for row in r.json():
+                found[row["message_id"]] = row
         return found
+
+    def merge_email_source(
+        self, existing: dict, mailbox: str, gmail_id: str, direction: str
+    ) -> dict:
+        mailboxes = {
+            str(value).strip().lower()
+            for value in (existing.get("ingested_mailboxes") or [])
+            if value
+        }
+        mailboxes.add(mailbox.lower())
+        refs = dict(existing.get("gmail_refs") or {})
+        refs[mailbox.lower()] = gmail_id
+        merged_direction = (
+            "inbound"
+            if "inbound" in (existing.get("direction"), direction)
+            else "sent"
+        )
+        patch = {
+            "ingested_mailboxes": sorted(mailboxes),
+            "gmail_refs": refs,
+            "direction": merged_direction,
+        }
+        if (
+            patch["ingested_mailboxes"] != existing.get("ingested_mailboxes")
+            or patch["gmail_refs"] != existing.get("gmail_refs")
+            or patch["direction"] != existing.get("direction")
+        ):
+            self.update_email(existing["id"], patch)
+        return {**existing, **patch}
 
     def known_item_names(self) -> set[str]:
         """Distinctive item names + codes for the >5-page relevance
@@ -584,10 +777,18 @@ def iter_attachments(msg: Message):
                payload)
 
 
-def process_message(raw: bytes, sb: Supabase | None, known_items: set[str],
-                    gmail_id: str, dry_run: bool, verbose: bool) -> dict:
+def process_message(
+    raw: bytes,
+    sb: Supabase | None,
+    known_items: set[str],
+    gmail_id: str,
+    mailbox: str,
+    direction: str,
+    dry_run: bool,
+    verbose: bool,
+) -> dict:
     msg = email.message_from_bytes(raw)
-    message_id = header_message_id(msg, fallback=f"gmail:{gmail_id}")
+    message_id = header_message_id(msg, fallback=f"gmail:{mailbox}:{gmail_id}")
     from_addr = parse_from(msg)
     subject = decode_hdr(msg.get("Subject"))
 
@@ -606,6 +807,9 @@ def process_message(raw: bytes, sb: Supabase | None, known_items: set[str],
         "received_at": received_at(msg),
         "clean_text": clean_text,
         "token_estimate": tok,
+        "direction": direction,
+        "ingested_mailboxes": [mailbox],
+        "gmail_refs": {mailbox: gmail_id},
         "status": "skipped" if skip_reason else "new",
     }
     if skip_reason:
@@ -613,6 +817,7 @@ def process_message(raw: bytes, sb: Supabase | None, known_items: set[str],
 
     summary = {
         "message_id": message_id, "from": from_addr, "subject": subject,
+        "mailbox": mailbox, "direction": direction,
         "status": row["status"], "skip_reason": skip_reason,
         "token_estimate": tok, "attachments": 0, "needs_vision": 0,
     }
@@ -628,6 +833,7 @@ def process_message(raw: bytes, sb: Supabase | None, known_items: set[str],
     except DuplicateEmail:
         summary["status"] = "duplicate"
         return summary
+    summary["email_id"] = email_id
 
     # Skipped emails: don't spend OCR/vision effort on their attachments.
     if skip_reason:
@@ -641,6 +847,7 @@ def process_message(raw: bytes, sb: Supabase | None, known_items: set[str],
             "storage_ref": storage_ref, "extracted_text": None,
             "extraction_method": None, "needs_vision": False,
             "page_count": None, "kept_pages": None,
+            "content_sha256": hashlib.sha256(data).hexdigest(),
         }
         if mime == "application/pdf" or filename.lower().endswith(".pdf"):
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
@@ -698,6 +905,31 @@ def run_selftest() -> int:
     print("\n--- clean_text ---")
     print(clean)
     tok = estimate_tokens(clean)
+    bunnings = email.message_from_string(
+        "From: donotreply@orders.bunnings.com.au\n"
+        "Subject: Bunnings Online Order - Invoice\n\n"
+        "Invoice attached."
+    )
+    generic_noreply = email.message_from_string(
+        "From: notifications@example.com\nSubject: Account notice\n\nHello"
+    )
+    newsletter = email.message_from_string(
+        "From: studio@example.com\nSubject: July news\n"
+        "List-Unsubscribe: <https://example.com/unsubscribe>\n\nHello"
+    )
+    fake_supabase = Supabase("https://example.supabase.co", "test-key")
+    fake_supabase.update_email = lambda _email_id, _patch: None
+    merged_source = fake_supabase.merge_email_source(
+        {
+            "id": "email-1",
+            "direction": "sent",
+            "ingested_mailboxes": ["phillip@reslu.com.au"],
+            "gmail_refs": {"phillip@reslu.com.au": "sent-1"},
+        },
+        "aria@reslu.com.au",
+        "inbound-1",
+        "inbound",
+    )
     checks = {
         "no quoted history (no '>' line, no 'On ... wrote:')":
             (">" not in clean) and ("wrote:" not in clean),
@@ -708,6 +940,24 @@ def run_selftest() -> int:
         "prices survive ('$136' present)": "$136" in clean,
         "lead time survives ('5 weeks' present)": "5 weeks" in clean,
         f"token_estimate < 900 (got {tok})": tok < 900,
+        "Bunnings donotreply invoice is retained":
+            should_skip(bunnings, "donotreply@orders.bunnings.com.au", bunnings["Subject"]) is None,
+        "ordinary automated notification is skipped":
+            should_skip(generic_noreply, "notifications@example.com", generic_noreply["Subject"])
+            == "noreply sender",
+        "newsletter is skipped":
+            should_skip(newsletter, "studio@example.com", newsletter["Subject"])
+            == "mailing list",
+        "Gmail direction keeps archived mail inbound": gmail_direction(set()) == "inbound",
+        "Gmail direction recognises Sent": gmail_direction({"SENT"}) == "sent",
+        "all three RESLU mailboxes are configured":
+            {address for address, _, _ in EXPECTED_MAILBOXES}
+            == {"aria@reslu.com.au", "phillip@reslu.com.au", "tenille@reslu.com.au"},
+        "cross-mailbox duplicate records both sources":
+            merged_source["ingested_mailboxes"]
+            == ["aria@reslu.com.au", "phillip@reslu.com.au"],
+        "an inbound copy upgrades a sent-only canonical row":
+            merged_source["direction"] == "inbound",
     }
     print("\n--- checks ---")
     ok = True
@@ -718,6 +968,86 @@ def run_selftest() -> int:
     return 0 if ok else 1
 
 
+def process_fetched_messages(
+    messages: list[GmailMessage],
+    sb: Supabase | None,
+    known_items: set[str],
+    dry_run: bool,
+    verbose: bool,
+    existing: dict[str, dict],
+    dry_seen: set[str],
+    stats: dict[str, int],
+) -> None:
+    for message in messages:
+        current = existing.get(message.message_id)
+        if current or message.message_id in dry_seen:
+            stats["duplicate"] += 1
+            if verbose:
+                print(f"  = dup   {message.message_id} [{message.mailbox}]")
+            if sb and current:
+                try:
+                    existing[message.message_id] = sb.merge_email_source(
+                        current,
+                        message.mailbox,
+                        message.gmail_id,
+                        message.direction,
+                    )
+                except Exception as exc:
+                    stats["error"] += 1
+                    print(f"  ! merge {message.message_id} failed: {exc}")
+            continue
+        try:
+            summary = process_message(
+                message.raw,
+                sb,
+                known_items,
+                message.gmail_id,
+                message.mailbox,
+                message.direction,
+                dry_run,
+                verbose,
+            )
+        except Exception as exc:
+            stats["error"] += 1
+            print(f"  ! process {message.message_id} failed: {exc}")
+            continue
+        dry_seen.add(message.message_id)
+        if summary.get("email_id"):
+            existing[message.message_id] = {
+                "id": summary["email_id"],
+                "message_id": message.message_id,
+                "direction": message.direction,
+                "ingested_mailboxes": [message.mailbox],
+                "gmail_refs": {message.mailbox: message.gmail_id},
+            }
+        elif summary.get("status") == "duplicate" and sb:
+            # A concurrent run may have inserted between the initial lookup
+            # and this message. Merge the mailbox provenance after the race.
+            raced = sb.existing_emails([message.message_id]).get(message.message_id)
+            if raced:
+                existing[message.message_id] = sb.merge_email_source(
+                    raced,
+                    message.mailbox,
+                    message.gmail_id,
+                    message.direction,
+                )
+        key = summary["status"] if summary["status"] in stats else "new"
+        stats[key] = stats.get(key, 0) + 1
+        stats["attachments"] += summary.get("attachments", 0)
+        stats["needs_vision"] += summary.get("needs_vision", 0)
+        flag = (
+            f" [SKIP: {summary['skip_reason']}]"
+            if summary.get("skip_reason")
+            else ""
+        )
+        print(
+            f"  {summary['status']:9s} tok={summary['token_estimate']:<5d} "
+            f"att={summary.get('attachments', 0)} {summary['mailbox']:24.24s} "
+            f"{summary['direction']:7s} {summary['from']:35.35s} "
+            f"{(summary['subject'] or '(no subject)'):40.40s}{flag}"
+        )
+
+
 # ------------------------------------------------------------------
 # Main
 # ------------------------------------------------------------------
@@ -726,7 +1056,16 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=int(os.environ.get("LIMIT", "50")))
     ap.add_argument("--lookback-days", type=int, default=int(os.environ.get("LOOKBACK_DAYS", "2")))
     ap.add_argument("--query", default=os.environ.get("GMAIL_QUERY"),
-                    help="override Gmail search query (default: in:inbox newer_than:Nd)")
+                    help="override Gmail search query (default: received + sent, excluding spam/trash/drafts)")
+    ap.add_argument(
+        "--mailbox",
+        action="append",
+        help="limit a run to one expected mailbox; repeat to select more than one",
+    )
+    ap.add_argument(
+        "--credentials-file",
+        help="override the shared Gmail OAuth credentials.json path",
+    )
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--verbose", "-v", action="store_true")
@@ -739,7 +1078,7 @@ def main() -> int:
 
     sup_url = env("SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL")
     sup_key = env("SUPABASE_SERVICE_ROLE_KEY")
-    if not (sup_url and sup_key):
+    if not args.dry_run and not (sup_url and sup_key):
         raise SystemExit(
             "Supabase not configured: set SUPABASE_URL (or "
             "NEXT_PUBLIC_SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY in "
@@ -747,58 +1086,106 @@ def main() -> int:
         )
     sb = None if args.dry_run else Supabase(sup_url, sup_key)
 
-    query = args.query or f"in:inbox newer_than:{args.lookback_days}d"
-    token = gmail_access_token()
-    gmail_ids = gmail_list_message_ids(token, query, args.limit)
-    print(f"Gmail query {query!r}: {len(gmail_ids)} message(s) (limit {args.limit})")
+    query = args.query or (
+        f"newer_than:{args.lookback_days}d -in:spam -in:trash -in:drafts"
+    )
+    credentials_file = (
+        Path(args.credentials_file).expanduser()
+        if args.credentials_file
+        else gmail_credentials_file()
+    )
+    mailboxes = mailbox_configs(args.mailbox)
 
     known_items = sb.known_item_names() if sb else set()
     if args.verbose:
         print(f"known item names loaded: {len(known_items)}")
 
-    # Fetch raw first so we can dedupe by RFC Message-ID before writing.
-    fetched = []  # (gmail_id, raw, message_id)
-    for gid in gmail_ids:
+    # Fetch every account independently. One bad token is reported but does
+    # not prevent the healthy mailboxes from being ingested in the same run.
+    stats = {
+        "new": 0,
+        "skipped": 0,
+        "duplicate": 0,
+        "error": 0,
+        "auth_error": 0,
+        "attachments": 0,
+        "needs_vision": 0,
+        "mailboxes_ok": 0,
+    }
+    existing: dict[str, dict] = {}
+    dry_seen: set[str] = set()
+    fetch_chunk_size = 25
+    for mailbox in mailboxes:
         try:
-            raw = gmail_fetch_raw(token, gid)
-        except Exception as e:
-            print(f"  ! fetch {gid} failed: {e}")
+            token = gmail_access_token(mailbox, credentials_file)
+            profile_email = gmail_profile_email(token)
+            if profile_email != mailbox.address:
+                raise RuntimeError(
+                    f"token belongs to {profile_email or 'an unknown account'}, expected {mailbox.address}"
+                )
+            gmail_ids = gmail_list_message_ids(token, query, args.limit)
+            stats["mailboxes_ok"] += 1
+            print(
+                f"[{mailbox.address}] Gmail query {query!r}: "
+                f"{len(gmail_ids)} message(s) (limit {args.limit})"
+            )
+        except Exception as exc:
+            stats["auth_error"] += 1
+            print(f"  ! {mailbox.address} unavailable: {exc}")
             continue
-        msg = email.message_from_bytes(raw)
-        mid = header_message_id(msg, fallback=f"gmail:{gid}")
-        fetched.append((gid, raw, mid))
 
-    seen = sb.existing_message_ids([m for _, _, m in fetched]) if sb else set()
+        # Raw messages can contain large PDFs. Fetch/process in bounded chunks
+        # so the 30-day backfill never holds hundreds of attachments in memory.
+        for offset in range(0, len(gmail_ids), fetch_chunk_size):
+            fetched: list[GmailMessage] = []
+            for gid in gmail_ids[offset:offset + fetch_chunk_size]:
+                try:
+                    raw, labels = gmail_fetch_raw(token, gid)
+                except Exception as exc:
+                    stats["error"] += 1
+                    print(f"  ! {mailbox.address} fetch {gid} failed: {exc}")
+                    continue
+                msg = email.message_from_bytes(raw)
+                mid = header_message_id(
+                    msg, fallback=f"gmail:{mailbox.address}:{gid}"
+                )
+                fetched.append(
+                    GmailMessage(
+                        mailbox=mailbox.address,
+                        gmail_id=gid,
+                        raw=raw,
+                        message_id=mid,
+                        direction=gmail_direction(labels),
+                    )
+                )
 
-    stats = {"new": 0, "skipped": 0, "duplicate": 0, "error": 0, "attachments": 0, "needs_vision": 0}
-    for gid, raw, mid in fetched:
-        if mid in seen:
-            stats["duplicate"] += 1
-            if args.verbose:
-                print(f"  = dup   {mid}")
-            continue
-        try:
-            s = process_message(raw, sb, known_items, gid, args.dry_run, args.verbose)
-        except Exception as e:
-            stats["error"] += 1
-            print(f"  ! process {mid} failed: {e}")
-            continue
-        key = s["status"] if s["status"] in stats else "new"
-        stats[key] = stats.get(key, 0) + 1
-        stats["attachments"] += s.get("attachments", 0)
-        stats["needs_vision"] += s.get("needs_vision", 0)
-        flag = f" [SKIP: {s['skip_reason']}]" if s.get("skip_reason") else ""
-        print(f"  {s['status']:9s} tok={s['token_estimate']:<5d} "
-              f"att={s.get('attachments',0)} {s['from']:35.35s} "
-              f"{(s['subject'] or '(no subject)'):40.40s}{flag}")
+            if sb:
+                unknown_ids = [
+                    message.message_id
+                    for message in fetched
+                    if message.message_id not in existing
+                ]
+                if unknown_ids:
+                    existing.update(sb.existing_emails(unknown_ids))
+            process_fetched_messages(
+                fetched,
+                sb,
+                known_items,
+                args.dry_run,
+                args.verbose,
+                existing,
+                dry_seen,
+                stats,
+            )
 
     print("\n=== summary ===")
     print(f"  new={stats['new']} skipped={stats['skipped']} "
           f"duplicate={stats['duplicate']} error={stats['error']} "
+          f"auth_error={stats['auth_error']} mailboxes_ok={stats['mailboxes_ok']}/{len(mailboxes)} "
           f"attachments={stats['attachments']} needs_vision={stats['needs_vision']}")
     if args.dry_run:
         print("  (dry-run: nothing written)")
-    return 0
+    return 1 if stats["auth_error"] or stats["error"] else 0
 
 
 if __name__ == "__main__":

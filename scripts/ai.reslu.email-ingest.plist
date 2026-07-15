@@ -3,13 +3,19 @@
 <!--
   Step 8 email-ingest schedule (Mac mini).
 
+  This Python worker is the ONE authoritative Second Brain mailbox
+  ingest. Do not schedule the older email-ingest.mjs alongside it.
+  It reads the existing OAuth files for aria@, phillip@ and
+  tenille@reslu.com.au under ~/.openclaw/workspace, then processes
+  received + sent mail while excluding spam/trash/drafts.
+
   The brief says "cron every 10 min"; this machine schedules with
   launchd exclusively (no crontab), so this is the local equivalent:
   StartInterval=600 (10 min). Matches the ai.reslu.* LaunchAgent
   convention already in ~/Library/LaunchAgents.
 
-  Install (does NOT run until you load it — validate with a manual
-  --limit 20 run first):
+  Install (does NOT run until you load it — validate all three OAuth
+  profiles with a manual --dry-run --limit 20 pass first):
     cp scripts/ai.reslu.email-ingest.plist ~/Library/LaunchAgents/
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.reslu.email-ingest.plist
     launchctl kickstart -p gui/$(id -u)/ai.reslu.email-ingest   # optional: run once now

@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import {
+  invoiceCandidateAttachmentHashes,
+  invoiceCandidateDedupeKey,
+} from "@/lib/invoice-candidates";
 import { extractEmail, type ExtractionAttachment } from "@/lib/second-brain/extraction";
 
 export const runtime = "nodejs";
@@ -63,7 +67,7 @@ export async function GET(request: NextRequest) {
     try {
       const { data: attachments, error: attError } = await supabase
         .from("email_attachments")
-        .select("id,filename,mime,storage_ref,needs_vision,kept_pages")
+        .select("id,filename,mime,storage_ref,needs_vision,kept_pages,content_sha256")
         .eq("email_id", email.id);
       if (attError) throw new Error(`attachment fetch failed: ${attError.message}`);
 
@@ -73,7 +77,10 @@ export async function GET(request: NextRequest) {
         const { error: queueError } = await supabase.from("aria_queue").upsert(
           {
             kind: "invoice_candidate",
-            dedupe_key: `invoice_candidate:${email.id}`,
+            dedupe_key: invoiceCandidateDedupeKey(
+              email.id,
+              invoiceCandidateAttachmentHashes(attachments ?? [])
+            ),
             source: "second-brain-extraction",
             payload: {
               action: "review_supplier_invoice",

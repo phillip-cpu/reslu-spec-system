@@ -1209,6 +1209,14 @@ without them.
   call — a signed-in team member can still trigger it manually from a
   browser session too (the route accepts either).
 
+  **Second Brain mailbox ingest is separate from the team-digest sender.**
+  The Mac-mini worker uses the existing file-based OAuth profiles for
+  `aria@`, `phillip@`, and `tenille@reslu.com.au`; it does not use the
+  copied `GMAIL_CLIENT_SECRET`/`ARIA_GMAIL_REFRESH_TOKEN` values above.
+  It captures received and sent mail, preserves mailbox provenance, retains
+  transactional no-reply invoices such as Bunnings, and deduplicates original
+  versus forwarded invoice PDFs. See `docs/EMAIL-INGEST-REPAIR.md`.
+
 ## Leads + Aria (Week 10)
 
 The **Leads** page (`/leads`) is admin-only — Phillip's account should
