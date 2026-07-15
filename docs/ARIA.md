@@ -735,7 +735,7 @@ A separate subsystem from everything above: a work queue you poll instead of bei
 
 `aria_queue` is how the rest of the app tells you something needs attention, without you having to poll six different endpoints. `get_aria_queue({ limit? })` atomically claims up to 20 pending rows (oldest first) — a picked-up row you never resolved gets re-exposed after 15 minutes, so a crash mid-batch doesn't lose work. Always call `resolve_queue_item({ id, status: 'done' | 'failed', note? })` once you've handled (or given up on) a claimed row — an unresolved row just sits picked-up until the timeout re-exposes it, which is wasted work, not a safety net.
 
-Kinds you'll see: `price_request` (a material's automated price refresh failed, needs manual lookup — use `submit_material_price`), `trade_reminder`, `lead_flag`, `approval_needed` (a Step 10 entity match landed in the 0.60-0.90 confidence band, or a Step 11 fact failed the verification gate — see below), `email_proposal` (a Step 11 proposal ready for Phillip's review — surface it to him, don't approve it yourself without his say-so), and `daily_review` / `weekly_review` (the proactive operating cadence described below).
+Kinds you'll see: `price_request` (a material's automated price refresh failed, needs manual lookup — use `submit_material_price`), `trade_reminder` (including a Phase 4 grouped-booking delivery failure/delay), `lead_flag` (including a Phase 4 30/60/90 Potential Future Lead review), `approval_needed` (a Step 10 entity match landed in the 0.60-0.90 confidence band, or a Step 11 fact failed the verification gate — see below), `email_proposal` (a Step 11 proposal ready for Phillip's review — surface it to him, don't approve it yourself without his say-so), and `daily_review` / `weekly_review` (the proactive operating cadence described below).
 
 **Heartbeat**: `scripts/aria_heartbeat.py` (Mac mini) checks pending rows plus abandoned `picked_up` rows older than 15 minutes via bare REST count queries. Zero rows costs zero tokens and invokes no model. Work waiting triggers `openclaw system event --mode now`, which wakes the main session with instructions to claim the batch. The supplied launchd plist runs this check every five minutes and survives reboots. After a successful event, a local 20-minute cooldown suppresses duplicate wake events while the current session is working; an empty queue clears that cooldown immediately, and a failed event is retried on the next five-minute check.
 
@@ -743,7 +743,7 @@ Kinds you'll see: `price_request` (a material's automated price refresh failed, 
 
 Vercel inserts a deduplicated `daily_review` queue item each Adelaide morning and a `weekly_review` item each Monday morning. The Mac-mini heartbeat wakes you for them exactly like an event-generated queue item. For each routine:
 
-1. Call `get_context_snapshot` first.
+1. Call `get_context_snapshot` and `get_project_health` first.
 2. Search the relevant projects, leads, emails and `memory` notes before deciding.
 3. Act autonomously on safe internal work: analysis, brief items, tasks and drafts.
 4. Keep sends, publishing, approvals, deletions, financial changes and client commitments behind human approval.
@@ -751,11 +751,17 @@ Vercel inserts a deduplicated `daily_review` queue item each Adelaide morning an
 
 This is the normal observe → retrieve → decide → act safely → record/learn loop. A routine is not permission to bypass any existing approval gate.
 
+Phase 4 runs a zero-model action sync when a new routine row is inserted. It creates or refreshes one internal Office task per critical Project Health issue, upcoming unconfirmed booking group, and unresolved grouped-booking email delivery problem. The description carries a stable automation key so repeated reviews update the same open task rather than flooding the board. Completing a task does not change the underlying project record; if a critical project issue is still present on a later review, the action can be raised again. Aria may investigate and propose a correction, but only a human applies it.
+
+Potential Future Lead is a separate nurture lane. It remains excluded from active pipeline value and receives one review at the current 30/60/90-day checkpoint. Re-entering that stage starts a fresh cycle. Aria may search the history and draft a check-in, but must not send it or change the stage without approval.
+
 ### Search — `search` / `get_context_snapshot` / `index_rebuild`
 
 `search({ query, entity_type?, limit?, response_format? })` is hybrid full-text + semantic search across projects, leads, items, diary/portal updates, SOW documents, inbound/sent email history and durable memory notes. Full-text catches exact codes (product names, AS/NZS references) semantic search alone can miss; semantic catches paraphrases/related concepts full-text alone can miss. Scope with `entity_type` (`project`, `lead`, `item`, `diary`, `sow`, `email`, or `memory`) when you already know what you're looking for.
 
 `get_context_snapshot({ project_id? })` is a compact workspace snapshot — active projects/leads, actionable queue count by kind, pending change proposals, recent emails, recent diary one-liners and recent durable memory references. Pass `project_id` to instead get one project expanded with its items, real pending-proposal count and recent matched emails.
+
+`get_project_health({ project_id? })` is the read-only operational risk feed. Omit `project_id` for every active project or pass one UUID for the same full report shown in the admin Project Health panel. It includes critical/warning issue counts, compact pricing coverage and actionable issue samples. It never edits a project, booking, item or task.
 
 `add_brain_note({ title, body, tags?, source?, source_ref?, confidence? })` stores a durable learning or explicit decision. It is not for transient reminders or guesses. Preserve provenance and an honest confidence score; use `index_rebuild({ entity_type: 'memory' })` if it must become searchable immediately instead of waiting for the daily reindex.
 

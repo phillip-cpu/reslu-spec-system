@@ -10,6 +10,14 @@ interface ResendEventBody {
   data?: { email_id?: unknown; id?: unknown };
 }
 
+const ACTIONABLE_DELIVERY_EVENTS = new Set([
+  "email.bounced",
+  "email.failed",
+  "email.delivery_delayed",
+  "email.complained",
+  "email.suppressed",
+]);
+
 /**
  * Signed Resend delivery webhook. This route intentionally lives below
  * the existing public /api/trade-request/* boundary so the protected
@@ -75,5 +83,58 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Could not record event" }, { status: 500 });
   }
 
-  return NextResponse.json({ received: true, matched: Number(matched ?? 0) > 0 });
+  // Phase 4: wake Aria immediately for real booking-delivery problems.
+  // This queue write is internal only — it never resends the message or
+  // changes a booking. Daily action sync independently creates/refreshes
+  // one deduplicated Office task if the latest send is still unhealthy.
+  let queueRaised = false;
+  if (Number(matched ?? 0) > 0 && ACTIONABLE_DELIVERY_EVENTS.has(eventType)) {
+    const { data: emailSend } = await supabase
+      .from("email_sends")
+      .select("id,record_type,record_id,to_email")
+      .eq("provider_message_id", providerMessageId)
+      .maybeSingle();
+    if (emailSend?.record_type === "trade_booking_request") {
+      const { data: bookingRequest } = await supabase
+        .from("trade_booking_requests")
+        .select("id,project_id,status")
+        .eq("id", emailSend.record_id)
+        .maybeSingle();
+      if (bookingRequest?.status === "sent") {
+        const { data: queueRow, error: queueError } = await supabase
+          .from("aria_queue")
+          .upsert(
+            {
+              kind: "trade_reminder",
+              payload: {
+                action: "booking_email_delivery_exception",
+                booking_request_id: bookingRequest.id,
+                project_id: bookingRequest.project_id,
+                email_send_id: emailSend.id,
+                event_type: eventType,
+                to_email: emailSend.to_email,
+                instruction:
+                  "Check the latest delivery evidence and prepare a safe internal follow-up. Do not resend or contact the trade without approval.",
+              },
+              dedupe_key: `trade_delivery:${emailSend.id}:${eventType}`,
+              source: "resend-webhook",
+            },
+            { onConflict: "dedupe_key", ignoreDuplicates: true }
+          )
+          .select("id")
+          .maybeSingle();
+        if (queueError) {
+          console.error("resend-webhook: could not raise delivery alert", queueError.message);
+        } else {
+          queueRaised = Boolean(queueRow);
+        }
+      }
+    }
+  }
+
+  return NextResponse.json({
+    received: true,
+    matched: Number(matched ?? 0) > 0,
+    queue_raised: queueRaised,
+  });
 }

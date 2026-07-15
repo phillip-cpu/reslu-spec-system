@@ -70,6 +70,7 @@ Every tool is a thin wrapper over an existing REST route — see `docs/API.md` f
 |---|---|---|
 | `list_projects` | `GET /api/projects` | All active projects. |
 | `get_project` | `GET /api/projects/[id]` | Full project detail. |
+| `get_project_health` | `GET /api/projects/data-quality` or `GET /api/projects/[id]/data-quality` | Admin-only, read-only Project Health feed; Phase 4 corrections remain human-approved. |
 | `list_items` | `GET /api/projects/[id]/items` | Spec register — design data only, no pricing. |
 | `create_item` | `POST /api/projects/[id]/items` | `item_code` is generated server-side; never pass one. |
 | `update_item_status` | `PATCH /api/items/[id]` | Status only (`Specced`/`Quoted`/`Ordered`/`On Site`/`Installed`); triggers the existing one-way Monday sync on a move to `Ordered`, same as the UI. |

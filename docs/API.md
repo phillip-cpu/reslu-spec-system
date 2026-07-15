@@ -851,6 +851,24 @@ trade programme. It reuses the same `deriveOrderBy()` policy as the
 Pricing & Procurement view; it never edits an item, task or booking.
 Pricing/procurement sensitivity is why the entire route is admin-only.
 
+### GET /api/projects/data-quality
+Auth: admin. Body: none. Company-wide read-only Project Health feed for
+every active project. Response: `{ summary, projects, errors,
+generated_at }`; each project embeds the exact same report produced by
+`GET /api/projects/[id]/data-quality`. This is the `get_project_health`
+MCP tool's no-argument target and never mutates project data.
+
+### GET /api/aria-actions/sync
+Auth: admin session or `Authorization: Bearer ${CRON_SECRET}`. Phase 4
+manual retry for the action sync normally run by a newly inserted daily/
+weekly routine. Creates or refreshes one internal Office task per
+critical Project Health issue, upcoming unconfirmed-booking group,
+unresolved grouped-booking delivery exception and current 30/60/90
+Future Lead checkpoint. Stable automation markers deduplicate open
+tasks. The route may also raise `trade_reminder`/`lead_flag` Aria queue
+rows; it never sends, corrects project data or changes a lead stage.
+Response: `{ ok, summary }`.
+
 ### PATCH /api/projects/[id]/document-status
 Auth: session (NOT admin-gated). Body: `{ kind, status }` where
 `kind ∈ plans | council | engineering | scope_of_works | other` and

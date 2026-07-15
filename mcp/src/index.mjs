@@ -1371,15 +1371,37 @@ const TOOLS = [
       }),
   },
   // ------------------------------------------------------------
-  // RESLU Second Brain, Step 7 (docs/RESLU-second-brain-build-brief.md).
+  // Phase 4 Project Health feed + RESLU Second Brain Step 7 context.
+  // Both remain thin fetches: the business rules live in the Spec API.
   // Compact snapshot replacing 6-8 separate round-trips at the start
   // of a session. Same thin-fetch pattern — GET /api/me/context holds
   // the actual query/aggregation logic, not duplicated here.
   // ------------------------------------------------------------
   {
+    name: "get_project_health",
+    description:
+      "Read the same Project Health diagnostics shown to admins in Spec. Omit project_id for every active project, or pass one project UUID for its full report. This is read-only: use it to investigate and propose corrections, never treat a warning as permission to change project data. Phase 4 already creates/refreshes deduplicated Office tasks for critical issues and upcoming unconfirmed trade visits.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: {
+          type: "string",
+          description: "Optional project UUID. Omit for the company-wide active-project feed.",
+        },
+      },
+      additionalProperties: false,
+    },
+    handler: async ({ project_id } = {}) =>
+      apiFetch(
+        project_id
+          ? `/api/projects/${encodeURIComponent(project_id)}/data-quality`
+          : "/api/projects/data-quality"
+      ),
+  },
+  {
     name: "get_context_snapshot",
     description:
-      "Compact workspace snapshot for proactive review: active projects, active leads, actionable aria_queue items (including abandoned claims), pending change proposals, recent emails, recent diary updates and durable memory references. IDs + names + counts + one-liners only — use search or record tools for detail. Pass project_id to expand one project with its items, real open-proposal count and recent matched emails.",
+      "Compact workspace snapshot for proactive review: active projects, active leads, actionable aria_queue items (including abandoned claims), pending change proposals, recent emails, recent diary updates and durable memory references. IDs + names + counts + one-liners only — use get_project_health for operational data-quality risks and search or record tools for detail. Pass project_id to expand one project with its items, real open-proposal count and recent matched emails.",
     inputSchema: {
       type: "object",
       properties: {
