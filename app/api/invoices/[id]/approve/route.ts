@@ -2,7 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { closeBriefItem } from "@/lib/daily-brief-close";
-import type { ApproveInvoiceInput, ApproveInvoiceResponse, InvoiceWithIntake } from "@/types/round-supplier-invoice-intake";
+import type {
+  ApproveInvoiceInput,
+  ApproveInvoiceResponse,
+  InvoiceWithAllocations,
+  InvoiceWithIntake,
+} from "@/types/round-supplier-invoice-intake";
 
 export const runtime = "nodejs";
 
@@ -121,7 +126,7 @@ export async function POST(
 
   const { data: existing, error: fetchError } = await supabase
     .from("invoices")
-    .select("*")
+    .select("*, invoice_allocations(*)")
     .eq("id", id)
     .single();
   if (fetchError || !existing) {
@@ -133,11 +138,57 @@ export async function POST(
   if (existing.status === "rejected") {
     return NextResponse.json({ error: "Cannot approve a rejected invoice" }, { status: 400 });
   }
-  if (!existing.proposed_match_type || !existing.proposed_match_id) {
+  const existingWithAllocations = existing as unknown as InvoiceWithAllocations;
+  const allocations = existingWithAllocations.invoice_allocations ?? [];
+
+  if (allocations.length === 0 && (!existing.proposed_match_type || !existing.proposed_match_id)) {
     return NextResponse.json(
-      { error: "Invoice has no proposed match to approve — set a match first" },
+      { error: "Invoice has no saved allocations to approve" },
       { status: 400 }
     );
+  }
+
+  // Migration 060 split path. The RPC locks the invoice, re-validates
+  // every target and exact-cent total, applies all cost actuals, and
+  // marks the invoice approved in one database transaction. Any error
+  // rolls the whole approval back.
+  if (allocations.length > 0) {
+    const { data: libraryCostApplied, error: splitError } = await supabase.rpc(
+      "approve_supplier_invoice_allocations",
+      { p_invoice_id: id, p_approved_by: info.userId }
+    );
+    if (splitError) {
+      return NextResponse.json({ error: splitError.message }, { status: 400 });
+    }
+
+    const { data: approved, error: reloadError } = await supabase
+      .from("invoices")
+      .select("*, invoice_allocations(*)")
+      .eq("id", id)
+      .single();
+    if (reloadError || !approved) {
+      return NextResponse.json({ error: reloadError?.message ?? "Invoice not found" }, { status: 500 });
+    }
+
+    const typedApproved = approved as unknown as InvoiceWithAllocations;
+    typedApproved.invoice_allocations = [...(typedApproved.invoice_allocations ?? [])].sort(
+      (a, b) => a.sort - b.sort || a.created_at.localeCompare(b.created_at)
+    );
+
+    if (typedApproved.source === "aria") {
+      await closeBriefItem(
+        supabase,
+        "invoice",
+        `/projects/${typedApproved.project_id}/invoices`,
+        `Aria flagged a supplier invoice — ${typedApproved.supplier} #${typedApproved.invoice_number}`
+      );
+    }
+
+    const payload: ApproveInvoiceResponse = {
+      invoice: typedApproved,
+      library_cost_applied: libraryCostApplied === true,
+    };
+    return NextResponse.json(payload);
   }
 
   const { data: invoice, error: approveError } = await supabase

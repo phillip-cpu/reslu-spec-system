@@ -564,7 +564,7 @@ const TOOLS = [
   {
     name: "propose_supplier_invoice",
     description:
-      "Propose a DRAFT supplier invoice (money OUT) extracted from an already-ingested email — for the Invoice queue's Aria pipeline (BUILD-SPEC.md r24). Creates a row with source='aria', status='proposed' if you also pass a match, marked 'Aria · needs approval' in the queue UI. INSERT ONLY — nothing is applied to any cost/item/library record until a human clicks Approve in the UI; you cannot bypass that gate with this tool. source_email_id is required — every proposed invoice must trace back to the email it came from. If you can identify which cost_line or item this invoice covers, pass proposed_match_type + proposed_match_id (use list_invoices' sibling read tools / the project's own estimate to find candidates first) — the queue UI shows your proposed match for the human to confirm or change before approving.",
+      "Propose a DRAFT supplier invoice (money OUT) extracted from an already-ingested email — for the Invoice queue's Aria pipeline. Nothing is applied until a human clicks Approve. source_email_id is required. For one confident match, pass proposed_match_type + proposed_match_id. If the invoice spans several project costs, pass allocations instead; their ex-GST amounts must add exactly to amount_ex_gst. Omit both when a human should match it manually.",
     inputSchema: {
       type: "object",
       properties: {
@@ -581,6 +581,22 @@ const TOOLS = [
         job_hints: { type: "string", description: "Free text — what in the email told you which project this belongs to (address, job number, contact name, etc)" },
         proposed_match_type: { type: "string", enum: ["cost_line", "item"], description: "Omit if you can't confidently match — the invoice still lands in the queue as 'unmatched' for a human to match manually" },
         proposed_match_id: { type: "string", description: "cost_lines.id or items.id, matching proposed_match_type — must belong to the same project_id" },
+        allocations: {
+          type: "array",
+          description: "Optional multi-line draft allocation. Use instead of proposed_match_type/proposed_match_id. Amounts must add exactly to amount_ex_gst; still requires human approval.",
+          items: {
+            type: "object",
+            properties: {
+              match_type: { type: "string", enum: ["cost_line", "item"] },
+              match_id: { type: "string", description: "Target UUID in the same project" },
+              amount_ex_gst: { type: "number" },
+              apply_to_library_cost: { type: "boolean", description: "Default false; only propose true when the invoice establishes a reliable reusable unit cost" },
+            },
+            required: ["match_type", "match_id", "amount_ex_gst"],
+            additionalProperties: false,
+          },
+          maxItems: 50,
+        },
         confidence_note: { type: "string", description: "Free text — anything about the extraction/match a human reviewer should know, e.g. 'ABN partly obscured by a coffee stain, verify supplier'" },
       },
       required: ["project_id", "source_email_id", "supplier", "invoice_number", "amount_ex_gst"],

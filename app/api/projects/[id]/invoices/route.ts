@@ -4,8 +4,10 @@ import { getUserRole } from "@/lib/auth";
 import { ASSET_BUCKET, slugFilename } from "@/lib/storage";
 import { validateUploadBytes } from "@/lib/file-sniff";
 import { sendPushToAdmins } from "@/lib/push";
+import { validateInvoiceAllocations } from "@/lib/invoice-allocations";
+import type { NormalizedInvoiceAllocation } from "@/lib/invoice-allocations";
 import type { CreateInvoiceResponse, Invoice, InvoiceMatchType, InvoiceStatus } from "@/types";
-import type { InvoiceSource, InvoiceWithIntake, SupplierInvoiceExtracted } from "@/types/round-supplier-invoice-intake";
+import type { InvoiceSource, InvoiceWithAllocations, SupplierInvoiceExtracted } from "@/types/round-supplier-invoice-intake";
 
 export const runtime = "nodejs";
 
@@ -46,7 +48,7 @@ export async function GET(
 
   let query = supabase
     .from("invoices")
-    .select("*")
+    .select("*, invoice_allocations(*)")
     .eq("project_id", projectId)
     .order("created_at", { ascending: false });
 
@@ -59,7 +61,14 @@ export async function GET(
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ invoices: invoices as InvoiceWithIntake[] });
+  const ordered = ((invoices ?? []) as unknown as InvoiceWithAllocations[]).map((invoice) => ({
+    ...invoice,
+    invoice_allocations: [...(invoice.invoice_allocations ?? [])].sort(
+      (a, b) => a.sort - b.sort || a.created_at.localeCompare(b.created_at)
+    ),
+  }));
+
+  return NextResponse.json({ invoices: ordered });
 }
 
 /**
@@ -198,6 +207,21 @@ export async function POST(
     );
   }
 
+  let requestedAllocations: NormalizedInvoiceAllocation[] | null = null;
+  if (body.allocations !== undefined) {
+    if (proposed_match_type || proposed_match_id) {
+      return NextResponse.json(
+        { error: "Use allocations or a proposed match, not both" },
+        { status: 400 }
+      );
+    }
+    const validation = validateInvoiceAllocations(body.allocations, amount_ex_gst);
+    if (!validation.ok) {
+      return NextResponse.json({ error: validation.error }, { status: 400 });
+    }
+    requestedAllocations = validation.allocations;
+  }
+
   const invoice_date =
     typeof body.invoice_date === "string" && body.invoice_date ? body.invoice_date : null;
   const confidence_note =
@@ -294,7 +318,7 @@ export async function POST(
   // already proposed (e.g. Aria posting with high-confidence
   // extraction) — start the row at 'proposed' rather than 'unmatched'
   // so it doesn't need a separate PATCH just to flip status.
-  if (proposed_match_type) {
+  if (proposed_match_type || requestedAllocations) {
     insertBody.status = "proposed";
   }
 
@@ -315,6 +339,50 @@ export async function POST(
     // as a 409 rather than a raw 500 in that edge case.
     const status = insertError.code === "23505" ? 409 : 500;
     return NextResponse.json({ error: insertError.message }, { status });
+  }
+
+  let createdInvoice: Invoice | InvoiceWithAllocations = invoice as Invoice;
+
+  // Migration 060: new one-match proposals use the same allocation
+  // model as split invoices. The transactional setter also validates
+  // that the target belongs to this project. This keeps Aria's simple
+  // proposal payload backwards compatible while ensuring every new
+  // draft reaches the safer approval path.
+  const initialAllocations = requestedAllocations ??
+    (proposed_match_type && proposed_match_id
+      ? [
+          {
+            match_type: proposed_match_type,
+            match_id: proposed_match_id,
+            amount_ex_gst,
+            apply_to_library_cost: false,
+          },
+        ]
+      : []);
+
+  if (initialAllocations.length > 0) {
+    const { error: allocationError } = await supabase.rpc("set_supplier_invoice_allocations", {
+      p_invoice_id: invoice.id,
+      p_allocations: initialAllocations,
+    });
+    if (allocationError) {
+      await supabase.from("invoices").delete().eq("id", invoice.id);
+      if (storage_path) await supabase.storage.from(ASSET_BUCKET).remove([storage_path]);
+      return NextResponse.json({ error: allocationError.message }, { status: 400 });
+    }
+
+    const { data: allocatedInvoice, error: allocationReloadError } = await supabase
+      .from("invoices")
+      .select("*, invoice_allocations(*)")
+      .eq("id", invoice.id)
+      .single();
+    if (allocationReloadError || !allocatedInvoice) {
+      return NextResponse.json(
+        { error: allocationReloadError?.message ?? "Invoice allocation could not be reloaded" },
+        { status: 500 }
+      );
+    }
+    createdInvoice = allocatedInvoice as unknown as InvoiceWithAllocations;
   }
 
   // Booking selection v2 + Aria supplier invoices (r24), item 5:
@@ -374,7 +442,7 @@ export async function POST(
     }
   }
 
-  const payload: CreateInvoiceResponse = { invoice: invoice as Invoice };
+  const payload: CreateInvoiceResponse = { invoice: createdInvoice as Invoice };
   if (existing) {
     payload.duplicate_warning = existing as Invoice;
   }

@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import type { CostSectionWithLines, InvoiceMatchType, InvoiceStatus, Item } from "@/types";
-import type { InvoiceWithIntake } from "@/types/round-supplier-invoice-intake";
+import type {
+  InvoiceAllocation,
+  InvoiceWithAllocations,
+} from "@/types/round-supplier-invoice-intake";
+import type { InvoiceAllocationInput } from "@/lib/invoice-allocations";
+import { invoiceAllocationBalance } from "@/lib/invoice-allocations";
 import { formatMoney } from "@/components/estimate/EstimateWorkspace";
 
 const STATUS_TABS: { value: InvoiceStatus | "all"; label: string }[] = [
@@ -38,7 +43,7 @@ interface Props {
  * status the server actually rejected (e.g. approving twice).
  */
 export function InvoiceQueue({ projectId }: Props) {
-  const [invoices, setInvoices] = useState<InvoiceWithIntake[]>([]);
+  const [invoices, setInvoices] = useState<InvoiceWithAllocations[]>([]);
   const [statusFilter, setStatusFilter] = useState<InvoiceStatus | "all">("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -61,6 +66,9 @@ export function InvoiceQueue({ projectId }: Props) {
   }, [projectId, statusFilter]);
 
   useEffect(() => {
+    // Initial/filter-triggered network load; state updates happen after
+    // the awaited request inside load(), not as derived render state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, [load]);
 
@@ -120,22 +128,19 @@ export function InvoiceQueue({ projectId }: Props) {
     }
   }
 
-  async function setMatch(
-    id: string,
-    match: { proposed_match_type: InvoiceMatchType | null; proposed_match_id: string | null }
-  ) {
+  async function saveAllocations(id: string, allocations: InvoiceAllocationInput[]) {
     setError(null);
     try {
       const res = await fetch(`/api/invoices/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(match),
+        body: JSON.stringify({ allocations }),
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error ?? "Could not update match.");
+      if (!res.ok) throw new Error(body.error ?? "Could not save allocations.");
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update match.");
+      setError(err instanceof Error ? err.message : "Could not save allocations.");
     }
   }
 
@@ -196,7 +201,7 @@ export function InvoiceQueue({ projectId }: Props) {
                   onToggle={() => setExpandedId((cur) => (cur === inv.id ? null : inv.id))}
                   onApprove={(applyToLibraryCost) => approve(inv.id, applyToLibraryCost)}
                   onReject={() => reject(inv.id)}
-                  onSetMatch={(match) => setMatch(inv.id, match)}
+                  onSaveAllocations={(allocations) => saveAllocations(inv.id, allocations)}
                   onSaveFields={(patch) => saveFields(inv.id, patch)}
                 />
               ))}
@@ -215,19 +220,23 @@ function InvoiceRow({
   onToggle,
   onApprove,
   onReject,
-  onSetMatch,
+  onSaveAllocations,
   onSaveFields,
 }: {
-  invoice: InvoiceWithIntake;
+  invoice: InvoiceWithAllocations;
   projectId: string;
   expanded: boolean;
   onToggle: () => void;
   onApprove: (applyToLibraryCost?: boolean) => void;
   onReject: () => void;
-  onSetMatch: (match: { proposed_match_type: InvoiceMatchType | null; proposed_match_id: string | null }) => void;
+  onSaveAllocations: (allocations: InvoiceAllocationInput[]) => void;
   onSaveFields: (patch: Record<string, unknown>) => void;
 }) {
   const editable = invoice.status !== "approved" && invoice.status !== "rejected";
+  const savedAllocations = invoice.invoice_allocations ?? [];
+  const hasSavedAllocations = savedAllocations.length > 0;
+  const hasLegacyMatch = Boolean(invoice.proposed_match_type && invoice.proposed_match_id);
+  const canApprove = hasSavedAllocations || hasLegacyMatch;
   // r24 item 7's per-line toggle — undefined means "let the server pick
   // its own default" (see POST /api/invoices/[id]/approve's own doc
   // comment); starts checked so the UI's own default reads as ON,
@@ -298,7 +307,9 @@ function InvoiceRow({
           </div>
         </td>
         <td className="px-2 py-1.5 text-caption text-charcoal/60">
-          {invoice.proposed_match_type
+          {hasSavedAllocations
+            ? `${savedAllocations.length} allocation${savedAllocations.length === 1 ? "" : "s"}`
+            : invoice.proposed_match_type
             ? `${invoice.proposed_match_type === "cost_line" ? "Cost line" : "Item"} linked`
             : "No match"}
         </td>
@@ -308,9 +319,9 @@ function InvoiceRow({
               <>
                 <button
                   type="button"
-                  disabled={!invoice.proposed_match_type}
-                  title={!invoice.proposed_match_type ? "Set a match before approving" : undefined}
-                  onClick={() => onApprove(applyToLibraryCost)}
+                  disabled={!canApprove}
+                  title={!canApprove ? "Save allocations before approving" : undefined}
+                  onClick={() => onApprove(hasSavedAllocations ? undefined : applyToLibraryCost)}
                   className="border border-nearblack px-2 py-1 text-caption text-nearblack transition-colors hover:bg-nearblack hover:text-white disabled:opacity-40"
                 >
                   Approve & apply
@@ -346,7 +357,7 @@ function InvoiceRow({
                   off the PDF", useful for spotting an extraction miss. */}
               {invoice.source === "aria" && invoice.extracted && (
                 <div className="space-y-1 border border-amber-700/30 bg-amber-50/60 px-3 py-2">
-                  <p className="label-caps !text-amber-800">Aria's extraction</p>
+                  <p className="label-caps !text-amber-800">Aria&apos;s extraction</p>
                   <dl className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-caption text-charcoal/70 sm:grid-cols-4">
                     {invoice.extracted.abn && (
                       <div>
@@ -455,7 +466,7 @@ function InvoiceRow({
                 )}
               </div>
 
-              {editable && invoice.proposed_match_type && (
+              {editable && !hasSavedAllocations && invoice.proposed_match_type && (
                 <label className="flex items-start gap-2 text-caption text-charcoal/70">
                   <input
                     type="checkbox"
@@ -475,12 +486,25 @@ function InvoiceRow({
                 <p className="text-caption text-charcoal/50">Library product cost was updated from this invoice.</p>
               )}
 
-              <MatchPicker
+              <AllocationEditor
+                key={`${invoice.id}:${invoice.updated_at}:${savedAllocations
+                  .map((allocation) => allocation.updated_at)
+                  .join(",")}`}
                 projectId={projectId}
-                currentMatchType={invoice.proposed_match_type}
-                currentMatchId={invoice.proposed_match_id}
+                invoiceAmountExGst={invoice.amount_ex_gst}
+                savedAllocations={savedAllocations}
+                legacyMatch={
+                  invoice.proposed_match_type && invoice.proposed_match_id
+                    ? {
+                        match_type: invoice.proposed_match_type,
+                        match_id: invoice.proposed_match_id,
+                        amount_ex_gst: invoice.amount_ex_gst,
+                        apply_to_library_cost: false,
+                      }
+                    : null
+                }
                 disabled={invoice.status === "approved" || invoice.status === "rejected"}
-                onSelect={onSetMatch}
+                onSave={onSaveAllocations}
               />
             </div>
           </td>
@@ -490,33 +514,54 @@ function InvoiceRow({
   );
 }
 
-/**
- * Set/change match: pick a section→cost line from the estimate, or a
- * spec register item. Reads the existing admin-gated estimate route
- * (for cost lines, grouped by section) and the team-visible items
- * route (for items) — both already exist, no new read endpoints needed.
- */
-function MatchPicker({
+interface AllocationDraft {
+  key: string;
+  match_type: InvoiceMatchType;
+  match_id: string;
+  amount: string;
+  apply_to_library_cost: boolean;
+}
+
+function allocationDrafts(
+  saved: InvoiceAllocation[],
+  legacyMatch: InvoiceAllocationInput | null
+): AllocationDraft[] {
+  const source = saved.length > 0 ? saved : legacyMatch ? [legacyMatch] : [];
+  return source.map((allocation, index) => ({
+    key: "id" in allocation ? String(allocation.id) : `legacy-${index}`,
+    match_type: allocation.match_type,
+    match_id: allocation.match_id,
+    amount: String(allocation.amount_ex_gst),
+    apply_to_library_cost: allocation.apply_to_library_cost === true,
+  }));
+}
+
+/** Exact-cent, multi-line allocation editor. A draft cannot be saved
+ * until every ex-GST cent has a real project target. */
+function AllocationEditor({
   projectId,
-  currentMatchType,
-  currentMatchId,
+  invoiceAmountExGst,
+  savedAllocations,
+  legacyMatch,
   disabled,
-  onSelect,
+  onSave,
 }: {
   projectId: string;
-  currentMatchType: InvoiceMatchType | null;
-  currentMatchId: string | null;
+  invoiceAmountExGst: number;
+  savedAllocations: InvoiceAllocation[];
+  legacyMatch: InvoiceAllocationInput | null;
   disabled: boolean;
-  onSelect: (match: { proposed_match_type: InvoiceMatchType | null; proposed_match_id: string | null }) => void;
+  onSave: (allocations: InvoiceAllocationInput[]) => void;
 }) {
-  const [tab, setTab] = useState<InvoiceMatchType>(currentMatchType ?? "cost_line");
+  const [drafts, setDrafts] = useState<AllocationDraft[]>(() =>
+    allocationDrafts(savedAllocations, legacyMatch)
+  );
   const [sections, setSections] = useState<CostSectionWithLines[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
     Promise.all([
       fetch(`/api/projects/${projectId}/estimate`).then((r) => (r.ok ? r.json() : { sections: [] })),
       fetch(`/api/projects/${projectId}/items`).then((r) => (r.ok ? r.json() : { items: [] })),
@@ -533,105 +578,195 @@ function MatchPicker({
     };
   }, [projectId]);
 
-  if (disabled) {
-    return (
-      <p className="text-caption text-charcoal/50">
-        This invoice is {currentMatchType ? "already " : ""}
-        {currentMatchType ? "finalised" : "not editable"} — match cannot be changed.
-      </p>
+  const numericDrafts = drafts.map((draft) => ({ amount_ex_gst: Number(draft.amount) || 0 }));
+  const balance = invoiceAllocationBalance(invoiceAmountExGst, numericDrafts);
+  const complete =
+    drafts.length > 0 &&
+    drafts.every((draft) => draft.match_id && Number(draft.amount) > 0) &&
+    balance === 0;
+
+  function updateDraft(key: string, patch: Partial<AllocationDraft>) {
+    setDrafts((current) => current.map((draft) => (draft.key === key ? { ...draft, ...patch } : draft)));
+  }
+
+  function addAllocation() {
+    const remaining = invoiceAllocationBalance(
+      invoiceAmountExGst,
+      drafts.map((draft) => ({ amount_ex_gst: Number(draft.amount) || 0 }))
+    );
+    setDrafts((current) => [
+      ...current,
+      {
+        key: crypto.randomUUID(),
+        match_type: "cost_line",
+        match_id: "",
+        amount: remaining > 0 ? remaining.toFixed(2) : "",
+        apply_to_library_cost: false,
+      },
+    ]);
+  }
+
+  function save() {
+    if (!complete) return;
+    onSave(
+      drafts.map((draft) => ({
+        match_type: draft.match_type,
+        match_id: draft.match_id,
+        amount_ex_gst: Number(draft.amount),
+        apply_to_library_cost: draft.apply_to_library_cost,
+      }))
     );
   }
 
   return (
-    <div className="max-w-2xl space-y-2 border border-[#dcd6cc] bg-nearwhite p-3">
-      <div className="flex items-center justify-between">
-        <p className="label-caps">Set match</p>
-        <div className="flex border border-[#c9c2b4]">
-          {(["cost_line", "item"] as InvoiceMatchType[]).map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setTab(t)}
-              className={clsx(
-                "px-3 py-1 text-caption transition-colors",
-                tab === t ? "bg-nearblack text-white" : "text-charcoal hover:bg-cream"
-              )}
-            >
-              {t === "cost_line" ? "Cost line" : "Item"}
-            </button>
-          ))}
+    <div className="max-w-4xl space-y-3 border border-[#dcd6cc] bg-nearwhite p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="label-caps">Invoice allocation</p>
+          <p className="text-caption text-charcoal/50">
+            Split the full {formatMoney(invoiceAmountExGst)} ex GST across the estimate or specification.
+          </p>
         </div>
+        <span
+          className={clsx(
+            "label-caps border px-2 py-1",
+            balance === 0
+              ? "border-green-700/30 bg-green-50 !text-green-800"
+              : "border-amber-700/30 bg-amber-50 !text-amber-800"
+          )}
+        >
+          {balance === 0
+            ? "Fully allocated"
+            : balance > 0
+              ? `${formatMoney(balance)} remaining`
+              : `${formatMoney(Math.abs(balance))} over`}
+        </span>
       </div>
 
       {loading ? (
-        <p className="text-caption text-charcoal/50">Loading…</p>
-      ) : tab === "cost_line" ? (
-        <div className="max-h-56 overflow-y-auto">
-          <button
-            type="button"
-            onClick={() => onSelect({ proposed_match_type: null, proposed_match_id: null })}
-            className="block w-full border-b border-[#e5e0d6] px-2 py-1.5 text-left text-body text-charcoal/60 hover:bg-cream"
-          >
-            No match
-          </button>
-          {sections.length === 0 ? (
-            <p className="px-2 py-2 text-caption text-charcoal/50">No estimate sections yet.</p>
-          ) : (
-            sections.map((section) => (
-              <div key={section.id}>
-                <p className="px-2 py-1 text-caption text-charcoal/50">{section.name}</p>
-                {section.lines.map((line) => (
-                  <button
-                    key={line.id}
-                    type="button"
-                    onClick={() => onSelect({ proposed_match_type: "cost_line", proposed_match_id: line.id })}
-                    className={clsx(
-                      "flex w-full items-center justify-between gap-3 border-b border-[#e5e0d6] px-3 py-1.5 text-left text-body hover:bg-cream",
-                      currentMatchType === "cost_line" && currentMatchId === line.id
-                        ? "bg-cream text-nearblack"
-                        : "text-charcoal"
-                    )}
-                  >
-                    <span className="truncate">{line.description}</span>
-                    <span className="shrink-0 text-caption text-charcoal/40">
-                      {line.actual_paid_ex_gst !== null ? `paid ${formatMoney(line.actual_paid_ex_gst)}` : ""}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            ))
-          )}
-        </div>
+        <p className="text-caption text-charcoal/50">Loading project costs…</p>
+      ) : drafts.length === 0 ? (
+        <p className="border border-dashed border-[#c9c2b4] px-3 py-4 text-center text-caption text-charcoal/50">
+          No allocations saved. Add a line before approval.
+        </p>
       ) : (
-        <div className="max-h-56 overflow-y-auto">
+        <div className="space-y-2">
+          {drafts.map((draft, index) => (
+            <div
+              key={draft.key}
+              className="grid grid-cols-1 gap-2 border border-[#e5e0d6] bg-cream p-2 md:grid-cols-[minmax(0,1fr)_130px_auto_auto] md:items-center"
+            >
+              <label>
+                <span className="sr-only">Allocation {index + 1} match</span>
+                <select
+                  disabled={disabled}
+                  value={draft.match_id ? `${draft.match_type}:${draft.match_id}` : ""}
+                  onChange={(event) => {
+                    const [matchType, matchId] = event.target.value.split(":");
+                    updateDraft(draft.key, {
+                      match_type: (matchType || "cost_line") as InvoiceMatchType,
+                      match_id: matchId ?? "",
+                    });
+                  }}
+                  className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+                >
+                  <option value="">Choose a cost line or item…</option>
+                  {sections.map((section) => (
+                    <optgroup key={section.id} label={`Estimate · ${section.name}`}>
+                      {section.lines.map((line) => (
+                        <option key={line.id} value={`cost_line:${line.id}`}>
+                          {line.description}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                  {items.length > 0 && (
+                    <optgroup label="Specification items">
+                      {items.map((item) => (
+                        <option key={item.id} value={`item:${item.id}`}>
+                          {item.item_code} — {item.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+              </label>
+
+              <label>
+                <span className="sr-only">Allocation {index + 1} ex-GST amount</span>
+                <input
+                  disabled={disabled}
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={draft.amount}
+                  onChange={(event) => updateDraft(draft.key, { amount: event.target.value })}
+                  className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-right text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+                  aria-label={`Allocation ${index + 1} amount ex GST`}
+                />
+              </label>
+
+              <label className="flex items-center gap-1.5 text-caption text-charcoal/60">
+                <input
+                  disabled={disabled}
+                  type="checkbox"
+                  checked={draft.apply_to_library_cost}
+                  onChange={(event) =>
+                    updateDraft(draft.key, { apply_to_library_cost: event.target.checked })
+                  }
+                />
+                Update library price
+              </label>
+
+              {!disabled && (
+                <button
+                  type="button"
+                  onClick={() => setDrafts((current) => current.filter((row) => row.key !== draft.key))}
+                  className="text-caption text-red-700 hover:underline"
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!disabled && (
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => onSelect({ proposed_match_type: null, proposed_match_id: null })}
-            className="block w-full border-b border-[#e5e0d6] px-2 py-1.5 text-left text-body text-charcoal/60 hover:bg-cream"
+            onClick={addAllocation}
+            className="border border-[#c9c2b4] px-3 py-1.5 text-caption text-charcoal hover:border-nearblack"
           >
-            No match
+            + Add allocation
           </button>
-          {items.length === 0 ? (
-            <p className="px-2 py-2 text-caption text-charcoal/50">No items yet.</p>
-          ) : (
-            items.map((it) => (
-              <button
-                key={it.id}
-                type="button"
-                onClick={() => onSelect({ proposed_match_type: "item", proposed_match_id: it.id })}
-                className={clsx(
-                  "flex w-full items-center justify-between gap-3 border-b border-[#e5e0d6] px-2 py-1.5 text-left text-body hover:bg-cream",
-                  currentMatchType === "item" && currentMatchId === it.id ? "bg-cream text-nearblack" : "text-charcoal"
-                )}
-              >
-                <span>
-                  {it.item_code} — {it.name}
-                </span>
-                {it.location && <span className="text-caption text-charcoal/40">{it.location}</span>}
-              </button>
-            ))
+          <button
+            type="button"
+            disabled={!complete}
+            onClick={save}
+            className="border border-nearblack bg-nearblack px-3 py-1.5 text-caption text-white disabled:cursor-not-allowed disabled:opacity-35"
+          >
+            Save allocations
+          </button>
+          {savedAllocations.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                if (confirm("Clear every saved allocation from this invoice?")) onSave([]);
+              }}
+              className="text-caption text-charcoal/50 hover:text-red-700"
+            >
+              Clear saved allocations
+            </button>
           )}
         </div>
+      )}
+
+      {!disabled && !complete && drafts.length > 0 && (
+        <p className="text-caption text-amber-800">
+          Approval stays locked until every line has a match and the remaining balance is $0.00.
+        </p>
       )}
     </div>
   );

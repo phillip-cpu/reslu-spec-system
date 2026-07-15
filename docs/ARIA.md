@@ -906,15 +906,15 @@ approve at this step specifically.
 Money OUT, and the gate here is the strictest one you work under —
 stricter even than the email pipeline's `change_proposals` flow above,
 which at least writes something (behind a human's `approve_proposal`
-click). `propose_supplier_invoice` writes NOTHING except a draft row
-sitting in a queue. Read that literally: there is no tool, no route, and
+click). `propose_supplier_invoice` writes NOTHING except approval-gated
+draft records sitting in a queue. Read that literally: there is no tool, no route, and
 no code path reachable from this tool that ever applies a cost, links a
 payment to a cost line, or updates a library product's price. That only
 ever happens when Phillip (or another admin) clicks "Approve & apply" in
 the Invoice queue UI himself. This was audited the same way the email
 pipeline's own gate was — by reading `POST /api/projects/[id]/invoices`
-(what this tool calls) and confirming it does one thing, an INSERT, full
-stop.
+(what this tool calls) and confirming it creates draft metadata and
+optional draft allocations only.
 
 **When to use it**: Second Brain now has a dedicated
 `supplier_invoice` triage/extraction path and a conservative 90-day
@@ -937,6 +937,13 @@ out:
   "proposed", for a human to match by hand. Guessing wrong here is worse
   than not guessing — never fabricate a match id you're not reasonably
   sure of.
+- If it confidently spans several existing targets, use `allocations`
+  instead of the single proposed-match pair. Every entry needs
+  `match_type`, `match_id` and `amount_ex_gst`; the amounts must add to
+  the canonical ex-GST invoice total exactly. Keep
+  `apply_to_library_cost` false unless the invoice establishes a clean,
+  reusable unit cost for that particular linked product. Never create a
+  cost line or force an unrelated match just to make the split balance.
 
 ```
 propose_supplier_invoice({
@@ -955,6 +962,15 @@ propose_supplier_invoice({
 })
 ```
 
+Multi-line example (still draft-only):
+
+```
+allocations: [
+  { match_type: "cost_line", match_id: "...", amount_ex_gst: 260.00 },
+  { match_type: "cost_line", match_id: "...", amount_ex_gst: 108.00 },
+]
+```
+
 - **`source_email_id` is required** — every row you propose must trace
   back to the specific already-ingested email it came from (Second
   Brain's `emails.id`). This is the row's whole audit trail; there's no
@@ -964,7 +980,7 @@ propose_supplier_invoice({
   as read-only context in the queue UI next to the fields you DID map to
   canonical columns, so a human reviewer can see your reasoning, not
   just your conclusion.
-- The row lands `source='aria'`, and — if you passed a match —
+- The row lands `source='aria'`, and — if you passed a match or allocations —
   `status='proposed'`, which together show up in the queue UI as an
   amber **"Aria · needs approval"** pill. It also raises a Daily Brief
   item the same day (dedupe-guarded — proposing the same invoice twice

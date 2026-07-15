@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
+import { validateInvoiceAllocations } from "@/lib/invoice-allocations";
 import type { InvoiceMatchType } from "@/types";
-import type { InvoiceWithIntake } from "@/types/round-supplier-invoice-intake";
+import type { InvoiceWithAllocations, InvoiceWithIntake } from "@/types/round-supplier-invoice-intake";
 
 export const runtime = "nodejs";
 
@@ -59,7 +60,7 @@ export async function PATCH(
 
   const { data: existing, error: fetchError } = await supabase
     .from("invoices")
-    .select("*")
+    .select("*, invoice_allocations(id)")
     .eq("id", id)
     .single();
   if (fetchError || !existing) {
@@ -70,6 +71,44 @@ export async function PATCH(
       { error: `Cannot edit an invoice that is already ${existing.status}` },
       { status: 400 }
     );
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, "allocations")) {
+    if (Object.keys(body).some((key) => key !== "allocations")) {
+      return NextResponse.json(
+        { error: "Save invoice fields and allocations separately" },
+        { status: 400 }
+      );
+    }
+
+    const validation = validateInvoiceAllocations(body.allocations, Number(existing.amount_ex_gst), {
+      allowEmpty: true,
+    });
+    if (!validation.ok) {
+      return NextResponse.json({ error: validation.error }, { status: 400 });
+    }
+
+    const { error: allocationError } = await supabase.rpc("set_supplier_invoice_allocations", {
+      p_invoice_id: id,
+      p_allocations: validation.allocations,
+    });
+    if (allocationError) {
+      return NextResponse.json({ error: allocationError.message }, { status: 400 });
+    }
+
+    const { data: invoice, error: reloadError } = await supabase
+      .from("invoices")
+      .select("*, invoice_allocations(*)")
+      .eq("id", id)
+      .single();
+    if (reloadError || !invoice) {
+      return NextResponse.json({ error: reloadError?.message ?? "Invoice not found" }, { status: 500 });
+    }
+    const typed = invoice as unknown as InvoiceWithAllocations;
+    typed.invoice_allocations = [...(typed.invoice_allocations ?? [])].sort(
+      (a, b) => a.sort - b.sort || a.created_at.localeCompare(b.created_at)
+    );
+    return NextResponse.json({ invoice: typed });
   }
 
   const update: Record<string, unknown> = {};
@@ -86,6 +125,17 @@ export async function PATCH(
     } else {
       update[key] = raw;
     }
+  }
+
+  if (
+    Object.prototype.hasOwnProperty.call(update, "amount_ex_gst") &&
+    existing.invoice_allocations.length > 0 &&
+    Number(update.amount_ex_gst) !== Number(existing.amount_ex_gst)
+  ) {
+    return NextResponse.json(
+      { error: "Clear the saved allocations before changing the invoice amount" },
+      { status: 400 }
+    );
   }
 
   const hasMatchType = "proposed_match_type" in body;

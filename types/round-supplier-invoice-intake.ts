@@ -14,7 +14,7 @@
 // they need the new columns (migration 052).
 // ============================================================
 
-import type { Invoice } from "@/types";
+import type { Invoice, InvoiceMatchType } from "@/types";
 
 export type InvoiceSource = "manual" | "aria";
 
@@ -45,6 +45,25 @@ export interface InvoiceWithIntake extends Invoice {
   source_email_id: string | null;
   extracted: SupplierInvoiceExtracted | null;
   library_cost_applied: boolean;
+}
+
+/** One approval-gated ex-GST split from migration 060. */
+export interface InvoiceAllocation {
+  id: string;
+  invoice_id: string;
+  match_type: InvoiceMatchType;
+  match_id: string;
+  amount_ex_gst: number;
+  apply_to_library_cost: boolean;
+  library_cost_applied: boolean;
+  sort: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** GET invoice responses include their saved splits in display order. */
+export interface InvoiceWithAllocations extends InvoiceWithIntake {
+  invoice_allocations: InvoiceAllocation[];
 }
 
 /** body accepted by POST /api/invoices/[id]/approve (r24 addition — see that route's own doc comment for the cost flow-through this drives). */

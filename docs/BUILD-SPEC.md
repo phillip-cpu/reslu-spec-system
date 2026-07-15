@@ -102,8 +102,13 @@ A. Booking selection v2 (rework of r20 entry points — r20 backend machinery st
 B. Aria supplier-invoice intake (money out):
 5. Second Brain email pipeline flags likely supplier invoices (attachment/pdf + amount/invoice-number heuristics on ALREADY-INGESTED emails). Aria (mini) extracts: supplier, ABN, invoice number, invoice date, total inc GST, GST, line hints, job hints. MCP tool propose_supplier_invoice(payload incl. source email id) creates a DRAFT entry in the existing supplier-invoice queue (whatever its table is — study InvoiceQueue) marked source 'aria', status needing approval, with proposed project match + cost-line/item matches. HARD RULE: draft only — nothing applies without Phillip's explicit approve action in the UI (standing prompt-injection ruling; email content NEVER writes financials directly).
 6. Approval UI in the Supplier invoices section: review extracted fields + matches (editable), Approve & apply / Reject. PDF attachment stored on the job.
-7. Cost flow-through: when a supplier invoice application (Aria-proposed OR manual) confirms costs against matched items, the confirmed cost writes to those items' actual/confirmed cost fields AND (toggle per line, default on when a library product is linked) updates the linked library product's cost record so future quotes use real numbers. Admin-only, server-side gated like all financials.
+7. Cost flow-through: when a supplier invoice application (Aria-proposed OR manual) confirms costs against matched items, the confirmed cost writes to those items' actual/confirmed cost fields AND can update the linked library product's cost record so future quotes use real numbers. Admin-only, server-side gated like all financials. (Migration 060 supersedes the original blanket default with an explicit, default-off choice per allocation; the legacy single-match path keeps its old toggle for backwards compatibility.)
 8. Migration 052 only for what's genuinely missing after studying the existing supplier-invoice tables (extraction/source columns, status, email link). One migration.
+
+C. Supplier-invoice split allocation (r30, migration 060):
+9. A supplier invoice may be allocated across several cost lines/items. Each allocation stores its own ex-GST amount and an explicit, default-off library-price update choice.
+10. Save and approval both require the allocation total to equal the invoice's canonical ex-GST amount to the cent. Approval is admin-only and applies every allocation in one database transaction; a missing/deleted/ambiguous target or repeated resolved cost line rolls the whole approval back.
+11. `propose_supplier_invoice` remains draft-only and may optionally propose an `allocations[]` array. A single legacy proposed match is converted to a one-line allocation. Human approval remains the only money-writing action.
 
 ## Proposal delivery skin (r25)
 

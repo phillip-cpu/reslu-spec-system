@@ -631,19 +631,26 @@ Aria is expected to drive most heavily for this feature.
 
 ### GET /api/projects/[id]/invoices
 Auth: admin. Body: none. Query: `?status=` (`unmatched|proposed|approved|rejected`).
-Response: `{ invoices: Invoice[] }`, newest first. **Aria-relevant.**
+Response: `{ invoices: InvoiceWithAllocations[] }`, newest first. Each
+invoice includes `invoice_allocations[]` in display order. **Aria-relevant.**
 
 ### POST /api/projects/[id]/invoices
 Auth: admin. Body: JSON `{ supplier, invoice_number, invoice_date?,
 amount_ex_gst, gst?, total?, proposed_match_type? ('cost_line'|'item'),
-proposed_match_id?, confidence_note? }`, OR multipart form-data with
+proposed_match_id?, allocations?[], confidence_note? }`, OR multipart form-data with
 the same fields plus an optional `file` (PDF) — supports both Aria
 posting programmatically (JSON, no file) and the queue UI's manual
 upload form. `gst`/`total` default to a 10% GST computation off
 `amount_ex_gst` if omitted. Setting `proposed_match_type` +
 `proposed_match_id` at creation starts the row at `status: 'proposed'`
-instead of `'unmatched'`. Response: `{ invoice, duplicate_warning? }`
-(201) — `duplicate_warning` (an `Invoice`) is present when a
+instead of `'unmatched'`.
+(Migration 060: use `allocations[]` instead of the single proposed-match
+pair when an invoice spans several targets. Each entry is
+`{ match_type, match_id, amount_ex_gst, apply_to_library_cost? }`; the
+amounts must equal the invoice ex-GST total exactly. The server validates
+every target belongs to the project and stores draft allocations only.)
+Response (201): `{ invoice, duplicate_warning? }` — `duplicate_warning`
+(an `Invoice`) is present when a
 non-rejected invoice already exists for the same
 `(project, supplier, invoice_number)`; the new invoice is still
 created (warn, not block — matches the partial unique index
@@ -663,12 +670,24 @@ match and drops `status` back to `'unmatched'` if it was `'proposed'`.
 Response: `{ invoice }`. Rejects edits to an already `approved` or
 `rejected` invoice (400) — those are terminal states. **Aria-relevant.**
 
+Migration 060 also accepts an allocations-only body:
+`{ allocations: [{ match_type, match_id, amount_ex_gst,
+apply_to_library_cost? }, ...] }`. Saving is transactional, targets must
+belong to the invoice project, repeated targets are rejected and the
+ex-GST sum must match exactly. `{ allocations: [] }` clears the draft
+split and returns the invoice to `unmatched`. Saved allocations must be
+cleared before changing the canonical invoice amount.
+
 ### POST /api/invoices/[id]/approve
-Auth: admin. Body: none. Response: `{ invoice }`, or `{ invoice,
-warning }` with HTTP 207 if the invoice was approved but its matched
-cost line couldn't be found/updated. Requires a proposed match to
-exist first (400 otherwise). Sets `status: 'approved'`,
-`approved_by`, `approved_at`, then:
+Auth: admin. Body: none (legacy one-match requests may still send the
+existing library toggle). Response: `{ invoice, library_cost_applied }`.
+For migration-060 allocations, approval requires at least one saved
+allocation and an exact ex-GST total. The database locks the invoice,
+validates every target, applies every cost actual, optionally updates
+library prices per allocation, and marks the invoice approved in one
+transaction. Any failure rolls everything back; a retry cannot
+double-apply an approved invoice. The legacy single-match path remains
+available for approved history/backwards compatibility. Allocation rules:
   - **cost_line match**: ADDS `amount_ex_gst` to the line's existing
     `actual_paid_ex_gst` (`COALESCE(existing, 0) + amount_ex_gst`) —
     this is what makes partial invoices work (a deposit invoice
@@ -676,17 +695,12 @@ exist first (400 otherwise). Sets `status: 'approved'`,
     first payment). Variance recalculates for free on next read via
     the existing `lineVariance()` rollup math — no separate variance
     column.
-  - **item match**: does **nothing automatic** to the item's
-    `price_trade` or any other pricing field — only the linkage
-    (already set by the propose step) is preserved as an audit trail.
-    `price_trade` is the negotiated per-unit quote price, captured
-    once via the library/scraper trade-price flow; it is not the same
-    figure as "amount this invoice paid" (an invoice can cover partial
-    quantity, freight, multiple items). Item-level actuals are
-    intentionally routed through `cost_lines.actual_paid_ex_gst`, not
-    by mutating spec register pricing as a side effect of invoice
-    approval. **Aria-relevant** — but note the asymmetry: only
-    cost_line matches move money automatically.
+  - **item allocation**: resolves to exactly one non-deleted linked
+    `cost_line`; zero or multiple linked lines block the entire approval
+    instead of guessing.
+  - **library cost**: explicit per allocation and default off. When on,
+    it updates the linked library item's trade price only if a real linked
+    library item exists. **Aria-relevant.**
 
 ### POST /api/invoices/[id]/reject
 Auth: admin. Body: none. Response: `{ invoice }`. Sets
