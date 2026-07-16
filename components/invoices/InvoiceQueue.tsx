@@ -10,6 +10,7 @@ import type {
 } from "@/types/round-supplier-invoice-intake";
 import type { InvoiceAllocationInput } from "@/lib/invoice-allocations";
 import { invoiceAllocationBalance } from "@/lib/invoice-allocations";
+import { supplierLineCostLineInput } from "@/lib/supplier-invoice-lines";
 import { formatMoney } from "@/components/estimate/EstimateWorkspace";
 
 const STATUS_TABS: { value: InvoiceStatus | "all"; label: string }[] = [
@@ -593,6 +594,9 @@ function AllocationEditor({
   const [sections, setSections] = useState<CostSectionWithLines[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
+  const [creatingLineKey, setCreatingLineKey] = useState<string | null>(null);
+  const [createLineErrors, setCreateLineErrors] = useState<Record<string, string>>({});
+  const [createdInArea, setCreatedInArea] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -652,6 +656,45 @@ function AllocationEditor({
         apply_to_library_cost: false,
       },
     ]);
+  }
+
+  async function createCostLineInArea(draft: AllocationDraft, sectionId: string) {
+    if (!draft.source_line || !sectionId || disabled || creatingLineKey) return;
+    setCreatingLineKey(draft.key);
+    setCreateLineErrors((current) => ({ ...current, [draft.key]: "" }));
+
+    try {
+      const response = await fetch(`/api/estimate/sections/${sectionId}/lines`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(supplierLineCostLineInput(draft.source_line)),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body.line) {
+        throw new Error(body.error ?? "Could not create the cost line.");
+      }
+
+      const line = body.line as CostSectionWithLines["lines"][number];
+      const areaName = sections.find((section) => section.id === sectionId)?.name ?? "the selected area";
+      setSections((current) =>
+        current.map((section) =>
+          section.id === sectionId ? { ...section, lines: [...section.lines, line] } : section
+        )
+      );
+      updateDraft(draft.key, {
+        match_type: "cost_line",
+        match_id: line.id,
+        apply_to_library_cost: false,
+      });
+      setCreatedInArea((current) => ({ ...current, [draft.key]: areaName }));
+    } catch (error) {
+      setCreateLineErrors((current) => ({
+        ...current,
+        [draft.key]: error instanceof Error ? error.message : "Could not create the cost line.",
+      }));
+    } finally {
+      setCreatingLineKey(null);
+    }
   }
 
   function save() {
@@ -772,6 +815,7 @@ function AllocationEditor({
                           match_id: nextId,
                           apply_to_library_cost: Boolean(nextId && linkedLibraryItem(nextType, nextId)),
                         });
+                        setCreatedInArea((current) => ({ ...current, [draft.key]: "" }));
                       }}
                       className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
                     >
@@ -796,6 +840,50 @@ function AllocationEditor({
                       )}
                     </select>
                   </label>
+
+                  {sourceLine && !draft.match_id && (
+                    <label className="block border border-dashed border-[#c9c2b4] bg-nearwhite p-2">
+                      <span className="label-caps mb-1 block !text-charcoal/50">No destination yet?</span>
+                      <select
+                        disabled={disabled || Boolean(creatingLineKey) || sections.length === 0}
+                        value=""
+                        onChange={(event) => {
+                          const sectionId = event.target.value;
+                          if (sectionId) void createCostLineInArea(draft, sectionId);
+                        }}
+                        className="w-full border border-[#c9c2b4] bg-cream px-2 py-1.5 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+                        aria-label={`Add ${sourceLine.description} to an estimate area`}
+                      >
+                        <option value="">
+                          {creatingLineKey === draft.key
+                            ? "Creating cost line…"
+                            : sections.length === 0
+                              ? "No estimate areas available"
+                              : "Add to an area as a new cost line…"}
+                        </option>
+                        {sections.map((section) => (
+                          <option key={section.id} value={section.id}>
+                            {section.name}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="mt-1 block text-caption text-charcoal/50">
+                        Choosing an area creates the line with this description, quantity and supplier cost,
+                        then selects it automatically.
+                      </span>
+                      {createLineErrors[draft.key] && (
+                        <span className="mt-1 block text-caption text-red-700">
+                          {createLineErrors[draft.key]}
+                        </span>
+                      )}
+                    </label>
+                  )}
+
+                  {sourceLine && draft.match_id && createdInArea[draft.key] && (
+                    <p className="text-caption text-green-800">
+                      New cost line created in {createdInArea[draft.key]} and selected.
+                    </p>
+                  )}
 
                   {sourceLine?.suggestion_note && (
                     <p className="text-caption text-amber-800">Aria&apos;s note: {sourceLine.suggestion_note}</p>

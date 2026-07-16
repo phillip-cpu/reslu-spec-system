@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validateSupplierInvoiceLines } from "./supplier-invoice-lines.ts";
+import {
+  supplierLineCostLineInput,
+  validateSupplierInvoiceLines,
+} from "./supplier-invoice-lines.ts";
 
 const bunningsLines = [
   { supplier_item_code: "9920161", description: "Standard metro UTE delivery", quantity: 1, unit: "EACH", unit_price_ex_gst: 50, amount_ex_gst: 50, gst: 5, amount_inc_gst: 55 },
@@ -48,4 +51,15 @@ test("validates paired project suggestions", () => {
   assert.equal(invalid.ok, false);
   assert.equal(valid.ok, true);
   if (valid.ok) assert.equal(valid.lines[0].apply_to_library_cost, true);
+});
+
+test("creates an estimate line payload from a supplier line without posting an actual", () => {
+  assert.deepEqual(supplierLineCostLineInput(bunningsLines[8]), {
+    description: "RamBoard temporary floor protection",
+    qty: 2,
+    unit: "EACH",
+    rate_ex_gst: 115.87,
+    cost_ex_gst: 231.75,
+    notes: "Created from supplier invoice line (SKU 1090813).",
+  });
 });

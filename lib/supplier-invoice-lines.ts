@@ -33,6 +33,15 @@ export interface NormalizedSupplierInvoiceLine extends SupplierInvoiceLineInput 
   sort: number;
 }
 
+export interface SupplierLineCostLineInput {
+  description: string;
+  qty: number;
+  unit: string | null;
+  rate_ex_gst: number | null;
+  cost_ex_gst: number;
+  notes: string;
+}
+
 export type SupplierInvoiceLineValidation =
   | { ok: true; lines: NormalizedSupplierInvoiceLine[]; line_total_cents: number }
   | { ok: false; error: string };
@@ -46,6 +55,36 @@ function optionalMoney(value: unknown): number | null | undefined {
   const number = Number(value);
   if (!Number.isFinite(number)) return undefined;
   return moneyToCents(number) / 100;
+}
+
+/**
+ * Turns immutable supplier evidence into a new project estimate line. The
+ * invoice amount becomes the forecast cost, while actual_paid_ex_gst is left
+ * untouched until the separate invoice approval step.
+ */
+export function supplierLineCostLineInput(
+  line: Pick<
+    SupplierInvoiceLineInput,
+    | "description"
+    | "quantity"
+    | "unit"
+    | "unit_price_ex_gst"
+    | "amount_ex_gst"
+    | "supplier_item_code"
+  >
+): SupplierLineCostLineInput {
+  const supplierCode = optionalText(line.supplier_item_code);
+  return {
+    description: line.description.trim(),
+    qty: line.quantity,
+    unit: optionalText(line.unit),
+    rate_ex_gst:
+      line.unit_price_ex_gst === undefined || line.unit_price_ex_gst === null
+        ? null
+        : moneyToCents(Number(line.unit_price_ex_gst)) / 100,
+    cost_ex_gst: moneyToCents(Number(line.amount_ex_gst)) / 100,
+    notes: `Created from supplier invoice line${supplierCode ? ` (SKU ${supplierCode})` : ""}.`,
+  };
 }
 
 /**
