@@ -57,6 +57,30 @@ test("rejects duplicate matches and invalid zero amounts", () => {
   assert.equal(zero.ok, false);
 });
 
+test("allows separate supplier lines to share a project target", () => {
+  const result = validateInvoiceAllocations(
+    [
+      { source_line_id: "tape", match_type: "cost_line", match_id: "consumables", amount_ex_gst: 36.79 },
+      { source_line_id: "film", match_type: "cost_line", match_id: "consumables", amount_ex_gst: 88.62 },
+    ],
+    125.41
+  );
+
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.allocations[1].source_line_id, "film");
+});
+
+test("rejects allocating the same supplier line twice", () => {
+  const result = validateInvoiceAllocations(
+    [
+      { source_line_id: "same", match_type: "cost_line", match_id: "one", amount_ex_gst: 40 },
+      { source_line_id: "same", match_type: "cost_line", match_id: "two", amount_ex_gst: 60 },
+    ],
+    100
+  );
+  assert.equal(result.ok, false);
+});
+
 test("reports the live allocation balance without floating point drift", () => {
   assert.equal(
     invoiceAllocationBalance(604.65, [

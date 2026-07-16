@@ -6,6 +6,8 @@ import { validateUploadBytes } from "@/lib/file-sniff";
 import { sendPushToAdmins } from "@/lib/push";
 import { validateInvoiceAllocations } from "@/lib/invoice-allocations";
 import type { NormalizedInvoiceAllocation } from "@/lib/invoice-allocations";
+import { validateSupplierInvoiceLines } from "@/lib/supplier-invoice-lines";
+import type { NormalizedSupplierInvoiceLine } from "@/lib/supplier-invoice-lines";
 import type { CreateInvoiceResponse, Invoice, InvoiceMatchType, InvoiceStatus } from "@/types";
 import type { InvoiceSource, InvoiceWithAllocations, SupplierInvoiceExtracted } from "@/types/round-supplier-invoice-intake";
 
@@ -48,7 +50,7 @@ export async function GET(
 
   let query = supabase
     .from("invoices")
-    .select("*, invoice_allocations(*)")
+    .select("*, invoice_allocations(*), supplier_invoice_lines(*)")
     .eq("project_id", projectId)
     .order("created_at", { ascending: false });
 
@@ -64,6 +66,9 @@ export async function GET(
   const ordered = ((invoices ?? []) as unknown as InvoiceWithAllocations[]).map((invoice) => ({
     ...invoice,
     invoice_allocations: [...(invoice.invoice_allocations ?? [])].sort(
+      (a, b) => a.sort - b.sort || a.created_at.localeCompare(b.created_at)
+    ),
+    supplier_invoice_lines: [...(invoice.supplier_invoice_lines ?? [])].sort(
       (a, b) => a.sort - b.sort || a.created_at.localeCompare(b.created_at)
     ),
   }));
@@ -222,6 +227,53 @@ export async function POST(
     requestedAllocations = validation.allocations;
   }
 
+  let requestedLines: NormalizedSupplierInvoiceLine[] | null = null;
+  if (body.line_items !== undefined) {
+    if (requestedAllocations || proposed_match_type || proposed_match_id) {
+      return NextResponse.json(
+        { error: "Use supplier-line suggestions or invoice allocations, not both" },
+        { status: 400 }
+      );
+    }
+    const lineValidation = validateSupplierInvoiceLines(body.line_items, amount_ex_gst);
+    if (!lineValidation.ok) {
+      return NextResponse.json({ error: lineValidation.error }, { status: 400 });
+    }
+    requestedLines = lineValidation.lines;
+
+    // Suggested targets are convenience only, but still must belong to
+    // this invoice's project before they are stored or shown to a human.
+    const costLineIds = requestedLines
+      .filter((line) => line.suggested_match_type === "cost_line")
+      .map((line) => line.suggested_match_id as string);
+    const itemIds = requestedLines
+      .filter((line) => line.suggested_match_type === "item")
+      .map((line) => line.suggested_match_id as string);
+
+    if (costLineIds.length > 0) {
+      const { data: targets } = await supabase
+        .from("cost_lines")
+        .select("id")
+        .eq("project_id", projectId)
+        .is("deleted_at", null)
+        .in("id", costLineIds);
+      if ((targets ?? []).length !== new Set(costLineIds).size) {
+        return NextResponse.json({ error: "A suggested cost line is not in this project" }, { status: 400 });
+      }
+    }
+    if (itemIds.length > 0) {
+      const { data: targets } = await supabase
+        .from("items")
+        .select("id")
+        .eq("project_id", projectId)
+        .is("deleted_at", null)
+        .in("id", itemIds);
+      if ((targets ?? []).length !== new Set(itemIds).size) {
+        return NextResponse.json({ error: "A suggested specification item is not in this project" }, { status: 400 });
+      }
+    }
+  }
+
   const invoice_date =
     typeof body.invoice_date === "string" && body.invoice_date ? body.invoice_date : null;
   const confidence_note =
@@ -318,7 +370,11 @@ export async function POST(
   // already proposed (e.g. Aria posting with high-confidence
   // extraction) — start the row at 'proposed' rather than 'unmatched'
   // so it doesn't need a separate PATCH just to flip status.
-  if (proposed_match_type || requestedAllocations) {
+  const linesFullySuggested = Boolean(
+    requestedLines?.length &&
+      requestedLines.every((line) => line.suggested_match_type && line.suggested_match_id)
+  );
+  if (proposed_match_type || requestedAllocations || linesFullySuggested) {
     insertBody.status = "proposed";
   }
 
@@ -343,12 +399,41 @@ export async function POST(
 
   let createdInvoice: Invoice | InvoiceWithAllocations = invoice as Invoice;
 
+  let insertedLines: Array<NormalizedSupplierInvoiceLine & { id: string }> = [];
+  if (requestedLines && requestedLines.length > 0) {
+    const { data: lines, error: lineInsertError } = await supabase
+      .from("supplier_invoice_lines")
+      .insert(requestedLines.map((line) => ({ ...line, invoice_id: invoice.id })))
+      .select();
+    if (lineInsertError || !lines) {
+      await supabase.from("invoices").delete().eq("id", invoice.id);
+      if (storage_path) await supabase.storage.from(ASSET_BUCKET).remove([storage_path]);
+      return NextResponse.json(
+        { error: lineInsertError?.message ?? "Supplier invoice lines could not be saved" },
+        { status: 400 }
+      );
+    }
+    insertedLines = lines as Array<NormalizedSupplierInvoiceLine & { id: string }>;
+  }
+
   // Migration 060: new one-match proposals use the same allocation
   // model as split invoices. The transactional setter also validates
   // that the target belongs to this project. This keeps Aria's simple
   // proposal payload backwards compatible while ensuring every new
   // draft reaches the safer approval path.
-  const initialAllocations = requestedAllocations ??
+  const sourceLineAllocations = linesFullySuggested
+    ? insertedLines
+        .sort((a, b) => a.sort - b.sort)
+        .map((line) => ({
+          source_line_id: line.id,
+          match_type: line.suggested_match_type as InvoiceMatchType,
+          match_id: line.suggested_match_id as string,
+          amount_ex_gst: line.amount_ex_gst,
+          apply_to_library_cost: line.apply_to_library_cost,
+        }))
+    : null;
+
+  const initialAllocations = sourceLineAllocations ?? requestedAllocations ??
     (proposed_match_type && proposed_match_id
       ? [
           {
@@ -373,7 +458,7 @@ export async function POST(
 
     const { data: allocatedInvoice, error: allocationReloadError } = await supabase
       .from("invoices")
-      .select("*, invoice_allocations(*)")
+      .select("*, invoice_allocations(*), supplier_invoice_lines(*)")
       .eq("id", invoice.id)
       .single();
     if (allocationReloadError || !allocatedInvoice) {
@@ -383,6 +468,19 @@ export async function POST(
       );
     }
     createdInvoice = allocatedInvoice as unknown as InvoiceWithAllocations;
+  } else if (insertedLines.length > 0) {
+    const { data: invoiceWithLines, error: lineReloadError } = await supabase
+      .from("invoices")
+      .select("*, invoice_allocations(*), supplier_invoice_lines(*)")
+      .eq("id", invoice.id)
+      .single();
+    if (lineReloadError || !invoiceWithLines) {
+      return NextResponse.json(
+        { error: lineReloadError?.message ?? "Supplier invoice lines could not be reloaded" },
+        { status: 500 }
+      );
+    }
+    createdInvoice = invoiceWithLines as unknown as InvoiceWithAllocations;
   }
 
   // Booking selection v2 + Aria supplier invoices (r24), item 5:

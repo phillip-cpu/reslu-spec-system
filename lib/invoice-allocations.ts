@@ -1,8 +1,9 @@
 import type { InvoiceMatchType } from "@/types";
 
-export const MAX_INVOICE_ALLOCATIONS = 50;
+export const MAX_INVOICE_ALLOCATIONS = 100;
 
 export interface InvoiceAllocationInput {
+  source_line_id?: string | null;
   match_type: InvoiceMatchType;
   match_id: string;
   amount_ex_gst: number;
@@ -75,6 +76,10 @@ export function validateInvoiceAllocations(
     const matchType = record.match_type;
     const matchId = typeof record.match_id === "string" ? record.match_id.trim() : "";
     const amount = Number(record.amount_ex_gst);
+    const sourceLineId =
+      typeof record.source_line_id === "string" && record.source_line_id.trim()
+        ? record.source_line_id.trim()
+        : null;
 
     if (matchType !== "cost_line" && matchType !== "item") {
       return { ok: false, error: `Allocation ${index + 1} has an invalid match type` };
@@ -86,15 +91,25 @@ export function validateInvoiceAllocations(
       return { ok: false, error: `Allocation ${index + 1} amount must be greater than zero` };
     }
 
-    const key = `${matchType}:${matchId}`;
+    // Distinct supplier lines may legitimately post to the same project
+    // target (for example tape + protective film -> site consumables).
+    // A freehand allocation still cannot repeat a target, while a
+    // source-backed allocation is unique by its immutable invoice line.
+    const key = sourceLineId ? `source:${sourceLineId}` : `target:${matchType}:${matchId}`;
     if (seen.has(key)) {
-      return { ok: false, error: `Allocation ${index + 1} repeats the same match` };
+      return {
+        ok: false,
+        error: sourceLineId
+          ? `Allocation ${index + 1} repeats the same supplier line`
+          : `Allocation ${index + 1} repeats the same match`,
+      };
     }
     seen.add(key);
 
     const amountCents = moneyToCents(amount);
     allocatedCents += amountCents;
     allocations.push({
+      source_line_id: sourceLineId,
       match_type: matchType,
       match_id: matchId,
       amount_ex_gst: amountCents / 100,

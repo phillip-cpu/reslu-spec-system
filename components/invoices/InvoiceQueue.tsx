@@ -6,6 +6,7 @@ import type { CostSectionWithLines, InvoiceMatchType, InvoiceStatus, Item } from
 import type {
   InvoiceAllocation,
   InvoiceWithAllocations,
+  SupplierInvoiceLine,
 } from "@/types/round-supplier-invoice-intake";
 import type { InvoiceAllocationInput } from "@/lib/invoice-allocations";
 import { invoiceAllocationBalance } from "@/lib/invoice-allocations";
@@ -489,10 +490,13 @@ function InvoiceRow({
               <AllocationEditor
                 key={`${invoice.id}:${invoice.updated_at}:${savedAllocations
                   .map((allocation) => allocation.updated_at)
+                  .join(",")}:${(invoice.supplier_invoice_lines ?? [])
+                  .map((line) => line.updated_at)
                   .join(",")}`}
                 projectId={projectId}
                 invoiceAmountExGst={invoice.amount_ex_gst}
                 savedAllocations={savedAllocations}
+                sourceLines={invoice.supplier_invoice_lines ?? []}
                 legacyMatch={
                   invoice.proposed_match_type && invoice.proposed_match_id
                     ? {
@@ -516,6 +520,8 @@ function InvoiceRow({
 
 interface AllocationDraft {
   key: string;
+  source_line_id: string | null;
+  source_line: SupplierInvoiceLine | null;
   match_type: InvoiceMatchType;
   match_id: string;
   amount: string;
@@ -524,11 +530,37 @@ interface AllocationDraft {
 
 function allocationDrafts(
   saved: InvoiceAllocation[],
-  legacyMatch: InvoiceAllocationInput | null
+  legacyMatch: InvoiceAllocationInput | null,
+  sourceLines: SupplierInvoiceLine[]
 ): AllocationDraft[] {
+  if (sourceLines.length > 0) {
+    const savedBySource = new Map(
+      saved
+        .filter((allocation) => allocation.source_line_id)
+        .map((allocation) => [allocation.source_line_id as string, allocation])
+    );
+    return [...sourceLines]
+      .sort((a, b) => a.sort - b.sort || a.created_at.localeCompare(b.created_at))
+      .map((line) => {
+        const allocation = savedBySource.get(line.id);
+        return {
+          key: line.id,
+          source_line_id: line.id,
+          source_line: line,
+          match_type: allocation?.match_type ?? line.suggested_match_type ?? "cost_line",
+          match_id: allocation?.match_id ?? line.suggested_match_id ?? "",
+          amount: String(line.amount_ex_gst),
+          apply_to_library_cost:
+            allocation?.apply_to_library_cost ?? line.apply_to_library_cost ?? false,
+        };
+      });
+  }
+
   const source = saved.length > 0 ? saved : legacyMatch ? [legacyMatch] : [];
   return source.map((allocation, index) => ({
     key: "id" in allocation ? String(allocation.id) : `legacy-${index}`,
+    source_line_id: "source_line_id" in allocation ? (allocation.source_line_id ?? null) : null,
+    source_line: null,
     match_type: allocation.match_type,
     match_id: allocation.match_id,
     amount: String(allocation.amount_ex_gst),
@@ -542,6 +574,7 @@ function AllocationEditor({
   projectId,
   invoiceAmountExGst,
   savedAllocations,
+  sourceLines,
   legacyMatch,
   disabled,
   onSave,
@@ -549,12 +582,13 @@ function AllocationEditor({
   projectId: string;
   invoiceAmountExGst: number;
   savedAllocations: InvoiceAllocation[];
+  sourceLines: SupplierInvoiceLine[];
   legacyMatch: InvoiceAllocationInput | null;
   disabled: boolean;
   onSave: (allocations: InvoiceAllocationInput[]) => void;
 }) {
   const [drafts, setDrafts] = useState<AllocationDraft[]>(() =>
-    allocationDrafts(savedAllocations, legacyMatch)
+    allocationDrafts(savedAllocations, legacyMatch, sourceLines)
   );
   const [sections, setSections] = useState<CostSectionWithLines[]>([]);
   const [items, setItems] = useState<Item[]>([]);
@@ -580,10 +614,22 @@ function AllocationEditor({
 
   const numericDrafts = drafts.map((draft) => ({ amount_ex_gst: Number(draft.amount) || 0 }));
   const balance = invoiceAllocationBalance(invoiceAmountExGst, numericDrafts);
+  const sourceBacked = sourceLines.length > 0;
+  const unmatchedCount = drafts.filter((draft) => !draft.match_id).length;
   const complete =
     drafts.length > 0 &&
     drafts.every((draft) => draft.match_id && Number(draft.amount) > 0) &&
     balance === 0;
+
+  function linkedLibraryItem(matchType: InvoiceMatchType, matchId: string): Item | null {
+    const itemId =
+      matchType === "item"
+        ? matchId
+        : sections.flatMap((section) => section.lines).find((line) => line.id === matchId)?.item_id;
+    if (!itemId) return null;
+    const item = items.find((candidate) => candidate.id === itemId);
+    return item?.library_item_id ? item : null;
+  }
 
   function updateDraft(key: string, patch: Partial<AllocationDraft>) {
     setDrafts((current) => current.map((draft) => (draft.key === key ? { ...draft, ...patch } : draft)));
@@ -598,6 +644,8 @@ function AllocationEditor({
       ...current,
       {
         key: crypto.randomUUID(),
+        source_line_id: null,
+        source_line: null,
         match_type: "cost_line",
         match_id: "",
         amount: remaining > 0 ? remaining.toFixed(2) : "",
@@ -610,10 +658,13 @@ function AllocationEditor({
     if (!complete) return;
     onSave(
       drafts.map((draft) => ({
+        source_line_id: draft.source_line_id,
         match_type: draft.match_type,
         match_id: draft.match_id,
         amount_ex_gst: Number(draft.amount),
-        apply_to_library_cost: draft.apply_to_library_cost,
+        apply_to_library_cost:
+          draft.apply_to_library_cost &&
+          Boolean(linkedLibraryItem(draft.match_type, draft.match_id)),
       }))
     );
   }
@@ -622,21 +673,29 @@ function AllocationEditor({
     <div className="max-w-4xl space-y-3 border border-[#dcd6cc] bg-nearwhite p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="label-caps">Invoice allocation</p>
+          <p className="label-caps">{sourceBacked ? "Invoice line matching" : "Invoice allocation"}</p>
           <p className="text-caption text-charcoal/50">
-            Split the full {formatMoney(invoiceAmountExGst)} ex GST across the estimate or specification.
+            {sourceBacked
+              ? `${sourceLines.length} supplier line${sourceLines.length === 1 ? "" : "s"} · match each line to the estimate or specification before approval.`
+              : `Split the full ${formatMoney(invoiceAmountExGst)} ex GST across the estimate or specification.`}
           </p>
         </div>
         <span
           className={clsx(
             "label-caps border px-2 py-1",
-            balance === 0
+            complete
               ? "border-green-700/30 bg-green-50 !text-green-800"
               : "border-amber-700/30 bg-amber-50 !text-amber-800"
           )}
         >
-          {balance === 0
-            ? "Fully allocated"
+          {complete
+            ? sourceBacked
+              ? "All lines matched"
+              : "Fully allocated"
+            : sourceBacked && unmatchedCount > 0
+              ? `${unmatchedCount} line${unmatchedCount === 1 ? "" : "s"} need a destination`
+            : balance === 0
+              ? "Choose every destination"
             : balance > 0
               ? `${formatMoney(balance)} remaining`
               : `${formatMoney(Math.abs(balance))} over`}
@@ -651,96 +710,190 @@ function AllocationEditor({
         </p>
       ) : (
         <div className="space-y-2">
-          {drafts.map((draft, index) => (
-            <div
-              key={draft.key}
-              className="grid grid-cols-1 gap-2 border border-[#e5e0d6] bg-cream p-2 md:grid-cols-[minmax(0,1fr)_130px_auto_auto] md:items-center"
-            >
-              <label>
-                <span className="sr-only">Allocation {index + 1} match</span>
-                <select
-                  disabled={disabled}
-                  value={draft.match_id ? `${draft.match_type}:${draft.match_id}` : ""}
-                  onChange={(event) => {
-                    const [matchType, matchId] = event.target.value.split(":");
-                    updateDraft(draft.key, {
-                      match_type: (matchType || "cost_line") as InvoiceMatchType,
-                      match_id: matchId ?? "",
-                    });
-                  }}
-                  className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
-                >
-                  <option value="">Choose a cost line or item…</option>
-                  {sections.map((section) => (
-                    <optgroup key={section.id} label={`Estimate · ${section.name}`}>
-                      {section.lines.map((line) => (
-                        <option key={line.id} value={`cost_line:${line.id}`}>
-                          {line.description}
-                        </option>
+          {drafts.map((draft, index) => {
+            const libraryItem = draft.match_id
+              ? linkedLibraryItem(draft.match_type, draft.match_id)
+              : null;
+            const sourceLine = draft.source_line;
+
+            return (
+              <div
+                key={draft.key}
+                className={clsx(
+                  "grid grid-cols-1 gap-2 border border-[#e5e0d6] bg-cream p-3",
+                  sourceBacked
+                    ? "lg:grid-cols-[minmax(220px,1.1fr)_minmax(260px,1fr)_120px] lg:items-start"
+                    : "md:grid-cols-[minmax(0,1fr)_130px_auto_auto] md:items-center"
+                )}
+              >
+                {sourceLine && (
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-body font-medium text-nearblack">{sourceLine.description}</p>
+                        <p className="text-caption text-charcoal/50">
+                          {sourceLine.supplier_item_code ? `SKU ${sourceLine.supplier_item_code} · ` : ""}
+                          Qty {sourceLine.quantity} {sourceLine.unit ?? ""}
+                          {sourceLine.unit_price_ex_gst !== null
+                            ? ` · ${formatMoney(sourceLine.unit_price_ex_gst)} each ex GST`
+                            : ""}
+                        </p>
+                      </div>
+                      <span className="shrink-0 text-body font-medium text-nearblack lg:hidden">
+                        {formatMoney(sourceLine.amount_ex_gst)}
+                      </span>
+                    </div>
+                    {(sourceLine.gst !== null || sourceLine.amount_inc_gst !== null) && (
+                      <p className="text-caption text-charcoal/40">
+                        {sourceLine.gst !== null ? `${formatMoney(sourceLine.gst)} GST` : ""}
+                        {sourceLine.gst !== null && sourceLine.amount_inc_gst !== null ? " · " : ""}
+                        {sourceLine.amount_inc_gst !== null
+                          ? `${formatMoney(sourceLine.amount_inc_gst)} inc GST`
+                          : ""}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <div className="space-y-1.5">
+                  <label>
+                    <span className={sourceLine ? "label-caps mb-1 block !text-charcoal/50" : "sr-only"}>
+                      {sourceLine ? "Match to project" : `Allocation ${index + 1} match`}
+                    </span>
+                    <select
+                      disabled={disabled}
+                      value={draft.match_id ? `${draft.match_type}:${draft.match_id}` : ""}
+                      onChange={(event) => {
+                        const [matchType, matchId] = event.target.value.split(":");
+                        const nextType = (matchType || "cost_line") as InvoiceMatchType;
+                        const nextId = matchId ?? "";
+                        updateDraft(draft.key, {
+                          match_type: nextType,
+                          match_id: nextId,
+                          apply_to_library_cost: Boolean(nextId && linkedLibraryItem(nextType, nextId)),
+                        });
+                      }}
+                      className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+                    >
+                      <option value="">Choose a cost line or item…</option>
+                      {sections.map((section) => (
+                        <optgroup key={section.id} label={`Estimate · ${section.name}`}>
+                          {section.lines.map((line) => (
+                            <option key={line.id} value={`cost_line:${line.id}`}>
+                              {line.description}
+                            </option>
+                          ))}
+                        </optgroup>
                       ))}
-                    </optgroup>
-                  ))}
-                  {items.length > 0 && (
-                    <optgroup label="Specification items">
-                      {items.map((item) => (
-                        <option key={item.id} value={`item:${item.id}`}>
-                          {item.item_code} — {item.name}
-                        </option>
-                      ))}
-                    </optgroup>
+                      {items.length > 0 && (
+                        <optgroup label="Specification items">
+                          {items.map((item) => (
+                            <option key={item.id} value={`item:${item.id}`}>
+                              {item.item_code} — {item.name}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </select>
+                  </label>
+
+                  {sourceLine?.suggestion_note && (
+                    <p className="text-caption text-amber-800">Aria&apos;s note: {sourceLine.suggestion_note}</p>
                   )}
-                </select>
-              </label>
 
-              <label>
-                <span className="sr-only">Allocation {index + 1} ex-GST amount</span>
-                <input
-                  disabled={disabled}
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  value={draft.amount}
-                  onChange={(event) => updateDraft(draft.key, { amount: event.target.value })}
-                  className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-right text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
-                  aria-label={`Allocation ${index + 1} amount ex GST`}
-                />
-              </label>
+                  {sourceLine && (
+                    <label
+                      className={clsx(
+                        "flex items-start gap-1.5 text-caption",
+                        libraryItem ? "text-charcoal/70" : "text-charcoal/35"
+                      )}
+                      title={
+                        libraryItem
+                          ? `Update ${libraryItem.item_code} — ${libraryItem.name} in the library from this supplier unit price`
+                          : "Choose a specification item linked to the library, or an estimate line linked to one"
+                      }
+                    >
+                      <input
+                        disabled={disabled || !libraryItem}
+                        type="checkbox"
+                        checked={draft.apply_to_library_cost && Boolean(libraryItem)}
+                        onChange={(event) =>
+                          updateDraft(draft.key, { apply_to_library_cost: event.target.checked })
+                        }
+                        className="mt-0.5"
+                      />
+                      <span>
+                        {libraryItem
+                          ? `Update library price for ${libraryItem.item_code} — ${libraryItem.name}`
+                          : "Library price update unavailable for this destination"}
+                      </span>
+                    </label>
+                  )}
+                </div>
 
-              <label className="flex items-center gap-1.5 text-caption text-charcoal/60">
-                <input
-                  disabled={disabled}
-                  type="checkbox"
-                  checked={draft.apply_to_library_cost}
-                  onChange={(event) =>
-                    updateDraft(draft.key, { apply_to_library_cost: event.target.checked })
-                  }
-                />
-                Update library price
-              </label>
+                {sourceLine ? (
+                  <div className="hidden text-right lg:block">
+                    <p className="label-caps !text-charcoal/50">Line ex GST</p>
+                    <p className="mt-1 text-body font-medium text-nearblack">
+                      {formatMoney(sourceLine.amount_ex_gst)}
+                    </p>
+                  </div>
+                ) : (
+                  <label>
+                    <span className="sr-only">Allocation {index + 1} ex-GST amount</span>
+                    <input
+                      disabled={disabled}
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      value={draft.amount}
+                      onChange={(event) => updateDraft(draft.key, { amount: event.target.value })}
+                      className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-right text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+                      aria-label={`Allocation ${index + 1} amount ex GST`}
+                    />
+                  </label>
+                )}
 
-              {!disabled && (
-                <button
-                  type="button"
-                  onClick={() => setDrafts((current) => current.filter((row) => row.key !== draft.key))}
-                  className="text-caption text-red-700 hover:underline"
-                >
-                  Remove
-                </button>
-              )}
-            </div>
-          ))}
+                {!sourceLine && (
+                  <label className="flex items-center gap-1.5 text-caption text-charcoal/60">
+                    <input
+                      disabled={disabled || !libraryItem}
+                      type="checkbox"
+                      checked={draft.apply_to_library_cost && Boolean(libraryItem)}
+                      onChange={(event) =>
+                        updateDraft(draft.key, { apply_to_library_cost: event.target.checked })
+                      }
+                    />
+                    Update library price
+                  </label>
+                )}
+
+                {!disabled && !sourceLine && (
+                  <button
+                    type="button"
+                    onClick={() => setDrafts((current) => current.filter((row) => row.key !== draft.key))}
+                    className="text-caption text-red-700 hover:underline"
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
       {!disabled && (
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={addAllocation}
-            className="border border-[#c9c2b4] px-3 py-1.5 text-caption text-charcoal hover:border-nearblack"
-          >
-            + Add allocation
-          </button>
+          {!sourceBacked && (
+            <button
+              type="button"
+              onClick={addAllocation}
+              className="border border-[#c9c2b4] px-3 py-1.5 text-caption text-charcoal hover:border-nearblack"
+            >
+              + Add allocation
+            </button>
+          )}
           <button
             type="button"
             disabled={!complete}
@@ -765,7 +918,8 @@ function AllocationEditor({
 
       {!disabled && !complete && drafts.length > 0 && (
         <p className="text-caption text-amber-800">
-          Approval stays locked until every line has a match and the remaining balance is $0.00.
+          Approval stays locked until every {sourceBacked ? "supplier line" : "allocation"} has a project
+          destination and the remaining balance is $0.00.
         </p>
       )}
     </div>

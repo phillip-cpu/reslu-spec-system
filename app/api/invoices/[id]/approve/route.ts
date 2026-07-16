@@ -126,7 +126,7 @@ export async function POST(
 
   const { data: existing, error: fetchError } = await supabase
     .from("invoices")
-    .select("*, invoice_allocations(*)")
+    .select("*, invoice_allocations(*), supplier_invoice_lines(*)")
     .eq("id", id)
     .single();
   if (fetchError || !existing) {
@@ -163,7 +163,7 @@ export async function POST(
 
     const { data: approved, error: reloadError } = await supabase
       .from("invoices")
-      .select("*, invoice_allocations(*)")
+      .select("*, invoice_allocations(*), supplier_invoice_lines(*)")
       .eq("id", id)
       .single();
     if (reloadError || !approved) {
@@ -172,6 +172,9 @@ export async function POST(
 
     const typedApproved = approved as unknown as InvoiceWithAllocations;
     typedApproved.invoice_allocations = [...(typedApproved.invoice_allocations ?? [])].sort(
+      (a, b) => a.sort - b.sort || a.created_at.localeCompare(b.created_at)
+    );
+    typedApproved.supplier_invoice_lines = [...(typedApproved.supplier_invoice_lines ?? [])].sort(
       (a, b) => a.sort - b.sort || a.created_at.localeCompare(b.created_at)
     );
 

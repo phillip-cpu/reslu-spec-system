@@ -60,7 +60,7 @@ export async function PATCH(
 
   const { data: existing, error: fetchError } = await supabase
     .from("invoices")
-    .select("*, invoice_allocations(id)")
+    .select("*, invoice_allocations(id), supplier_invoice_lines(id)")
     .eq("id", id)
     .single();
   if (fetchError || !existing) {
@@ -98,7 +98,7 @@ export async function PATCH(
 
     const { data: invoice, error: reloadError } = await supabase
       .from("invoices")
-      .select("*, invoice_allocations(*)")
+      .select("*, invoice_allocations(*), supplier_invoice_lines(*)")
       .eq("id", id)
       .single();
     if (reloadError || !invoice) {
@@ -106,6 +106,9 @@ export async function PATCH(
     }
     const typed = invoice as unknown as InvoiceWithAllocations;
     typed.invoice_allocations = [...(typed.invoice_allocations ?? [])].sort(
+      (a, b) => a.sort - b.sort || a.created_at.localeCompare(b.created_at)
+    );
+    typed.supplier_invoice_lines = [...(typed.supplier_invoice_lines ?? [])].sort(
       (a, b) => a.sort - b.sort || a.created_at.localeCompare(b.created_at)
     );
     return NextResponse.json({ invoice: typed });
@@ -129,11 +132,11 @@ export async function PATCH(
 
   if (
     Object.prototype.hasOwnProperty.call(update, "amount_ex_gst") &&
-    existing.invoice_allocations.length > 0 &&
+    (existing.invoice_allocations.length > 0 || existing.supplier_invoice_lines.length > 0) &&
     Number(update.amount_ex_gst) !== Number(existing.amount_ex_gst)
   ) {
     return NextResponse.json(
-      { error: "Clear the saved allocations before changing the invoice amount" },
+      { error: "Clear saved allocations and supplier lines before changing the invoice amount" },
       { status: 400 }
     );
   }

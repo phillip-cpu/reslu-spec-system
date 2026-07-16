@@ -7245,6 +7245,35 @@ notes" above). Single migration (052); no protected file touched —
 round). `components/board/GroupBookPanel.tsx` was read in full and
 verified but not edited (already correct — see "Repair notes").
 
+### Supplier invoice source lines (16 July 2026, migration 061)
+
+`POST /api/projects/[id]/invoices` accepts an optional `line_items[]`
+array for both manual API callers and `propose_supplier_invoice`. Each
+row preserves the supplier SKU, description, quantity/unit, unit price,
+ex-GST amount, GST, inc-GST amount and an optional draft project-target
+suggestion. The line ex-GST amounts must reconcile to
+`amount_ex_gst` exactly. `line_items` cannot be combined with the legacy
+whole-invoice match or `allocations` modes.
+
+`GET /api/projects/[id]/invoices`, `PATCH /api/invoices/[id]` and
+`POST /api/invoices/[id]/approve` now return `supplier_invoice_lines`
+beside `invoice_allocations`. When source lines exist,
+`set_supplier_invoice_allocations` requires exactly one saved allocation
+per line, with the immutable source amount. Several source lines may map
+to one project cost line. Approval remains an admin-only, explicit action
+and applies every actual/library write atomically.
+
+A line-level library update uses the supplier's unit price (rather than
+dividing by the project's quantity), writes the exact project item's
+`price_trade`, updates its linked `library_items.price_trade`, and appends
+an auditable `library_price_history` row with the old/new price, invoice,
+source line and approving admin. The checkbox is unavailable in the UI
+unless the chosen destination resolves to a linked library product.
+
+Migration 061 backfills the already-ingested Bunnings invoice
+`W288707086-1` as its 10 exact printed lines. It deliberately creates no
+allocations and performs no approval or financial write.
+
 ## Proposal delivery skin (r25)
 
 Purely visual round, no migration, no schema change (BUILD-SPEC.md

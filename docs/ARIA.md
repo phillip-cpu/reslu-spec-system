@@ -930,20 +930,25 @@ out:
 - The canonical fields: `supplier`, `invoice_number`, `invoice_date`,
   `amount_ex_gst` (the figure Approve actually applies — get this one
   right), `gst`/`total` (omit either to let the server compute them).
-- If you can confidently tell which cost line or spec item this invoice
-  covers, a `proposed_match_type` (`'cost_line'` or `'item'`) +
-  `proposed_match_id`. If you're not confident, leave both out — the
-  invoice still lands in the queue, just as "unmatched" rather than
-  "proposed", for a human to match by hand. Guessing wrong here is worse
-  than not guessing — never fabricate a match id you're not reasonably
-  sure of.
-- If it confidently spans several existing targets, use `allocations`
-  instead of the single proposed-match pair. Every entry needs
-  `match_type`, `match_id` and `amount_ex_gst`; the amounts must add to
-  the canonical ex-GST invoice total exactly. Keep
-  `apply_to_library_cost` false unless the invoice establishes a clean,
-  reusable unit cost for that particular linked product. Never create a
-  cost line or force an unrelated match just to make the split balance.
+- Extract **every visible product/service row** into `line_items`, in
+  printed order: supplier SKU, useful description, quantity/unit, unit
+  price, ex-GST line amount, GST and inc-GST amount where present. The
+  ex-GST line amounts must add to the canonical invoice total exactly.
+  Do not collapse a multi-product supplier invoice into prose in
+  `line_hints`; line hints remain supplementary context only.
+- Each source line may carry its own `suggested_match_type`
+  (`'cost_line'` or `'item'`) + `suggested_match_id`. Leave both off a
+  line when uncertain: Phillip can match it in the queue. Guessing wrong
+  is worse than leaving a line unmatched; never fabricate a target.
+- Set a line's `apply_to_library_cost` true only when it is an exact,
+  reusable product/unit-price match to a specification item linked to
+  the library (for example an individual Yabby tap). General site
+  consumables, freight and delivery normally map to job cost lines and
+  remain false.
+- `proposed_match_type`/`proposed_match_id` and `allocations` remain
+  legacy whole-invoice options for invoices where individual source
+  lines genuinely are not available. Prefer `line_items` whenever the
+  attachment shows them. Never mix these modes in one call.
 
 ```
 propose_supplier_invoice({
@@ -954,15 +959,39 @@ propose_supplier_invoice({
   invoice_date: "2026-07-09",
   amount_ex_gst: 1840.50,
   abn: "12 345 678 901",
-  line_hints: "Floor tiles, ensuite — matches the tiling cost line",
+  line_items: [
+    {
+      supplier_item_code: "TILE-600-WH",
+      description: "Porcelain floor tile 600 x 600 white",
+      quantity: 20,
+      unit: "M2",
+      unit_price_ex_gst: 82.00,
+      amount_ex_gst: 1640.00,
+      gst: 164.00,
+      amount_inc_gst: 1804.00,
+      suggested_match_type: "item",
+      suggested_match_id: "...",
+      apply_to_library_cost: true,
+    },
+    {
+      description: "Metro delivery",
+      quantity: 1,
+      unit: "EA",
+      unit_price_ex_gst: 200.50,
+      amount_ex_gst: 200.50,
+      gst: 20.05,
+      amount_inc_gst: 220.55,
+      suggested_match_type: "cost_line",
+      suggested_match_id: "...",
+      apply_to_library_cost: false,
+    },
+  ],
   job_hints: "Invoice addressed to '14 Seaview Road' — matches this project's site address",
-  proposed_match_type: "cost_line",
-  proposed_match_id: "...",
   confidence_note: "Confident on amount/supplier; matched by address only, no job number on the invoice",
 })
 ```
 
-Multi-line example (still draft-only):
+Legacy allocation example when source rows are unavailable (still draft-only):
 
 ```
 allocations: [

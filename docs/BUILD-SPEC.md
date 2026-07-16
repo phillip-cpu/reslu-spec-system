@@ -110,6 +110,13 @@ C. Supplier-invoice split allocation (r30, migration 060):
 10. Save and approval both require the allocation total to equal the invoice's canonical ex-GST amount to the cent. Approval is admin-only and applies every allocation in one database transaction; a missing/deleted/ambiguous target or repeated resolved cost line rolls the whole approval back.
 11. `propose_supplier_invoice` remains draft-only and may optionally propose an `allocations[]` array. A single legacy proposed match is converted to a one-line allocation. Human approval remains the only money-writing action.
 
+D. Supplier invoice source lines (r31, migration 061):
+12. Preserve every visible supplier product/service row as immutable invoice evidence: supplier SKU, description, quantity/unit, unit price, ex-GST line total, GST and inc-GST total. The supplier-line ex-GST total must reconcile to the canonical invoice amount exactly before the draft is accepted.
+13. The approval screen shows each supplier line and requires a separate project destination. Several supplier lines may legitimately map to one estimate cost line; one supplier line cannot be split or silently changed. Approval remains locked until every source line is matched.
+14. A supplier line matched to an exact specification item (or an estimate line linked to that item) may explicitly update its linked library product using the supplier unit price. General consumables and delivery lines update job actuals only. Every library price write records invoice, supplier, source-line, old price, new price and approving admin in `library_price_history`.
+15. Existing Bunnings invoice W288707086-1 is backfilled as 10 source lines from its ingested PDF. This is evidence-only: migration does not allocate or approve the invoice.
+16. Aria must prefer `line_items[]` in `propose_supplier_invoice`, extracting every visible line even when she cannot suggest a destination. Suggestions are draft metadata only; email content never writes project actuals or library prices.
+
 ## Proposal delivery skin (r25)
 
 Approved via animated mockup 2026-07-11. The proposal email + page adopt the website's card/paper language. Sources of truth: docs/RESLU-Card-Design-Spec.md, docs/RESLU-Paper-Animation-Brief.md, and the WORKING implementation at "…/260611_RESLU Marketing & Branding overhall/Website/reslu-site/src/components/BeginForm.astro" (filmed fold: FV geometry fractions, video alignment/clip/feather technique, write() pen + .ink CSS, cardstock #faf6ec/#e6dfcf, emboss #e2dac5). COPY, don't reinvent.

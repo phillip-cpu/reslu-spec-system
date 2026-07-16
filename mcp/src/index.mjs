@@ -189,6 +189,47 @@ async function apiFetch(path, options = {}) {
 // drifting apart.
 // ------------------------------------------------------------
 
+const SUPPLIER_INVOICE_LINE_ITEMS_SCHEMA = {
+  type: "array",
+  maxItems: 100,
+  description:
+    "Every visible supplier invoice line, in printed order. The ex-GST line amounts must add exactly to amount_ex_gst. These are immutable source evidence; suggested matches remain draft-only until a human approves.",
+  items: {
+    type: "object",
+    properties: {
+      supplier_item_code: { type: "string", description: "Supplier SKU/product code, if printed" },
+      description: { type: "string", description: "Exact useful supplier line description" },
+      quantity: { type: "number", exclusiveMinimum: 0 },
+      unit: { type: "string", description: "Printed unit, e.g. EACH, EA, M2" },
+      unit_price_ex_gst: { type: "number", minimum: 0 },
+      amount_ex_gst: { type: "number", exclusiveMinimum: 0 },
+      gst: { type: "number", minimum: 0 },
+      amount_inc_gst: { type: "number", exclusiveMinimum: 0 },
+      raw_text: { type: "string", description: "Optional unnormalised source line for audit" },
+      suggested_match_type: {
+        type: "string",
+        enum: ["cost_line", "item"],
+        description: "Optional project destination suggestion; omit when uncertain",
+      },
+      suggested_match_id: {
+        type: "string",
+        description: "cost_lines.id or items.id in the same project; set only with suggested_match_type",
+      },
+      suggestion_note: {
+        type: "string",
+        description: "Short reason for the suggested destination or why human matching is needed",
+      },
+      apply_to_library_cost: {
+        type: "boolean",
+        description:
+          "Default false. Suggest true only for an exact reusable product/unit-price match to a specification item linked to the library.",
+      },
+    },
+    required: ["description", "quantity", "amount_ex_gst"],
+    additionalProperties: false,
+  },
+};
+
 const TOOLS = [
   {
     name: "list_projects",
@@ -516,7 +557,7 @@ const TOOLS = [
   {
     name: "create_invoice",
     description:
-      "Create (extract) an invoice record for a project — admin-only, financial. Use this after parsing an incoming supplier invoice email/PDF. amount_ex_gst is required; gst/total will be computed by the caller's own extraction if provided.",
+      "Create (extract) an invoice record for a project — admin-only, financial. Use this after parsing an incoming supplier invoice email/PDF. Include line_items whenever individual supplier lines are visible. This creates a draft only; amount_ex_gst is required and gst/total may be provided.",
     inputSchema: {
       type: "object",
       properties: {
@@ -527,6 +568,7 @@ const TOOLS = [
         amount_ex_gst: { type: "number" },
         gst: { type: "number" },
         total: { type: "number" },
+        line_items: SUPPLIER_INVOICE_LINE_ITEMS_SCHEMA,
         confidence_note: {
           type: "string",
           description: "Free-text note on extraction confidence, e.g. 'OCR unclear on invoice_number'",
@@ -564,7 +606,7 @@ const TOOLS = [
   {
     name: "propose_supplier_invoice",
     description:
-      "Propose a DRAFT supplier invoice (money OUT) extracted from an already-ingested email — for the Invoice queue's Aria pipeline. Nothing is applied until a human clicks Approve. source_email_id is required. For one confident match, pass proposed_match_type + proposed_match_id. If the invoice spans several project costs, pass allocations instead; their ex-GST amounts must add exactly to amount_ex_gst. Omit both when a human should match it manually.",
+      "Propose a DRAFT supplier invoice (money OUT) extracted from an already-ingested email. Nothing is applied until a human clicks Approve. source_email_id is required. Extract every visible product/service row into line_items; each line can optionally suggest its own cost-line or specification-item destination. Prefer line_items over the legacy whole-invoice match/allocations fields.",
     inputSchema: {
       type: "object",
       properties: {
@@ -579,6 +621,7 @@ const TOOLS = [
         abn: { type: "string", description: "Supplier's ABN, if visible on the invoice — stored in `extracted`, not a canonical column" },
         line_hints: { type: "string", description: "Free text — which line items/work this invoice covers, and why you think so" },
         job_hints: { type: "string", description: "Free text — what in the email told you which project this belongs to (address, job number, contact name, etc)" },
+        line_items: SUPPLIER_INVOICE_LINE_ITEMS_SCHEMA,
         proposed_match_type: { type: "string", enum: ["cost_line", "item"], description: "Omit if you can't confidently match — the invoice still lands in the queue as 'unmatched' for a human to match manually" },
         proposed_match_id: { type: "string", description: "cost_lines.id or items.id, matching proposed_match_type — must belong to the same project_id" },
         allocations: {
@@ -595,7 +638,7 @@ const TOOLS = [
             required: ["match_type", "match_id", "amount_ex_gst"],
             additionalProperties: false,
           },
-          maxItems: 50,
+          maxItems: 100,
         },
         confidence_note: { type: "string", description: "Free text — anything about the extraction/match a human reviewer should know, e.g. 'ABN partly obscured by a coffee stain, verify supplier'" },
       },

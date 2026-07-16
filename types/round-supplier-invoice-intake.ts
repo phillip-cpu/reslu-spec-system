@@ -39,6 +39,28 @@ export interface SupplierInvoiceExtracted {
   job_hints?: string | null;
 }
 
+/** Immutable supplier/PDF source line (migration 061). */
+export interface SupplierInvoiceLine {
+  id: string;
+  invoice_id: string;
+  supplier_item_code: string | null;
+  description: string;
+  quantity: number;
+  unit: string | null;
+  unit_price_ex_gst: number | null;
+  amount_ex_gst: number;
+  gst: number | null;
+  amount_inc_gst: number | null;
+  raw_text: string | null;
+  suggested_match_type: InvoiceMatchType | null;
+  suggested_match_id: string | null;
+  suggestion_note: string | null;
+  apply_to_library_cost: boolean;
+  sort: number;
+  created_at: string;
+  updated_at: string;
+}
+
 /** `invoices` (007_estimating.sql) + migration 052's additive columns. */
 export interface InvoiceWithIntake extends Invoice {
   source: InvoiceSource;
@@ -51,6 +73,7 @@ export interface InvoiceWithIntake extends Invoice {
 export interface InvoiceAllocation {
   id: string;
   invoice_id: string;
+  source_line_id: string | null;
   match_type: InvoiceMatchType;
   match_id: string;
   amount_ex_gst: number;
@@ -64,6 +87,7 @@ export interface InvoiceAllocation {
 /** GET invoice responses include their saved splits in display order. */
 export interface InvoiceWithAllocations extends InvoiceWithIntake {
   invoice_allocations: InvoiceAllocation[];
+  supplier_invoice_lines: SupplierInvoiceLine[];
 }
 
 /** body accepted by POST /api/invoices/[id]/approve (r24 addition — see that route's own doc comment for the cost flow-through this drives). */
