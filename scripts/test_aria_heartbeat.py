@@ -15,6 +15,9 @@ SPEC.loader.exec_module(aria_heartbeat)
 
 
 class AriaHeartbeatTests(unittest.TestCase):
+    def test_batch_limit_is_timeout_safe(self):
+        self.assertEqual(aria_heartbeat.QUEUE_BATCH_LIMIT, 4)
+
     def test_count_url_encodes_filters(self):
         url = aria_heartbeat._queue_count_url(
             "https://example.supabase.co",
@@ -49,6 +52,20 @@ class AriaHeartbeatTests(unittest.TestCase):
         self.assertEqual(request.full_url, "https://example.test/rest/v1/rpc/claim_aria_queue_items")
         self.assertEqual(json.loads(request.data), {"p_limit": 4})
 
+    @patch("subprocess.run")
+    def test_wake_message_forbids_overlapping_queue_claim(self, run):
+        run.return_value = MagicMock(returncode=0, stdout="{}", stderr="")
+
+        self.assertTrue(
+            aria_heartbeat.wake_aria(
+                [{"id": "queue-1", "kind": "invoice_candidate", "payload": {}}]
+            )
+        )
+
+        message = run.call_args.args[0]
+        text_index = message.index("--text") + 1
+        self.assertIn("Do NOT call get_aria_queue", message[text_index])
+
     @patch.object(aria_heartbeat, "release_queue_items")
     @patch.object(aria_heartbeat, "wake_aria", return_value=False)
     @patch.object(
@@ -76,7 +93,11 @@ class AriaHeartbeatTests(unittest.TestCase):
         now = datetime(2026, 7, 14, 13, 0, tzinfo=timezone.utc)
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "heartbeat.json"
-            aria_heartbeat.record_successful_wake(state_path, 2, now=now)
+            aria_heartbeat.record_successful_wake(
+                state_path,
+                [{"id": "queue-1"}, {"id": "queue-2"}],
+                now=now,
+            )
 
             remaining = aria_heartbeat.wake_cooldown_remaining(
                 state_path,
@@ -89,7 +110,11 @@ class AriaHeartbeatTests(unittest.TestCase):
         now = datetime(2026, 7, 14, 13, 0, tzinfo=timezone.utc)
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "heartbeat.json"
-            aria_heartbeat.record_successful_wake(state_path, 2, now=now)
+            aria_heartbeat.record_successful_wake(
+                state_path,
+                [{"id": "queue-1"}, {"id": "queue-2"}],
+                now=now,
+            )
 
             remaining = aria_heartbeat.wake_cooldown_remaining(
                 state_path,
@@ -122,6 +147,96 @@ class AriaHeartbeatTests(unittest.TestCase):
                 aria_heartbeat.wake_cooldown_remaining(state_path),
                 timedelta(0),
             )
+
+    def test_successful_wake_records_exact_batch(self):
+        now = datetime(2026, 7, 14, 13, 0, tzinfo=timezone.utc)
+        queue_items = [
+            {
+                "id": "queue-1",
+                "kind": "invoice_candidate",
+                "payload": {"supplier": "Example"},
+                "created_at": "2026-07-14T12:00:00+00:00",
+            }
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "heartbeat.json"
+            aria_heartbeat.record_successful_wake(state_path, queue_items, now=now)
+
+            self.assertEqual(aria_heartbeat.active_queue_batch(state_path), queue_items)
+
+    @patch.object(aria_heartbeat, "claim_queue_items")
+    @patch.object(aria_heartbeat, "wake_aria")
+    @patch.object(
+        aria_heartbeat,
+        "get_queue_item_statuses",
+        return_value={"queue-1": "picked_up"},
+    )
+    def test_unfinished_active_batch_blocks_new_claim_during_cooldown(
+        self,
+        _statuses,
+        wake,
+        claim,
+    ):
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            aria_heartbeat.os.environ,
+            {
+                "SUPABASE_URL": "https://example.test",
+                "SUPABASE_SERVICE_ROLE_KEY": "secret",
+                "ARIA_HEARTBEAT_STATE_PATH": str(Path(directory) / "state.json"),
+            },
+            clear=False,
+        ):
+            aria_heartbeat.record_successful_wake(
+                aria_heartbeat.heartbeat_state_path(),
+                [{"id": "queue-1", "kind": "daily_review", "payload": {}}],
+                now=now,
+            )
+            aria_heartbeat.main()
+
+        claim.assert_not_called()
+        wake.assert_not_called()
+
+    @patch.object(aria_heartbeat, "claim_queue_items")
+    @patch.object(aria_heartbeat, "wake_aria", return_value=True)
+    @patch.object(
+        aria_heartbeat,
+        "get_queue_item_statuses",
+        return_value={"queue-1": "picked_up"},
+    )
+    def test_expired_active_batch_rewakes_same_items_without_new_claim(
+        self,
+        _statuses,
+        wake,
+        claim,
+    ):
+        now = datetime.now(timezone.utc)
+        queue_items = [
+            {
+                "id": "queue-1",
+                "kind": "daily_review",
+                "payload": {},
+                "created_at": None,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            aria_heartbeat.os.environ,
+            {
+                "SUPABASE_URL": "https://example.test",
+                "SUPABASE_SERVICE_ROLE_KEY": "secret",
+                "ARIA_HEARTBEAT_STATE_PATH": str(Path(directory) / "state.json"),
+            },
+            clear=False,
+        ):
+            aria_heartbeat.record_successful_wake(
+                aria_heartbeat.heartbeat_state_path(),
+                queue_items,
+                now=now - timedelta(minutes=21),
+            )
+            aria_heartbeat.main()
+
+        claim.assert_not_called()
+        wake.assert_called_once_with(queue_items)
 
 
 if __name__ == "__main__":

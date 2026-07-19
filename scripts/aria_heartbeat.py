@@ -13,9 +13,10 @@ The count check costs zero tokens and invokes no model when there is no
 work. Pending rows AND abandoned picked_up rows older than the queue's
 15-minute visibility timeout are counted, matching the database claim
 function exactly. When work exists the script injects a trusted system
-event into OpenClaw and wakes Aria immediately. A successful wake starts
-a 20-minute local cooldown so the five-minute launchd check cannot keep
-injecting duplicate events into a session that is already working. An
+event into OpenClaw and wakes Aria immediately. A successful wake records
+the exact claimed batch locally. That batch remains exclusive until every
+row is resolved: later five-minute checks never claim more work while it
+is unfinished, and can only re-wake the same rows after the cooldown. An
 empty queue clears the cooldown immediately.
 
 Only stdlib (urllib) — no new dependency for a single cheap HTTP call,
@@ -38,7 +39,10 @@ from urllib.parse import urlencode
 
 
 WAKE_COOLDOWN = timedelta(minutes=20)
-QUEUE_BATCH_LIMIT = 10
+# Four records is the largest batch Aria completed reliably in one turn
+# during the July 2026 recovery. Keeping it small also limits the blast
+# radius if OpenClaw accepts a wake but the session is busy or times out.
+QUEUE_BATCH_LIMIT = 4
 DEFAULT_STATE_PATH = Path.home() / ".openclaw" / "aria-heartbeat-state.json"
 
 
@@ -156,6 +160,39 @@ def release_queue_items(
         return
 
 
+def get_queue_item_statuses(
+    supabase_url: str,
+    service_role_key: str,
+    item_ids: list[str],
+) -> dict[str, str]:
+    """Read the current status of one locally tracked claimed batch."""
+    safe_ids = [value for value in item_ids if value]
+    if not safe_ids:
+        return {}
+    query = urlencode(
+        {
+            "select": "id,status",
+            "id": f"in.({','.join(safe_ids)})",
+        }
+    )
+    request = urllib.request.Request(
+        f"{supabase_url}/rest/v1/aria_queue?{query}",
+        headers={
+            "apikey": service_role_key,
+            "Authorization": f"Bearer {service_role_key}",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        payload = json.loads(response.read().decode("utf-8") or "[]")
+    if not isinstance(payload, list):
+        return {}
+    return {
+        str(row.get("id")): str(row.get("status"))
+        for row in payload
+        if isinstance(row, dict) and row.get("id") and row.get("status")
+    }
+
+
 def heartbeat_state_path() -> Path:
     """Return the local wake-state path, with an override for tests/ops."""
     configured = os.environ.get("ARIA_HEARTBEAT_STATE_PATH")
@@ -177,6 +214,18 @@ def _last_successful_wake(path: Path) -> datetime | None:
         return None
 
 
+def active_queue_batch(path: Path) -> list[dict]:
+    """Return the last successfully delivered batch, if state has one."""
+    try:
+        payload = json.loads(path.read_text())
+        batch = payload.get("queue_items")
+        if not isinstance(batch, list):
+            return []
+        return [item for item in batch if isinstance(item, dict) and item.get("id")]
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+
+
 def wake_cooldown_remaining(path: Path, now: datetime | None = None) -> timedelta:
     """How long until another successful wake may be injected."""
     last_wake = _last_successful_wake(path)
@@ -188,18 +237,29 @@ def wake_cooldown_remaining(path: Path, now: datetime | None = None) -> timedelt
 
 def record_successful_wake(
     path: Path,
-    pending_count: int,
+    queue_items: list[dict],
     now: datetime | None = None,
 ) -> None:
-    """Atomically persist the last successful OpenClaw wake."""
+    """Atomically persist the last successful OpenClaw wake and batch."""
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    batch = [
+        {
+            "id": item.get("id"),
+            "kind": item.get("kind"),
+            "payload": item.get("payload", {}),
+            "created_at": item.get("created_at"),
+        }
+        for item in queue_items
+        if item.get("id")
+    ]
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(f"{path.suffix}.tmp")
     temporary.write_text(
         json.dumps(
             {
                 "last_successful_wake_at": current.isoformat(),
-                "pending_count": pending_count,
+                "pending_count": len(batch),
+                "queue_items": batch,
             }
         )
     )
@@ -245,7 +305,8 @@ def wake_aria(queue_items: list[dict]) -> bool:
     )
     text = (
         f"[aria-heartbeat] {pending_count} aria_queue item(s) have been atomically claimed "
-        "for this run. Process every item in the batch below. Before acting, call "
+        "for this run. Process every item in the batch below. Do NOT call get_aria_queue "
+        "for this wake: doing so would claim a second, overlapping batch. Before acting, call "
         "get_context_snapshot and search the relevant Second Brain records. Work "
         "autonomously on safe internal tasks and drafts; keep sends, publishing, approvals, "
         "deletions, financial changes and client commitments behind human approval. Resolve "
@@ -291,13 +352,49 @@ def main() -> None:
         print("[aria-heartbeat] Missing SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.", file=sys.stderr)
         sys.exit(2)
 
+    state_path = heartbeat_state_path()
+    previous_batch = active_queue_batch(state_path)
+    if previous_batch:
+        previous_ids = [str(item.get("id") or "") for item in previous_batch]
+        try:
+            statuses = get_queue_item_statuses(
+                supabase_url,
+                service_role_key,
+                previous_ids,
+            )
+        except Exception as exc:  # noqa: BLE001 — fail closed: never open an overlapping batch.
+            print(f"[aria-heartbeat] Active batch status check failed: {exc}", file=sys.stderr)
+            sys.exit(2)
+
+        unfinished = [
+            item
+            for item in previous_batch
+            if statuses.get(str(item.get("id") or "")) not in {"done", "failed"}
+        ]
+        if unfinished:
+            cooldown = wake_cooldown_remaining(state_path)
+            if cooldown > timedelta(0):
+                minutes = max(1, int((cooldown.total_seconds() + 59) // 60))
+                print(
+                    f"[aria-heartbeat] {len(unfinished)} item(s) still active in the current "
+                    f"batch; no new claim — retry available in about {minutes} minute(s)."
+                )
+                return
+            if wake_aria(unfinished):
+                record_successful_wake(state_path, unfinished)
+                return
+            sys.exit(1)
+
+        # Every row from the delivered batch reached a terminal state.
+        # Only now may the heartbeat claim the next batch.
+        clear_wake_state(state_path)
+
     try:
         pending = get_actionable_queue_count(supabase_url, service_role_key)
     except Exception as exc:  # noqa: BLE001 — a heartbeat failing to check is not worth crashing loudly over.
         print(f"[aria-heartbeat] Queue count check failed: {exc}", file=sys.stderr)
         sys.exit(2)
 
-    state_path = heartbeat_state_path()
     if pending == 0:
         # Zero rows = exit, no model invoked, zero token cost — the
         # entire point of this script. Clearing the successful-wake
@@ -325,7 +422,7 @@ def main() -> None:
         return
 
     if wake_aria(queue_items):
-        record_successful_wake(state_path, len(queue_items))
+        record_successful_wake(state_path, queue_items)
         return
 
     try:
