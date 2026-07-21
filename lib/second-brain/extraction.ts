@@ -120,6 +120,54 @@ const EXTRACTION_TOOL: ClaudeTool = {
   },
 };
 
+// ── Xero invoice detection & HTML fetch ─────────────────────────────────────
+//
+// Xero notification emails arrive from *@xero.com and include a public invoice
+// view URL (https://in.xero.com/[token]). The email body only carries a brief
+// summary line; the full invoice detail (supplier ABN, line items, dates) lives
+// on the Xero page itself. These helpers fetch that HTML so Claude can parse a
+// complete invoice rather than just the notification stub.
+
+const XERO_FROM_RE = /xero\.com/i;
+const XERO_URL_RE = /https:\/\/in\.xero\.com\/[^\s"'<>]+/;
+
+/** Extract the first in.xero.com URL from email body text, or null. */
+function extractXeroUrl(text: string | null): string | null {
+  if (!text) return null;
+  const m = text.match(XERO_URL_RE);
+  // Strip trailing punctuation that email clients may include (., ;, )
+  return m ? m[0].replace(/[.,;)]+$/, "") : null;
+}
+
+/**
+ * Fetch the Xero public invoice page HTML.
+ * in.xero.com view URLs are server-rendered and return meaningful invoice HTML
+ * without JavaScript execution. Capped at 25 000 chars — Xero pages bundle a
+ * large JS payload; we only need the invoice body content.
+ * Returns null on any network error or non-200 response so callers fall back
+ * gracefully to parsing the email body alone.
+ */
+async function tryFetchXeroHtml(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        Accept: "text/html,application/xhtml+xml",
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    return html.length > 25000
+      ? html.slice(0, 25000) + "\n<!-- [truncated at 25 000 chars] -->"
+      : html;
+  } catch {
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export type ExtractionAttachment = {
   id: string;
   filename: string | null;
@@ -242,8 +290,24 @@ export async function extractEmail(
   supabase: SupabaseClient,
   email: { id: string; from_addr: string; subject: string | null; clean_text: string | null },
   attachments: ExtractionAttachment[]
-): Promise<{ result: ExtractionResult; usage: Record<string, unknown> }> {
+): Promise<{ result: ExtractionResult; usage: Record<string, unknown>; xeroUrl: string | null }> {
   const visionBlocks = await buildVisionBlocks(supabase, attachments);
+
+  // Xero invoice emails: detect the public view URL and fetch live HTML so
+  // Claude can extract structured invoice data (line items, ABN, invoice number)
+  // rather than just the notification email's summary text. Falls back silently
+  // to email-body-only extraction if the fetch fails.
+  let xeroUrl: string | null = null;
+  let xeroHtml: string | null = null;
+  if (XERO_FROM_RE.test(email.from_addr)) {
+    xeroUrl = extractXeroUrl(email.clean_text);
+    if (xeroUrl) {
+      xeroHtml = await tryFetchXeroHtml(xeroUrl);
+      if (!xeroHtml) {
+        console.warn("extraction: Xero HTML fetch failed, falling back to email body only", xeroUrl);
+      }
+    }
+  }
 
   const content: ClaudeContentBlock[] = [
     {
@@ -253,6 +317,15 @@ export async function extractEmail(
     ...visionBlocks,
   ];
 
+  if (xeroHtml) {
+    content.push({
+      type: "text",
+      text:
+        `<xero_invoice_page url="${xeroUrl ?? ""}">${"\n"}${xeroHtml}${"\n"}</xero_invoice_page>` +
+        "\n\nThe above block is the live HTML from the Xero invoice view page. When populating supplier_invoice, extract supplier name, ABN, invoice number, invoice date, line items (use as line_hints), subtotal, GST, and total from this HTML — it is more complete than the notification email body. You may use verbatim text from within the <xero_invoice_page> block as source_quote values.",
+    });
+  }
+
   const { toolInput, usage } = await callClaude({
     model: EXTRACTION_MODEL,
     system: EXTRACTION_SYSTEM_PROMPT,
@@ -261,5 +334,5 @@ export async function extractEmail(
     maxTokens: 4096,
   });
 
-  return { result: toolInput as ExtractionResult, usage };
+  return { result: toolInput as ExtractionResult, usage, xeroUrl };
 }

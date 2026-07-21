@@ -71,7 +71,7 @@ export async function GET(request: NextRequest) {
         .eq("email_id", email.id);
       if (attError) throw new Error(`attachment fetch failed: ${attError.message}`);
 
-      const { result } = await extractEmail(supabase, email, (attachments ?? []) as ExtractionAttachment[]);
+      const { result, xeroUrl } = await extractEmail(supabase, email, (attachments ?? []) as ExtractionAttachment[]);
 
       if (result.supplier_invoice) {
         const { error: queueError } = await supabase.from("aria_queue").upsert(
@@ -88,6 +88,7 @@ export async function GET(request: NextRequest) {
               from_addr: email.from_addr,
               subject: email.subject,
               candidate: result.supplier_invoice,
+              xero_url: xeroUrl ?? null,
               instruction:
                 "Match this invoice candidate to the correct RESLU project and specification context, then call propose_supplier_invoice. Do not approve, apply, mark paid, or alter project financials.",
             },

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { ASSET_BUCKET, slugFilename } from "@/lib/storage";
 import { validateUploadBytes } from "@/lib/file-sniff";
@@ -538,6 +538,59 @@ export async function POST(
     } catch (pushError) {
       console.error("projects/[id]/invoices: push notify failed (non-fatal)", pushError);
     }
+  }
+
+  // Auto-confirm unconfirmed trade visits when an invoice arrives from a
+  // matching supplier on the same project. This is a system-initiated action
+  // (service role, bypasses RLS) so it always runs regardless of which admin
+  // created the invoice. Non-blocking: any failure here must never prevent the
+  // invoice from being created.
+  try {
+    const svcClient = createServiceRoleClient();
+    // Fuzzy match: find contacts whose company name contains the invoice
+    // supplier string (or vice versa via ilike). Limit 5 to cap the IN clause.
+    const { data: matchedContacts } = await svcClient
+      .from("contacts")
+      .select("id")
+      .ilike("company", `%${supplier}%`)
+      .limit(5);
+    if (matchedContacts && matchedContacts.length > 0) {
+      const contactIds = (matchedContacts as { id: string }[]).map((c) => c.id);
+      const { data: unconfirmedVisits } = await svcClient
+        .from("trade_visits")
+        .select("id")
+        .eq("project_id", projectId)
+        .eq("status", "unconfirmed")
+        .in("contact_id", contactIds)
+        .is("deleted_at", null);
+      if (unconfirmedVisits && unconfirmedVisits.length > 0) {
+        const autoConfirmedAt = new Date().toISOString();
+        for (const v of unconfirmedVisits as { id: string }[]) {
+          const { error: confirmErr } = await svcClient
+            .from("trade_visits")
+            .update({ status: "confirmed", confirmed_at: autoConfirmedAt, confirmed_by: "staff" })
+            .eq("id", v.id)
+            .eq("status", "unconfirmed") // guard: only confirm if still unconfirmed
+            .is("deleted_at", null);
+          if (confirmErr) {
+            console.error(
+              "projects/[id]/invoices: auto-confirm visit failed (non-fatal)",
+              v.id,
+              confirmErr.message
+            );
+          } else {
+            console.log(
+              `projects/[id]/invoices: auto-confirmed visit ${v.id} via invoice from ${supplier} on project ${projectId}`
+            );
+          }
+        }
+      }
+    }
+  } catch (autoConfirmErr) {
+    console.error(
+      "projects/[id]/invoices: auto-confirm trade visits failed (non-fatal)",
+      autoConfirmErr
+    );
   }
 
   const payload: CreateInvoiceResponse = { invoice: createdInvoice as Invoice };
