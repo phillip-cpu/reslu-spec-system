@@ -19,6 +19,7 @@ export const SIDEBAR_NAV_ITEMS: SidebarNavItem[] = [
   { id: "cpd", label: "CPD", href: "/cpd" },
   { id: "contacts", label: "Address Book", href: "/contacts" },
   { id: "leads", label: "Leads", href: "/leads", adminOnly: true, badgeKey: "leads_followups" },
+  { id: "marketing", label: "Marketing", href: "/marketing", adminOnly: true },
   { id: "health", label: "Health", href: "/health", adminOnly: true },
   { id: "settings", label: "Settings", href: "/settings" },
   {
