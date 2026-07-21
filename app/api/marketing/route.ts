@@ -1,272 +1,474 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
+import {
+  adelaideUtcRange,
+  EXCLUDED_MARKETING_LEAD_STAGE,
+  mergeAdDailyMetrics,
+  metaLeadConversions,
+  parseMarketingRange,
+  rollupMarketingWeeks,
+  type AdDailyMetric,
+  type MarketingSourceState,
+  type MarketingSourceStatus,
+} from "@/lib/marketing";
 
-// ── Google Ads ─────────────────────────────────────────────────────────────
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-async function getGoogleAdsToken(): Promise<string | null> {
+interface SourceResult<T> {
+  data: T | null;
+  status: MarketingSourceStatus;
+}
+
+interface AdSourceData {
+  daily: AdDailyMetric[];
+  total_spend: number;
+  total_conversions: number;
+  ctr: number;
+}
+
+interface GoogleAdsRow {
+  segments?: { date?: string };
+  metrics?: {
+    costMicros?: string | number;
+    clicks?: string | number;
+    impressions?: string | number;
+    conversions?: string | number;
+  };
+}
+
+interface GoogleAdsResponse {
+  results?: GoogleAdsRow[];
+  nextPageToken?: string;
+}
+
+interface MetaInsightsRow {
+  date_start?: string;
+  spend?: string | number;
+  clicks?: string | number;
+  impressions?: string | number;
+  actions?: unknown;
+}
+
+interface MetaInsightsResponse {
+  data?: MetaInsightsRow[];
+  paging?: { cursors?: { after?: string }; next?: string };
+}
+
+interface SearchConsoleRow {
+  keys?: string[];
+  clicks?: number;
+  impressions?: number;
+  ctr?: number;
+  position?: number;
+}
+
+interface SearchConsoleResponse {
+  rows?: SearchConsoleRow[];
+}
+
+interface SearchConsoleData {
+  top_queries: Array<{
+    query: string;
+    clicks: number;
+    impressions: number;
+    ctr: number;
+    position: number;
+  }>;
+  pages: Array<{
+    page: string;
+    clicks: number;
+    impressions: number;
+    ctr: number;
+    position: number;
+  }>;
+  totals: { clicks: number; impressions: number; ctr: number; avg_position: number };
+}
+
+function sourceStatus(state: MarketingSourceState, message?: string): MarketingSourceStatus {
+  return { state, ...(message ? { message } : {}) };
+}
+
+function missingEnvironment(names: string[]): string[] {
+  return names.filter((name) => !process.env[name]?.trim());
+}
+
+async function jsonBody<T>(response: Response): Promise<T | null> {
   try {
-    const res = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: process.env.GOOGLE_ADS_CLIENT_ID ?? "",
-        client_secret: process.env.GOOGLE_ADS_CLIENT_SECRET ?? "",
-        refresh_token: process.env.GOOGLE_ADS_REFRESH_TOKEN ?? "",
-        grant_type: "refresh_token",
-      }),
-    });
-    const data = await res.json();
-    return data.access_token ?? null;
+    return (await response.json()) as T;
   } catch {
     return null;
   }
 }
 
-async function fetchGoogleAds(from: string, to: string) {
+// ── Google Ads ─────────────────────────────────────────────────────────────
+
+async function fetchGoogleAds(from: string, to: string): Promise<SourceResult<AdSourceData>> {
+  const required = [
+    "GOOGLE_ADS_DEVELOPER_TOKEN",
+    "GOOGLE_ADS_REFRESH_TOKEN",
+    "GOOGLE_ADS_CLIENT_ID",
+    "GOOGLE_ADS_CLIENT_SECRET",
+    "GOOGLE_ADS_CUSTOMER_ID",
+  ];
+  const missing = missingEnvironment(required);
+  if (missing.length > 0) {
+    return {
+      data: null,
+      status: sourceStatus("not_configured", "Add Google Ads credentials in Vercel."),
+    };
+  }
+
   try {
-    const accessToken = await getGoogleAdsToken();
-    if (!accessToken) return null;
+    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: process.env.GOOGLE_ADS_CLIENT_ID!,
+        client_secret: process.env.GOOGLE_ADS_CLIENT_SECRET!,
+        refresh_token: process.env.GOOGLE_ADS_REFRESH_TOKEN!,
+        grant_type: "refresh_token",
+      }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
+    });
+    const tokenData = await jsonBody<{ access_token?: string }>(tokenResponse);
+    if (!tokenResponse.ok || !tokenData?.access_token) {
+      console.error("[marketing] Google Ads OAuth failed:", tokenResponse.status);
+      return {
+        data: null,
+        status: sourceStatus("error", "Google Ads authentication needs attention."),
+      };
+    }
 
-    const customerId = process.env.GOOGLE_ADS_CUSTOMER_ID ?? "3357756972";
-    const devToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN ?? "";
+    const customerId = process.env.GOOGLE_ADS_CUSTOMER_ID!.replace(/-/g, "");
+    if (!/^\d+$/.test(customerId)) {
+      return {
+        data: null,
+        status: sourceStatus("error", "Google Ads customer ID is invalid."),
+      };
+    }
 
+    const configuredVersion = process.env.GOOGLE_ADS_API_VERSION?.trim() || "v24";
+    const apiVersion = /^v\d+$/.test(configuredVersion) ? configuredVersion : "v24";
     const query = `
       SELECT
         segments.date,
         metrics.cost_micros,
         metrics.clicks,
         metrics.impressions,
-        metrics.ctr,
         metrics.conversions
       FROM campaign
       WHERE segments.date BETWEEN '${from}' AND '${to}'
         AND campaign.status != 'REMOVED'
     `;
 
-    const res = await fetch(
-      `https://googleads.googleapis.com/v17/customers/${customerId}/googleAds:search`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "developer-token": devToken,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ query }),
+    const rows: GoogleAdsRow[] = [];
+    let pageToken: string | undefined;
+    let pageCount = 0;
+    do {
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${tokenData.access_token}`,
+        "developer-token": process.env.GOOGLE_ADS_DEVELOPER_TOKEN!,
+        "Content-Type": "application/json",
+      };
+      const loginCustomerId = process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID?.replace(/-/g, "");
+      if (loginCustomerId) headers["login-customer-id"] = loginCustomerId;
+
+      const response = await fetch(
+        `https://googleads.googleapis.com/${apiVersion}/customers/${customerId}/googleAds:search`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ query, ...(pageToken ? { pageToken } : {}) }),
+          cache: "no-store",
+          signal: AbortSignal.timeout(20_000),
+        }
+      );
+      const page = await jsonBody<GoogleAdsResponse>(response);
+      if (!response.ok || !page) {
+        console.error("[marketing] Google Ads API failed:", response.status);
+        return {
+          data: null,
+          status: sourceStatus("error", "Google Ads data could not be refreshed."),
+        };
       }
-    );
+      rows.push(...(page.results ?? []));
+      pageToken = page.nextPageToken;
+      pageCount += 1;
+    } while (pageToken && pageCount < 20);
 
-    if (!res.ok) {
-      console.error("[marketing] Google Ads API error:", res.status, await res.text());
-      return null;
+    if (pageToken) {
+      return {
+        data: null,
+        status: sourceStatus("error", "Google Ads returned more rows than the reporting limit."),
+      };
     }
 
-    const data = await res.json();
-    const rows: any[] = data.results ?? [];
-
-    const byDate: Record<string, { spend: number; clicks: number; impressions: number; conversions: number }> = {};
+    const byDate = new Map<
+      string,
+      { spend: number; clicks: number; impressions: number; conversions: number }
+    >();
     for (const row of rows) {
-      const date: string = row.segments?.date;
+      const date = row.segments?.date;
       if (!date) continue;
-      if (!byDate[date]) byDate[date] = { spend: 0, clicks: 0, impressions: 0, conversions: 0 };
-      byDate[date].spend += (Number(row.metrics?.costMicros) || 0) / 1_000_000;
-      byDate[date].clicks += Number(row.metrics?.clicks) || 0;
-      byDate[date].impressions += Number(row.metrics?.impressions) || 0;
-      byDate[date].conversions += Number(row.metrics?.conversions) || 0;
+      const current = byDate.get(date) ?? { spend: 0, clicks: 0, impressions: 0, conversions: 0 };
+      current.spend += (Number(row.metrics?.costMicros) || 0) / 1_000_000;
+      current.clicks += Number(row.metrics?.clicks) || 0;
+      current.impressions += Number(row.metrics?.impressions) || 0;
+      current.conversions += Number(row.metrics?.conversions) || 0;
+      byDate.set(date, current);
     }
 
-    const daily = Object.entries(byDate)
-      .map(([date, m]) => ({
+    const daily: AdDailyMetric[] = [...byDate.entries()]
+      .map(([date, metrics]) => ({
         date,
-        spend: m.spend,
-        clicks: m.clicks,
-        impressions: m.impressions,
-        ctr: m.impressions > 0 ? m.clicks / m.impressions : 0,
-        conversions: m.conversions,
+        spend: metrics.spend,
+        clicks: metrics.clicks,
+        impressions: metrics.impressions,
+        ctr: metrics.impressions > 0 ? metrics.clicks / metrics.impressions : 0,
+        conversions: metrics.conversions,
       }))
       .sort((a, b) => a.date.localeCompare(b.date));
 
-    const total_spend = daily.reduce((s, d) => s + d.spend, 0);
-    const total_conversions = daily.reduce((s, d) => s + d.conversions, 0);
-    const total_clicks = daily.reduce((s, d) => s + d.clicks, 0);
-    const total_impressions = daily.reduce((s, d) => s + d.impressions, 0);
-
+    const totalSpend = daily.reduce((sum, row) => sum + row.spend, 0);
+    const totalConversions = daily.reduce((sum, row) => sum + row.conversions, 0);
+    const totalClicks = daily.reduce((sum, row) => sum + row.clicks, 0);
+    const totalImpressions = daily.reduce((sum, row) => sum + row.impressions, 0);
     return {
-      daily,
-      total_spend,
-      total_conversions,
-      ctr: total_impressions > 0 ? total_clicks / total_impressions : 0,
+      data: {
+        daily,
+        total_spend: totalSpend,
+        total_conversions: totalConversions,
+        ctr: totalImpressions > 0 ? totalClicks / totalImpressions : 0,
+      },
+      status: sourceStatus("connected"),
     };
-  } catch (e) {
-    console.error("[marketing] Google Ads fetch error:", e);
-    return null;
+  } catch (error) {
+    console.error("[marketing] Google Ads fetch failed:", error);
+    return {
+      data: null,
+      status: sourceStatus("error", "Google Ads timed out or could not be reached."),
+    };
   }
 }
 
 // ── Meta Ads ───────────────────────────────────────────────────────────────
 
-async function fetchMeta(from: string, to: string) {
+async function fetchMeta(from: string, to: string): Promise<SourceResult<AdSourceData>> {
+  const missing = missingEnvironment(["META_ACCESS_TOKEN", "META_AD_ACCOUNT_ID"]);
+  if (missing.length > 0) {
+    return {
+      data: null,
+      status: sourceStatus("not_configured", "Add Meta Ads credentials in Vercel."),
+    };
+  }
+
   try {
-    const accessToken = process.env.META_ACCESS_TOKEN ?? "";
-    const adAccountId = process.env.META_AD_ACCOUNT_ID ?? "act_1132427791048457";
+    const rows: MetaInsightsRow[] = [];
+    let after: string | undefined;
+    let pageCount = 0;
+    do {
+      const params = new URLSearchParams({
+        fields: "date_start,spend,clicks,impressions,actions",
+        time_increment: "1",
+        time_range: JSON.stringify({ since: from, until: to }),
+        limit: "200",
+        ...(after ? { after } : {}),
+      });
+      const response = await fetch(
+        `https://graph.facebook.com/v21.0/${process.env.META_AD_ACCOUNT_ID}/insights?${params}`,
+        {
+          headers: { Authorization: `Bearer ${process.env.META_ACCESS_TOKEN}` },
+          cache: "no-store",
+          signal: AbortSignal.timeout(20_000),
+        }
+      );
+      const page = await jsonBody<MetaInsightsResponse>(response);
+      if (!response.ok || !page) {
+        console.error("[marketing] Meta Ads API failed:", response.status);
+        return {
+          data: null,
+          status: sourceStatus("error", "Meta Ads data could not be refreshed."),
+        };
+      }
+      rows.push(...(page.data ?? []));
+      after = page.paging?.next ? page.paging.cursors?.after : undefined;
+      pageCount += 1;
+    } while (after && pageCount < 20);
 
-    if (!accessToken) return null;
-
-    const params = new URLSearchParams({
-      fields: "date_start,spend,clicks,impressions,ctr,actions",
-      time_increment: "1",
-      time_range: JSON.stringify({ since: from, until: to }),
-      access_token: accessToken,
-      limit: "200",
-    });
-
-    const res = await fetch(`https://graph.facebook.com/v21.0/${adAccountId}/insights?${params}`);
-
-    if (!res.ok) {
-      console.error("[marketing] Meta API error:", res.status, await res.text());
-      return null;
+    if (after) {
+      return {
+        data: null,
+        status: sourceStatus("error", "Meta Ads returned more rows than the reporting limit."),
+      };
     }
 
-    const data = await res.json();
-    const rows: any[] = data.data ?? [];
-
-    const daily = rows
-      .map((row) => {
-        const conversions = ((row.actions as any[]) ?? [])
-          .filter((a) => ["lead", "offsite_conversion.fb_pixel_lead"].includes(a.action_type))
-          .reduce((s: number, a: any) => s + Number(a.value || 0), 0);
-
-        return {
-          date: row.date_start as string,
+    const daily: AdDailyMetric[] = rows
+      .flatMap((row) => {
+        if (!row.date_start) return [];
+        const clicks = Number(row.clicks) || 0;
+        const impressions = Number(row.impressions) || 0;
+        return [{
+          date: row.date_start,
           spend: Number(row.spend) || 0,
-          clicks: Number(row.clicks) || 0,
-          impressions: Number(row.impressions) || 0,
-          ctr: Number(row.ctr) || 0,
-          conversions,
-        };
+          clicks,
+          impressions,
+          ctr: impressions > 0 ? clicks / impressions : 0,
+          conversions: metaLeadConversions(row.actions),
+        }];
       })
       .sort((a, b) => a.date.localeCompare(b.date));
 
-    const total_spend = daily.reduce((s, d) => s + d.spend, 0);
-    const total_conversions = daily.reduce((s, d) => s + d.conversions, 0);
-    const total_clicks = daily.reduce((s, d) => s + d.clicks, 0);
-    const total_impressions = daily.reduce((s, d) => s + d.impressions, 0);
-
+    const totalSpend = daily.reduce((sum, row) => sum + row.spend, 0);
+    const totalConversions = daily.reduce((sum, row) => sum + row.conversions, 0);
+    const totalClicks = daily.reduce((sum, row) => sum + row.clicks, 0);
+    const totalImpressions = daily.reduce((sum, row) => sum + row.impressions, 0);
     return {
-      daily,
-      total_spend,
-      total_conversions,
-      ctr: total_impressions > 0 ? total_clicks / total_impressions : 0,
+      data: {
+        daily,
+        total_spend: totalSpend,
+        total_conversions: totalConversions,
+        ctr: totalImpressions > 0 ? totalClicks / totalImpressions : 0,
+      },
+      status: sourceStatus("connected"),
     };
-  } catch (e) {
-    console.error("[marketing] Meta fetch error:", e);
-    return null;
+  } catch (error) {
+    console.error("[marketing] Meta Ads fetch failed:", error);
+    return {
+      data: null,
+      status: sourceStatus("error", "Meta Ads timed out or could not be reached."),
+    };
   }
 }
 
 // ── Google Search Console ──────────────────────────────────────────────────
 
-async function fetchGSC(from: string, to: string) {
+async function fetchSearchConsole(from: string, to: string): Promise<SourceResult<SearchConsoleData>> {
+  const required = [
+    "GOOGLE_SEARCH_CONSOLE_CLIENT_ID",
+    "GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET",
+    "GOOGLE_SEARCH_CONSOLE_REFRESH_TOKEN",
+  ];
+  if (missingEnvironment(required).length > 0) {
+    return {
+      data: null,
+      status: sourceStatus("not_configured", "Connect Google Search Console in Vercel."),
+    };
+  }
+
   try {
-    const clientId = process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_ID ?? "";
-    const clientSecret = process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET ?? "";
-    const refreshToken = process.env.GOOGLE_SEARCH_CONSOLE_REFRESH_TOKEN ?? "";
-
-    if (!refreshToken || !clientId || !clientSecret) return null;
-
-    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
-        client_id: clientId,
-        client_secret: clientSecret,
-        refresh_token: refreshToken,
+        client_id: process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_ID!,
+        client_secret: process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET!,
+        refresh_token: process.env.GOOGLE_SEARCH_CONSOLE_REFRESH_TOKEN!,
         grant_type: "refresh_token",
       }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
     });
-    const tokenData = await tokenRes.json();
-    const accessToken: string = tokenData.access_token;
-    if (!accessToken) return null;
+    const tokenData = await jsonBody<{ access_token?: string }>(tokenResponse);
+    if (!tokenResponse.ok || !tokenData?.access_token) {
+      console.error("[marketing] Search Console OAuth failed:", tokenResponse.status);
+      return {
+        data: null,
+        status: sourceStatus("error", "Search Console authentication needs attention."),
+      };
+    }
 
-    const siteUrl = "sc-domain:reslu.com.au";
+    const siteUrl = process.env.GOOGLE_SEARCH_CONSOLE_SITE_URL || "sc-domain:reslu.com.au";
+    const endpoint = `https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(siteUrl)}/searchAnalytics/query`;
     const headers = {
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: `Bearer ${tokenData.access_token}`,
       "Content-Type": "application/json",
     };
+    const requestBody = (body: Record<string, unknown>) =>
+      fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ startDate: from, endDate: to, dataState: "all", ...body }),
+        cache: "no-store",
+        signal: AbortSignal.timeout(20_000),
+      });
 
-    const [queryRes, pageRes] = await Promise.all([
-      fetch(
-        `https://searchconsole.googleapis.com/webmasters/v3/sites/${encodeURIComponent(siteUrl)}/searchAnalytics/query`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            startDate: from,
-            endDate: to,
-            dimensions: ["query"],
-            rowLimit: 20,
-            orderBy: [{ fieldName: "clicks", sortOrder: "DESCENDING" }],
-          }),
-        }
-      ),
-      fetch(
-        `https://searchconsole.googleapis.com/webmasters/v3/sites/${encodeURIComponent(siteUrl)}/searchAnalytics/query`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            startDate: from,
-            endDate: to,
-            dimensions: ["page"],
-            rowLimit: 10,
-            orderBy: [{ fieldName: "clicks", sortOrder: "DESCENDING" }],
-          }),
-        }
-      ),
+    // A dimensionless row is the correct site-wide total. Summing the
+    // top queries would understate clicks/impressions and distort position.
+    const [totalsResponse, queriesResponse, pagesResponse] = await Promise.all([
+      requestBody({ rowLimit: 1 }),
+      requestBody({ dimensions: ["query"], rowLimit: 20 }),
+      requestBody({ dimensions: ["page"], rowLimit: 10 }),
     ]);
+    if (!totalsResponse.ok || !queriesResponse.ok || !pagesResponse.ok) {
+      console.error("[marketing] Search Console API failed:", {
+        totals: totalsResponse.status,
+        queries: queriesResponse.status,
+        pages: pagesResponse.status,
+      });
+      return {
+        data: null,
+        status: sourceStatus("error", "Search Console data could not be refreshed."),
+      };
+    }
 
-    const [queryData, pageData] = await Promise.all([
-      queryRes.ok ? queryRes.json() : { rows: [] },
-      pageRes.ok ? pageRes.json() : { rows: [] },
+    const [totalsData, queriesData, pagesData] = await Promise.all([
+      jsonBody<SearchConsoleResponse>(totalsResponse),
+      jsonBody<SearchConsoleResponse>(queriesResponse),
+      jsonBody<SearchConsoleResponse>(pagesResponse),
     ]);
+    if (!totalsData || !queriesData || !pagesData) {
+      return {
+        data: null,
+        status: sourceStatus("error", "Search Console returned an unreadable response."),
+      };
+    }
 
-    const top_queries = ((queryData.rows ?? []) as any[]).map((r) => ({
-      query: r.keys[0] as string,
-      clicks: r.clicks as number,
-      impressions: r.impressions as number,
-      ctr: r.ctr as number,
-      position: r.position as number,
-    }));
-
-    const pages = ((pageData.rows ?? []) as any[]).map((r) => ({
-      page: (r.keys[0] as string).replace(/^https?:\/\/(www\.)?reslu\.com\.au/, "") || "/",
-      clicks: r.clicks as number,
-      impressions: r.impressions as number,
-      ctr: r.ctr as number,
-      position: r.position as number,
-    }));
-
-    const total_clicks = top_queries.reduce((s, r) => s + r.clicks, 0);
-    const total_impressions = top_queries.reduce((s, r) => s + r.impressions, 0);
-    const avg_position =
-      top_queries.length > 0
-        ? top_queries.reduce((s, r) => s + r.position, 0) / top_queries.length
-        : 0;
+    const total = totalsData.rows?.[0];
+    const topQueries = (queriesData.rows ?? []).flatMap((row) => {
+      const query = row.keys?.[0];
+      if (!query) return [];
+      return [{
+        query,
+        clicks: Number(row.clicks) || 0,
+        impressions: Number(row.impressions) || 0,
+        ctr: Number(row.ctr) || 0,
+        position: Number(row.position) || 0,
+      }];
+    });
+    const pages = (pagesData.rows ?? []).flatMap((row) => {
+      const page = row.keys?.[0];
+      if (!page) return [];
+      return [{
+        page: page.replace(/^https?:\/\/(www\.)?reslu\.com\.au/, "") || "/",
+        clicks: Number(row.clicks) || 0,
+        impressions: Number(row.impressions) || 0,
+        ctr: Number(row.ctr) || 0,
+        position: Number(row.position) || 0,
+      }];
+    });
 
     return {
-      top_queries,
-      pages,
-      totals: {
-        clicks: total_clicks,
-        impressions: total_impressions,
-        ctr: total_impressions > 0 ? total_clicks / total_impressions : 0,
-        avg_position,
+      data: {
+        top_queries: topQueries,
+        pages,
+        totals: {
+          clicks: Number(total?.clicks) || 0,
+          impressions: Number(total?.impressions) || 0,
+          ctr: Number(total?.ctr) || 0,
+          avg_position: Number(total?.position) || 0,
+        },
       },
+      status: sourceStatus("connected"),
     };
-  } catch (e) {
-    console.error("[marketing] GSC fetch error:", e);
-    return null;
+  } catch (error) {
+    console.error("[marketing] Search Console fetch failed:", error);
+    return {
+      data: null,
+      status: sourceStatus("error", "Search Console timed out or could not be reached."),
+    };
   }
 }
 
@@ -275,85 +477,79 @@ async function fetchGSC(from: string, to: string) {
 export async function GET(request: NextRequest) {
   const supabase = await createClient();
   const info = await getUserRole(supabase);
-  if (info?.role !== "admin") {
+  if (!info) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (info.role !== "admin") {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const { searchParams } = request.nextUrl;
-  const defaultFrom = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
-  const defaultTo = new Date().toISOString().slice(0, 10);
-  const from = searchParams.get("from") || defaultFrom;
-  const to = searchParams.get("to") || defaultTo;
-
-  const [google, meta, gsc] = await Promise.all([
-    fetchGoogleAds(from, to),
-    fetchMeta(from, to),
-    fetchGSC(from, to),
-  ]);
-
-  // Lead count
-  const { count: leadCount } = await supabase
-    .from("leads")
-    .select("*", { count: "exact", head: true })
-    .gte("created_at", from)
-    .lte("created_at", `${to}T23:59:59Z`);
-
-  const total_spend = (google?.total_spend ?? 0) + (meta?.total_spend ?? 0);
-  const total_conversions = (google?.total_conversions ?? 0) + (meta?.total_conversions ?? 0);
-  const leads = leadCount ?? 0;
-  const cost_per_lead = leads > 0 ? total_spend / leads : null;
-
-  // Merge daily rows
-  const dateSet = new Set([
-    ...(google?.daily.map((d) => d.date) ?? []),
-    ...(meta?.daily.map((d) => d.date) ?? []),
-  ]);
-  const daily = Array.from(dateSet)
-    .sort()
-    .map((date) => {
-      const g = google?.daily.find((d) => d.date === date);
-      const m = meta?.daily.find((d) => d.date === date);
-      return {
-        date,
-        google_spend: g?.spend ?? 0,
-        meta_spend: m?.spend ?? 0,
-        total_spend: (g?.spend ?? 0) + (m?.spend ?? 0),
-        conversions: (g?.conversions ?? 0) + (m?.conversions ?? 0),
-      };
-    });
-
-  // Weekly rollup (Mon–Sun)
-  const weekMap: Record<string, { week: string; total_spend: number; google_spend: number; meta_spend: number; conversions: number }> = {};
-  for (const d of daily) {
-    const dt = new Date(`${d.date}T00:00:00Z`);
-    const dow = dt.getUTCDay(); // 0=Sun
-    const offset = dow === 0 ? 6 : dow - 1;
-    const mon = new Date(dt);
-    mon.setUTCDate(dt.getUTCDate() - offset);
-    const wk = mon.toISOString().slice(0, 10);
-    if (!weekMap[wk]) weekMap[wk] = { week: wk, total_spend: 0, google_spend: 0, meta_spend: 0, conversions: 0 };
-    weekMap[wk].total_spend += d.total_spend;
-    weekMap[wk].google_spend += d.google_spend;
-    weekMap[wk].meta_spend += d.meta_spend;
-    weekMap[wk].conversions += d.conversions;
+  const range = parseMarketingRange(
+    request.nextUrl.searchParams.get("from"),
+    request.nextUrl.searchParams.get("to")
+  );
+  if (!range.ok) {
+    return NextResponse.json({ error: range.error }, { status: 400 });
   }
-  const weekly = Object.values(weekMap).sort((a, b) => a.week.localeCompare(b.week));
 
-  return NextResponse.json({
-    from,
-    to,
-    summary: {
-      total_spend,
-      total_conversions,
-      cost_per_lead,
-      leads,
-      google_spend: google?.total_spend ?? 0,
-      meta_spend: meta?.total_spend ?? 0,
-      google_ctr: google?.ctr ?? 0,
-      meta_ctr: meta?.ctr ?? 0,
+  const leadRange = adelaideUtcRange(range.from, range.to);
+  const leadQuery = supabase
+    .from("leads")
+    .select("id", { count: "exact", head: true })
+    .is("deleted_at", null)
+    .neq("stage", EXCLUDED_MARKETING_LEAD_STAGE)
+    .gte("received_at", leadRange.start)
+    .lt("received_at", leadRange.endExclusive);
+
+  const [google, meta, searchConsole, leadResult] = await Promise.all([
+    fetchGoogleAds(range.from, range.to),
+    fetchMeta(range.from, range.to),
+    fetchSearchConsole(range.from, range.to),
+    leadQuery,
+  ]);
+
+  const leadStatus = leadResult.error
+    ? sourceStatus("error", "Lead totals could not be loaded.")
+    : sourceStatus("connected");
+  if (leadResult.error) {
+    console.error("[marketing] Lead count failed:", leadResult.error.message);
+  }
+
+  const googleSpend = google.data?.total_spend ?? 0;
+  const metaSpend = meta.data?.total_spend ?? 0;
+  const googleConversions = google.data?.total_conversions ?? 0;
+  const metaConversions = meta.data?.total_conversions ?? 0;
+  const leads = leadResult.error ? 0 : (leadResult.count ?? 0);
+  const totalSpend = googleSpend + metaSpend;
+  const daily = mergeAdDailyMetrics(google.data?.daily, meta.data?.daily);
+
+  return NextResponse.json(
+    {
+      from: range.from,
+      to: range.to,
+      generated_at: new Date().toISOString(),
+      sources: {
+        google_ads: google.status,
+        meta_ads: meta.status,
+        search_console: searchConsole.status,
+        leads: leadStatus,
+      },
+      summary: {
+        total_spend: totalSpend,
+        total_conversions: googleConversions + metaConversions,
+        cost_per_lead: leads > 0 ? totalSpend / leads : null,
+        leads,
+        google_spend: googleSpend,
+        meta_spend: metaSpend,
+        google_conversions: googleConversions,
+        meta_conversions: metaConversions,
+        google_ctr: google.data?.ctr ?? 0,
+        meta_ctr: meta.data?.ctr ?? 0,
+      },
+      daily,
+      weekly: rollupMarketingWeeks(daily),
+      seo: searchConsole.data,
     },
-    daily,
-    weekly,
-    seo: gsc,
-  });
+    { headers: { "Cache-Control": "private, no-store, max-age=0" } }
+  );
 }

@@ -1,6 +1,10 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import {
+  marketingPresetFrom,
+  type MarketingSourceStatus,
+} from "@/lib/marketing";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -46,8 +50,16 @@ interface MarketingData {
     leads: number;
     google_spend: number;
     meta_spend: number;
+    google_conversions: number;
+    meta_conversions: number;
     google_ctr: number;
     meta_ctr: number;
+  };
+  sources: {
+    google_ads: MarketingSourceStatus;
+    meta_ads: MarketingSourceStatus;
+    search_console: MarketingSourceStatus;
+    leads: MarketingSourceStatus;
   };
   daily: DailyRow[];
   weekly: WeeklyRow[];
@@ -56,6 +68,11 @@ interface MarketingData {
     pages: SEOPage[];
     totals: { clicks: number; impressions: number; ctr: number; avg_position: number };
   } | null;
+}
+
+interface MarketingDashboardProps {
+  initialFrom: string;
+  initialTo: string;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -83,9 +100,9 @@ function BarChart({
   formatTip,
   height = 140,
 }: {
-  data: Record<string, any>[];
+  data: Record<string, unknown>[];
   bars: { key: string; color: string; label: string }[];
-  formatTip?: (d: Record<string, any>) => string;
+  formatTip?: (d: Record<string, unknown>) => string;
   height?: number;
 }) {
   const [tip, setTip] = useState<{ x: number; y: number; text: string } | null>(null);
@@ -107,16 +124,20 @@ function BarChart({
         {data.map((d, i) => {
           const x = 10 + i * ((viewW - 20) / count);
           let yOffset = height;
+          const accessibleLabel = formatTip
+            ? formatTip(d)
+            : bars.map((bar) => `${bar.label}: ${fmt$(Number(d[bar.key]) || 0)}`).join(" · ");
           return (
             <g
               key={i}
+              aria-label={accessibleLabel}
               onMouseEnter={(e) => {
                 const rect = (e.currentTarget as SVGElement).getBoundingClientRect();
-                const text = formatTip ? formatTip(d) : bars.map((b) => `${b.label}: ${fmt$(Number(d[b.key]) || 0)}`).join(" · ");
-                setTip({ x: rect.left + rect.width / 2, y: rect.top - 8, text });
+                setTip({ x: rect.left + rect.width / 2, y: rect.top - 8, text: accessibleLabel });
               }}
               className="cursor-default"
             >
+              <title>{accessibleLabel}</title>
               {bars.map((b) => {
                 const val = Number(d[b.key]) || 0;
                 const barH = (val / maxVal) * height;
@@ -141,7 +162,7 @@ function BarChart({
                   fontSize={count > 20 ? 7 : 8}
                   fill="#666"
                 >
-                  {d._label ?? ""}
+                  {String(d._label ?? "")}
                 </text>
               )}
             </g>
@@ -193,41 +214,90 @@ function Dot({ color, label }: { color: string; label: string }) {
   );
 }
 
+function SourcePill({ label, status }: { label: string; status: MarketingSourceStatus }) {
+  const appearance = {
+    connected: { dot: "#55705b", text: "Connected" },
+    not_configured: { dot: "#A08C72", text: "Needs setup" },
+    error: { dot: "#a13f35", text: "Needs attention" },
+  }[status.state];
+
+  return (
+    <div
+      className="flex min-w-0 items-center gap-2 border border-[#dcd6cc] bg-white px-3 py-2"
+      title={status.message}
+    >
+      <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: appearance.dot }} />
+      <span className="truncate text-caption text-charcoal/75">{label}</span>
+      <span className="ml-auto whitespace-nowrap text-caption text-charcoal/45">{appearance.text}</span>
+    </div>
+  );
+}
+
+async function requestMarketingData(
+  from: string,
+  to: string,
+  signal?: AbortSignal
+): Promise<MarketingData> {
+  const params = new URLSearchParams({ from, to });
+  const response = await fetch(`/api/marketing?${params}`, { signal, cache: "no-store" });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(payload?.error || `Marketing data failed (${response.status}).`);
+  }
+  return (await response.json()) as MarketingData;
+}
+
 // ── Main dashboard ─────────────────────────────────────────────────────────
 
-export function MarketingDashboard() {
-  const today = new Date().toISOString().slice(0, 10);
-  const thirtyAgo = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
-
-  const [from, setFrom] = useState(thirtyAgo);
-  const [to, setTo] = useState(today);
+export function MarketingDashboard({ initialFrom, initialTo }: MarketingDashboardProps) {
+  const [from, setFrom] = useState(initialFrom);
+  const [to, setTo] = useState(initialTo);
   const [data, setData] = useState<MarketingData | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async (f: string, t: string) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/marketing?from=${f}&to=${t}`);
-      if (!res.ok) throw new Error(`${res.status}`);
-      setData(await res.json());
-    } catch (e: any) {
-      setError(e.message ?? "Failed to load");
+      setData(await requestMarketingData(f, t));
+    } catch (loadError: unknown) {
+      setError(loadError instanceof Error ? loadError.message : "Marketing data failed.");
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void load(from, to);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    const controller = new AbortController();
+    let active = true;
+    void requestMarketingData(initialFrom, initialTo, controller.signal)
+      .then((nextData) => {
+        if (active) setData(nextData);
+      })
+      .catch((loadError: unknown) => {
+        if (active && !(loadError instanceof DOMException && loadError.name === "AbortError")) {
+          setError(loadError instanceof Error ? loadError.message : "Marketing data failed.");
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [initialFrom, initialTo]);
 
   function apply() {
     void load(from, to);
   }
 
   const s = data?.summary;
+  const googleConnected = data?.sources.google_ads.state === "connected";
+  const metaConnected = data?.sources.meta_ads.state === "connected";
+  const adsConnected = googleConnected || metaConnected;
+  const leadsConnected = data?.sources.leads.state === "connected";
 
   // Prep chart data
   const dailyChartData = (data?.daily ?? []).map((d) => ({
@@ -260,7 +330,7 @@ export function MarketingDashboard() {
             type="date"
             value={to}
             min={from}
-            max={today}
+            max={initialTo}
             onChange={(e) => setTo(e.target.value)}
             className="border border-[#dcd6cc] bg-white px-3 py-2 text-body text-nearblack focus:border-nearblack focus:outline-none"
           />
@@ -282,10 +352,10 @@ export function MarketingDashboard() {
             <button
               key={label}
               onClick={() => {
-                const f = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+                const f = marketingPresetFrom(initialTo, days);
                 setFrom(f);
-                setTo(today);
-                void load(f, today);
+                setTo(initialTo);
+                void load(f, initialTo);
               }}
               className="border border-[#dcd6cc] px-3 py-2 text-caption text-charcoal hover:border-nearblack hover:text-nearblack transition-colors"
             >
@@ -296,28 +366,47 @@ export function MarketingDashboard() {
         {error && <p className="text-caption text-red-700">Error: {error}</p>}
       </div>
 
+      {data && (
+        <section aria-label="Marketing data connections" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          <SourcePill label="Google Ads" status={data.sources.google_ads} />
+          <SourcePill label="Meta Ads" status={data.sources.meta_ads} />
+          <SourcePill label="Search Console" status={data.sources.search_console} />
+          <SourcePill label="RESLU leads" status={data.sources.leads} />
+        </section>
+      )}
+
       {/* Summary cards */}
       {s && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <MetricCard
             label="Total spend"
-            value={fmt$(s.total_spend)}
-            sub={`Google ${fmt$(s.google_spend)} · Meta ${fmt$(s.meta_spend)}`}
+            value={adsConnected ? fmt$(s.total_spend) : "—"}
+            sub={
+              adsConnected
+                ? `Google ${googleConnected ? fmt$(s.google_spend) : "not connected"} · Meta ${metaConnected ? fmt$(s.meta_spend) : "not connected"}`
+                : "Connect Google Ads or Meta Ads"
+            }
             accent
           />
           <MetricCard
             label="Conversions"
-            value={s.total_conversions.toString()}
-            sub="Google Ads + Meta combined"
+            value={adsConnected ? s.total_conversions.toString() : "—"}
+            sub={adsConnected ? "Google Ads + Meta lead actions" : "Ad platforms not connected"}
           />
           <MetricCard
             label="Cost per lead"
-            value={s.cost_per_lead != null ? fmt$(s.cost_per_lead) : "—"}
-            sub={`${s.leads} lead${s.leads !== 1 ? "s" : ""} in pipeline`}
+            value={adsConnected && leadsConnected && s.cost_per_lead != null ? fmt$(s.cost_per_lead) : "—"}
+            sub={
+              leadsConnected
+                ? `${s.leads} eligible lead${s.leads !== 1 ? "s" : ""} · future leads excluded`
+                : "Lead totals unavailable"
+            }
           />
           <MetricCard
             label="Click-through rate"
-            value={`G ${fmtPct(s.google_ctr)} · M ${fmtPct(s.meta_ctr)}`}
+            value={adsConnected
+              ? `G ${googleConnected ? fmtPct(s.google_ctr) : "—"} · M ${metaConnected ? fmtPct(s.meta_ctr) : "—"}`
+              : "—"}
             sub="Google · Meta"
           />
         </div>
@@ -345,7 +434,7 @@ export function MarketingDashboard() {
                 { key: "meta_spend", color: "#A08C72", label: "Meta" },
               ]}
               formatTip={(d) =>
-                `${d.date}  Google ${fmt$(d.google_spend)}  Meta ${fmt$(d.meta_spend)}  Total ${fmt$(d.total_spend)}`
+                `${String(d.date)}  Google ${fmt$(Number(d.google_spend) || 0)}  Meta ${fmt$(Number(d.meta_spend) || 0)}  Total ${fmt$(Number(d.total_spend) || 0)}`
               }
               height={160}
             />
@@ -367,7 +456,7 @@ export function MarketingDashboard() {
                 { key: "meta_spend", color: "#A08C72", label: "Meta" },
               ]}
               formatTip={(d) =>
-                `w/c ${d.week}  Google ${fmt$(d.google_spend)}  Meta ${fmt$(d.meta_spend)}  Total ${fmt$(d.total_spend)}`
+                `w/c ${String(d.week)}  Google ${fmt$(Number(d.google_spend) || 0)}  Meta ${fmt$(Number(d.meta_spend) || 0)}  Total ${fmt$(Number(d.total_spend) || 0)}`
               }
               height={160}
             />
@@ -377,35 +466,45 @@ export function MarketingDashboard() {
           <section className="grid gap-3 sm:grid-cols-2">
             <div className="border border-[#dcd6cc] bg-white p-5">
               <p className="label-caps mb-3 text-charcoal/60">Google Ads</p>
-              <div className="space-y-2">
+              {!googleConnected && (
+                <p className="mb-3 text-caption text-charcoal/50">
+                  {data.sources.google_ads.message || "Google Ads is not connected."}
+                </p>
+              )}
+              <div className={`space-y-2 ${googleConnected ? "" : "opacity-45"}`}>
                 <div className="flex justify-between text-body">
                   <span className="text-charcoal/70">Spend</span>
-                  <span className="font-medium">{fmt$(s?.google_spend ?? 0)}</span>
+                  <span>{googleConnected ? fmt$(s?.google_spend ?? 0) : "—"}</span>
                 </div>
                 <div className="flex justify-between text-body">
                   <span className="text-charcoal/70">Conversions</span>
-                  <span className="font-medium">{data.summary.total_conversions}</span>
+                  <span>{googleConnected ? data.summary.google_conversions : "—"}</span>
                 </div>
                 <div className="flex justify-between text-body">
                   <span className="text-charcoal/70">CTR</span>
-                  <span className="font-medium">{fmtPct(s?.google_ctr ?? 0)}</span>
+                  <span>{googleConnected ? fmtPct(s?.google_ctr ?? 0) : "—"}</span>
                 </div>
               </div>
             </div>
             <div className="border border-[#dcd6cc] bg-white p-5">
               <p className="label-caps mb-3 text-charcoal/60">Meta Ads</p>
-              <div className="space-y-2">
+              {!metaConnected && (
+                <p className="mb-3 text-caption text-charcoal/50">
+                  {data.sources.meta_ads.message || "Meta Ads is not connected."}
+                </p>
+              )}
+              <div className={`space-y-2 ${metaConnected ? "" : "opacity-45"}`}>
                 <div className="flex justify-between text-body">
                   <span className="text-charcoal/70">Spend</span>
-                  <span className="font-medium">{fmt$(s?.meta_spend ?? 0)}</span>
+                  <span>{metaConnected ? fmt$(s?.meta_spend ?? 0) : "—"}</span>
                 </div>
                 <div className="flex justify-between text-body">
                   <span className="text-charcoal/70">Conversions</span>
-                  <span className="font-medium">{data.summary.total_conversions}</span>
+                  <span>{metaConnected ? data.summary.meta_conversions : "—"}</span>
                 </div>
                 <div className="flex justify-between text-body">
                   <span className="text-charcoal/70">CTR</span>
-                  <span className="font-medium">{fmtPct(s?.meta_ctr ?? 0)}</span>
+                  <span>{metaConnected ? fmtPct(s?.meta_ctr ?? 0) : "—"}</span>
                 </div>
               </div>
             </div>
@@ -417,8 +516,14 @@ export function MarketingDashboard() {
 
             {!data.seo ? (
               <div className="py-8 text-center">
-                <p className="text-body text-charcoal/60 mb-2">Search Console not connected</p>
-                <p className="text-caption text-charcoal/40">Run <code className="bg-[#f5f2ee] px-1">node google-ads/gsc-setup-oauth.js</code> on the Mac mini to connect</p>
+                <p className="text-body text-charcoal/60 mb-2">
+                  {data.sources.search_console.state === "not_configured"
+                    ? "Search Console needs setup"
+                    : "Search Console needs attention"}
+                </p>
+                <p className="text-caption text-charcoal/40">
+                  {data.sources.search_console.message || "No SEO data is available for this range."}
+                </p>
               </div>
             ) : (
               <div className="space-y-6">
@@ -433,32 +538,42 @@ export function MarketingDashboard() {
                 {/* Top queries */}
                 <div>
                   <p className="label-caps mb-3 text-charcoal/60">Top search queries</p>
-                  <div className="divide-y divide-[#eee]">
-                    {data.seo.top_queries.slice(0, 10).map((q) => (
-                      <div key={q.query} className="flex items-center gap-4 py-2.5">
-                        <span className="flex-1 text-body text-nearblack truncate">{q.query}</span>
-                        <span className="text-caption text-charcoal/60 w-16 text-right">{q.clicks} clicks</span>
-                        <span className="text-caption text-charcoal/60 w-20 text-right">{q.impressions.toLocaleString()} impr.</span>
-                        <span className="text-caption text-charcoal/60 w-14 text-right">{fmtPct(q.ctr)}</span>
-                        <span className="text-caption text-charcoal/50 w-14 text-right">pos {q.position.toFixed(1)}</span>
-                      </div>
-                    ))}
+                  <div className="overflow-x-auto">
+                    <div className="min-w-[620px] divide-y divide-[#eee]">
+                      {data.seo.top_queries.slice(0, 10).map((q) => (
+                        <div key={q.query} className="flex items-center gap-4 py-2.5">
+                          <span className="flex-1 text-body text-nearblack truncate">{q.query}</span>
+                          <span className="text-caption text-charcoal/60 w-16 text-right">{q.clicks} clicks</span>
+                          <span className="text-caption text-charcoal/60 w-20 text-right">{q.impressions.toLocaleString()} impr.</span>
+                          <span className="text-caption text-charcoal/60 w-14 text-right">{fmtPct(q.ctr)}</span>
+                          <span className="text-caption text-charcoal/50 w-14 text-right">pos {q.position.toFixed(1)}</span>
+                        </div>
+                      ))}
+                      {data.seo.top_queries.length === 0 && (
+                        <p className="py-4 text-caption text-charcoal/45">No search queries for this range.</p>
+                      )}
+                    </div>
                   </div>
                 </div>
 
                 {/* Top pages */}
                 <div>
                   <p className="label-caps mb-3 text-charcoal/60">Landing page performance</p>
-                  <div className="divide-y divide-[#eee]">
-                    {data.seo.pages.slice(0, 10).map((p) => (
-                      <div key={p.page} className="flex items-center gap-4 py-2.5">
-                        <span className="flex-1 text-body text-nearblack truncate font-mono text-sm">{p.page || "/"}</span>
-                        <span className="text-caption text-charcoal/60 w-16 text-right">{p.clicks} clicks</span>
-                        <span className="text-caption text-charcoal/60 w-20 text-right">{p.impressions.toLocaleString()} impr.</span>
-                        <span className="text-caption text-charcoal/60 w-14 text-right">{fmtPct(p.ctr)}</span>
-                        <span className="text-caption text-charcoal/50 w-14 text-right">pos {p.position.toFixed(1)}</span>
-                      </div>
-                    ))}
+                  <div className="overflow-x-auto">
+                    <div className="min-w-[620px] divide-y divide-[#eee]">
+                      {data.seo.pages.slice(0, 10).map((p) => (
+                        <div key={p.page} className="flex items-center gap-4 py-2.5">
+                          <span className="flex-1 text-body text-nearblack truncate font-mono text-sm">{p.page || "/"}</span>
+                          <span className="text-caption text-charcoal/60 w-16 text-right">{p.clicks} clicks</span>
+                          <span className="text-caption text-charcoal/60 w-20 text-right">{p.impressions.toLocaleString()} impr.</span>
+                          <span className="text-caption text-charcoal/60 w-14 text-right">{fmtPct(p.ctr)}</span>
+                          <span className="text-caption text-charcoal/50 w-14 text-right">pos {p.position.toFixed(1)}</span>
+                        </div>
+                      ))}
+                      {data.seo.pages.length === 0 && (
+                        <p className="py-4 text-caption text-charcoal/45">No landing-page data for this range.</p>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>

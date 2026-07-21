@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { Header } from "@/components/layout/Header";
 import { MarketingDashboard } from "@/components/marketing/MarketingDashboard";
+import { defaultMarketingRange } from "@/lib/marketing";
 
 /**
  * /marketing — Marketing performance dashboard (admin-only).
@@ -12,6 +13,7 @@ export default async function MarketingPage() {
   const supabase = await createClient();
   const info = await getUserRole(supabase);
   const isAdmin = info?.role === "admin";
+  const initialRange = defaultMarketingRange();
 
   if (!isAdmin) {
     return (
@@ -35,8 +37,8 @@ export default async function MarketingPage() {
         title="Marketing"
         subtitle="Google Ads · Meta Ads · SEO · Cost per lead"
       />
-      <main className="flex-1 px-8 py-8">
-        <MarketingDashboard />
+      <main className="flex-1 px-4 py-6 sm:px-8 sm:py-8">
+        <MarketingDashboard initialFrom={initialRange.from} initialTo={initialRange.to} />
       </main>
     </>
   );
