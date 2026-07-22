@@ -290,8 +290,40 @@ export function mergeOrganicPagePerformance(
   current: OrganicPageMetric[],
   previous: OrganicPageMetric[]
 ): OrganicPagePerformance[] {
-  const previousByPage = new Map(previous.map((row) => [resluPagePath(row.page), row]));
-  return current
+  const aggregateByPath = (rows: OrganicPageMetric[]): OrganicPageMetric[] => {
+    const grouped = new Map<string, {
+      clicks: number;
+      impressions: number;
+      weightedPosition: number;
+      positionWeight: number;
+    }>();
+    for (const row of rows) {
+      const page = resluPagePath(row.page);
+      const existing = grouped.get(page) ?? {
+        clicks: 0,
+        impressions: 0,
+        weightedPosition: 0,
+        positionWeight: 0,
+      };
+      const weight = Math.max(1, row.impressions);
+      existing.clicks += row.clicks;
+      existing.impressions += row.impressions;
+      existing.weightedPosition += row.position * weight;
+      existing.positionWeight += weight;
+      grouped.set(page, existing);
+    }
+    return [...grouped.entries()].map(([page, totals]) => ({
+      page,
+      clicks: totals.clicks,
+      impressions: totals.impressions,
+      ctr: totals.impressions > 0 ? totals.clicks / totals.impressions : 0,
+      position: totals.positionWeight > 0 ? totals.weightedPosition / totals.positionWeight : 0,
+    }));
+  };
+
+  const currentByPath = aggregateByPath(current);
+  const previousByPage = new Map(aggregateByPath(previous).map((row) => [row.page, row]));
+  return currentByPath
     .map((row) => {
       const page = resluPagePath(row.page);
       const prior = previousByPage.get(page);
@@ -407,7 +439,7 @@ export function organicOpportunities(
   );
   const collapsed = opportunities.filter((opportunity) => !coreDeclines.includes(opportunity));
   if (coreDeclines.length >= 3) {
-    const affectedPages = coreDeclines.map((opportunity) => opportunity.page);
+    const affectedPages = [...new Set(coreDeclines.map((opportunity) => opportunity.page))];
     collapsed.push({
       page: affectedPages[0] ?? "/",
       affected_pages: affectedPages,

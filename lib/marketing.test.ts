@@ -92,6 +92,25 @@ test("organic pages split blog articles from core webpages", () => {
   assert.equal(organicPageKind("/services"), "page");
 });
 
+test("Search Console URL variants merge into one canonical page", () => {
+  const performance = mergeOrganicPagePerformance(
+    [
+      { page: "https://reslu.com.au/", clicks: 2, impressions: 100, ctr: 0.02, position: 4 },
+      { page: "https://www.reslu.com.au/", clicks: 3, impressions: 200, ctr: 0.015, position: 10 },
+    ],
+    [
+      { page: "https://reslu.com.au/", clicks: 1, impressions: 50, ctr: 0.02, position: 3 },
+      { page: "https://www.reslu.com.au/", clicks: 1, impressions: 50, ctr: 0.02, position: 5 },
+    ]
+  );
+  assert.equal(performance.length, 1);
+  assert.equal(performance[0]?.page, "/");
+  assert.equal(performance[0]?.clicks, 5);
+  assert.equal(performance[0]?.impressions, 300);
+  assert.equal(performance[0]?.previous_clicks, 2);
+  assert.equal(performance[0]?.position, 8);
+});
+
 test("organic comparison uses the immediately preceding equivalent range", () => {
   assert.deepEqual(previousMarketingPeriod("2026-07-16", "2026-07-22"), {
     from: "2026-07-09",
