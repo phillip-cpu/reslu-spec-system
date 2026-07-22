@@ -4,6 +4,7 @@ import {
   adelaideUtcRange,
   defaultMarketingRange,
   EXCLUDED_MARKETING_LEAD_STAGE,
+  landingPageQuality,
   marketingPresetFrom,
   mergeAdDailyMetrics,
   mergeOrganicPagePerformance,
@@ -136,6 +137,27 @@ test("organic opportunity engine ranks actionable CTR and ranking gaps", () => {
   assert.match(insights[0]?.action ?? "", /title and meta description/i);
   assert.equal(performance[1]?.kind, "blog");
   assert.ok(Math.abs((performance[1]?.clicks_change_pct ?? 0) - (100 / 3)) < 0.000001);
+});
+
+test("landing-page quality lists every non-blog page weakest first", () => {
+  const performance = mergeOrganicPagePerformance(
+    [
+      { page: "/services", clicks: 5, impressions: 500, ctr: 0.01, position: 7 },
+      { page: "/contact", clicks: 30, impressions: 200, ctr: 0.15, position: 2 },
+      { page: "/blog/design-build", clicks: 20, impressions: 300, ctr: 0.067, position: 4 },
+    ],
+    [
+      { page: "/services", clicks: 12, impressions: 450, ctr: 0.027, position: 4 },
+      { page: "/contact", clicks: 25, impressions: 180, ctr: 0.139, position: 2.5 },
+    ]
+  );
+  const quality = landingPageQuality(performance);
+  assert.equal(quality.length, 2);
+  assert.equal(quality[0]?.page, "/services");
+  assert.equal(quality[0]?.primary_signal, "Visibility is slipping");
+  assert.equal(quality[0]?.confidence, "High");
+  assert.equal(quality[1]?.page, "/contact");
+  assert.equal(quality[1]?.quality_label, "Strong");
 });
 
 test("organic opportunity engine groups simultaneous core-page declines", () => {

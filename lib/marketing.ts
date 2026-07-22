@@ -56,6 +56,13 @@ export interface OrganicPagePerformance extends OrganicPageMetric {
   position_change: number | null;
 }
 
+export interface LandingPageQuality extends OrganicPagePerformance {
+  quality_score: number;
+  quality_label: "Strong" | "Good" | "Fair" | "Needs work";
+  confidence: "High" | "Medium" | "Low";
+  primary_signal: string;
+}
+
 export interface OrganicOpportunity {
   page: string;
   affected_pages: string[];
@@ -348,6 +355,92 @@ function expectedOrganicCtr(position: number): number {
   if (position <= 10) return 0.035;
   if (position <= 20) return 0.015;
   return 0.008;
+}
+
+/**
+ * A page-level RESLU organic quality score, deliberately separate from Google
+ * Ads' keyword-level Quality Score. It grades visibility, CTR against a
+ * position-aware benchmark and movement against the preceding period.
+ * Impression volume is exposed as confidence rather than inflating the score.
+ */
+export function landingPageQuality(
+  pages: OrganicPagePerformance[]
+): LandingPageQuality[] {
+  return pages
+    .filter((page) => page.kind === "page")
+    .map((page): LandingPageQuality => {
+      const expectedCtr = expectedOrganicCtr(page.position);
+      const ctrRatio = expectedCtr > 0 ? page.ctr / expectedCtr : 0;
+      const visibilityScore = page.position <= 3
+        ? 40
+        : page.position <= 5
+          ? 36
+          : page.position <= 10
+            ? 31
+            : page.position <= 20
+              ? 23
+              : page.position <= 40
+                ? 13
+                : 5;
+      const ctrScore = Math.min(35, Math.max(0, ctrRatio * 35));
+
+      const absoluteClickDrop = page.previous_clicks - page.clicks;
+      const meaningfulDecline =
+        (absoluteClickDrop >= 3 && (page.clicks_change_pct ?? 0) <= -30) ||
+        (page.impressions >= 50 && (page.position_change ?? 0) <= -2);
+      const improving =
+        (page.clicks_change_pct ?? 0) >= 15 ||
+        (page.position_change ?? 0) >= 1;
+      const stable =
+        (page.clicks_change_pct == null || page.clicks_change_pct > -15) &&
+        (page.position_change == null || page.position_change > -1);
+      const movementScore = page.previous_impressions === 0
+        ? 13
+        : meaningfulDecline
+            ? 4
+          : improving
+            ? 25
+            : stable
+              ? 18
+              : 10;
+
+      const qualityScore = Math.round(Math.min(100, visibilityScore + ctrScore + movementScore));
+      const confidence = page.impressions >= 100
+        ? "High"
+        : page.impressions >= 25
+          ? "Medium"
+          : "Low";
+
+      let primarySignal: string;
+      if (page.impressions < 25) {
+        primarySignal = "Limited search data";
+      } else if (meaningfulDecline) {
+        primarySignal = "Visibility is slipping";
+      } else if (page.ctr < expectedCtr * 0.6) {
+        primarySignal = "CTR is below potential";
+      } else if (page.position > 20) {
+        primarySignal = "Needs stronger ranking";
+      } else if (page.position > 10) {
+        primarySignal = "Within reach of page one";
+      } else {
+        primarySignal = "Performing well";
+      }
+
+      return {
+        ...page,
+        quality_score: qualityScore,
+        quality_label: qualityScore >= 80
+          ? "Strong"
+          : qualityScore >= 65
+            ? "Good"
+            : qualityScore >= 50
+              ? "Fair"
+              : "Needs work",
+        confidence,
+        primary_signal: primarySignal,
+      };
+    })
+    .sort((a, b) => a.quality_score - b.quality_score || b.impressions - a.impressions);
 }
 
 /**

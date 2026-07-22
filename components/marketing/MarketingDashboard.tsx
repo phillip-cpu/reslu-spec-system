@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import {
   marketingPresetFrom,
+  type LandingPageQuality,
   type MarketingSourceStatus,
   type OrganicOpportunity,
   type OrganicPagePerformance,
@@ -61,6 +62,7 @@ interface MarketingData {
   seo: {
     top_queries: SEOQuery[];
     pages: OrganicPagePerformance[];
+    landing_pages: LandingPageQuality[];
     top_pages: OrganicPagePerformance[];
     top_blogs: OrganicPagePerformance[];
     insights: OrganicOpportunity[];
@@ -314,6 +316,74 @@ function OrganicPerformanceTable({
           {rows.length === 0 && <p className="py-4 text-caption text-charcoal/45">{empty}</p>}
         </div>
       </div>
+    </div>
+  );
+}
+
+function LandingPageQualityTable({ rows }: { rows: LandingPageQuality[] }) {
+  const labelColor = (label: LandingPageQuality["quality_label"]) => ({
+    Strong: "#55705b",
+    Good: "#6e8064",
+    Fair: "#9a7a43",
+    "Needs work": "#a13f35",
+  })[label];
+
+  return (
+    <div className="border border-[#dcd6cc] bg-[#faf9f6] p-4">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <p className="label-caps text-charcoal/60">Landing-page quality</p>
+          <p className="mt-1 text-caption text-charcoal/45">
+            Every non-blog page seen in Search Console for this range, weakest signal first.
+          </p>
+        </div>
+        <span className="text-caption text-charcoal/45">{rows.length} pages</span>
+      </div>
+      <div className="overflow-x-auto">
+        <div className="min-w-[970px] divide-y divide-[#e7e2d9]">
+          <div className="grid grid-cols-[minmax(220px,1fr)_5rem_7rem_5.5rem_5rem_4.5rem_5rem_minmax(150px,0.8fr)] gap-3 pb-2 text-caption text-charcoal/45">
+            <span>Landing page</span>
+            <span className="text-right">Score</span>
+            <span>Status</span>
+            <span>Confidence</span>
+            <span className="text-right">Clicks</span>
+            <span className="text-right">CTR</span>
+            <span className="text-right">Position</span>
+            <span>Primary signal</span>
+          </div>
+          {rows.map((row) => (
+            <div
+              key={row.page}
+              className="grid grid-cols-[minmax(220px,1fr)_5rem_7rem_5.5rem_5rem_4.5rem_5rem_minmax(150px,0.8fr)] items-center gap-3 py-3"
+            >
+              <a
+                href={`https://www.reslu.com.au${row.page === "/" ? "" : row.page}`}
+                target="_blank"
+                rel="noreferrer"
+                className="truncate text-body text-nearblack underline-offset-2 hover:underline"
+                title={row.page}
+              >
+                {row.page}
+              </a>
+              <span className="text-right text-subhead font-medium text-nearblack">{row.quality_score}</span>
+              <span className="label-caps" style={{ color: labelColor(row.quality_label) }}>
+                {row.quality_label}
+              </span>
+              <span className="text-caption text-charcoal/55">{row.confidence}</span>
+              <span className="text-right text-body text-nearblack">{row.clicks}</span>
+              <span className="text-right text-caption text-charcoal/60">{fmtPct(row.ctr)}</span>
+              <span className="text-right text-caption text-charcoal/60">{row.position.toFixed(1)}</span>
+              <span className="text-caption text-charcoal/60">{row.primary_signal}</span>
+            </div>
+          ))}
+          {rows.length === 0 && (
+            <p className="py-4 text-caption text-charcoal/45">No landing-page data for this range.</p>
+          )}
+        </div>
+      </div>
+      <p className="mt-4 border-t border-[#e7e2d9] pt-3 text-caption text-charcoal/45">
+        RESLU score /100 uses organic position, click-through performance and movement against the preceding period. Confidence reflects impression volume. This is not Google Ads&apos; keyword Quality Score.
+      </p>
     </div>
   );
 }
@@ -942,6 +1012,8 @@ export function MarketingDashboard({ initialFrom, initialTo }: MarketingDashboar
                     empty="No blog-article data for this range."
                   />
                 </div>
+
+                <LandingPageQualityTable rows={data.seo.landing_pages ?? []} />
 
                 {/* Top queries */}
                 <div>

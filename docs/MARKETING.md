@@ -17,6 +17,11 @@ Meta Ads, Google Search Console and RESLU leads over one date range.
   leads, conversions or Search Console data.
 - Organic performance separates `/blog/*` articles from the rest of the website
   and ranks both groups by clicks, then impressions.
+- Landing-page quality lists every non-blog page returned by Search Console for
+  the selected range. Its RESLU score /100 combines organic position, CTR
+  against a position-aware benchmark and preceding-period movement; impression
+  volume is shown separately as confidence. It is not Google Ads' keyword-level
+  Quality Score.
 - Each selected range is compared with the immediately preceding equivalent
   period. The organic opportunity score combines impressions, ranking proximity,
   CTR headroom and negative movement to recommend the next useful action.
@@ -75,9 +80,11 @@ Adding or changing a Vercel environment variable requires a new deployment.
    the same date range and `Web` search type.
 7. Confirm highest-performing webpages and blog articles match Search Console's
    page results for the same range.
-8. Spot-check an organic recommendation against the immediately preceding
+8. Confirm every non-blog Search Console page appears in Landing-page quality,
+   and spot-check its score inputs against clicks, CTR, position and movement.
+9. Spot-check an organic recommendation against the immediately preceding
    equivalent period.
-9. Try the 7d, 30d and 90d presets and one custom range.
+10. Try the 7d, 30d and 90d presets and one custom range.
 
 ## Planned extensions
 

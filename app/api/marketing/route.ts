@@ -4,6 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import {
   adelaideUtcRange,
   EXCLUDED_MARKETING_LEAD_STAGE,
+  landingPageQuality,
   mergeAdDailyMetrics,
   mergeOrganicPagePerformance,
   metaLeadConversions,
@@ -15,6 +16,7 @@ import {
   type AdDailyMetric,
   type MarketingSourceState,
   type MarketingSourceStatus,
+  type LandingPageQuality,
   type OrganicOpportunity,
   type OrganicPagePerformance,
   type OrganicPageMetric,
@@ -84,6 +86,7 @@ interface SearchConsoleData {
     position: number;
   }>;
   pages: OrganicPagePerformance[];
+  landing_pages: LandingPageQuality[];
   top_pages: OrganicPagePerformance[];
   top_blogs: OrganicPagePerformance[];
   insights: OrganicOpportunity[];
@@ -467,6 +470,7 @@ async function fetchSearchConsole(from: string, to: string): Promise<SourceResul
       data: {
         top_queries: topQueries,
         pages,
+        landing_pages: landingPageQuality(pages),
         top_pages: pages.filter((page) => page.kind === "page").slice(0, 10),
         top_blogs: pages.filter((page) => page.kind === "blog").slice(0, 10),
         insights: organicOpportunities(pages),
