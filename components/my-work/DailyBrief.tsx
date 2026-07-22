@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import clsx from "clsx";
 import type { BriefResponse, DailyBriefItemWithMeta, DailyBriefSource } from "@/types/round-daily-brief";
 
 /**
@@ -107,18 +106,17 @@ export function DailyBrief() {
 
   async function toggleStatus(item: DailyBriefItemWithMeta) {
     if (!data) return;
-    const nextStatus = item.status === "open" ? "done" : "open";
     const prev = data;
     setData({
       ...data,
-      items: data.items.map((i) => (i.id === item.id ? { ...i, status: nextStatus } : i)),
-      done_count: data.done_count + (nextStatus === "done" ? 1 : -1),
+      items: data.items.filter((i) => i.id !== item.id),
+      total_count: Math.max(0, data.total_count - 1),
     });
     try {
       const res = await fetch(`/api/brief/items/${item.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: nextStatus }),
+        body: JSON.stringify({ status: "done" }),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? "Could not update this item.");
     } catch (err) {
@@ -166,11 +164,11 @@ export function DailyBrief() {
         body: JSON.stringify({ project_id: projectId }),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? "Could not add this to a project.");
-      const { item: updated } = await res.json();
+      await res.json();
       setData({
         ...data,
-        items: data.items.map((i) => (i.id === item.id ? { ...i, ...updated } : i)),
-        done_count: data.done_count + (item.status === "open" ? 1 : 0),
+        items: data.items.filter((i) => i.id !== item.id),
+        total_count: Math.max(0, data.total_count - 1),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not add this to a project.");
@@ -185,6 +183,7 @@ export function DailyBrief() {
   // and only feeds a day-level header label, not renderer-critical
   // state.
   const today = new Date();
+  const activeItems = data?.items.filter((item) => item.status === "open") ?? [];
 
   return (
     <section className="border border-[#dcd6cc] bg-offwhite">
@@ -193,7 +192,7 @@ export function DailyBrief() {
           <p className="text-body font-medium text-nearblack">Daily Brief · {formatDateHeader(today)}</p>
           {data && (
             <p className="mt-0.5 text-caption text-charcoal/45">
-              {data.total_count - data.done_count}/{data.total_count} to review
+              {activeItems.length} to review
               {" · "}refreshed {formatRefreshedAt(data.refreshed_at)}
             </p>
           )}
@@ -205,11 +204,11 @@ export function DailyBrief() {
 
         {!data ? (
           <p className="px-1 py-2 text-caption text-charcoal/40">Loading…</p>
-        ) : data.items.length === 0 ? (
+        ) : activeItems.length === 0 ? (
           <p className="px-1 py-2 text-caption text-charcoal/40">Nothing in the brief right now.</p>
         ) : (
           <ul className="space-y-1.5">
-            {data.items.map((item) => (
+            {activeItems.map((item) => (
               <BriefRow
                 key={item.id}
                 item={item}
@@ -246,19 +245,13 @@ function BriefRow({
   onConvert: (projectId: string | null) => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
-  const isDone = item.status === "done";
   const alreadyConverted = !!item.converted_label;
 
   return (
-    <li
-      className={clsx(
-        "flex flex-wrap items-start gap-2.5 border border-[#e5e0d6] bg-white px-3 py-2",
-        isDone && "opacity-55"
-      )}
-    >
+    <li className="flex flex-wrap items-start gap-2.5 border border-[#e5e0d6] bg-white px-3 py-2">
       <input
         type="checkbox"
-        checked={isDone}
+        checked={false}
         onChange={onToggle}
         className="mt-0.5 h-3.5 w-3.5 shrink-0"
       />
@@ -277,9 +270,7 @@ function BriefRow({
             <span className="label-caps shrink-0 !text-sand">{item.carried_over_label}</span>
           )}
         </div>
-        <p className={clsx("mt-1 text-body", isDone ? "text-charcoal/45 line-through" : "text-nearblack")}>
-          {item.title}
-        </p>
+        <p className="mt-1 text-body text-nearblack">{item.title}</p>
         {item.converted_label && (
           <p className="mt-0.5 text-caption text-charcoal/45">{item.converted_label}</p>
         )}

@@ -104,9 +104,8 @@ export async function PATCH(
       update.completed_at = new Date().toISOString();
       update.prev_group_id = existing.group_id;
       update.group_id = archived.id;
-      // Keep due_date as completion history. My Work removes this row from
-      // the active list using completed_at, then nests it under the date it
-      // belonged to in the section's Completed area.
+      // Keep due_date as completion history at the source. My Work removes
+      // this row from its active view using completed_at.
     } else {
       update.completed_at = null;
       update.group_id = existing.prev_group_id ?? existing.group_id;

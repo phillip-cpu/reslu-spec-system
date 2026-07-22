@@ -5523,11 +5523,11 @@ section, no error banner.
   7am glance email (see below) after generating — see `README.md`'s
   "Daily Brief cron" section for the exact `vercel.json` entry and its
   DST caveat.
-- **`GET /api/brief`** (**session, admin-only**) — "today's open +
-  recent done": every OPEN item (any `brief_date`) plus every DONE item
-  whose `acknowledged_at` falls within the last 24 hours (so a
-  carried-over item ticked done today still counts toward today's
-  done/total). Each item is annotated with `project` (resolved from
+- **`GET /api/brief`** (**session, admin-only**) — every OPEN item
+  regardless of `brief_date`. DONE rows remain stored for history and
+  deduplication but are omitted from My Work, so ticking or converting
+  an item clears it from the active view. Each item is annotated with
+  `project` (resolved from
   `project_id`), `carried_over_label` (null for a genuinely-today item),
   and `converted_label` ("added to {project}" / "added to Office",
   derived from `converted_task_id`/`converted_office_task_id` at read

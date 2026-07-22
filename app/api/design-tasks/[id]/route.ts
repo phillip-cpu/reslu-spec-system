@@ -55,8 +55,8 @@ export async function PATCH(
 
   if (body.complete !== undefined) {
     update.completed_at = body.complete ? new Date().toISOString() : null;
-    // Keep due_date as completion history. My Work filters by completed_at
-    // and uses the retained date to place the row in its Completed area.
+    // Keep due_date as completion history at the source. My Work filters the
+    // row from its active view using completed_at.
   }
 
   for (const [key, raw] of Object.entries(body)) {

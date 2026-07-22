@@ -59,7 +59,7 @@ export interface DailyBriefItemWithMeta extends DailyBriefItem {
   converted_label: string | null;
 }
 
-/** GET /api/brief response — BUILD-SPEC "GET /api/brief (today's open + recent done)". */
+/** GET /api/brief response — active open items only; completed rows stay stored but are hidden from My Work. */
 export interface BriefResponse {
   items: DailyBriefItemWithMeta[];
   refreshed_at: string;

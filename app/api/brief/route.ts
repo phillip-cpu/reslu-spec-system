@@ -6,28 +6,12 @@ import type { BriefResponse, DailyBriefItem, DailyBriefItemWithMeta } from "@/ty
 
 export const runtime = "nodejs";
 
-/** How far back a ticked-done item still counts as "recent" for this GET — see this route's own doc comment below. */
-const RECENT_DONE_HOURS = 24;
-
 /**
  * GET /api/brief
- * BUILD-SPEC.md "Daily Brief" routes list: "GET /api/brief (today's
- * open + recent done)". Two queries, unioned:
- *   1. Every OPEN item, REGARDLESS of brief_date — not just today's.
- *      This is deliberate, per the brief's own dedupe/carry-over
- *      section: "items still open from previous days remain listed
- *      with a 'from yesterday'/'from {weekday}' tag (query open items
- *      regardless of brief_date)". carriedOverLabel() (lib/daily-brief.ts)
- *      computes that tag per item from how many days old its
- *      brief_date is; null for a genuinely-today item.
- *   2. DONE items acknowledged within the last 24 hours — "recent
- *      done" per the route's own name in the brief. This is measured
- *      from acknowledged_at (when it was actually ticked), NOT
- *      brief_date, so a CARRIED-OVER item ticked done today still
- *      counts as "recent" even though its brief_date is from a prior
- *      day — the done/total counter and the satisfying "just ticked
- *      this" visibility window both care about when the tick
- *      happened, not when the item first appeared.
+ * Returns every OPEN item regardless of brief_date. Completed items
+ * remain stored for audit/deduplication but are deliberately omitted
+ * from My Work so ticking a row clears it from the active view.
+ * Carried-over open items keep their "from yesterday"/weekday label.
  *
  * Admin-gated (this round's own "brief admin-gating consistent"
  * verification note): the brief mixes admin-only-sourced rows (leads
@@ -56,31 +40,17 @@ export async function GET() {
     return NextResponse.json({ error: "The Daily Brief is admin-only in v1." }, { status: 403 });
   }
 
-  const recentDoneFloor = new Date(Date.now() - RECENT_DONE_HOURS * 60 * 60 * 1000).toISOString();
-
-  const [{ data: openRows, error: openError }, { data: doneRows, error: doneError }] = await Promise.all([
-    supabase
-      .from("daily_brief_items")
-      .select("*")
-      .eq("status", "open")
-      .order("brief_date", { ascending: true })
-      .order("created_at", { ascending: true }),
-    supabase
-      .from("daily_brief_items")
-      .select("*")
-      .eq("status", "done")
-      .gte("acknowledged_at", recentDoneFloor)
-      .order("acknowledged_at", { ascending: false }),
-  ]);
+  const { data: openRows, error: openError } = await supabase
+    .from("daily_brief_items")
+    .select("*")
+    .eq("status", "open")
+    .order("brief_date", { ascending: true })
+    .order("created_at", { ascending: true });
 
   if (openError) {
     return NextResponse.json({ error: openError.message }, { status: 500 });
   }
-  if (doneError) {
-    return NextResponse.json({ error: doneError.message }, { status: 500 });
-  }
-
-  const rows = [...((openRows ?? []) as DailyBriefItem[]), ...((doneRows ?? []) as DailyBriefItem[])];
+  const rows = (openRows ?? []) as DailyBriefItem[];
 
   const projectIds = [...new Set(rows.map((r) => r.project_id).filter((id): id is string => !!id))];
   const { data: projects } = projectIds.length
@@ -111,7 +81,7 @@ export async function GET() {
   const body: BriefResponse = {
     items,
     refreshed_at: new Date().toISOString(),
-    done_count: (doneRows ?? []).length,
+    done_count: 0,
     total_count: items.length,
   };
   return NextResponse.json(body);
