@@ -15,6 +15,13 @@ Meta Ads, Google Search Console and RESLU leads over one date range.
   they are never presented as genuine zero spend or zero performance.
 - The dashboard only reads source systems. It cannot change campaigns, budgets,
   leads, conversions or Search Console data.
+- Organic performance separates `/blog/*` articles from the rest of the website
+  and ranks both groups by clicks, then impressions.
+- Each selected range is compared with the immediately preceding equivalent
+  period. The organic opportunity score combines impressions, ranking proximity,
+  CTR headroom and negative movement to recommend the next useful action.
+- Organic recommendations are directional signals, not guaranteed traffic or
+  ranking forecasts. They never modify the website automatically.
 
 ## Vercel environment variables
 
@@ -52,7 +59,11 @@ Adding or changing a Vercel environment variable requires a new deployment.
 5. Confirm a known `Potential Future Lead` does not increase the lead count.
 6. Compare Search Console clicks, impressions, CTR and average position using
    the same date range and `Web` search type.
-7. Try the 7d, 30d and 90d presets and one custom range.
+7. Confirm highest-performing webpages and blog articles match Search Console's
+   page results for the same range.
+8. Spot-check an organic recommendation against the immediately preceding
+   equivalent period.
+9. Try the 7d, 30d and 90d presets and one custom range.
 
 ## Planned extensions
 

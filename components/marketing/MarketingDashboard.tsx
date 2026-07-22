@@ -4,6 +4,8 @@ import { useEffect, useState, useCallback } from "react";
 import {
   marketingPresetFrom,
   type MarketingSourceStatus,
+  type OrganicOpportunity,
+  type OrganicPagePerformance,
 } from "@/lib/marketing";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -26,14 +28,6 @@ interface WeeklyRow {
 
 interface SEOQuery {
   query: string;
-  clicks: number;
-  impressions: number;
-  ctr: number;
-  position: number;
-}
-
-interface SEOPage {
-  page: string;
   clicks: number;
   impressions: number;
   ctr: number;
@@ -65,7 +59,11 @@ interface MarketingData {
   weekly: WeeklyRow[];
   seo: {
     top_queries: SEOQuery[];
-    pages: SEOPage[];
+    pages: OrganicPagePerformance[];
+    top_pages: OrganicPagePerformance[];
+    top_blogs: OrganicPagePerformance[];
+    insights: OrganicOpportunity[];
+    comparison: { from: string; to: string };
     totals: { clicks: number; impressions: number; ctr: number; avg_position: number };
   } | null;
 }
@@ -230,6 +228,104 @@ function SourcePill({ label, status }: { label: string; status: MarketingSourceS
       <span className="truncate text-caption text-charcoal/75">{label}</span>
       <span className="ml-auto whitespace-nowrap text-caption text-charcoal/45">{appearance.text}</span>
     </div>
+  );
+}
+
+function changeLabel(change: number | null, current: number, previous: number): string {
+  if (change == null) return current > 0 && previous === 0 ? "New" : "—";
+  if (Math.abs(change) < 0.5) return "No change";
+  return `${change > 0 ? "+" : ""}${Math.round(change)}%`;
+}
+
+function OrganicPerformanceTable({
+  title,
+  rows,
+  empty,
+}: {
+  title: string;
+  rows: OrganicPagePerformance[];
+  empty: string;
+}) {
+  return (
+    <div className="border border-[#dcd6cc] bg-[#faf9f6] p-4">
+      <p className="label-caps mb-3 text-charcoal/60">{title}</p>
+      <div className="overflow-x-auto">
+        <div className="min-w-[630px] divide-y divide-[#e7e2d9]">
+          <div className="grid grid-cols-[2rem_minmax(210px,1fr)_5rem_6rem_4rem_4.5rem] gap-3 pb-2 text-caption text-charcoal/45">
+            <span>#</span>
+            <span>Page</span>
+            <span className="text-right">Clicks</span>
+            <span className="text-right">Vs prior</span>
+            <span className="text-right">CTR</span>
+            <span className="text-right">Position</span>
+          </div>
+          {rows.map((row, index) => {
+            const change = changeLabel(row.clicks_change_pct, row.clicks, row.previous_clicks);
+            const positive = (row.clicks_change_pct ?? 0) > 0;
+            const negative = (row.clicks_change_pct ?? 0) < 0;
+            return (
+              <div
+                key={row.page}
+                className="grid grid-cols-[2rem_minmax(210px,1fr)_5rem_6rem_4rem_4.5rem] items-center gap-3 py-2.5"
+              >
+                <span className="text-caption text-charcoal/40">{index + 1}</span>
+                <a
+                  href={`https://www.reslu.com.au${row.page === "/" ? "" : row.page}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="truncate text-body text-nearblack underline-offset-2 hover:underline"
+                  title={row.page}
+                >
+                  {row.page}
+                </a>
+                <span className="text-right text-body text-nearblack">{row.clicks}</span>
+                <span
+                  className={`text-right text-caption ${positive ? "text-[#55705b]" : negative ? "text-[#a13f35]" : "text-charcoal/45"}`}
+                >
+                  {change}
+                </span>
+                <span className="text-right text-caption text-charcoal/60">{fmtPct(row.ctr)}</span>
+                <span className="text-right text-caption text-charcoal/60">{row.position.toFixed(1)}</span>
+              </div>
+            );
+          })}
+          {rows.length === 0 && <p className="py-4 text-caption text-charcoal/45">{empty}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OrganicInsightCard({ insight }: { insight: OrganicOpportunity }) {
+  const priority = {
+    high: { label: "High opportunity", color: "#a13f35" },
+    medium: { label: "Good opportunity", color: "#A08C72" },
+    watch: { label: "Watch", color: "#55705b" },
+  }[insight.priority];
+
+  return (
+    <article className="border border-[#dcd6cc] bg-white p-5">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <span className="label-caps" style={{ color: priority.color }}>{priority.label}</span>
+        <span className="text-caption text-charcoal/45">Opportunity {insight.score}/100</span>
+      </div>
+      <p className="mb-1 text-subhead font-medium text-nearblack">{insight.title}</p>
+      <a
+        href={`https://www.reslu.com.au${insight.page === "/" ? "" : insight.page}`}
+        target="_blank"
+        rel="noreferrer"
+        className="mb-3 block truncate text-caption text-charcoal/55 underline-offset-2 hover:underline"
+        title={insight.page}
+      >
+        {insight.kind === "blog" ? "Blog · " : "Webpage · "}{insight.page}
+      </a>
+      <p className="mb-3 text-body text-charcoal/70">{insight.reason}</p>
+      <div className="border-l-2 border-[#A08C72] pl-3">
+        <p className="label-caps mb-1 text-charcoal/50">Recommended action</p>
+        <p className="text-body text-nearblack">{insight.action}</p>
+      </div>
+      <p className="mt-3 text-caption text-[#55705b]">{insight.predicted_impact}</p>
+    </article>
   );
 }
 
@@ -535,6 +631,44 @@ export function MarketingDashboard({ initialFrom, initialTo }: MarketingDashboar
                   <MetricCard label="Avg. position" value={data.seo.totals.avg_position.toFixed(1)} />
                 </div>
 
+                {/* Organic recommendations */}
+                <div>
+                  <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+                    <div>
+                      <p className="label-caps text-charcoal/60">Organic actions to take next</p>
+                      <p className="mt-1 text-caption text-charcoal/45">
+                        Ranked from impressions, position, CTR headroom and movement against {data.seo.comparison.from}–{data.seo.comparison.to}.
+                      </p>
+                    </div>
+                    <p className="text-caption text-charcoal/40">Directional opportunity signals—not guaranteed forecasts.</p>
+                  </div>
+                  {data.seo.insights.length > 0 ? (
+                    <div className="grid gap-3 lg:grid-cols-2">
+                      {data.seo.insights.map((insight) => (
+                        <OrganicInsightCard key={`${insight.page}-${insight.title}`} insight={insight} />
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="border border-[#dcd6cc] bg-[#faf9f6] p-4 text-caption text-charcoal/45">
+                      Not enough Search Console demand in this range to form a useful recommendation.
+                    </p>
+                  )}
+                </div>
+
+                {/* Highest-performing pages by type */}
+                <div className="grid gap-3 xl:grid-cols-2">
+                  <OrganicPerformanceTable
+                    title="Highest-performing webpages"
+                    rows={data.seo.top_pages}
+                    empty="No website-page data for this range."
+                  />
+                  <OrganicPerformanceTable
+                    title="Highest-performing blog articles"
+                    rows={data.seo.top_blogs}
+                    empty="No blog-article data for this range."
+                  />
+                </div>
+
                 {/* Top queries */}
                 <div>
                   <p className="label-caps mb-3 text-charcoal/60">Top search queries</p>
@@ -556,26 +690,6 @@ export function MarketingDashboard({ initialFrom, initialTo }: MarketingDashboar
                   </div>
                 </div>
 
-                {/* Top pages */}
-                <div>
-                  <p className="label-caps mb-3 text-charcoal/60">Landing page performance</p>
-                  <div className="overflow-x-auto">
-                    <div className="min-w-[620px] divide-y divide-[#eee]">
-                      {data.seo.pages.slice(0, 10).map((p) => (
-                        <div key={p.page} className="flex items-center gap-4 py-2.5">
-                          <span className="flex-1 text-body text-nearblack truncate font-mono text-sm">{p.page || "/"}</span>
-                          <span className="text-caption text-charcoal/60 w-16 text-right">{p.clicks} clicks</span>
-                          <span className="text-caption text-charcoal/60 w-20 text-right">{p.impressions.toLocaleString()} impr.</span>
-                          <span className="text-caption text-charcoal/60 w-14 text-right">{fmtPct(p.ctr)}</span>
-                          <span className="text-caption text-charcoal/50 w-14 text-right">pos {p.position.toFixed(1)}</span>
-                        </div>
-                      ))}
-                      {data.seo.pages.length === 0 && (
-                        <p className="py-4 text-caption text-charcoal/45">No landing-page data for this range.</p>
-                      )}
-                    </div>
-                  </div>
-                </div>
               </div>
             )}
           </section>

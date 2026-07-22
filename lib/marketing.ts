@@ -36,6 +36,37 @@ export interface WeeklyMarketingMetric {
   conversions: number;
 }
 
+export type OrganicPageKind = "blog" | "page";
+
+export interface OrganicPageMetric {
+  page: string;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number;
+}
+
+export interface OrganicPagePerformance extends OrganicPageMetric {
+  kind: OrganicPageKind;
+  previous_clicks: number;
+  previous_impressions: number;
+  previous_position: number | null;
+  clicks_change_pct: number | null;
+  impressions_change_pct: number | null;
+  position_change: number | null;
+}
+
+export interface OrganicOpportunity {
+  page: string;
+  kind: OrganicPageKind;
+  score: number;
+  priority: "high" | "medium" | "watch";
+  title: string;
+  action: string;
+  reason: string;
+  predicted_impact: string;
+}
+
 export type MarketingRangeResult =
   | { ok: true; from: string; to: string }
   | { ok: false; error: string };
@@ -59,6 +90,18 @@ export function addIsoDays(date: string, days: number): string {
 /** A 7-day preset includes today plus the six preceding calendar days. */
 export function marketingPresetFrom(to: string, days: number): string {
   return addIsoDays(to, -(Math.max(1, Math.trunc(days)) - 1));
+}
+
+/** The comparison period immediately precedes the selected inclusive range. */
+export function previousMarketingPeriod(from: string, to: string): { from: string; to: string } {
+  const rangeDays = Math.round(
+    (Date.parse(`${to}T00:00:00.000Z`) - Date.parse(`${from}T00:00:00.000Z`)) / 86_400_000
+  ) + 1;
+  const previousTo = addIsoDays(from, -1);
+  return {
+    from: addIsoDays(previousTo, -(rangeDays - 1)),
+    to: previousTo,
+  };
 }
 
 export function defaultMarketingRange(now: Date = new Date()): { from: string; to: string } {
@@ -220,4 +263,135 @@ export function metaLeadConversions(actions: unknown): number {
     }
   }
   return 0;
+}
+
+export function resluPagePath(value: string): string {
+  try {
+    const url = new URL(value, "https://www.reslu.com.au");
+    const path = url.pathname.replace(/\/{2,}/g, "/");
+    return path === "/" ? "/" : path.replace(/\/$/, "");
+  } catch {
+    const path = value.split(/[?#]/, 1)[0]?.trim() || "/";
+    return path.startsWith("/") ? path : `/${path}`;
+  }
+}
+
+export function organicPageKind(page: string): OrganicPageKind {
+  return /^\/blog\/.+/.test(resluPagePath(page)) ? "blog" : "page";
+}
+
+function percentageChange(current: number, previous: number): number | null {
+  if (previous <= 0) return current > 0 ? null : 0;
+  return ((current - previous) / previous) * 100;
+}
+
+export function mergeOrganicPagePerformance(
+  current: OrganicPageMetric[],
+  previous: OrganicPageMetric[]
+): OrganicPagePerformance[] {
+  const previousByPage = new Map(previous.map((row) => [resluPagePath(row.page), row]));
+  return current
+    .map((row) => {
+      const page = resluPagePath(row.page);
+      const prior = previousByPage.get(page);
+      return {
+        ...row,
+        page,
+        kind: organicPageKind(page),
+        previous_clicks: prior?.clicks ?? 0,
+        previous_impressions: prior?.impressions ?? 0,
+        previous_position: prior?.position ?? null,
+        clicks_change_pct: percentageChange(row.clicks, prior?.clicks ?? 0),
+        impressions_change_pct: percentageChange(row.impressions, prior?.impressions ?? 0),
+        position_change: prior ? prior.position - row.position : null,
+      };
+    })
+    .sort((a, b) => b.clicks - a.clicks || b.impressions - a.impressions);
+}
+
+function expectedOrganicCtr(position: number): number {
+  if (position <= 3) return 0.12;
+  if (position <= 5) return 0.07;
+  if (position <= 10) return 0.035;
+  if (position <= 20) return 0.015;
+  return 0.008;
+}
+
+/**
+ * Directional organic opportunity scoring. It combines current demand
+ * (impressions), ranking proximity, CTR headroom and prior-period movement.
+ * It recommends the next action but deliberately avoids guaranteed forecasts.
+ */
+export function organicOpportunities(
+  pages: OrganicPagePerformance[],
+  limit = 6
+): OrganicOpportunity[] {
+  return pages
+    .filter((page) => page.impressions >= 10)
+    .map((page): OrganicOpportunity => {
+      const expectedCtr = expectedOrganicCtr(page.position);
+      const ctrGap = Math.max(0, expectedCtr - page.ctr);
+      const demandScore = Math.min(35, Math.log10(page.impressions + 1) * 13);
+      const proximityScore = page.position <= 3
+        ? 8
+        : page.position <= 10
+          ? 24
+          : page.position <= 20
+            ? 30
+            : page.position <= 40
+              ? 18
+              : 6;
+      const ctrScore = expectedCtr > 0 ? Math.min(20, (ctrGap / expectedCtr) * 20) : 0;
+      const declineScore = (page.clicks_change_pct ?? 0) <= -30 || (page.position_change ?? 0) <= -2
+        ? 18
+        : 0;
+      const score = Math.round(Math.min(100, demandScore + proximityScore + ctrScore + declineScore));
+
+      let title: string;
+      let action: string;
+      let reason: string;
+      let predictedImpact: string;
+
+      if (declineScore > 0 && page.previous_clicks > 0) {
+        title = "Recover slipping visibility";
+        action = "Refresh the page, confirm its search intent, update examples and strengthen links from relevant RESLU pages.";
+        reason = `Clicks are ${Math.abs(Math.round(page.clicks_change_pct ?? 0))}% lower than the preceding period${(page.position_change ?? 0) < 0 ? ` and average position slipped ${Math.abs(page.position_change ?? 0).toFixed(1)} places` : ""}.`;
+        predictedImpact = "Likely opportunity: recover lost clicks and stabilise ranking.";
+      } else if (page.position <= 10 && ctrGap > expectedCtr * 0.35) {
+        title = "Turn impressions into clicks";
+        action = "Rewrite the page title and meta description around the searcher's decision, while keeping the page content aligned.";
+        reason = `${page.impressions.toLocaleString()} impressions at position ${page.position.toFixed(1)}, but CTR is ${(page.ctr * 100).toFixed(1)}%.`;
+        predictedImpact = "Likely opportunity: gain more clicks without needing a ranking increase.";
+      } else if (page.position > 7 && page.position <= 20) {
+        title = "Push towards page one";
+        action = "Expand the most useful answer, add project evidence and link to this page from closely related services and articles.";
+        reason = `${page.impressions.toLocaleString()} impressions with an average position of ${page.position.toFixed(1)} places it within striking distance.`;
+        predictedImpact = "Likely opportunity: improve first-page visibility for relevant searches.";
+      } else if (page.position > 20 && page.position <= 50) {
+        title = "Build topical authority";
+        action = page.kind === "blog"
+          ? "Deepen the article and connect it to a relevant service page with clear internal links."
+          : "Create a focused supporting article, then link it back to this service page.";
+        reason = `Search demand exists (${page.impressions.toLocaleString()} impressions), but average position is ${page.position.toFixed(1)}.`;
+        predictedImpact = "Likely opportunity: grow qualified impressions and improve topical relevance.";
+      } else {
+        title = "Extend a current winner";
+        action = "Protect the page's core intent, add a useful supporting section and target one closely related search question.";
+        reason = `${page.clicks.toLocaleString()} clicks from ${page.impressions.toLocaleString()} impressions at position ${page.position.toFixed(1)}.`;
+        predictedImpact = "Likely opportunity: defend current visibility and capture adjacent searches.";
+      }
+
+      return {
+        page: page.page,
+        kind: page.kind,
+        score,
+        priority: score >= 70 ? "high" : score >= 50 ? "medium" : "watch",
+        title,
+        action,
+        reason,
+        predicted_impact: predictedImpact,
+      };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(1, limit));
 }

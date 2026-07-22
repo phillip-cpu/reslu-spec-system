@@ -5,12 +5,19 @@ import {
   adelaideUtcRange,
   EXCLUDED_MARKETING_LEAD_STAGE,
   mergeAdDailyMetrics,
+  mergeOrganicPagePerformance,
   metaLeadConversions,
+  organicOpportunities,
   parseMarketingRange,
+  previousMarketingPeriod,
+  resluPagePath,
   rollupMarketingWeeks,
   type AdDailyMetric,
   type MarketingSourceState,
   type MarketingSourceStatus,
+  type OrganicOpportunity,
+  type OrganicPagePerformance,
+  type OrganicPageMetric,
 } from "@/lib/marketing";
 
 export const runtime = "nodejs";
@@ -76,13 +83,11 @@ interface SearchConsoleData {
     ctr: number;
     position: number;
   }>;
-  pages: Array<{
-    page: string;
-    clicks: number;
-    impressions: number;
-    ctr: number;
-    position: number;
-  }>;
+  pages: OrganicPagePerformance[];
+  top_pages: OrganicPagePerformance[];
+  top_blogs: OrganicPagePerformance[];
+  insights: OrganicOpportunity[];
+  comparison: { from: string; to: string };
   totals: { clicks: number; impressions: number; ctr: number; avg_position: number };
 }
 
@@ -386,27 +391,30 @@ async function fetchSearchConsole(from: string, to: string): Promise<SourceResul
       Authorization: `Bearer ${tokenData.access_token}`,
       "Content-Type": "application/json",
     };
-    const requestBody = (body: Record<string, unknown>) =>
+    const requestBody = (startDate: string, endDate: string, body: Record<string, unknown>) =>
       fetch(endpoint, {
         method: "POST",
         headers,
-        body: JSON.stringify({ startDate: from, endDate: to, dataState: "all", ...body }),
+        body: JSON.stringify({ startDate, endDate, dataState: "all", ...body }),
         cache: "no-store",
         signal: AbortSignal.timeout(20_000),
       });
 
     // A dimensionless row is the correct site-wide total. Summing the
     // top queries would understate clicks/impressions and distort position.
-    const [totalsResponse, queriesResponse, pagesResponse] = await Promise.all([
-      requestBody({ rowLimit: 1 }),
-      requestBody({ dimensions: ["query"], rowLimit: 20 }),
-      requestBody({ dimensions: ["page"], rowLimit: 10 }),
+    const comparison = previousMarketingPeriod(from, to);
+    const [totalsResponse, queriesResponse, pagesResponse, previousPagesResponse] = await Promise.all([
+      requestBody(from, to, { rowLimit: 1 }),
+      requestBody(from, to, { dimensions: ["query"], rowLimit: 20 }),
+      requestBody(from, to, { dimensions: ["page"], rowLimit: 250 }),
+      requestBody(comparison.from, comparison.to, { dimensions: ["page"], rowLimit: 250 }),
     ]);
-    if (!totalsResponse.ok || !queriesResponse.ok || !pagesResponse.ok) {
+    if (!totalsResponse.ok || !queriesResponse.ok || !pagesResponse.ok || !previousPagesResponse.ok) {
       console.error("[marketing] Search Console API failed:", {
         totals: totalsResponse.status,
         queries: queriesResponse.status,
         pages: pagesResponse.status,
+        previousPages: previousPagesResponse.status,
       });
       return {
         data: null,
@@ -414,12 +422,13 @@ async function fetchSearchConsole(from: string, to: string): Promise<SourceResul
       };
     }
 
-    const [totalsData, queriesData, pagesData] = await Promise.all([
+    const [totalsData, queriesData, pagesData, previousPagesData] = await Promise.all([
       jsonBody<SearchConsoleResponse>(totalsResponse),
       jsonBody<SearchConsoleResponse>(queriesResponse),
       jsonBody<SearchConsoleResponse>(pagesResponse),
+      jsonBody<SearchConsoleResponse>(previousPagesResponse),
     ]);
-    if (!totalsData || !queriesData || !pagesData) {
+    if (!totalsData || !queriesData || !pagesData || !previousPagesData) {
       return {
         data: null,
         status: sourceStatus("error", "Search Console returned an unreadable response."),
@@ -438,22 +447,30 @@ async function fetchSearchConsole(from: string, to: string): Promise<SourceResul
         position: Number(row.position) || 0,
       }];
     });
-    const pages = (pagesData.rows ?? []).flatMap((row) => {
+    const toPageMetrics = (rows: SearchConsoleRow[]): OrganicPageMetric[] => rows.flatMap((row) => {
       const page = row.keys?.[0];
       if (!page) return [];
       return [{
-        page: page.replace(/^https?:\/\/(www\.)?reslu\.com\.au/, "") || "/",
+        page: resluPagePath(page),
         clicks: Number(row.clicks) || 0,
         impressions: Number(row.impressions) || 0,
         ctr: Number(row.ctr) || 0,
         position: Number(row.position) || 0,
       }];
     });
+    const pages = mergeOrganicPagePerformance(
+      toPageMetrics(pagesData.rows ?? []),
+      toPageMetrics(previousPagesData.rows ?? [])
+    );
 
     return {
       data: {
         top_queries: topQueries,
         pages,
+        top_pages: pages.filter((page) => page.kind === "page").slice(0, 10),
+        top_blogs: pages.filter((page) => page.kind === "blog").slice(0, 10),
+        insights: organicOpportunities(pages),
+        comparison,
         totals: {
           clicks: Number(total?.clicks) || 0,
           impressions: Number(total?.impressions) || 0,

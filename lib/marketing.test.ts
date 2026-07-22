@@ -6,8 +6,13 @@ import {
   EXCLUDED_MARKETING_LEAD_STAGE,
   marketingPresetFrom,
   mergeAdDailyMetrics,
+  mergeOrganicPagePerformance,
   metaLeadConversions,
+  organicOpportunities,
+  organicPageKind,
   parseMarketingRange,
+  previousMarketingPeriod,
+  resluPagePath,
   rollupMarketingWeeks,
 } from "./marketing.ts";
 
@@ -78,4 +83,38 @@ test("daily platform data merges and rolls up Monday-to-Sunday", () => {
       ["2026-07-20", 25, 3],
     ]
   );
+});
+
+test("organic pages split blog articles from core webpages", () => {
+  assert.equal(resluPagePath("https://www.reslu.com.au/blog/design-build/"), "/blog/design-build");
+  assert.equal(organicPageKind("/blog/design-build"), "blog");
+  assert.equal(organicPageKind("/blog"), "page");
+  assert.equal(organicPageKind("/services"), "page");
+});
+
+test("organic comparison uses the immediately preceding equivalent range", () => {
+  assert.deepEqual(previousMarketingPeriod("2026-07-16", "2026-07-22"), {
+    from: "2026-07-09",
+    to: "2026-07-15",
+  });
+});
+
+test("organic opportunity engine ranks actionable CTR and ranking gaps", () => {
+  const performance = mergeOrganicPagePerformance(
+    [
+      { page: "/services", clicks: 8, impressions: 1000, ctr: 0.008, position: 6 },
+      { page: "/blog/design-build", clicks: 4, impressions: 500, ctr: 0.008, position: 13 },
+    ],
+    [
+      { page: "/services", clicks: 9, impressions: 900, ctr: 0.01, position: 6.2 },
+      { page: "/blog/design-build", clicks: 3, impressions: 400, ctr: 0.0075, position: 14 },
+    ]
+  );
+  const insights = organicOpportunities(performance);
+  assert.equal(insights.length, 2);
+  assert.equal(insights[0]?.page, "/services");
+  assert.equal(insights[0]?.title, "Turn impressions into clicks");
+  assert.match(insights[0]?.action ?? "", /title and meta description/i);
+  assert.equal(performance[1]?.kind, "blog");
+  assert.ok(Math.abs((performance[1]?.clicks_change_pct ?? 0) - (100 / 3)) < 0.000001);
 });
