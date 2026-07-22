@@ -364,10 +364,22 @@ def wake_aria(queue_items: list[dict]) -> bool:
     )
     try:
         result = subprocess.run(
-            ["openclaw", "system", "event", "--text", text, "--mode", "now", "--json"],
+            [
+                "openclaw",
+                "system",
+                "event",
+                "--text",
+                text,
+                "--mode",
+                "now",
+                "--expect-final",
+                "--timeout",
+                "600000",
+                "--json",
+            ],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=630,
         )
         if result.returncode == 0:
             print(f"[aria-heartbeat] woke Aria — {pending_count} pending item(s).")
@@ -386,7 +398,7 @@ def wake_aria(queue_items: list[dict]) -> bool:
         )
         return False
     except subprocess.TimeoutExpired:
-        print("[aria-heartbeat] openclaw system event timed out after 30s.", file=sys.stderr)
+        print("[aria-heartbeat] OpenClaw agent turn timed out after 630s.", file=sys.stderr)
         return False
 
 
