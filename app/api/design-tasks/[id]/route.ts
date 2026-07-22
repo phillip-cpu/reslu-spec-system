@@ -55,11 +55,8 @@ export async function PATCH(
 
   if (body.complete !== undefined) {
     update.completed_at = body.complete ? new Date().toISOString() : null;
-    // Phillip, 11 Jul 2026: completing a task clears its due date — see
-    // the identical fix + reasoning in app/api/office/tasks/[id]/route.ts.
-    if (body.complete) {
-      update.due_date = null;
-    }
+    // Keep due_date as completion history. My Work filters by completed_at
+    // and uses the retained date to place the row in its Completed area.
   }
 
   for (const [key, raw] of Object.entries(body)) {

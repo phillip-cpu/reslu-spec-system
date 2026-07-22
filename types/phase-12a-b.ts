@@ -308,6 +308,8 @@ export interface MyWorkItem {
    * "HH:MM[:SS]" string rather than a combined Date/timestamp.
    */
   due_time?: string | null;
+  /** Set only for rows returned in MyWorkResponse.completed. */
+  completed_at?: string | null;
 }
 
 export interface MyWorkGroups {
@@ -320,6 +322,8 @@ export interface MyWorkGroups {
 /** GET /api/my-work response. */
 export interface MyWorkResponse {
   groups: MyWorkGroups;
+  /** Recently completed, completable tasks grouped under the same date headings. */
+  completed: MyWorkGroups;
   is_admin: boolean;
 }
 

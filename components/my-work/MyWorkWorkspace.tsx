@@ -111,6 +111,10 @@ const SECTIONS: { key: keyof MyWorkGroups; label: string; emptyLabel: string }[]
   { key: "no_date", label: "No date", emptyLabel: "Nothing undated." },
 ];
 
+function emptyGroups(): MyWorkGroups {
+  return { overdue: [], today: [], this_week: [], no_date: [] };
+}
+
 /**
  * My Work aggregator UI (BUILD-SPEC.md §"Phase 12a — My Work"): four
  * date-bucketed groupings (Overdue / Today / This week / No date) fed
@@ -145,12 +149,8 @@ export function MyWorkWorkspace() {
   /**
    * BUILD-SPEC.md item 6 — ticking the checkbox writes the SAME
    * completion PATCH the item's own source screen (Office board /
-   * Design tab) uses, then optimistically removes it from every
-   * bucket client-side (mirrors those source screens' own "completed
-   * items disappear from the active list" behaviour, and matches GET
-   * /api/my-work's own server-side filter — a completed office_task/
-   * design_task is `is("completed_at", null)`-excluded on the very
-   * next load anyway, this just avoids waiting for a refetch).
+   * Design tab) uses, then moves it out of the active list and into the
+   * Completed area nested beneath the same date heading.
    */
   async function completeItem(item: MyWorkItem) {
     const endpoint = COMPLETABLE_ENDPOINT[item.kind];
@@ -167,10 +167,21 @@ export function MyWorkWorkspace() {
     setData((prev) => {
       if (!prev) return prev;
       const nextGroups = { ...prev.groups };
+      const nextCompleted = { ...(prev.completed ?? emptyGroups()) };
+      let sourceBucket: keyof MyWorkGroups | null = null;
       for (const key of Object.keys(nextGroups) as (keyof MyWorkGroups)[]) {
+        if (nextGroups[key].some((i) => i.kind === item.kind && i.id === item.id)) {
+          sourceBucket = key;
+        }
         nextGroups[key] = nextGroups[key].filter((i) => !(i.kind === item.kind && i.id === item.id));
       }
-      return { ...prev, groups: nextGroups };
+      if (sourceBucket) {
+        nextCompleted[sourceBucket] = [
+          { ...item, completed_at: new Date().toISOString() },
+          ...nextCompleted[sourceBucket].filter((i) => !(i.kind === item.kind && i.id === item.id)),
+        ];
+      }
+      return { ...prev, groups: nextGroups, completed: nextCompleted };
     });
   }
 
@@ -197,6 +208,7 @@ export function MyWorkWorkspace() {
               label={section.label}
               emptyLabel={section.emptyLabel}
               items={data.groups[section.key]}
+              completedItems={(data.completed ?? emptyGroups())[section.key]}
               highlightOverdue={section.key === "overdue"}
               onComplete={completeItem}
             />
@@ -212,12 +224,14 @@ function Section({
   label,
   emptyLabel,
   items,
+  completedItems,
   highlightOverdue,
   onComplete,
 }: {
   label: string;
   emptyLabel: string;
   items: MyWorkItem[];
+  completedItems: MyWorkItem[];
   highlightOverdue: boolean;
   onComplete: (item: MyWorkItem) => Promise<void>;
 }) {
@@ -235,6 +249,24 @@ function Section({
           ))}
         </ul>
       )}
+      {completedItems.length > 0 && (
+        <details className="mt-3 border-t border-[#dcd6cc] pt-3">
+          <summary className="label-caps cursor-pointer select-none !text-charcoal/45 hover:!text-charcoal/70">
+            Completed · {completedItems.length}
+          </summary>
+          <ul className="mt-2 space-y-2">
+            {completedItems.map((item) => (
+              <ItemRow
+                key={`completed-${item.kind}-${item.id}`}
+                item={item}
+                overdue={false}
+                completed
+                onComplete={onComplete}
+              />
+            ))}
+          </ul>
+        </details>
+      )}
     </section>
   );
 }
@@ -242,13 +274,15 @@ function Section({
 function ItemRow({
   item,
   overdue,
+  completed = false,
   onComplete,
 }: {
   item: MyWorkItem;
   overdue: boolean;
+  completed?: boolean;
   onComplete: (item: MyWorkItem) => Promise<void>;
 }) {
-  const completable = item.kind in COMPLETABLE_ENDPOINT;
+  const completable = !completed && item.kind in COMPLETABLE_ENDPOINT;
   const [completing, setCompleting] = useState(false);
   const [completeError, setCompleteError] = useState<string | null>(null);
 
@@ -274,7 +308,8 @@ function ItemRow({
         href={item.href}
         className={clsx(
           "flex items-center justify-between gap-3 border bg-offwhite px-4 py-3 transition-colors hover:border-nearblack",
-          overdue ? "border-red-700/30" : "border-[#dcd6cc]"
+          overdue ? "border-red-700/30" : "border-[#dcd6cc]",
+          completed && "opacity-55"
         )}
       >
         <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -289,6 +324,14 @@ function ItemRow({
             >
               {completing ? "…" : ""}
             </button>
+          )}
+          {completed && (
+            <span
+              aria-label="Completed"
+              className="flex h-5 w-5 shrink-0 items-center justify-center border border-charcoal/35 bg-charcoal/10 text-caption text-charcoal/60"
+            >
+              ✓
+            </span>
           )}
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -309,7 +352,7 @@ function ItemRow({
               )}
               <span className="label-caps shrink-0 !text-sand">{KIND_LABEL[item.kind]}</span>
             </div>
-            <p className="mt-1 truncate text-body text-nearblack">{item.title}</p>
+            <p className={clsx("mt-1 truncate text-body text-nearblack", completed && "line-through")}>{item.title}</p>
             {item.meta && <p className="mt-0.5 text-caption text-charcoal/50">{item.meta}</p>}
             {completeError && <p className="mt-0.5 text-caption text-red-700">{completeError}</p>}
           </div>

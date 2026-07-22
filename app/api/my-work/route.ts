@@ -133,6 +133,10 @@ export async function GET() {
   const { userId, role } = info;
   const isAdmin = role === "admin";
   const items: MyWorkItem[] = [];
+  const completedItems: MyWorkItem[] = [];
+  const completedCutoffDate = new Date();
+  completedCutoffDate.setDate(completedCutoffDate.getDate() - 14);
+  const completedCutoff = completedCutoffDate.toISOString();
 
   // ---- 1. My board tasks (via board_task_assignees) ----
   const { data: myAssignments } = await supabase
@@ -332,20 +336,21 @@ export async function GET() {
     const { data: officeTasks } = await supabase
       .from("office_tasks")
       // migration 041 — due_time added alongside due_date (see source #6's push below).
-      .select("id,group_id,title,due_date,due_time,kind,completed_at")
+      .select("id,group_id,prev_group_id,title,due_date,due_time,kind,completed_at")
       .in("id", myOfficeTaskIds)
       .is("deleted_at", null)
-      .eq("kind", "task")
-      .is("completed_at", null)
-      // Phillip, 11 Jul 2026: a no-date office task used to sit in My
-      // Work's "No date" bucket forever — nothing ever removed it short
-      // of explicit completion. Matches design_tasks' own source #8
-      // filter below: no due date means it isn't ready to chase yet, so
-      // it stays on the Office board but doesn't clutter My Work.
-      .not("due_date", "is", null);
+      .eq("kind", "task");
 
-    const officeTaskRows = officeTasks ?? [];
-    const groupIds = [...new Set(officeTaskRows.map((t) => t.group_id))];
+    const officeTaskRows = (officeTasks ?? []).filter((t) => !t.completed_at && t.due_date);
+    const completedOfficeTaskRows = (officeTasks ?? []).filter(
+      (t) => t.completed_at && t.completed_at >= completedCutoff
+    );
+    const groupIds = [
+      ...new Set([
+        ...officeTaskRows.map((t) => t.group_id),
+        ...completedOfficeTaskRows.map((t) => t.prev_group_id ?? t.group_id),
+      ]),
+    ];
     const { data: officeGroups } = groupIds.length
       ? await supabase.from("office_groups").select("id,name").in("id", groupIds)
       : { data: [] as { id: string; name: string }[] };
@@ -361,6 +366,20 @@ export async function GET() {
         due_time: t.due_time,
         href: `/office?focus=office_task-${t.id}`,
         meta: groupById.get(t.group_id)?.name ?? "Office",
+      });
+    }
+
+    for (const t of completedOfficeTaskRows) {
+      const originalGroupId = t.prev_group_id ?? t.group_id;
+      completedItems.push({
+        kind: "office_task",
+        id: t.id,
+        title: t.title,
+        project: null,
+        due: t.due_date ?? t.completed_at.slice(0, 10),
+        href: `/office?focus=office_task-${t.id}`,
+        meta: groupById.get(originalGroupId)?.name ?? "Office",
+        completed_at: t.completed_at,
       });
     }
   }
@@ -423,12 +442,14 @@ export async function GET() {
       // migration 041 — due_time added alongside due_date (see source #8's push below).
       .select("id,design_phase_id,title,due_date,due_time,completed_at")
       .in("id", myDesignTaskIds)
-      .is("deleted_at", null)
-      .is("completed_at", null)
-      .not("due_date", "is", null);
+      .is("deleted_at", null);
 
-    const designTaskRows = designTasks ?? [];
-    const phaseIds = [...new Set(designTaskRows.map((t) => t.design_phase_id))];
+    const designTaskRows = (designTasks ?? []).filter((t) => !t.completed_at && t.due_date);
+    const completedDesignTaskRows = (designTasks ?? []).filter(
+      (t) => t.completed_at && t.completed_at >= completedCutoff
+    );
+    const allDesignRows = [...designTaskRows, ...completedDesignTaskRows];
+    const phaseIds = [...new Set(allDesignRows.map((t) => t.design_phase_id))];
     const { data: designPhases } = phaseIds.length
       ? await supabase.from("design_phases").select("id,project_id").in("id", phaseIds)
       : { data: [] as { id: string; project_id: string }[] };
@@ -452,6 +473,21 @@ export async function GET() {
         due_time: t.due_time,
         href: project ? `/projects/${project.id}/design?focus=design_task-${t.id}` : "/",
         meta: "Design",
+      });
+    }
+
+    for (const t of completedDesignTaskRows) {
+      const phase = phaseById.get(t.design_phase_id);
+      const project = phase ? designProjectById.get(phase.project_id) : undefined;
+      completedItems.push({
+        kind: "design_task",
+        id: t.id,
+        title: t.title,
+        project: project ? { id: project.id, name: project.name, alias: project.alias } : null,
+        due: t.due_date ?? t.completed_at.slice(0, 10),
+        href: project ? `/projects/${project.id}/design?focus=design_task-${t.id}` : "/",
+        meta: "Design",
+        completed_at: t.completed_at,
       });
     }
   }
@@ -766,6 +802,7 @@ export async function GET() {
   }
 
   const groups = groupMyWorkItems(items);
-  const body: MyWorkResponse = { groups, is_admin: isAdmin };
+  const completed = groupMyWorkItems(completedItems);
+  const body: MyWorkResponse = { groups, completed, is_admin: isAdmin };
   return NextResponse.json(body);
 }

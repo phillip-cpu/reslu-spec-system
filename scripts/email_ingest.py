@@ -1053,7 +1053,10 @@ def process_fetched_messages(
 # ------------------------------------------------------------------
 def main() -> int:
     ap = argparse.ArgumentParser(description="RESLU Step 8 — email ingest + preprocessing")
-    ap.add_argument("--limit", type=int, default=int(os.environ.get("LIMIT", "50")))
+    # The scheduled scan runs every ten minutes and deduplicates against
+    # stored Message-IDs. A 250-message ceiling leaves enough headroom for a
+    # busy shared mailbox without making ordinary runs do any extra writes.
+    ap.add_argument("--limit", type=int, default=int(os.environ.get("LIMIT", "250")))
     ap.add_argument("--lookback-days", type=int, default=int(os.environ.get("LOOKBACK_DAYS", "2")))
     ap.add_argument("--query", default=os.environ.get("GMAIL_QUERY"),
                     help="override Gmail search query (default: received + sent, excluding spam/trash/drafts)")
