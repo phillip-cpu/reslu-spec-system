@@ -63,10 +63,10 @@ class AriaHeartbeatTests(unittest.TestCase):
         )
 
         message = run.call_args.args[0]
-        text_index = message.index("--text") + 1
+        text_index = message.index("--message") + 1
         self.assertIn("Do NOT call get_aria_queue", message[text_index])
-        self.assertIn("--expect-final", message)
-        self.assertEqual(message[message.index("--timeout") + 1], "600000")
+        self.assertEqual(message[:4], ["openclaw", "agent", "--agent", "main"])
+        self.assertEqual(message[message.index("--timeout") + 1], "600")
         self.assertEqual(run.call_args.kwargs["timeout"], 630)
 
     @patch.object(aria_heartbeat, "release_queue_items")

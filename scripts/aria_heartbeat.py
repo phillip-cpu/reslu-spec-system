@@ -323,17 +323,18 @@ def clear_wake_state(path: Path) -> None:
 
 def wake_aria(queue_items: list[dict]) -> bool:
     """
-    Inject the already-claimed batch as a system event on the OpenClaw
-    main session and trigger an immediate heartbeat wake via
-    `openclaw system event --mode now`.
+    Run an immediate OpenClaw main-agent turn with the already-claimed
+    batch and wait for its final response via `openclaw agent`.
 
     This is the local-only invocation path — the Gateway runs on this
     machine (port 18789, no auth token required for loopback calls), so
-    a plain subprocess call is enough. The event lands as a System: line
-    in the next agent prompt. The local script has already claimed these
-    exact rows, so Aria cannot wake, observe a count and then omit the
-    actual claim. A failed wake releases the batch immediately; the
-    database's 15-minute visibility timeout is the final fallback.
+    a plain subprocess call is enough. The local script has already
+    claimed these exact rows, so Aria cannot wake, observe a count and
+    then omit the actual claim. Unlike `openclaw system event`, whose
+    current CLI implementation hard-codes expectFinal=false, the agent
+    command blocks for the real turn. A failed initial wake releases the
+    batch immediately; the database's 15-minute visibility timeout is
+    the final fallback.
     """
     import subprocess
 
@@ -366,15 +367,13 @@ def wake_aria(queue_items: list[dict]) -> bool:
         result = subprocess.run(
             [
                 "openclaw",
-                "system",
-                "event",
-                "--text",
+                "agent",
+                "--agent",
+                "main",
+                "--message",
                 text,
-                "--mode",
-                "now",
-                "--expect-final",
                 "--timeout",
-                "600000",
+                "600",
                 "--json",
             ],
             capture_output=True,
@@ -386,7 +385,7 @@ def wake_aria(queue_items: list[dict]) -> bool:
             return True
         else:
             print(
-                f"[aria-heartbeat] openclaw system event failed (rc={result.returncode}): "
+                f"[aria-heartbeat] OpenClaw agent turn failed (rc={result.returncode}): "
                 f"{result.stderr.strip() or result.stdout.strip()}",
                 file=sys.stderr,
             )
