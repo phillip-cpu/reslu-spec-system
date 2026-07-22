@@ -25,12 +25,13 @@ Meta Ads, Google Search Console and RESLU leads over one date range.
 - Three or more simultaneous core-page declines are grouped into one site-wide
   diagnostic so indexing, sitemap, redirect, canonical and deployment checks
   happen before duplicate content tasks are created.
-- A recommendation becomes work only when an admin clicks `Create action`.
-  This creates a linked Marketing task in Office/My Work. The lifecycle is
-  New → Approved → In progress → 28-day monitoring → Complete, with dismiss
-  and reopen controls.
-- `Approve + ask Aria` queues an `organic_review`. Aria can store a technical
-  review and draft titles, descriptions, content changes and internal links.
+- Clicking `Create action with Aria` is the human approval to begin analysis.
+  The same click creates a linked Marketing task in Office/My Work and queues
+  an `organic_review`; there is no separate approval step. The visible lifecycle
+  is Aria reviewing → Ready for review → In progress → 28-day monitoring →
+  Complete, with dismiss and reopen controls.
+- Aria can store a technical review and draft titles, descriptions, content
+  changes and internal links. Phillip still accepts the draft before work starts.
   Neither Aria nor this workflow has a website-publishing route.
 - High-opportunity decline signals require meaningful absolute evidence: an
   absolute click loss or a ranking loss backed by sufficient impressions.

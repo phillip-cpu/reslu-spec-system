@@ -375,13 +375,19 @@ function OrganicInsightCard({
             disabled={busy}
             className="border border-nearblack bg-nearblack px-4 py-2 text-caption text-white transition-colors hover:bg-charcoal disabled:opacity-50"
           >
-            {busy ? "Creating…" : "Create action"}
+            {busy ? "Sending to Aria…" : "Create action with Aria"}
           </button>
         ) : (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="label-caps text-[#55705b]">
-                {action.status === "in_progress" ? "In progress" : action.status.replace("_", " ")}
+                {action.draft_status === "queued"
+                  ? "Aria reviewing"
+                  : action.draft_status === "ready" && action.status === "approved"
+                    ? "Ready for your review"
+                    : action.status === "in_progress"
+                      ? "In progress"
+                      : action.status.replace("_", " ")}
               </span>
               {action.office_task_id && (
                 <a href="/office" className="text-caption text-charcoal/55 underline-offset-2 hover:underline">
@@ -391,7 +397,7 @@ function OrganicInsightCard({
             </div>
 
             {action.draft_status === "queued" && (
-              <p className="text-caption text-charcoal/55">Aria draft queued. Nothing will be published automatically.</p>
+              <p className="text-caption text-charcoal/55">Aria is checking the evidence and preparing the draft. Nothing will be published automatically.</p>
             )}
             {action.draft_status === "ready" && action.aria_draft && (
               <details className="border border-[#dcd6cc] bg-[#faf9f6] p-3">
@@ -443,17 +449,18 @@ function OrganicInsightCard({
             <div className="flex flex-wrap gap-2">
               {action.status === "new" && (
                 <>
-                  <button type="button" disabled={busy} onClick={() => onStatus(action, "approved")} className="border border-nearblack px-3 py-2 text-caption hover:bg-[#f3f0ea] disabled:opacity-50">Approve</button>
-                  <button type="button" disabled={busy} onClick={() => onQueueAria(action)} className="border border-nearblack bg-nearblack px-3 py-2 text-caption text-white hover:bg-charcoal disabled:opacity-50">Approve + ask Aria</button>
+                  <button type="button" disabled={busy} onClick={() => onQueueAria(action)} className="border border-nearblack bg-nearblack px-3 py-2 text-caption text-white hover:bg-charcoal disabled:opacity-50">Start with Aria</button>
                   <button type="button" disabled={busy} onClick={() => onStatus(action, "dismissed")} className="px-3 py-2 text-caption text-charcoal/55 hover:text-nearblack disabled:opacity-50">Dismiss</button>
                 </>
               )}
               {action.status === "approved" && (
                 <>
-                  {action.draft_status === "not_requested" && (
-                    <button type="button" disabled={busy} onClick={() => onQueueAria(action)} className="border border-nearblack px-3 py-2 text-caption hover:bg-[#f3f0ea] disabled:opacity-50">Ask Aria to draft</button>
+                  {["not_requested", "failed"].includes(action.draft_status) && (
+                    <button type="button" disabled={busy} onClick={() => onQueueAria(action)} className="border border-nearblack px-3 py-2 text-caption hover:bg-[#f3f0ea] disabled:opacity-50">Retry with Aria</button>
                   )}
-                  <button type="button" disabled={busy} onClick={() => onStatus(action, "in_progress")} className="border border-nearblack bg-nearblack px-3 py-2 text-caption text-white hover:bg-charcoal disabled:opacity-50">Start work</button>
+                  {action.draft_status === "ready" && (
+                    <button type="button" disabled={busy} onClick={() => onStatus(action, "in_progress")} className="border border-nearblack bg-nearblack px-3 py-2 text-caption text-white hover:bg-charcoal disabled:opacity-50">Accept draft & start work</button>
+                  )}
                   <button type="button" disabled={busy} onClick={() => onStatus(action, "dismissed")} className="px-3 py-2 text-caption text-charcoal/55 hover:text-nearblack disabled:opacity-50">Dismiss</button>
                 </>
               )}

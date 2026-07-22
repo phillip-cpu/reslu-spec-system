@@ -211,5 +211,60 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: linkError.message }, { status: 500 });
   }
 
-  return NextResponse.json({ action: linked }, { status: 201 });
+  // Clicking Create action is the human approval to begin analysis. Aria is
+  // involved immediately, but the queue instruction remains draft-only and
+  // provides no website publishing capability.
+  const { data: queued, error: queueError } = await supabase
+    .from("aria_queue")
+    .upsert({
+      kind: "organic_review",
+      status: "pending",
+      payload: {
+        organic_action_id: linked.id,
+        title: linked.title,
+        page: linked.page,
+        affected_pages: linked.affected_pages,
+        reason: linked.reason,
+        recommended_action: linked.recommended_action,
+        baseline: linked.baseline,
+        instruction: "Audit the evidence and prepare a draft only. Do not publish, edit the website, send messages or claim unrelated queue items.",
+      },
+      dedupe_key: `organic_review:${linked.id}`,
+      source: "marketing_dashboard",
+      picked_up_at: null,
+      resolved_at: null,
+      attempts: 0,
+      error: null,
+    }, { onConflict: "dedupe_key" })
+    .select("id")
+    .single();
+  if (queueError || !queued) {
+    await supabase.from("office_tasks").delete().eq("id", officeTask.id);
+    await supabase.from("marketing_organic_actions").delete().eq("id", action.id);
+    return NextResponse.json({ error: queueError?.message || "Could not start Aria's review." }, { status: 500 });
+  }
+
+  const { data: started, error: startError } = await supabase
+    .from("marketing_organic_actions")
+    .update({
+      status: "approved",
+      reviewed_by: info.userId,
+      reviewed_at: new Date().toISOString(),
+      draft_status: "queued",
+      aria_queue_id: queued.id,
+    })
+    .eq("id", linked.id)
+    .select("*")
+    .single();
+  if (startError || !started) {
+    await supabase
+      .from("aria_queue")
+      .update({ status: "failed", resolved_at: new Date().toISOString(), error: "Organic action setup rolled back." })
+      .eq("id", queued.id);
+    await supabase.from("office_tasks").delete().eq("id", officeTask.id);
+    await supabase.from("marketing_organic_actions").delete().eq("id", action.id);
+    return NextResponse.json({ error: startError?.message || "Could not start the organic review." }, { status: 500 });
+  }
+
+  return NextResponse.json({ action: started }, { status: 201 });
 }
