@@ -58,6 +58,7 @@ export interface OrganicPagePerformance extends OrganicPageMetric {
 
 export interface OrganicOpportunity {
   page: string;
+  affected_pages: string[];
   kind: OrganicPageKind;
   score: number;
   priority: "high" | "medium" | "watch";
@@ -326,8 +327,8 @@ export function organicOpportunities(
   pages: OrganicPagePerformance[],
   limit = 6
 ): OrganicOpportunity[] {
-  return pages
-    .filter((page) => page.impressions >= 10)
+  const opportunities = pages
+    .filter((page) => page.impressions >= 25)
     .map((page): OrganicOpportunity => {
       const expectedCtr = expectedOrganicCtr(page.position);
       const ctrGap = Math.max(0, expectedCtr - page.ctr);
@@ -342,7 +343,11 @@ export function organicOpportunities(
               ? 18
               : 6;
       const ctrScore = expectedCtr > 0 ? Math.min(20, (ctrGap / expectedCtr) * 20) : 0;
-      const declineScore = (page.clicks_change_pct ?? 0) <= -30 || (page.position_change ?? 0) <= -2
+      const absoluteClickDrop = page.previous_clicks - page.clicks;
+      const meaningfulDecline =
+        (absoluteClickDrop >= 3 && (page.clicks_change_pct ?? 0) <= -30) ||
+        (page.impressions >= 50 && (page.position_change ?? 0) <= -2);
+      const declineScore = meaningfulDecline
         ? 18
         : 0;
       const score = Math.round(Math.min(100, demandScore + proximityScore + ctrScore + declineScore));
@@ -383,6 +388,7 @@ export function organicOpportunities(
 
       return {
         page: page.page,
+        affected_pages: [page.page],
         kind: page.kind,
         score,
         priority: score >= 70 ? "high" : score >= 50 ? "medium" : "watch",
@@ -391,7 +397,33 @@ export function organicOpportunities(
         reason,
         predicted_impact: predictedImpact,
       };
-    })
+    });
+
+  // Several core pages dropping together is one diagnostic problem,
+  // not several independent content edits. Group the signal so the
+  // technical/indexing check happens before any page is rewritten.
+  const coreDeclines = opportunities.filter(
+    (opportunity) => opportunity.kind === "page" && opportunity.title === "Recover slipping visibility"
+  );
+  const collapsed = opportunities.filter((opportunity) => !coreDeclines.includes(opportunity));
+  if (coreDeclines.length >= 3) {
+    const affectedPages = coreDeclines.map((opportunity) => opportunity.page);
+    collapsed.push({
+      page: affectedPages[0] ?? "/",
+      affected_pages: affectedPages,
+      kind: "page",
+      score: Math.max(...coreDeclines.map((opportunity) => opportunity.score)),
+      priority: "high",
+      title: "Investigate a site-wide organic decline",
+      action: "Check indexing, sitemap submission, redirects, canonical tags, noindex rules and the website deployment timeline before editing individual pages.",
+      reason: `${affectedPages.length} core webpages declined together, which is more likely to share a technical or tracking cause than require separate content rewrites.`,
+      predicted_impact: "Likely opportunity: identify the common cause and avoid unnecessary page-by-page changes.",
+    });
+  } else {
+    collapsed.push(...coreDeclines);
+  }
+
+  return collapsed
     .sort((a, b) => b.score - a.score)
     .slice(0, Math.max(1, limit));
 }

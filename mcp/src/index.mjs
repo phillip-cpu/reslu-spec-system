@@ -1365,6 +1365,45 @@ const TOOLS = [
       }),
   },
   {
+    name: "get_organic_action",
+    description:
+      "Read one approval-controlled organic marketing action after receiving an organic_review queue item. Returns the captured Search Console baseline, affected pages and the human-approved review scope. Read-only; it cannot edit or publish the RESLU website.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "marketing_organic_actions UUID from payload.organic_action_id" },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    handler: async ({ id }) => apiFetch(`/api/marketing/organic-actions/${encodeURIComponent(id)}`),
+  },
+  {
+    name: "submit_organic_action_draft",
+    description:
+      "Submit a grounded SEO/website improvement draft for Phillip to review after claiming an organic_review queue item. This stores analysis and proposed copy only. It cannot publish, edit the website, create redirects or send messages. For a grouped site-wide decline, report technical findings before proposing page copy changes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "marketing_organic_actions UUID" },
+        summary: { type: "string", description: "Concise evidence-based conclusion" },
+        technical_findings: { type: "array", items: { type: "string" }, description: "Indexing, redirects, canonicals, sitemap or deployment findings" },
+        suggested_title: { type: "string", description: "Optional proposed SEO title; draft only" },
+        suggested_meta_description: { type: "string", description: "Optional proposed meta description; draft only" },
+        content_changes: { type: "array", items: { type: "string" }, description: "Specific page improvements supported by the evidence" },
+        internal_links: { type: "array", items: { type: "string" }, description: "Specific source page -> target page link suggestions" },
+        evidence_sources: { type: "array", items: { type: "string" }, description: "URLs, Search Console dates or record references checked" },
+      },
+      required: ["id", "summary"],
+      additionalProperties: false,
+    },
+    handler: async ({ id, ...body }) =>
+      apiFetch(`/api/marketing/organic-actions/${encodeURIComponent(id)}/aria-draft`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+  },
+  {
     name: "submit_followup_draft",
     description:
       "Save an email draft for Phillip's approval after claiming a followup_draft queue item. This tool cannot send, approve, change the lead stage or clear the follow-up date. Search the lead, relevant emails and memory first; then submit grounded copy. The draft appears in Office with explicit Approve & send / Reject controls.",

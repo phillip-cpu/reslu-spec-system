@@ -22,6 +22,19 @@ Meta Ads, Google Search Console and RESLU leads over one date range.
   CTR headroom and negative movement to recommend the next useful action.
 - Organic recommendations are directional signals, not guaranteed traffic or
   ranking forecasts. They never modify the website automatically.
+- Three or more simultaneous core-page declines are grouped into one site-wide
+  diagnostic so indexing, sitemap, redirect, canonical and deployment checks
+  happen before duplicate content tasks are created.
+- A recommendation becomes work only when an admin clicks `Create action`.
+  This creates a linked Marketing task in Office/My Work. The lifecycle is
+  New → Approved → In progress → 28-day monitoring → Complete, with dismiss
+  and reopen controls.
+- `Approve + ask Aria` queues an `organic_review`. Aria can store a technical
+  review and draft titles, descriptions, content changes and internal links.
+  Neither Aria nor this workflow has a website-publishing route.
+- High-opportunity decline signals require meaningful absolute evidence: an
+  absolute click loss or a ranking loss backed by sufficient impressions.
+  Small low-volume percentage swings are not treated as emergencies.
 
 ## Vercel environment variables
 

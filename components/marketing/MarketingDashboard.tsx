@@ -7,6 +7,7 @@ import {
   type OrganicOpportunity,
   type OrganicPagePerformance,
 } from "@/lib/marketing";
+import type { OrganicActionStatus } from "@/lib/organic-actions";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -71,6 +72,27 @@ interface MarketingData {
 interface MarketingDashboardProps {
   initialFrom: string;
   initialTo: string;
+}
+
+interface OrganicAction {
+  id: string;
+  title: string;
+  affected_pages: string[];
+  range_from: string;
+  range_to: string;
+  status: OrganicActionStatus;
+  draft_status: "not_requested" | "queued" | "ready" | "failed";
+  aria_draft: {
+    summary?: string;
+    technical_findings?: string[];
+    suggested_title?: string;
+    suggested_meta_description?: string;
+    content_changes?: string[];
+    internal_links?: string[];
+    evidence_sources?: string[];
+  } | null;
+  office_task_id: string | null;
+  recheck_on: string | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -296,7 +318,21 @@ function OrganicPerformanceTable({
   );
 }
 
-function OrganicInsightCard({ insight }: { insight: OrganicOpportunity }) {
+function OrganicInsightCard({
+  insight,
+  action,
+  busy,
+  onCreate,
+  onQueueAria,
+  onStatus,
+}: {
+  insight: OrganicOpportunity;
+  action?: OrganicAction;
+  busy: boolean;
+  onCreate: () => void;
+  onQueueAria: (action: OrganicAction) => void;
+  onStatus: (action: OrganicAction, status: OrganicActionStatus) => void;
+}) {
   const priority = {
     high: { label: "High opportunity", color: "#a13f35" },
     medium: { label: "Good opportunity", color: "#A08C72" },
@@ -319,12 +355,131 @@ function OrganicInsightCard({ insight }: { insight: OrganicOpportunity }) {
       >
         {insight.kind === "blog" ? "Blog · " : "Webpage · "}{insight.page}
       </a>
+      {insight.affected_pages.length > 1 && (
+        <p className="mb-3 text-caption text-charcoal/50">
+          Grouped signal · {insight.affected_pages.join(" · ")}
+        </p>
+      )}
       <p className="mb-3 text-body text-charcoal/70">{insight.reason}</p>
       <div className="border-l-2 border-[#A08C72] pl-3">
         <p className="label-caps mb-1 text-charcoal/50">Recommended action</p>
         <p className="text-body text-nearblack">{insight.action}</p>
       </div>
       <p className="mt-3 text-caption text-[#55705b]">{insight.predicted_impact}</p>
+
+      <div className="mt-5 border-t border-[#e7e2d9] pt-4">
+        {!action ? (
+          <button
+            type="button"
+            onClick={onCreate}
+            disabled={busy}
+            className="border border-nearblack bg-nearblack px-4 py-2 text-caption text-white transition-colors hover:bg-charcoal disabled:opacity-50"
+          >
+            {busy ? "Creating…" : "Create action"}
+          </button>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="label-caps text-[#55705b]">
+                {action.status === "in_progress" ? "In progress" : action.status.replace("_", " ")}
+              </span>
+              {action.office_task_id && (
+                <a href="/office" className="text-caption text-charcoal/55 underline-offset-2 hover:underline">
+                  Open Office task →
+                </a>
+              )}
+            </div>
+
+            {action.draft_status === "queued" && (
+              <p className="text-caption text-charcoal/55">Aria draft queued. Nothing will be published automatically.</p>
+            )}
+            {action.draft_status === "ready" && action.aria_draft && (
+              <details className="border border-[#dcd6cc] bg-[#faf9f6] p-3">
+                <summary className="cursor-pointer text-body font-medium text-nearblack">Aria draft ready for review</summary>
+                <div className="mt-3 space-y-3 text-body text-charcoal/70">
+                  <p>{action.aria_draft.summary}</p>
+                  {!!action.aria_draft.technical_findings?.length && (
+                    <div>
+                      <p className="label-caps mb-1 text-charcoal/50">Technical findings</p>
+                      <ul className="list-disc space-y-1 pl-5">
+                        {action.aria_draft.technical_findings.map((item) => <li key={item}>{item}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {action.aria_draft.suggested_title && (
+                    <div><p className="label-caps text-charcoal/50">Suggested title</p><p>{action.aria_draft.suggested_title}</p></div>
+                  )}
+                  {action.aria_draft.suggested_meta_description && (
+                    <div><p className="label-caps text-charcoal/50">Suggested description</p><p>{action.aria_draft.suggested_meta_description}</p></div>
+                  )}
+                  {!!action.aria_draft.content_changes?.length && (
+                    <div>
+                      <p className="label-caps mb-1 text-charcoal/50">Content changes</p>
+                      <ul className="list-disc space-y-1 pl-5">
+                        {action.aria_draft.content_changes.map((item) => <li key={item}>{item}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {!!action.aria_draft.internal_links?.length && (
+                    <div>
+                      <p className="label-caps mb-1 text-charcoal/50">Internal links</p>
+                      <ul className="list-disc space-y-1 pl-5">
+                        {action.aria_draft.internal_links.map((item) => <li key={item}>{item}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {!!action.aria_draft.evidence_sources?.length && (
+                    <div>
+                      <p className="label-caps mb-1 text-charcoal/50">Evidence checked</p>
+                      <ul className="list-disc space-y-1 pl-5">
+                        {action.aria_draft.evidence_sources.map((item) => <li key={item}>{item}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </details>
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              {action.status === "new" && (
+                <>
+                  <button type="button" disabled={busy} onClick={() => onStatus(action, "approved")} className="border border-nearblack px-3 py-2 text-caption hover:bg-[#f3f0ea] disabled:opacity-50">Approve</button>
+                  <button type="button" disabled={busy} onClick={() => onQueueAria(action)} className="border border-nearblack bg-nearblack px-3 py-2 text-caption text-white hover:bg-charcoal disabled:opacity-50">Approve + ask Aria</button>
+                  <button type="button" disabled={busy} onClick={() => onStatus(action, "dismissed")} className="px-3 py-2 text-caption text-charcoal/55 hover:text-nearblack disabled:opacity-50">Dismiss</button>
+                </>
+              )}
+              {action.status === "approved" && (
+                <>
+                  {action.draft_status === "not_requested" && (
+                    <button type="button" disabled={busy} onClick={() => onQueueAria(action)} className="border border-nearblack px-3 py-2 text-caption hover:bg-[#f3f0ea] disabled:opacity-50">Ask Aria to draft</button>
+                  )}
+                  <button type="button" disabled={busy} onClick={() => onStatus(action, "in_progress")} className="border border-nearblack bg-nearblack px-3 py-2 text-caption text-white hover:bg-charcoal disabled:opacity-50">Start work</button>
+                  <button type="button" disabled={busy} onClick={() => onStatus(action, "dismissed")} className="px-3 py-2 text-caption text-charcoal/55 hover:text-nearblack disabled:opacity-50">Dismiss</button>
+                </>
+              )}
+              {action.status === "in_progress" && (
+                <>
+                  <button type="button" disabled={busy} onClick={() => onStatus(action, "monitoring")} className="border border-nearblack bg-nearblack px-3 py-2 text-caption text-white hover:bg-charcoal disabled:opacity-50">Begin 28-day monitoring</button>
+                  <button type="button" disabled={busy} onClick={() => onStatus(action, "dismissed")} className="px-3 py-2 text-caption text-charcoal/55 hover:text-nearblack disabled:opacity-50">Dismiss</button>
+                </>
+              )}
+              {action.status === "monitoring" && (
+                <>
+                  <span className="self-center text-caption text-charcoal/55">Recheck {action.recheck_on ?? "scheduled"}</span>
+                  <button type="button" disabled={busy} onClick={() => onStatus(action, "complete")} className="border border-nearblack bg-nearblack px-3 py-2 text-caption text-white hover:bg-charcoal disabled:opacity-50">Mark complete</button>
+                  <button type="button" disabled={busy} onClick={() => onStatus(action, "in_progress")} className="border border-nearblack px-3 py-2 text-caption hover:bg-[#f3f0ea] disabled:opacity-50">Resume work</button>
+                </>
+              )}
+              {action.status === "complete" && (
+                <button type="button" disabled={busy} onClick={() => onStatus(action, "in_progress")} className="border border-nearblack px-3 py-2 text-caption hover:bg-[#f3f0ea] disabled:opacity-50">Reopen</button>
+              )}
+              {action.status === "dismissed" && (
+                <button type="button" disabled={busy} onClick={() => onStatus(action, "new")} className="border border-nearblack px-3 py-2 text-caption hover:bg-[#f3f0ea] disabled:opacity-50">Restore</button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </article>
   );
 }
@@ -343,6 +498,16 @@ async function requestMarketingData(
   return (await response.json()) as MarketingData;
 }
 
+async function requestOrganicActions(signal?: AbortSignal): Promise<OrganicAction[]> {
+  const response = await fetch("/api/marketing/organic-actions", { signal, cache: "no-store" });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(payload?.error || `Organic actions failed (${response.status}).`);
+  }
+  const payload = (await response.json()) as { actions?: OrganicAction[] };
+  return payload.actions ?? [];
+}
+
 // ── Main dashboard ─────────────────────────────────────────────────────────
 
 export function MarketingDashboard({ initialFrom, initialTo }: MarketingDashboardProps) {
@@ -351,6 +516,9 @@ export function MarketingDashboard({ initialFrom, initialTo }: MarketingDashboar
   const [data, setData] = useState<MarketingData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actions, setActions] = useState<OrganicAction[]>([]);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
 
   const load = useCallback(async (f: string, t: string) => {
     setLoading(true);
@@ -385,8 +553,90 @@ export function MarketingDashboard({ initialFrom, initialTo }: MarketingDashboar
     };
   }, [initialFrom, initialTo]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    void requestOrganicActions(controller.signal)
+      .then(setActions)
+      .catch((loadError: unknown) => {
+        if (!(loadError instanceof DOMException && loadError.name === "AbortError")) {
+          setActionError(loadError instanceof Error ? loadError.message : "Organic actions failed.");
+        }
+      });
+    return () => controller.abort();
+  }, []);
+
   function apply() {
     void load(from, to);
+  }
+
+  function matchingAction(insight: OrganicOpportunity): OrganicAction | undefined {
+    const pages = [...insight.affected_pages].sort().join("|");
+    return actions.find((action) =>
+      action.title === insight.title &&
+      action.range_from === data?.from &&
+      action.range_to === data?.to &&
+      [...action.affected_pages].sort().join("|") === pages
+    );
+  }
+
+  async function createOrganicAction(insight: OrganicOpportunity) {
+    if (!data?.seo) return;
+    const busyKey = `${insight.title}:${insight.page}`;
+    setActionBusy(busyKey);
+    setActionError(null);
+    try {
+      const response = await fetch("/api/marketing/organic-actions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          insight,
+          range: { from: data.from, to: data.to },
+          comparison: data.seo.comparison,
+          baseline: data.seo.pages,
+        }),
+      });
+      const payload = (await response.json().catch(() => null)) as { action?: OrganicAction; error?: string } | null;
+      if (!response.ok || !payload?.action) throw new Error(payload?.error || "Could not create the organic action.");
+      setActions((current) => [payload.action!, ...current.filter((action) => action.id !== payload.action!.id)]);
+    } catch (createError: unknown) {
+      setActionError(createError instanceof Error ? createError.message : "Could not create the organic action.");
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function updateOrganicAction(action: OrganicAction, status: OrganicActionStatus) {
+    setActionBusy(action.id);
+    setActionError(null);
+    try {
+      const response = await fetch(`/api/marketing/organic-actions/${action.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      const payload = (await response.json().catch(() => null)) as { action?: OrganicAction; error?: string } | null;
+      if (!response.ok || !payload?.action) throw new Error(payload?.error || "Could not update the organic action.");
+      setActions((current) => current.map((item) => item.id === action.id ? payload.action! : item));
+    } catch (updateError: unknown) {
+      setActionError(updateError instanceof Error ? updateError.message : "Could not update the organic action.");
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function queueOrganicDraft(action: OrganicAction) {
+    setActionBusy(action.id);
+    setActionError(null);
+    try {
+      const response = await fetch(`/api/marketing/organic-actions/${action.id}/aria-draft`, { method: "POST" });
+      const payload = (await response.json().catch(() => null)) as { action?: OrganicAction; error?: string } | null;
+      if (!response.ok || !payload?.action) throw new Error(payload?.error || "Could not queue Aria.");
+      setActions((current) => current.map((item) => item.id === action.id ? payload.action! : item));
+    } catch (queueError: unknown) {
+      setActionError(queueError instanceof Error ? queueError.message : "Could not queue Aria.");
+    } finally {
+      setActionBusy(null);
+    }
   }
 
   const s = data?.summary;
@@ -642,11 +892,28 @@ export function MarketingDashboard({ initialFrom, initialTo }: MarketingDashboar
                     </div>
                     <p className="text-caption text-charcoal/40">Directional opportunity signals—not guaranteed forecasts.</p>
                   </div>
+                  {actionError && (
+                    <p className="mb-3 border border-[#d9b2ad] bg-[#fff8f7] p-3 text-caption text-[#8f342b]">
+                      {actionError}
+                    </p>
+                  )}
                   {data.seo.insights.length > 0 ? (
                     <div className="grid gap-3 lg:grid-cols-2">
-                      {data.seo.insights.map((insight) => (
-                        <OrganicInsightCard key={`${insight.page}-${insight.title}`} insight={insight} />
-                      ))}
+                      {data.seo.insights.map((insight) => {
+                        const action = matchingAction(insight);
+                        const busyKey = `${insight.title}:${insight.page}`;
+                        return (
+                          <OrganicInsightCard
+                            key={`${insight.page}-${insight.title}`}
+                            insight={insight}
+                            action={action}
+                            busy={actionBusy === busyKey || actionBusy === action?.id}
+                            onCreate={() => void createOrganicAction(insight)}
+                            onQueueAria={(selected) => void queueOrganicDraft(selected)}
+                            onStatus={(selected, status) => void updateOrganicAction(selected, status)}
+                          />
+                        );
+                      })}
                     </div>
                   ) : (
                     <p className="border border-[#dcd6cc] bg-[#faf9f6] p-4 text-caption text-charcoal/45">

@@ -118,3 +118,33 @@ test("organic opportunity engine ranks actionable CTR and ranking gaps", () => {
   assert.equal(performance[1]?.kind, "blog");
   assert.ok(Math.abs((performance[1]?.clicks_change_pct ?? 0) - (100 / 3)) < 0.000001);
 });
+
+test("organic opportunity engine groups simultaneous core-page declines", () => {
+  const performance = mergeOrganicPagePerformance(
+    [
+      { page: "/", clicks: 1, impressions: 500, ctr: 0.002, position: 15 },
+      { page: "/services", clicks: 2, impressions: 400, ctr: 0.005, position: 13 },
+      { page: "/contact", clicks: 1, impressions: 250, ctr: 0.004, position: 11 },
+      { page: "/blog/design-build", clicks: 1, impressions: 150, ctr: 0.0067, position: 18 },
+    ],
+    [
+      { page: "/", clicks: 8, impressions: 600, ctr: 0.013, position: 8 },
+      { page: "/services", clicks: 7, impressions: 450, ctr: 0.015, position: 9 },
+      { page: "/contact", clicks: 5, impressions: 280, ctr: 0.018, position: 8 },
+      { page: "/blog/design-build", clicks: 5, impressions: 170, ctr: 0.029, position: 12 },
+    ]
+  );
+  const insights = organicOpportunities(performance);
+  const sitewide = insights.find((insight) => insight.title === "Investigate a site-wide organic decline");
+  assert.deepEqual(sitewide?.affected_pages.sort(), ["/", "/contact", "/services"]);
+  assert.equal(insights.filter((insight) => insight.title === "Recover slipping visibility").length, 1);
+});
+
+test("small percentage swings do not become decline emergencies", () => {
+  const performance = mergeOrganicPagePerformance(
+    [{ page: "/contact", clicks: 1, impressions: 30, ctr: 0.033, position: 8 }],
+    [{ page: "/contact", clicks: 3, impressions: 35, ctr: 0.086, position: 8.5 }]
+  );
+  const insight = organicOpportunities(performance)[0];
+  assert.notEqual(insight?.title, "Recover slipping visibility");
+});
