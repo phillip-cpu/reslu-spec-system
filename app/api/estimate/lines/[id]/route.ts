@@ -103,7 +103,7 @@ export async function PATCH(
   for (const [key, value] of Object.entries(body)) {
     if (!EDITABLE_FIELDS.has(key)) continue;
     if (NUMERIC_FIELDS.has(key)) {
-      update[key] = value === "" || value === undefined ? null : Number(value);
+      update[key] = value === "" || value === undefined || value === null ? null : Number(value);
     } else if (key === "description" && typeof value === "string") {
       update[key] = value.trim();
     } else if (typeof value === "string") {
