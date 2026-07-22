@@ -97,7 +97,14 @@ export function effectiveQty(
 
 /**
  * lineCost(line, measurement?) = cost_ex_gst if manually set (override),
- * else effectiveQty * rate_ex_gst if both present, else null
+ * else effectiveQty * rate_ex_gst if both present, else null.
+ *
+ * Legacy compatibility: an earlier PATCH bug converted a blank manual cost
+ * to numeric zero whenever another field on the row was saved. When that
+ * stale zero sits beside a non-zero qty × rate, it must not suppress the
+ * calculated cost. A genuine zero-cost row is still represented by a zero
+ * rate, zero quantity, or a zero override where no non-zero calculation
+ * exists.
  * (unknown/not yet costed). BUILD-SPEC.md: "cost_ex_gst numeric(12,2)
  * nullable (manual override; else computed qty*rate in app)" — Week 7
  * additive: "qty" in that computation is effectiveQty() when a
@@ -114,19 +121,21 @@ export function lineCost(
   line: LineCostInput,
   measurement?: EffectiveQtyMeasurementInput | null
 ): number | null {
-  if (line.cost_ex_gst !== null && line.cost_ex_gst !== undefined) {
-    return roundMoney(line.cost_ex_gst);
-  }
   const qty = effectiveQty(line, measurement);
-  if (
+  const calculated =
     qty !== null &&
     qty !== undefined &&
     line.rate_ex_gst !== null &&
     line.rate_ex_gst !== undefined
-  ) {
-    return roundMoney(qty * line.rate_ex_gst);
+      ? roundMoney(qty * line.rate_ex_gst)
+      : null;
+  if (line.cost_ex_gst !== null && line.cost_ex_gst !== undefined) {
+    if (line.cost_ex_gst === 0 && calculated !== null && calculated !== 0) {
+      return calculated;
+    }
+    return roundMoney(line.cost_ex_gst);
   }
-  return null;
+  return calculated;
 }
 
 /**

@@ -743,7 +743,7 @@ function LineRow({
         </td>
         <td className="w-28 px-0 py-0">
           <EditableNumber
-            value={draft.cost_ex_gst}
+            value={draft.cost_ex_gst === 0 && cost !== 0 ? null : draft.cost_ex_gst}
             placeholder={cost !== null ? formatMoney(cost) : "—"}
             onCommit={(v) => setField("cost_ex_gst", v)}
           />
