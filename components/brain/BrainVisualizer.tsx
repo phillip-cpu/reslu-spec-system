@@ -274,13 +274,19 @@ function mountVisualizer(canvas: HTMLCanvasElement, tip: HTMLDivElement, data: B
     return s;
   }
 
-  const CL = data.clusters.map((cluster) => ({
-    entityType: cluster.entityType,
-    n: cluster.label,
-    ...CLUSTER_VISUALS[cluster.entityType],
-    cnt: cluster.totalCount.toLocaleString(),
-    records: cluster.records,
-  }));
+  const CL = data.clusters.flatMap((cluster) => {
+    const visual = CLUSTER_VISUALS[cluster.entityType];
+    if (!visual) return [];
+    return [
+      {
+        entityType: cluster.entityType,
+        n: cluster.label,
+        ...visual,
+        cnt: cluster.totalCount.toLocaleString(),
+        records: cluster.records,
+      },
+    ];
+  });
 
   const dots: Dot[] = [];
   CL.forEach((cl) => {

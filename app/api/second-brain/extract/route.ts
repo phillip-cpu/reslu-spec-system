@@ -3,6 +3,7 @@ import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import {
   invoiceCandidateAttachmentHashes,
   invoiceCandidateDedupeKey,
+  isUsableSupplierInvoiceCandidate,
 } from "@/lib/invoice-candidates";
 import { extractEmail, type ExtractionAttachment } from "@/lib/second-brain/extraction";
 
@@ -73,7 +74,7 @@ export async function GET(request: NextRequest) {
 
       const { result, xeroUrl } = await extractEmail(supabase, email, (attachments ?? []) as ExtractionAttachment[]);
 
-      if (result.supplier_invoice) {
+      if (isUsableSupplierInvoiceCandidate(result.supplier_invoice)) {
         const { error: queueError } = await supabase.from("aria_queue").upsert(
           {
             kind: "invoice_candidate",

@@ -4,6 +4,7 @@ import {
   invoiceCandidateAttachmentHashes,
   invoiceCandidateDedupeKey,
   isLikelySupplierInvoice,
+  isUsableSupplierInvoiceCandidate,
 } from "./invoice-candidates.ts";
 
 test("detects invoice PDF filenames even when the email body is terse", () => {
@@ -29,6 +30,35 @@ test("requires invoice evidence rather than any email containing a dollar amount
     isLikelySupplierInvoice({
       subject: "Tax invoice INV-88213",
       clean_text: "Total due $2,850.00",
+    }),
+    true
+  );
+});
+
+test("does not turn a morning brief that mentions invoice candidates into an invoice", () => {
+  assert.equal(
+    isLikelySupplierInvoice({
+      subject: "RESLU Morning Brief - 17/07/2026",
+      clean_text: "Supplier invoice candidates: Invoice #D11092 needs review for $8,500.00.",
+    }),
+    false
+  );
+});
+
+test("rejects incomplete model-extracted supplier invoices before queueing", () => {
+  assert.equal(
+    isUsableSupplierInvoiceCandidate({
+      supplier: "Verandah Trade",
+      total: 0,
+      source_quote: "QUOTE #D11092",
+    }),
+    false
+  );
+  assert.equal(
+    isUsableSupplierInvoiceCandidate({
+      supplier: "Example Trade",
+      total: 1250,
+      source_quote: "Tax Invoice INV-42 Total $1,250.00",
     }),
     true
   );

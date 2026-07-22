@@ -39,6 +39,7 @@ from urllib.parse import urlencode
 
 
 WAKE_COOLDOWN = timedelta(minutes=20)
+MAX_WAKE_ATTEMPTS = 3
 # Four records is the largest batch Aria completed reliably in one turn
 # during the July 2026 recovery. Keeping it small also limits the blast
 # radius if OpenClaw accepts a wake but the session is busy or times out.
@@ -160,6 +161,40 @@ def release_queue_items(
         return
 
 
+def quarantine_queue_items(
+    supabase_url: str,
+    service_role_key: str,
+    item_ids: list[str],
+) -> None:
+    """Fail a repeatedly undeliverable batch so it cannot block newer work."""
+    safe_ids = [value for value in item_ids if value]
+    if not safe_ids:
+        return
+    query = urlencode({"id": f"in.({','.join(safe_ids)})"})
+    request = urllib.request.Request(
+        f"{supabase_url}/rest/v1/aria_queue?{query}",
+        data=json.dumps(
+            {
+                "status": "failed",
+                "resolved_at": datetime.now(timezone.utc).isoformat(),
+                "error": (
+                    f"Quarantined by aria-heartbeat after {MAX_WAKE_ATTEMPTS} "
+                    "successful wake attempts without resolution."
+                ),
+            }
+        ).encode("utf-8"),
+        method="PATCH",
+        headers={
+            "apikey": service_role_key,
+            "Authorization": f"Bearer {service_role_key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=15):
+        return
+
+
 def get_queue_item_statuses(
     supabase_url: str,
     service_role_key: str,
@@ -226,6 +261,16 @@ def active_queue_batch(path: Path) -> list[dict]:
         return []
 
 
+def wake_attempt_count(path: Path) -> int:
+    """Return successful deliveries of the currently tracked batch."""
+    try:
+        payload = json.loads(path.read_text())
+        value = payload.get("wake_attempts", 1)
+        return max(1, int(value))
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+        return 1
+
+
 def wake_cooldown_remaining(path: Path, now: datetime | None = None) -> timedelta:
     """How long until another successful wake may be injected."""
     last_wake = _last_successful_wake(path)
@@ -239,6 +284,7 @@ def record_successful_wake(
     path: Path,
     queue_items: list[dict],
     now: datetime | None = None,
+    wake_attempts: int = 1,
 ) -> None:
     """Atomically persist the last successful OpenClaw wake and batch."""
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -259,6 +305,7 @@ def record_successful_wake(
             {
                 "last_successful_wake_at": current.isoformat(),
                 "pending_count": len(batch),
+                "wake_attempts": max(1, wake_attempts),
                 "queue_items": batch,
             }
         )
@@ -380,8 +427,29 @@ def main() -> None:
                     f"batch; no new claim — retry available in about {minutes} minute(s)."
                 )
                 return
+            attempts = wake_attempt_count(state_path)
+            if attempts >= MAX_WAKE_ATTEMPTS:
+                try:
+                    quarantine_queue_items(
+                        supabase_url,
+                        service_role_key,
+                        [str(item.get("id") or "") for item in unfinished],
+                    )
+                except Exception as exc:  # noqa: BLE001 — keep state so the batch can retry.
+                    print(f"[aria-heartbeat] Batch quarantine failed: {exc}", file=sys.stderr)
+                    sys.exit(2)
+                clear_wake_state(state_path)
+                print(
+                    f"[aria-heartbeat] quarantined {len(unfinished)} unresolved item(s) "
+                    f"after {attempts} successful wake attempts; newer work may continue."
+                )
+                return
             if wake_aria(unfinished):
-                record_successful_wake(state_path, unfinished)
+                record_successful_wake(
+                    state_path,
+                    unfinished,
+                    wake_attempts=attempts + 1,
+                )
                 return
             sys.exit(1)
 

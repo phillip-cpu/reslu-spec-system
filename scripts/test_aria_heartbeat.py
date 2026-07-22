@@ -163,6 +163,47 @@ class AriaHeartbeatTests(unittest.TestCase):
             aria_heartbeat.record_successful_wake(state_path, queue_items, now=now)
 
             self.assertEqual(aria_heartbeat.active_queue_batch(state_path), queue_items)
+            self.assertEqual(aria_heartbeat.wake_attempt_count(state_path), 1)
+
+    @patch.object(aria_heartbeat, "claim_queue_items")
+    @patch.object(aria_heartbeat, "wake_aria")
+    @patch.object(aria_heartbeat, "quarantine_queue_items")
+    @patch.object(
+        aria_heartbeat,
+        "get_queue_item_statuses",
+        return_value={"queue-1": "picked_up"},
+    )
+    def test_unresolved_batch_is_quarantined_after_retry_ceiling(
+        self,
+        _statuses,
+        quarantine,
+        wake,
+        claim,
+    ):
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            aria_heartbeat.os.environ,
+            {
+                "SUPABASE_URL": "https://example.test",
+                "SUPABASE_SERVICE_ROLE_KEY": "secret",
+                "ARIA_HEARTBEAT_STATE_PATH": str(Path(directory) / "state.json"),
+            },
+            clear=False,
+        ):
+            state_path = aria_heartbeat.heartbeat_state_path()
+            aria_heartbeat.record_successful_wake(
+                state_path,
+                [{"id": "queue-1", "kind": "invoice_candidate", "payload": {}}],
+                now=now - timedelta(minutes=21),
+                wake_attempts=aria_heartbeat.MAX_WAKE_ATTEMPTS,
+            )
+            aria_heartbeat.main()
+
+            self.assertFalse(state_path.exists())
+
+        quarantine.assert_called_once_with("https://example.test", "secret", ["queue-1"])
+        wake.assert_not_called()
+        claim.assert_not_called()
 
     @patch.object(aria_heartbeat, "claim_queue_items")
     @patch.object(aria_heartbeat, "wake_aria")
