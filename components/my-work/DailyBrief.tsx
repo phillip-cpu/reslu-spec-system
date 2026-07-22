@@ -177,19 +177,19 @@ export function DailyBrief() {
 
   if (forbidden) return null;
 
-  // No hook here (Rules of Hooks — this component already returned
-  // above for the `forbidden` case, so any hook after that point would
-  // be called conditionally): a plain `new Date()` per render is cheap
-  // and only feeds a day-level header label, not renderer-critical
-  // state.
-  const today = new Date();
+  // Use the fetched server timestamp only after data arrives. Rendering
+  // `new Date()` during SSR let UTC and Adelaide disagree around midnight,
+  // producing a hydration warning even though the underlying data was fine.
+  const briefDate = data ? new Date(data.refreshed_at) : null;
   const activeItems = data?.items.filter((item) => item.status === "open") ?? [];
 
   return (
     <section className="border border-[#dcd6cc] bg-offwhite">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#dcd6cc] px-4 py-3">
         <div>
-          <p className="text-body font-medium text-nearblack">Daily Brief · {formatDateHeader(today)}</p>
+          <p className="text-body font-medium text-nearblack">
+            Daily Brief{briefDate ? ` · ${formatDateHeader(briefDate)}` : ""}
+          </p>
           {data && (
             <p className="mt-0.5 text-caption text-charcoal/45">
               {activeItems.length} to review
