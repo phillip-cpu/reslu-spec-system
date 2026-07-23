@@ -9,6 +9,7 @@ import { isDoneColumnName } from "@/lib/board-constants";
 import { FALLBACK_CPD_DEFAULTS, computeCpdYearWindow, formatPoints, isBehindPace, sumPoints } from "@/lib/cpd";
 import { isBookingRequestFollowupDue } from "@/lib/trade-booking";
 import { isProposalFollowupDue } from "@/lib/proposals";
+import { suppressProposalFollowupForLeadStage } from "@/lib/proposal-followups";
 import type { CpdDefaults } from "@/types/cpd";
 import type { MyWorkItem, MyWorkResponse } from "@/types/phase-12a-b";
 
@@ -775,8 +776,8 @@ export async function GET() {
       const proposalProjectIds = [...new Set(dueProposals.map((p) => p.project_id).filter(Boolean))] as string[];
       const [{ data: proposalLeads }, { data: proposalProjects }] = await Promise.all([
         proposalLeadIds.length
-          ? supabase.from("leads").select("id,surname_project").in("id", proposalLeadIds)
-          : Promise.resolve({ data: [] as { id: string; surname_project: string }[] }),
+          ? supabase.from("leads").select("id,surname_project,stage").in("id", proposalLeadIds)
+          : Promise.resolve({ data: [] as { id: string; surname_project: string; stage: string }[] }),
         proposalProjectIds.length
           ? supabase.from("projects").select("id,name,alias").in("id", proposalProjectIds)
           : Promise.resolve({ data: [] as { id: string; name: string; alias: string | null }[] }),
@@ -787,6 +788,11 @@ export async function GET() {
       for (const p of dueProposals) {
         const project = p.project_id ? proposalProjectById.get(p.project_id) : null;
         const lead = p.lead_id ? proposalLeadById.get(p.lead_id) : null;
+        // A lost lead has no proposal follow-up left to perform. The
+        // database trigger in migration 068 normally closes the
+        // proposal as part of the stage change; keep this read-side
+        // guard as defence against stale/pre-migration records.
+        if (suppressProposalFollowupForLeadStage(lead?.stage)) continue;
         const residence = project?.name ?? lead?.surname_project ?? "Fee proposal";
         items.push({
           kind: "proposal_followup",
