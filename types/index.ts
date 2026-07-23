@@ -543,7 +543,7 @@ export interface MeasurementGroupWithRows extends MeasurementGroup {
   total: number;
 }
 
-export type InvoiceMatchType = "cost_line" | "item";
+export type InvoiceMatchType = "cost_line" | "item" | "item_component";
 export type InvoiceStatus = "unmatched" | "proposed" | "approved" | "rejected";
 
 /**

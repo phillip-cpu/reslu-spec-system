@@ -7,7 +7,7 @@ import type { InvoiceWithAllocations, InvoiceWithIntake } from "@/types/round-su
 
 export const runtime = "nodejs";
 
-const MATCH_TYPES: InvoiceMatchType[] = ["cost_line", "item"];
+const MATCH_TYPES: InvoiceMatchType[] = ["cost_line", "item", "item_component"];
 
 const EDITABLE_FIELDS = new Set([
   "supplier",
@@ -164,13 +164,26 @@ export async function PATCH(
       // Validate the target exists (no FK possible since proposed_match_id
       // can point at cost_lines or items depending on type — see
       // 007_estimating.sql's comment on this column).
-      const table = matchType === "cost_line" ? "cost_lines" : "items";
-      const { data: target } = await supabase
-        .from(table)
-        .select("id, project_id")
-        .eq("id", matchId)
-        .maybeSingle();
-      if (!target || target.project_id !== existing.project_id) {
+      let targetProjectId: string | null = null;
+      if (matchType === "item_component") {
+        const { data: target } = await supabase
+          .from("item_components")
+          .select("items!inner(project_id)")
+          .eq("id", matchId)
+          .is("deleted_at", null)
+          .maybeSingle();
+        const linkedItem = target?.items as unknown as { project_id: string } | null;
+        targetProjectId = linkedItem?.project_id ?? null;
+      } else {
+        const table = matchType === "cost_line" ? "cost_lines" : "items";
+        const { data: target } = await supabase
+          .from(table)
+          .select("id, project_id")
+          .eq("id", matchId)
+          .maybeSingle();
+        targetProjectId = target?.project_id ?? null;
+      }
+      if (targetProjectId !== existing.project_id) {
         return NextResponse.json(
           { error: "Match target not found in this project" },
           { status: 400 }

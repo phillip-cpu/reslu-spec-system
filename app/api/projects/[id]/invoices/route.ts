@@ -14,7 +14,7 @@ import type { InvoiceSource, InvoiceWithAllocations, SupplierInvoiceExtracted } 
 export const runtime = "nodejs";
 
 const STATUSES: InvoiceStatus[] = ["unmatched", "proposed", "approved", "rejected"];
-const MATCH_TYPES: InvoiceMatchType[] = ["cost_line", "item"];
+const MATCH_TYPES: InvoiceMatchType[] = ["cost_line", "item", "item_component"];
 const SOURCES: InvoiceSource[] = ["manual", "aria"];
 
 /**
@@ -249,6 +249,9 @@ export async function POST(
     const itemIds = requestedLines
       .filter((line) => line.suggested_match_type === "item")
       .map((line) => line.suggested_match_id as string);
+    const componentIds = requestedLines
+      .filter((line) => line.suggested_match_type === "item_component")
+      .map((line) => line.suggested_match_id as string);
 
     if (costLineIds.length > 0) {
       const { data: targets } = await supabase
@@ -270,6 +273,20 @@ export async function POST(
         .in("id", itemIds);
       if ((targets ?? []).length !== new Set(itemIds).size) {
         return NextResponse.json({ error: "A suggested specification item is not in this project" }, { status: 400 });
+      }
+    }
+    if (componentIds.length > 0) {
+      const { data: targets } = await supabase
+        .from("item_components")
+        .select("id,items!inner(project_id)")
+        .eq("items.project_id", projectId)
+        .is("deleted_at", null)
+        .in("id", componentIds);
+      if ((targets ?? []).length !== new Set(componentIds).size) {
+        return NextResponse.json(
+          { error: "A suggested assembly component is not in this project" },
+          { status: 400 }
+        );
       }
     }
   }

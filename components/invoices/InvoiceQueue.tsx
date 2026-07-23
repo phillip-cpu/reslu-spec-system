@@ -12,6 +12,7 @@ import type { InvoiceAllocationInput } from "@/lib/invoice-allocations";
 import { invoiceAllocationBalance } from "@/lib/invoice-allocations";
 import { supplierLineCostLineInput } from "@/lib/supplier-invoice-lines";
 import { formatMoney } from "@/components/estimate/EstimateWorkspace";
+import type { ItemComponent } from "@/types/item-components";
 
 const STATUS_TABS: { value: InvoiceStatus | "all"; label: string }[] = [
   { value: "all", label: "All" },
@@ -312,7 +313,13 @@ function InvoiceRow({
           {hasSavedAllocations
             ? `${savedAllocations.length} allocation${savedAllocations.length === 1 ? "" : "s"}`
             : invoice.proposed_match_type
-            ? `${invoice.proposed_match_type === "cost_line" ? "Cost line" : "Item"} linked`
+            ? `${
+                invoice.proposed_match_type === "cost_line"
+                  ? "Cost line"
+                  : invoice.proposed_match_type === "item_component"
+                    ? "Component"
+                    : "Item"
+              } linked`
             : "No match"}
         </td>
         <td className="px-2 py-1.5">
@@ -593,6 +600,7 @@ function AllocationEditor({
   );
   const [sections, setSections] = useState<CostSectionWithLines[]>([]);
   const [items, setItems] = useState<Item[]>([]);
+  const [components, setComponents] = useState<ItemComponent[]>([]);
   const [loading, setLoading] = useState(true);
   const [creatingLineKey, setCreatingLineKey] = useState<string | null>(null);
   const [createLineErrors, setCreateLineErrors] = useState<Record<string, string>>({});
@@ -603,11 +611,15 @@ function AllocationEditor({
     Promise.all([
       fetch(`/api/projects/${projectId}/estimate`).then((r) => (r.ok ? r.json() : { sections: [] })),
       fetch(`/api/projects/${projectId}/items`).then((r) => (r.ok ? r.json() : { items: [] })),
+      fetch(`/api/projects/${projectId}/item-components`).then((r) =>
+        r.ok ? r.json() : { components: [] }
+      ),
     ])
-      .then(([estimateBody, itemsBody]) => {
+      .then(([estimateBody, itemsBody, componentsBody]) => {
         if (cancelled) return;
         setSections(estimateBody.sections ?? []);
         setItems(itemsBody.items ?? []);
+        setComponents(componentsBody.components ?? []);
       })
       .catch(() => {})
       .finally(() => !cancelled && setLoading(false));
@@ -625,7 +637,14 @@ function AllocationEditor({
     drafts.every((draft) => draft.match_id && Number(draft.amount) > 0) &&
     balance === 0;
 
-  function linkedLibraryItem(matchType: InvoiceMatchType, matchId: string): Item | null {
+  function linkedLibraryItem(
+    matchType: InvoiceMatchType,
+    matchId: string
+  ): Item | ItemComponent | null {
+    if (matchType === "item_component") {
+      const component = components.find((candidate) => candidate.id === matchId);
+      return component?.library_item_id ? component : null;
+    }
     const itemId =
       matchType === "item"
         ? matchId
@@ -633,6 +652,12 @@ function AllocationEditor({
     if (!itemId) return null;
     const item = items.find((candidate) => candidate.id === itemId);
     return item?.library_item_id ? item : null;
+  }
+
+  function libraryTargetLabel(target: Item | ItemComponent): string {
+    return "item_code" in target
+      ? `${target.item_code} — ${target.name}`
+      : `${target.name}${target.supplier_item_code ? ` · ${target.supplier_item_code}` : ""}`;
   }
 
   function updateDraft(key: string, patch: Partial<AllocationDraft>) {
@@ -819,7 +844,7 @@ function AllocationEditor({
                       }}
                       className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
                     >
-                      <option value="">Choose a cost line or item…</option>
+                      <option value="">Choose a cost line, item or component…</option>
                       {sections.map((section) => (
                         <optgroup key={section.id} label={`Estimate · ${section.name}`}>
                           {section.lines.map((line) => (
@@ -836,6 +861,25 @@ function AllocationEditor({
                               {item.item_code} — {item.name}
                             </option>
                           ))}
+                        </optgroup>
+                      )}
+                      {components.length > 0 && (
+                        <optgroup label="Assembly components">
+                          {components.map((component) => {
+                            const parent = items.find((item) => item.id === component.item_id);
+                            return (
+                              <option
+                                key={component.id}
+                                value={`item_component:${component.id}`}
+                              >
+                                {parent ? `${parent.item_code} — ` : ""}
+                                {component.name}
+                                {component.supplier_item_code
+                                  ? ` · ${component.supplier_item_code}`
+                                  : ""}
+                              </option>
+                            );
+                          })}
                         </optgroup>
                       )}
                     </select>
@@ -897,8 +941,8 @@ function AllocationEditor({
                       )}
                       title={
                         libraryItem
-                          ? `Update ${libraryItem.item_code} — ${libraryItem.name} in the library from this supplier unit price`
-                          : "Choose a specification item linked to the library, or an estimate line linked to one"
+                          ? `Update ${libraryTargetLabel(libraryItem)} in the library from this supplier unit price`
+                          : "Choose a component or specification item linked to the library, or an estimate line linked to one"
                       }
                     >
                       <input
@@ -912,7 +956,7 @@ function AllocationEditor({
                       />
                       <span>
                         {libraryItem
-                          ? `Update library price for ${libraryItem.item_code} — ${libraryItem.name}`
+                          ? `Update library price for ${libraryTargetLabel(libraryItem)}`
                           : "Library price update unavailable for this destination"}
                       </span>
                     </label>

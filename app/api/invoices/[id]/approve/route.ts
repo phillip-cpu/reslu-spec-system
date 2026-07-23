@@ -231,7 +231,15 @@ export async function POST(
   // Resolve the affected item (for the library-cost sync below) while
   // applying the cost_line/item match's own actual_paid_ex_gst credit.
   type AffectedItem = { id: string; quantity: number; library_item_id: string | null };
+  type AffectedComponent = {
+    id: string;
+    item_id: string;
+    quantity_per_item: number;
+    library_item_id: string | null;
+    parent_quantity: number;
+  };
   let affectedItem: AffectedItem | null = null;
+  let affectedComponent: AffectedComponent | null = null;
 
   if (typedInvoice.proposed_match_type === "cost_line") {
     const { data: line, error: lineFetchError } = await supabase
@@ -295,13 +303,87 @@ export async function POST(
         warnings.push(`updating the cost line failed: ${lineUpdateError.message}`);
       }
     }
+  } else if (typedInvoice.proposed_match_type === "item_component") {
+    const { data: component } = await supabase
+      .from("item_components")
+      .select("id,item_id,quantity_per_item,library_item_id,items!inner(quantity)")
+      .eq("id", typedInvoice.proposed_match_id)
+      .is("deleted_at", null)
+      .maybeSingle();
+    const parent = component?.items as unknown as { quantity: number } | null;
+    if (component && parent) {
+      affectedComponent = {
+        id: component.id,
+        item_id: component.item_id,
+        quantity_per_item: Number(component.quantity_per_item),
+        library_item_id: component.library_item_id,
+        parent_quantity: Number(parent.quantity),
+      };
+    }
+
+    const { data: linkedLines, error: linesFetchError } = component
+      ? await supabase
+          .from("cost_lines")
+          .select("id, actual_paid_ex_gst")
+          .eq("item_id", component.item_id)
+          .is("deleted_at", null)
+      : { data: null, error: null };
+    if (!component) {
+      warnings.push("its matched assembly component could not be found — actuals were not updated");
+    } else if (linesFetchError) {
+      warnings.push(`could not look up the assembly's cost line: ${linesFetchError.message}`);
+    } else if (!linkedLines || linkedLines.length === 0) {
+      warnings.push("this assembly has no linked cost line — actuals were not updated");
+    } else if (linkedLines.length > 1) {
+      warnings.push("this assembly has more than one linked cost line — actuals were not updated");
+    } else {
+      const line = linkedLines[0];
+      const nextActual = roundToCents((line.actual_paid_ex_gst ?? 0) + typedInvoice.amount_ex_gst);
+      const { error: lineUpdateError } = await supabase
+        .from("cost_lines")
+        .update({ actual_paid_ex_gst: nextActual })
+        .eq("id", line.id);
+      if (lineUpdateError) warnings.push(`updating the cost line failed: ${lineUpdateError.message}`);
+    }
   }
 
   // r24 item 7, second half — per-line "update the linked library
   // product's cost record" toggle. Default: ON when the affected item
   // carries a library_item_id, OFF otherwise (nothing to update).
   let libraryCostApplied = false;
-  if (affectedItem?.library_item_id) {
+  if (affectedComponent) {
+    const applyToLibraryCost = input.apply_to_library_cost ?? Boolean(affectedComponent.library_item_id);
+    if (applyToLibraryCost) {
+      const quantity =
+        Math.max(affectedComponent.parent_quantity, 1) *
+        Math.max(affectedComponent.quantity_per_item, 1);
+      const unitCost = roundToCents(typedInvoice.amount_ex_gst / quantity);
+      await supabase
+        .from("item_components")
+        .update({
+          price_trade: unitCost,
+          trade_price_received_at: new Date().toISOString().slice(0, 10),
+          trade_price_source: `Invoice ${typedInvoice.invoice_number} · ${typedInvoice.supplier}`,
+        })
+        .eq("id", affectedComponent.id);
+
+      if (affectedComponent.library_item_id) {
+        const { error: libraryUpdateError } = await supabase
+          .from("library_items")
+          .update({
+            price_trade: unitCost,
+            trade_price_received_at: new Date().toISOString().slice(0, 10),
+            trade_price_source: `Invoice ${typedInvoice.invoice_number} · ${typedInvoice.supplier}`,
+          })
+          .eq("id", affectedComponent.library_item_id);
+        if (libraryUpdateError) {
+          warnings.push(`updating the component's library cost failed: ${libraryUpdateError.message}`);
+        } else {
+          libraryCostApplied = true;
+        }
+      }
+    }
+  } else if (affectedItem?.library_item_id) {
     const applyToLibraryCost = input.apply_to_library_cost ?? true;
     if (applyToLibraryCost) {
       const qty = affectedItem.quantity > 0 ? affectedItem.quantity : 1;

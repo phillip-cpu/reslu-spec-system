@@ -279,6 +279,7 @@ export function ProjectWorkspace({
         />
       ) : view === "procurement" ? (
         <ProcurementView
+          projectId={projectId}
           items={items}
           categories={categories}
           budget={budget}
@@ -286,6 +287,14 @@ export function ProjectWorkspace({
           measurements={isAdmin ? measurements : []}
           isAdmin={isAdmin}
           orderBy={isAdmin ? orderBy : null}
+          onError={setError}
+          onAssemblyPriceChange={(itemId, priceTrade) =>
+            setItems((current) =>
+              current.map((item) =>
+                item.id === itemId ? { ...item, price_trade: priceTrade } : item
+              )
+            )
+          }
         />
       ) : (
         <ProcurementBoardView items={items} onPatch={patchItem} />

@@ -53,6 +53,23 @@ test("validates paired project suggestions", () => {
   if (valid.ok) assert.equal(valid.lines[0].apply_to_library_cost, true);
 });
 
+test("accepts an assembly component suggestion", () => {
+  const result = validateSupplierInvoiceLines(
+    [
+      {
+        description: "In-wall mixer body",
+        quantity: 1,
+        unit_price_ex_gst: 54.09,
+        amount_ex_gst: 54.09,
+        suggested_match_type: "item_component",
+        suggested_match_id: "component-body",
+      },
+    ],
+    54.09
+  );
+  assert.equal(result.ok, true);
+});
+
 test("creates an estimate line payload from a supplier line without posting an actual", () => {
   assert.deepEqual(supplierLineCostLineInput(bunningsLines[8]), {
     description: "RamBoard temporary floor protection",

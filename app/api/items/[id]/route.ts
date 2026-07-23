@@ -378,6 +378,23 @@ export async function PATCH(
     );
   }
 
+  if ("price_trade" in update) {
+    const { count: componentCount } = await supabase
+      .from("item_components")
+      .select("id", { count: "exact", head: true })
+      .eq("item_id", id)
+      .is("deleted_at", null);
+    if ((componentCount ?? 0) > 0) {
+      return NextResponse.json(
+        {
+          error:
+            "This is an assembly. Its trade price is calculated from the component parts.",
+        },
+        { status: 400 }
+      );
+    }
+  }
+
   // item_code uniqueness — checked explicitly ahead of the write so the
   // caller gets a clean 409 with a clear message, rather than surfacing
   // the raw Postgres unique-violation text from

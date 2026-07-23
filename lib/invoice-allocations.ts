@@ -81,7 +81,11 @@ export function validateInvoiceAllocations(
         ? record.source_line_id.trim()
         : null;
 
-    if (matchType !== "cost_line" && matchType !== "item") {
+    if (
+      matchType !== "cost_line" &&
+      matchType !== "item" &&
+      matchType !== "item_component"
+    ) {
       return { ok: false, error: `Allocation ${index + 1} has an invalid match type` };
     }
     if (!matchId) {

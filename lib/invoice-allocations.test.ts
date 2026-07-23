@@ -70,6 +70,29 @@ test("allows separate supplier lines to share a project target", () => {
   if (result.ok) assert.equal(result.allocations[1].source_line_id, "film");
 });
 
+test("accepts assembly components as invoice destinations", () => {
+  const result = validateInvoiceAllocations(
+    [
+      {
+        source_line_id: "source-trim",
+        match_type: "item_component",
+        match_id: "component-trim",
+        amount_ex_gst: 79.55,
+        apply_to_library_cost: true,
+      },
+      {
+        source_line_id: "source-body",
+        match_type: "item_component",
+        match_id: "component-body",
+        amount_ex_gst: 54.09,
+        apply_to_library_cost: true,
+      },
+    ],
+    133.64
+  );
+  assert.equal(result.ok, true);
+});
+
 test("rejects allocating the same supplier line twice", () => {
   const result = validateInvoiceAllocations(
     [

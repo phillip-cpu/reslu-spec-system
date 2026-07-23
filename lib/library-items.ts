@@ -1,6 +1,45 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { normalizeProductUrl } from "@/lib/scraper";
 
+export async function copyLibraryAssemblyComponentsToItem(
+  supabase: SupabaseClient,
+  libraryItemId: string,
+  itemId: string,
+  createdBy: string
+) {
+  const { data: templates, error } = await supabase
+    .from("library_item_components")
+    .select("*, component_library_item:library_items!component_library_item_id(*)")
+    .eq("parent_library_item_id", libraryItemId)
+    .order("sort", { ascending: true });
+  if (error || !templates?.length) return [];
+
+  const rows = templates.map((template) => {
+    const linked = template.component_library_item as Record<string, unknown> | null;
+    return {
+      item_id: itemId,
+      library_item_id: template.component_library_item_id,
+      name: template.name,
+      supplier: template.supplier ?? linked?.supplier ?? null,
+      supplier_email: template.supplier_email ?? linked?.supplier_email ?? null,
+      brand: template.brand ?? linked?.brand ?? null,
+      supplier_item_code: template.supplier_item_code,
+      quantity_per_item: template.quantity_per_item,
+      unit: template.unit,
+      price_trade: linked?.price_trade ?? template.price_trade ?? null,
+      finish: template.finish ?? linked?.finish ?? null,
+      product_url: template.product_url ?? linked?.product_url ?? null,
+      lead_time_weeks: template.lead_time_weeks,
+      trade_price_received_at: linked?.trade_price_received_at ?? null,
+      trade_price_source: linked?.trade_price_source ?? null,
+      sort: template.sort,
+      created_by: createdBy,
+    };
+  });
+  const { data: components } = await supabase.from("item_components").insert(rows).select();
+  return components ?? [];
+}
+
 /**
  * Copies a single library_items row onto a project's spec register as
  * a new `items` row — this is the EXACT insert shape
@@ -94,6 +133,13 @@ export async function copyLibraryItemToProject(
       { project_id: projectId, library_item_id: lib.id },
       { onConflict: "project_id,library_item_id" }
     );
+
+  await copyLibraryAssemblyComponentsToItem(
+    supabase,
+    lib.id,
+    item.id,
+    createdBy
+  );
 
   return item;
 }

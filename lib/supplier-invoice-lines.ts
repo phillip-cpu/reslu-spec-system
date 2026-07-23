@@ -158,7 +158,8 @@ export function validateSupplierInvoiceLines(
     if (
       suggestedMatchType !== null &&
       suggestedMatchType !== "cost_line" &&
-      suggestedMatchType !== "item"
+      suggestedMatchType !== "item" &&
+      suggestedMatchType !== "item_component"
     ) {
       return { ok: false, error: `Supplier line ${index + 1} has an invalid suggested match type` };
     }

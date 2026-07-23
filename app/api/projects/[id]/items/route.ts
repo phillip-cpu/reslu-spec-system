@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { scrapeProductUrl, normalizeProductUrl } from "@/lib/scraper";
+import { copyLibraryAssemblyComponentsToItem } from "@/lib/library-items";
 import type { CreateItemInput } from "@/types";
 import type { ItemWithLinkedMeasurement } from "@/types/round-b";
 
@@ -337,6 +338,12 @@ export async function POST(
         { project_id: id, library_item_id: body.library_item_id },
         { onConflict: "project_id,library_item_id" }
       );
+    await copyLibraryAssemblyComponentsToItem(
+      supabase,
+      body.library_item_id,
+      item.id,
+      user.id
+    );
   }
 
   // Fetch-first scraping (BUILD-SPEC.md: "never block item creation" on

@@ -1,11 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import type { Category, Item, ItemStatus, MeasurementWithGroup } from "@/types";
 import type { OrderByResponse, OrderByRow } from "@/types/order-by";
 import { MeasurementLinkPicker } from "@/components/estimate/MeasurementLinkPicker";
 import { derivedQuantity, derivedQuantityNote } from "@/lib/item-quantity";
+import type { ItemComponent } from "@/types/item-components";
+import { assemblyProcurementLabel } from "@/lib/item-components";
+import { ItemComponentsPanel } from "./ItemComponentsPanel";
 
 const ITEM_STATUSES: ItemStatus[] = [
   "Specced",
@@ -41,6 +44,7 @@ type ItemWithQtyLink = Item & {
 };
 
 interface Props {
+  projectId: string;
   items: Item[];
   categories: Category[];
   budget: number | null;
@@ -63,6 +67,8 @@ interface Props {
    * Qty cell's measurement-link picker when `measurements` is empty.
    */
   orderBy?: OrderByResponse | null;
+  onAssemblyPriceChange: (itemId: string, priceTrade: number | null) => void;
+  onError: (message: string | null) => void;
 }
 
 // ── computations ────────────────────────────────────────────
@@ -386,6 +392,7 @@ function QtyCell({
 // ── main component ──────────────────────────────────────────
 
 export function ProcurementView({
+  projectId,
   items,
   categories,
   budget,
@@ -393,11 +400,25 @@ export function ProcurementView({
   measurements = [],
   isAdmin = false,
   orderBy = null,
+  onAssemblyPriceChange,
+  onError,
 }: Props) {
   // Round B — which item's measurement-link picker is currently open
   // (null = none). Only one open at a time, same "single open popover"
   // shape the Estimate module's per-row link picker uses.
   const [linkPickerFor, setLinkPickerFor] = useState<string | null>(null);
+  const [components, setComponents] = useState<ItemComponent[]>([]);
+  const [componentsLoaded, setComponentsLoaded] = useState(false);
+  const [componentsOpenFor, setComponentsOpenFor] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isAdmin || componentsLoaded) return;
+    setComponentsLoaded(true);
+    fetch(`/api/projects/${projectId}/item-components`)
+      .then((response) => (response.ok ? response.json() : { components: [] }))
+      .then((body) => setComponents(body.components ?? []))
+      .catch(() => onError("Could not load item components."));
+  }, [componentsLoaded, isAdmin, onError, projectId]);
 
   const measurementsById = useMemo(
     () => new Map(measurements.map((m) => [m.id, m])),
@@ -415,6 +436,15 @@ export function ProcurementView({
     () => new Set(orderBy?.missing_lead_time_item_ids ?? []),
     [orderBy]
   );
+  const componentsByItem = useMemo(() => {
+    const map = new Map<string, ItemComponent[]>();
+    for (const component of components) {
+      const current = map.get(component.item_id) ?? [];
+      current.push(component);
+      map.set(component.item_id, current);
+    }
+    return map;
+  }, [components]);
 
   const sortedCategories = useMemo(
     () => [...categories].sort((a, b) => a.sort_order - b.sort_order),
@@ -537,12 +567,14 @@ export function ProcurementView({
               <tbody>
                 {group.items.map((item) => {
                   const risk = riskFlag(item);
+                  const itemComponents = componentsByItem.get(item.id) ?? [];
+                  const isAssembly = itemComponents.length > 0;
                   return (
-                    <tr
-                      key={item.id}
-                      id={`focus-decision_overdue-${item.id}`}
-                      className="border-b border-[#e5e0d6] align-middle"
-                    >
+                    <Fragment key={item.id}>
+                      <tr
+                        id={`focus-decision_overdue-${item.id}`}
+                        className="border-b border-[#e5e0d6] align-middle"
+                      >
                       <td className="relative px-2 py-1.5 text-body text-nearblack">
                         {/* Order-by engine — a second, independently-
                             targetable focus anchor for My Work's
@@ -557,8 +589,28 @@ export function ProcurementView({
                         <span id={`focus-ordering_due-${item.id}`} className="absolute" aria-hidden />
                         {item.item_code}
                       </td>
-                      <td className="max-w-[220px] truncate px-2 py-1.5 text-body">
-                        {item.name}
+                      <td className="max-w-[240px] px-2 py-1.5 text-body">
+                        <span className="block truncate">{item.name}</span>
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setComponentsOpenFor((current) =>
+                                current === item.id ? null : item.id
+                              )
+                            }
+                            className={clsx(
+                              "mt-0.5 text-caption underline underline-offset-2",
+                              isAssembly ? "text-sand" : "text-charcoal/45 hover:text-nearblack"
+                            )}
+                          >
+                            {isAssembly
+                              ? `${itemComponents.length} component${
+                                  itemComponents.length === 1 ? "" : "s"
+                                } · ${assemblyProcurementLabel(itemComponents)}`
+                              : "Build as assembly"}
+                          </button>
+                        )}
                       </td>
                       <td className="px-2 py-1.5 text-right text-body">
                         <QtyCell
@@ -573,10 +625,17 @@ export function ProcurementView({
                         />
                       </td>
                       <td className="px-2 py-1">
-                        <NumCell
-                          value={item.price_trade}
-                          onCommit={(v) => onPatch(item.id, { price_trade: v })}
-                        />
+                        {isAssembly ? (
+                          <div className="text-right">
+                            <span className="text-body text-nearblack">{money(item.price_trade)}</span>
+                            <span className="block text-caption text-sand">from parts</span>
+                          </div>
+                        ) : (
+                          <NumCell
+                            value={item.price_trade}
+                            onCommit={(v) => onPatch(item.id, { price_trade: v })}
+                          />
+                        )}
                       </td>
                       <td className="px-2 py-1">
                         <NumCell
@@ -592,31 +651,51 @@ export function ProcurementView({
                         {money(lineTotal(item, resolvedQuantity(item as ItemWithQtyLink, measurementsById)))}
                       </td>
                       <td className="px-2 py-1">
-                        <NumCell
-                          value={item.lead_time_weeks}
-                          width="w-16"
-                          onCommit={(v) =>
-                            onPatch(item.id, { lead_time_weeks: v })
-                          }
-                        />
+                        {isAssembly ? (
+                          <span className="block text-right text-body text-charcoal/70">
+                            {item.lead_time_weeks ?? "—"}
+                          </span>
+                        ) : (
+                          <NumCell
+                            value={item.lead_time_weeks}
+                            width="w-16"
+                            onCommit={(v) =>
+                              onPatch(item.id, { lead_time_weeks: v })
+                            }
+                          />
+                        )}
                       </td>
                       <td className="px-2 py-1">
-                        <DateCell
-                          value={item.ordered_at}
-                          onCommit={(v) => onPatch(item.id, { ordered_at: v })}
-                        />
+                        {isAssembly ? (
+                          <span className="text-body text-charcoal/70">{item.ordered_at ?? "—"}</span>
+                        ) : (
+                          <DateCell
+                            value={item.ordered_at}
+                            onCommit={(v) => onPatch(item.id, { ordered_at: v })}
+                          />
+                        )}
                       </td>
                       <td className="px-2 py-1">
-                        <DateCell
-                          value={item.eta}
-                          onCommit={(v) => onPatch(item.id, { eta: v })}
-                        />
+                        {isAssembly ? (
+                          <span className="text-body text-charcoal/70">{item.eta ?? "—"}</span>
+                        ) : (
+                          <DateCell
+                            value={item.eta}
+                            onCommit={(v) => onPatch(item.id, { eta: v })}
+                          />
+                        )}
                       </td>
                       <td className="px-2 py-1">
-                        <DateCell
-                          value={item.delivered_at}
-                          onCommit={(v) => onPatch(item.id, { delivered_at: v })}
-                        />
+                        {isAssembly ? (
+                          <span className="text-body text-charcoal/70">
+                            {item.delivered_at ?? "—"}
+                          </span>
+                        ) : (
+                          <DateCell
+                            value={item.delivered_at}
+                            onCommit={(v) => onPatch(item.id, { delivered_at: v })}
+                          />
+                        )}
                       </td>
                       <td className="px-2 py-1.5">
                         <OrderByCell
@@ -655,7 +734,26 @@ export function ProcurementView({
                           </span>
                         )}
                       </td>
-                    </tr>
+                      </tr>
+                      {componentsOpenFor === item.id && (
+                        <tr className="border-b border-nearblack">
+                          <td colSpan={14} className="px-2 py-3">
+                            <ItemComponentsPanel
+                              item={item}
+                              components={itemComponents}
+                              onError={onError}
+                              onChange={(next, parentPriceTrade) => {
+                                setComponents((current) => [
+                                  ...current.filter((component) => component.item_id !== item.id),
+                                  ...next,
+                                ]);
+                                onAssemblyPriceChange(item.id, parentPriceTrade);
+                              }}
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })}
               </tbody>
