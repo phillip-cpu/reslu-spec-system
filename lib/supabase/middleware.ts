@@ -109,6 +109,13 @@ export async function updateSession(request: NextRequest) {
     // bounced to /login before the route handler ever runs.
     pathname.startsWith("/brief") ||
     pathname.startsWith("/api/brief-submit") ||
+    // Address Book insurance request: public token-gated upload page
+    // and its two upload APIs. The admin send endpoint stays below
+    // /api/contacts/** and therefore remains session-protected.
+    pathname === "/insurance" ||
+    pathname.startsWith("/insurance/") ||
+    pathname === "/api/insurance-request" ||
+    pathname.startsWith("/api/insurance-request/") ||
     pathname.startsWith("/_next") ||
     pathname.startsWith("/favicon") ||
     pathname.startsWith("/reslu-logo") ||

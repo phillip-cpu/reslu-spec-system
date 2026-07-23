@@ -240,6 +240,8 @@ export function ContactsBrowser({ categories: initialCategories }: Props) {
                         <div className="md:col-span-2 lg:col-span-3">
                           <ContactDocumentsPanel
                             contactId={contact.id}
+                            contactCompany={contact.company}
+                            contactEmail={contact.email}
                             insuranceRequired={contact.insurance_required}
                             onCountChange={(count) =>
                               setContacts((cur) =>

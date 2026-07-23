@@ -5,9 +5,15 @@ import { createClient } from "@/lib/supabase/client";
 import { ASSET_BUCKET } from "@/lib/storage";
 import type { ContactDocumentKind, InsuranceStatus } from "@/lib/insurance";
 import type { ContactDocumentWithUrl } from "@/types/phase-fix-a";
+import type {
+  InsuranceRequestKind,
+  InsuranceRequestSummary,
+} from "@/types/insurance-requests";
 
 interface Props {
   contactId: string;
+  contactCompany: string;
+  contactEmail: string | null;
   /** Current contacts.insurance_required value (migration 026) — drives the "Certificate needed" checkbox's initial state. */
   insuranceRequired: boolean;
   onCountChange: (count: number) => void;
@@ -55,6 +61,8 @@ const KIND_OPTIONS: { key: ContactDocumentKind; label: string }[] = [
  */
 export function ContactDocumentsPanel({
   contactId,
+  contactCompany,
+  contactEmail,
   insuranceRequired,
   onCountChange,
   onStatusChange,
@@ -67,14 +75,22 @@ export function ContactDocumentsPanel({
   const [kind, setKind] = useState<ContactDocumentKind>("public_liability");
   const [expiryDate, setExpiryDate] = useState("");
   const [savingRequired, setSavingRequired] = useState(false);
+  const [latestRequest, setLatestRequest] = useState<InsuranceRequestSummary | null>(null);
+  const [requestKinds, setRequestKinds] = useState<InsuranceRequestKind[]>([
+    "public_liability",
+    "workers_comp",
+  ]);
+  const [sendingRequest, setSendingRequest] = useState(false);
+  const [requestMessage, setRequestMessage] = useState<string | null>(null);
 
   async function refresh() {
     setLoading(true);
     try {
       const res = await fetch(`/api/contacts/${contactId}/documents`);
       if (!res.ok) throw new Error("Could not load documents");
-      const { documents: docs } = await res.json();
+      const { documents: docs, latest_request: latestRequestRow } = await res.json();
       setDocuments(docs ?? []);
+      setLatestRequest(latestRequestRow ?? null);
       onCountChange((docs ?? []).length);
       await refreshStatus();
     } catch (err) {
@@ -200,6 +216,55 @@ export function ContactDocumentsPanel({
     }
   }
 
+  function toggleRequestKind(kind: InsuranceRequestKind) {
+    setRequestKinds((current) =>
+      current.includes(kind)
+        ? current.filter((value) => value !== kind)
+        : [...current, kind]
+    );
+  }
+
+  async function sendInsuranceRequest() {
+    if (!contactEmail || requestKinds.length === 0) return;
+    setSendingRequest(true);
+    setError(null);
+    setRequestMessage(null);
+    try {
+      const res = await fetch(`/api/contacts/${contactId}/insurance-request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kinds: requestKinds }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "Could not send the request");
+      setLatestRequest(body.request ?? null);
+      onInsuranceRequiredChange(true);
+      setRequestMessage(`Request sent to ${contactEmail}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not send the request");
+    } finally {
+      setSendingRequest(false);
+    }
+  }
+
+  function requestStatus(): string {
+    if (!latestRequest) return "";
+    if (latestRequest.status === "completed") return "Uploaded";
+    if (latestRequest.status === "cancelled") return "Superseded";
+    if (new Date(latestRequest.expires_at).getTime() <= Date.now()) return "Link expired";
+    if (latestRequest.status === "opened") return "Opened";
+    return "Requested";
+  }
+
+  function requestDate(): string {
+    if (!latestRequest) return "";
+    return new Date(latestRequest.requested_at).toLocaleDateString("en-AU", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+  }
+
   return (
     <div className="border border-[#dcd6cc] bg-nearwhite p-4">
       <label className="mb-3 flex items-center gap-2 border-b border-[#e5e0d6] pb-3 text-body text-charcoal/80">
@@ -216,6 +281,63 @@ export function ContactDocumentsPanel({
       {error && (
         <p className="mb-3 border border-red-700/40 bg-red-50 px-3 py-2 text-caption text-red-700">{error}</p>
       )}
+
+      <section className="mb-4 border border-[#dcd6cc] bg-offwhite p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="label-caps">Request insurance documents</p>
+            <p className="mt-1 text-caption text-charcoal/60">
+              {contactEmail
+                ? `A secure upload link will be emailed to ${contactEmail}.`
+                : `Add an email address to ${contactCompany} before sending a request.`}
+            </p>
+          </div>
+          {latestRequest && (
+            <div className="text-right">
+              <span className="border border-sand px-2 py-1 text-caption uppercase tracking-wide text-sand">
+                {requestStatus()}
+              </span>
+              <p className="mt-1 text-caption text-charcoal/45">{requestDate()}</p>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2">
+          {([
+            ["public_liability", "Public liability"],
+            ["workers_comp", "Workers comp"],
+            ["licence", "Trade licence"],
+          ] as [InsuranceRequestKind, string][]).map(([value, label]) => (
+            <label key={value} className="flex items-center gap-2 text-caption text-charcoal/70">
+              <input
+                type="checkbox"
+                checked={requestKinds.includes(value)}
+                onChange={() => toggleRequestKind(value)}
+                className="h-4 w-4 accent-nearblack"
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={sendInsuranceRequest}
+            disabled={!contactEmail || requestKinds.length === 0 || sendingRequest}
+            className="bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal disabled:opacity-40"
+          >
+            {sendingRequest
+              ? "Sending…"
+              : latestRequest
+                ? "Send new request"
+                : "Send request"}
+          </button>
+          {requestMessage && (
+            <p className="text-caption text-[#46604a]">{requestMessage}</p>
+          )}
+        </div>
+      </section>
 
       {loading ? (
         <p className="text-caption text-charcoal/50">Loading documents…</p>

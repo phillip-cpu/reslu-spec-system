@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
 import type { ContactDocument, ContactDocumentKind, CreateContactDocumentInput } from "@/lib/insurance";
+import type { InsuranceRequestSummary } from "@/types/insurance-requests";
 
 export const runtime = "nodejs";
 
@@ -41,12 +42,26 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { data: documents, error } = await supabase
-    .from("contact_documents")
-    .select("*")
-    .eq("contact_id", contactId)
-    .is("deleted_at", null)
-    .order("created_at", { ascending: false });
+  const [
+    { data: documents, error },
+    { data: latestRequest },
+  ] = await Promise.all([
+    supabase
+      .from("contact_documents")
+      .select("*")
+      .eq("contact_id", contactId)
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("contact_document_requests")
+      .select(
+        "id,requested_kinds,to_email,status,requested_at,sent_at,opened_at,completed_at,expires_at"
+      )
+      .eq("contact_id", contactId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -54,6 +69,7 @@ export async function GET(
 
   return NextResponse.json({
     documents: await Promise.all((documents as ContactDocument[]).map((d) => withUrl(supabase, d))),
+    latest_request: (latestRequest as InsuranceRequestSummary | null) ?? null,
   });
 }
 
