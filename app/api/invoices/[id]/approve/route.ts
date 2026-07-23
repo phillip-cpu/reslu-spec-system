@@ -138,6 +138,9 @@ export async function POST(
   if (existing.status === "rejected") {
     return NextResponse.json({ error: "Cannot approve a rejected invoice" }, { status: 400 });
   }
+  if (existing.status === "voided") {
+    return NextResponse.json({ error: "Cannot approve a voided invoice" }, { status: 400 });
+  }
   const existingWithAllocations = existing as unknown as InvoiceWithAllocations;
   const allocations = existingWithAllocations.invoice_allocations ?? [];
 

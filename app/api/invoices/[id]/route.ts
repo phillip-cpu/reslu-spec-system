@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { validateInvoiceAllocations } from "@/lib/invoice-allocations";
+import { DUPLICATE_INVOICE_MESSAGE } from "@/lib/invoice-duplicates";
 import type { InvoiceMatchType } from "@/types";
 import type { InvoiceWithAllocations, InvoiceWithIntake } from "@/types/round-supplier-invoice-intake";
 
@@ -66,7 +67,7 @@ export async function PATCH(
   if (fetchError || !existing) {
     return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
   }
-  if (existing.status === "approved" || existing.status === "rejected") {
+  if (existing.status === "approved" || existing.status === "rejected" || existing.status === "voided") {
     return NextResponse.json(
       { error: `Cannot edit an invoice that is already ${existing.status}` },
       { status: 400 }
@@ -200,6 +201,37 @@ export async function PATCH(
     return NextResponse.json({ error: "No editable fields in request" }, { status: 400 });
   }
 
+  if (
+    Object.prototype.hasOwnProperty.call(update, "invoice_number") ||
+    Object.prototype.hasOwnProperty.call(update, "invoice_date") ||
+    Object.prototype.hasOwnProperty.call(update, "amount_ex_gst")
+  ) {
+    const { data: duplicateInvoiceId, error: duplicateCheckError } = await supabase.rpc(
+      "find_live_invoice_duplicate",
+      {
+        p_project_id: existing.project_id,
+        p_invoice_number: update.invoice_number ?? existing.invoice_number,
+        p_amount_ex_gst: update.amount_ex_gst ?? existing.amount_ex_gst,
+        p_invoice_date: Object.prototype.hasOwnProperty.call(update, "invoice_date")
+          ? update.invoice_date
+          : existing.invoice_date,
+        p_exclude_id: id,
+      }
+    );
+    if (duplicateCheckError) {
+      return NextResponse.json({ error: duplicateCheckError.message }, { status: 500 });
+    }
+    if (duplicateInvoiceId) {
+      return NextResponse.json(
+        {
+          error: DUPLICATE_INVOICE_MESSAGE,
+          duplicate_invoice_id: duplicateInvoiceId,
+        },
+        { status: 409 }
+      );
+    }
+  }
+
   const { data: invoice, error } = await supabase
     .from("invoices")
     .update(update)
@@ -208,6 +240,9 @@ export async function PATCH(
     .single();
 
   if (error) {
+    if (error.code === "23505") {
+      return NextResponse.json({ error: DUPLICATE_INVOICE_MESSAGE }, { status: 409 });
+    }
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 

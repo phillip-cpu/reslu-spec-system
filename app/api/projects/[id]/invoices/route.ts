@@ -8,12 +8,13 @@ import { validateInvoiceAllocations } from "@/lib/invoice-allocations";
 import type { NormalizedInvoiceAllocation } from "@/lib/invoice-allocations";
 import { validateSupplierInvoiceLines } from "@/lib/supplier-invoice-lines";
 import type { NormalizedSupplierInvoiceLine } from "@/lib/supplier-invoice-lines";
+import { DUPLICATE_INVOICE_MESSAGE } from "@/lib/invoice-duplicates";
 import type { CreateInvoiceResponse, Invoice, InvoiceMatchType, InvoiceStatus } from "@/types";
 import type { InvoiceSource, InvoiceWithAllocations, SupplierInvoiceExtracted } from "@/types/round-supplier-invoice-intake";
 
 export const runtime = "nodejs";
 
-const STATUSES: InvoiceStatus[] = ["unmatched", "proposed", "approved", "rejected"];
+const STATUSES: InvoiceStatus[] = ["unmatched", "proposed", "approved", "rejected", "voided"];
 const MATCH_TYPES: InvoiceMatchType[] = ["cost_line", "item", "item_component"];
 const SOURCES: InvoiceSource[] = ["manual", "aria"];
 
@@ -85,13 +86,11 @@ export async function GET(
  * app/api/items/[id]/files/route.ts's upload pattern for the file half
  * (same bucket, upload-then-insert-then-cleanup-on-failure shape).
  *
- * Duplicate warn (not hard block): if a non-rejected invoice already
- * exists for (project, supplier, invoice_number) — mirroring the
- * partial unique index idx_invoices_project_supplier_number_live from
- * 007_estimating.sql — the new invoice is still created (v1: "AI
- * proposes, admin approves — no silent money writes", not "reject
- * duplicates"), and the existing one is returned alongside it as
- * `duplicate_warning` so the queue UI/Aria can flag it for review.
+ * Duplicate block: a live invoice with the same project, normalised
+ * invoice number, ex-GST amount and invoice date blocks creation,
+ * regardless of supplier-name formatting. Migration 069 enforces the
+ * same identity with a partial unique index, so concurrent submissions
+ * cannot race past this readable pre-check.
  *
  * Booking selection v2 + Aria supplier invoices (r24), item 5: the MCP
  * `propose_supplier_invoice` tool is a thin caller of THIS SAME route
@@ -325,16 +324,28 @@ export async function POST(
     extracted = body.extracted as SupplierInvoiceExtracted;
   }
 
-  // Duplicate check (warn, not block) — same key as the partial unique
-  // index (project_id, supplier, invoice_number) where status != 'rejected'.
-  const { data: existing } = await supabase
-    .from("invoices")
-    .select("*")
-    .eq("project_id", projectId)
-    .eq("supplier", supplier)
-    .eq("invoice_number", invoice_number)
-    .neq("status", "rejected")
-    .maybeSingle();
+  const { data: duplicateInvoiceId, error: duplicateCheckError } = await supabase.rpc(
+    "find_live_invoice_duplicate",
+    {
+      p_project_id: projectId,
+      p_invoice_number: invoice_number,
+      p_amount_ex_gst: amount_ex_gst,
+      p_invoice_date: invoice_date,
+      p_exclude_id: null,
+    }
+  );
+  if (duplicateCheckError) {
+    return NextResponse.json({ error: duplicateCheckError.message }, { status: 500 });
+  }
+  if (duplicateInvoiceId) {
+    return NextResponse.json(
+      {
+        error: DUPLICATE_INVOICE_MESSAGE,
+        duplicate_invoice_id: duplicateInvoiceId,
+      },
+      { status: 409 }
+    );
+  }
 
   let storage_path: string | null = null;
   if (file) {
@@ -405,13 +416,10 @@ export async function POST(
     if (storage_path) {
       await supabase.storage.from(ASSET_BUCKET).remove([storage_path]);
     }
-    // 23505 shouldn't normally fire here since we warn rather than
-    // block, but the unique index only excludes 'rejected' — a
-    // concurrent insert of the exact same (project, supplier, number)
-    // between our check and this insert could still race. Surface it
-    // as a 409 rather than a raw 500 in that edge case.
-    const status = insertError.code === "23505" ? 409 : 500;
-    return NextResponse.json({ error: insertError.message }, { status });
+    if (insertError.code === "23505") {
+      return NextResponse.json({ error: DUPLICATE_INVOICE_MESSAGE }, { status: 409 });
+    }
+    return NextResponse.json({ error: insertError.message }, { status: 500 });
   }
 
   let createdInvoice: Invoice | InvoiceWithAllocations = invoice as Invoice;
@@ -611,10 +619,6 @@ export async function POST(
   }
 
   const payload: CreateInvoiceResponse = { invoice: createdInvoice as Invoice };
-  if (existing) {
-    payload.duplicate_warning = existing as Invoice;
-  }
-
   return NextResponse.json(payload, { status: 201 });
 }
 

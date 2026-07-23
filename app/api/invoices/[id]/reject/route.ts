@@ -51,6 +51,9 @@ export async function POST(
   if (existing.status === "rejected") {
     return NextResponse.json({ error: "Invoice is already rejected" }, { status: 400 });
   }
+  if (existing.status === "voided") {
+    return NextResponse.json({ error: "Invoice is already voided" }, { status: 400 });
+  }
 
   const { data: invoice, error } = await supabase
     .from("invoices")

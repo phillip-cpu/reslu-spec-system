@@ -20,6 +20,7 @@ const STATUS_TABS: { value: InvoiceStatus | "all"; label: string }[] = [
   { value: "proposed", label: "Proposed" },
   { value: "approved", label: "Approved" },
   { value: "rejected", label: "Rejected" },
+  { value: "voided", label: "Voided" },
 ];
 
 const STATUS_STYLES: Record<InvoiceStatus, string> = {
@@ -27,6 +28,7 @@ const STATUS_STYLES: Record<InvoiceStatus, string> = {
   proposed: "border-sand text-sand",
   approved: "border-nearblack bg-nearblack text-white",
   rejected: "border-red-700/40 text-red-700",
+  voided: "border-charcoal/30 bg-charcoal/10 text-charcoal/60",
 };
 
 interface Props {
@@ -131,6 +133,23 @@ export function InvoiceQueue({ projectId }: Props) {
     }
   }
 
+  async function voidInvoice(id: string) {
+    if (!confirm("Void this approved invoice and reverse its project actuals?")) return;
+    setError(null);
+    try {
+      const res = await fetch(`/api/invoices/${id}/void`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "Voided by Phillip after invoice review" }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Could not void invoice.");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not void invoice.");
+    }
+  }
+
   async function saveAllocations(id: string, allocations: InvoiceAllocationInput[]) {
     setError(null);
     try {
@@ -204,6 +223,7 @@ export function InvoiceQueue({ projectId }: Props) {
                   onToggle={() => setExpandedId((cur) => (cur === inv.id ? null : inv.id))}
                   onApprove={(applyToLibraryCost) => approve(inv.id, applyToLibraryCost)}
                   onReject={() => reject(inv.id)}
+                  onVoid={() => voidInvoice(inv.id)}
                   onSaveAllocations={(allocations) => saveAllocations(inv.id, allocations)}
                   onSaveFields={(patch) => saveFields(inv.id, patch)}
                 />
@@ -223,6 +243,7 @@ function InvoiceRow({
   onToggle,
   onApprove,
   onReject,
+  onVoid,
   onSaveAllocations,
   onSaveFields,
 }: {
@@ -232,10 +253,14 @@ function InvoiceRow({
   onToggle: () => void;
   onApprove: (applyToLibraryCost?: boolean) => void;
   onReject: () => void;
+  onVoid: () => void;
   onSaveAllocations: (allocations: InvoiceAllocationInput[]) => void;
   onSaveFields: (patch: Record<string, unknown>) => void;
 }) {
-  const editable = invoice.status !== "approved" && invoice.status !== "rejected";
+  const editable =
+    invoice.status !== "approved" &&
+    invoice.status !== "rejected" &&
+    invoice.status !== "voided";
   const savedAllocations = invoice.invoice_allocations ?? [];
   const hasSavedAllocations = savedAllocations.length > 0;
   const hasLegacyMatch = Boolean(invoice.proposed_match_type && invoice.proposed_match_id);
@@ -343,6 +368,15 @@ function InvoiceRow({
                   Reject
                 </button>
               </>
+            )}
+            {invoice.status === "approved" && (
+              <button
+                type="button"
+                onClick={onVoid}
+                className="border border-red-700/40 px-2 py-1 text-caption text-red-700 hover:bg-red-700 hover:text-white"
+              >
+                Void
+              </button>
             )}
           </div>
         </td>
@@ -515,7 +549,11 @@ function InvoiceRow({
                       }
                     : null
                 }
-                disabled={invoice.status === "approved" || invoice.status === "rejected"}
+                disabled={
+                  invoice.status === "approved" ||
+                  invoice.status === "rejected" ||
+                  invoice.status === "voided"
+                }
                 onSave={onSaveAllocations}
               />
             </div>
@@ -1099,11 +1137,6 @@ function UploadForm({
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Could not create invoice.");
-      if (body.duplicate_warning) {
-        onError(
-          `Warning: a non-rejected invoice already exists for ${supplier.trim()} #${invoiceNumber.trim()} — both are now in the queue for review.`
-        );
-      }
       setSupplier("");
       setInvoiceNumber("");
       setInvoiceDate("");

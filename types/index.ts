@@ -544,7 +544,7 @@ export interface MeasurementGroupWithRows extends MeasurementGroup {
 }
 
 export type InvoiceMatchType = "cost_line" | "item" | "item_component";
-export type InvoiceStatus = "unmatched" | "proposed" | "approved" | "rejected";
+export type InvoiceStatus = "unmatched" | "proposed" | "approved" | "rejected" | "voided";
 
 /**
  * Schema-only this release (BUILD-SPEC.md "Invoice pipeline — AI-updated
@@ -567,6 +567,9 @@ export interface Invoice {
   status: InvoiceStatus;
   approved_by: string | null;
   approved_at: string | null;
+  voided_by: string | null;
+  voided_at: string | null;
+  void_reason: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
