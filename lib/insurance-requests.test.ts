@@ -13,8 +13,14 @@ test("normaliseInsuranceRequestKinds defaults, filters and de-duplicates", () =>
     "workers_comp",
   ]);
   assert.deepEqual(
-    normaliseInsuranceRequestKinds(["licence", "other", "licence", "public_liability"]),
-    ["licence", "public_liability"]
+    normaliseInsuranceRequestKinds([
+      "licence",
+      "other",
+      "professional_indemnity",
+      "licence",
+      "public_liability",
+    ]),
+    ["licence", "professional_indemnity", "public_liability"]
   );
 });
 
@@ -47,13 +53,14 @@ test("request email escapes contact values and contains each requested document"
   const html = renderInsuranceRequestEmail({
     greetingName: "<Alex>",
     company: "A & B",
-    kinds: ["public_liability", "licence"],
+    kinds: ["public_liability", "professional_indemnity", "licence"],
     uploadUrl: "https://spec.reslu.com.au/insurance/token",
     expiresLabel: "22 August 2026",
   });
   assert.match(html, /&lt;Alex&gt;/);
   assert.match(html, /A &amp; B/);
   assert.match(html, /Public liability insurance/);
+  assert.match(html, /Professional indemnity insurance/);
   assert.match(html, /Trade licence/);
   assert.doesNotMatch(html, /Workers compensation insurance/);
 });

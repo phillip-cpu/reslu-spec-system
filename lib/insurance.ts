@@ -22,7 +22,12 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
 const EXPIRING_SOON_DAYS = 30;
 
-export type ContactDocumentKind = "public_liability" | "workers_comp" | "licence" | "other";
+export type ContactDocumentKind =
+  | "public_liability"
+  | "professional_indemnity"
+  | "workers_comp"
+  | "licence"
+  | "other";
 
 export interface ContactDocument {
   id: string;

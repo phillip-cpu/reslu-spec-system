@@ -6,7 +6,13 @@ import type { InsuranceRequestSummary } from "@/types/insurance-requests";
 
 export const runtime = "nodejs";
 
-const KINDS: ContactDocumentKind[] = ["public_liability", "workers_comp", "licence", "other"];
+const KINDS: ContactDocumentKind[] = [
+  "public_liability",
+  "professional_indemnity",
+  "workers_comp",
+  "licence",
+  "other",
+];
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -114,7 +120,10 @@ export async function POST(
 
   if (!KINDS.includes(body.kind)) {
     return NextResponse.json(
-      { error: "kind must be one of public_liability, workers_comp, licence, other" },
+      {
+        error:
+          "kind must be one of public_liability, professional_indemnity, workers_comp, licence, other",
+      },
       { status: 400 }
     );
   }

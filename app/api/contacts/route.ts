@@ -88,7 +88,12 @@ export async function GET(request: NextRequest) {
 
   type DocRow = {
     contact_id: string;
-    kind: "public_liability" | "workers_comp" | "licence" | "other";
+    kind:
+      | "public_liability"
+      | "professional_indemnity"
+      | "workers_comp"
+      | "licence"
+      | "other";
     expiry_date: string | null;
     deleted_at: string | null;
   };

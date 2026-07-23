@@ -24,6 +24,7 @@ interface Props {
 
 const KIND_OPTIONS: { key: ContactDocumentKind; label: string }[] = [
   { key: "public_liability", label: "Public liability" },
+  { key: "professional_indemnity", label: "Professional indemnity" },
   { key: "workers_comp", label: "Workers comp" },
   { key: "licence", label: "Licence" },
   { key: "other", label: "Other" },
@@ -305,6 +306,7 @@ export function ContactDocumentsPanel({
         <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2">
           {([
             ["public_liability", "Public liability"],
+            ["professional_indemnity", "Professional indemnity"],
             ["workers_comp", "Workers comp"],
             ["licence", "Trade licence"],
           ] as [InsuranceRequestKind, string][]).map(([value, label]) => (

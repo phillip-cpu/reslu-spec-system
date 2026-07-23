@@ -7,12 +7,14 @@ import type {
 
 export const INSURANCE_REQUEST_KINDS: InsuranceRequestKind[] = [
   "public_liability",
+  "professional_indemnity",
   "workers_comp",
   "licence",
 ];
 
 export const INSURANCE_REQUEST_KIND_LABEL: Record<InsuranceRequestKind, string> = {
   public_liability: "Public liability insurance",
+  professional_indemnity: "Professional indemnity insurance",
   workers_comp: "Workers compensation insurance",
   licence: "Trade licence",
 };
