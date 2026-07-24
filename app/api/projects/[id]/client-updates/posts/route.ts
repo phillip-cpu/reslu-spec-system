@@ -93,7 +93,7 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: { title?: string; body_richtext?: string; photo_ids?: string[] };
+  let body: { title?: string; body_richtext?: string; photo_ids?: string[]; queue_for_aria?: boolean };
   try {
     body = await request.json();
   } catch {
@@ -146,5 +146,32 @@ export async function POST(
     }
   }
 
-  return NextResponse.json({ update: row }, { status: 201 });
+  // A draft with useful notes or photos is explicitly being sent to
+  // Aria. Queue it in the same heartbeat system as every other
+  // autonomous action; previously the UI said "awaiting Aria" but no
+  // work item was created, so drafts could sit forever.
+  let ariaQueued = false;
+  if (body.queue_for_aria === true && (content || photoIds.length > 0)) {
+    const { error: queueError } = await supabase.from("aria_queue").upsert(
+      {
+        kind: "diary_draft",
+        payload: {
+          project_id: projectId,
+          post_id: row.id,
+          instruction:
+            "Use draft_diary_entry in fetch mode, write a concise warm client-facing update from the notes and photo captions, then submit it for human approval. Never publish it.",
+        },
+        dedupe_key: `diary_draft:${row.id}`,
+        source: "diary-composer",
+      },
+      { onConflict: "dedupe_key", ignoreDuplicates: true }
+    );
+    if (queueError) {
+      await supabase.from("portal_updates").delete().eq("id", row.id);
+      return NextResponse.json({ error: `Could not send this diary draft to Aria: ${queueError.message}` }, { status: 500 });
+    }
+    ariaQueued = true;
+  }
+
+  return NextResponse.json({ update: row, aria_queued: ariaQueued }, { status: 201 });
 }

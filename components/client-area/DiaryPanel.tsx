@@ -36,9 +36,9 @@ export interface DiaryUpdateRow {
  *      notes in ONE plain textarea -> "Send to Aria" saves a
  *      portal_updates row (status 'draft', draft_source 'manual') with
  *      the photos linked via portal_update_photos.
- *   2. Aria (external MCP tool draft_diary_entry, run on her own
- *      schedule/prompting — nothing in this UI calls her synchronously)
- *      fetches the draft + photo captions via GET .../aria-draft,
+ *   2. The create route queues that exact draft in aria_queue. Aria's
+ *      heartbeat receives it, then the external MCP tool
+ *      draft_diary_entry fetches the draft + photo captions via GET .../aria-draft,
  *      writes a polished title+body, and POSTs it back, which flips
  *      status to 'pending_approval' and draft_source to 'aria'.
  *   3. This panel shows pending_approval entries as an approval card:
@@ -89,6 +89,7 @@ export function DiaryPanel({
           title: "Site update",
           body_richtext: notes.trim(),
           photo_ids: pendingPhotos.map((p) => p.id),
+          queue_for_aria: true,
         }),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? "Could not send to Aria");

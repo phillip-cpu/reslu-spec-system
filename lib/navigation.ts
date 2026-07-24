@@ -12,6 +12,7 @@ export interface SidebarNavItem {
 /** Stable ids are persisted in user_navigation_preferences.sidebar_order. */
 export const SIDEBAR_NAV_ITEMS: SidebarNavItem[] = [
   { id: "my-work", label: "My Work", href: "/my-work", badgeKey: "my_work_due" },
+  { id: "friday-review", label: "Friday Review", href: "/friday-review" },
   { id: "projects", label: "Projects", href: "/" },
   { id: "office", label: "Office", href: "/office" },
   { id: "search", label: "Search", href: "/search" },
@@ -55,4 +56,3 @@ export function projectShortcutLabel(name: string): string {
   if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
   return `${words[0][0]}${words[words.length - 1][0]}`.toUpperCase();
 }
-
