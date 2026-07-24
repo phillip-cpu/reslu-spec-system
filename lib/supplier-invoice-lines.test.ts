@@ -70,6 +70,36 @@ test("accepts an assembly component suggestion", () => {
   assert.equal(result.ok, true);
 });
 
+test("accepts manually entered itemised invoice lines without project matches", () => {
+  const result = validateSupplierInvoiceLines(
+    [
+      {
+        supplier_item_code: "MIX-BODY",
+        description: "In-wall mixer body",
+        quantity: 2,
+        unit: "ea",
+        unit_price_ex_gst: 54.09,
+        amount_ex_gst: 108.18,
+      },
+      {
+        supplier_item_code: "MIX-TRIM",
+        description: "Mixer trim and handle",
+        quantity: 2,
+        unit: "ea",
+        unit_price_ex_gst: 79.55,
+        amount_ex_gst: 159.1,
+      },
+    ],
+    267.28
+  );
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.lines.length, 2);
+    assert.equal(result.line_total_cents, 26_728);
+    assert.equal(result.lines[0].suggested_match_id, null);
+  }
+});
+
 test("creates an estimate line payload from a supplier line without posting an actual", () => {
   assert.deepEqual(supplierLineCostLineInput(bunningsLines[8]), {
     description: "RamBoard temporary floor protection",

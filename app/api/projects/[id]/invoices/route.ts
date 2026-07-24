@@ -161,6 +161,17 @@ export async function POST(
       const v = form.get(key);
       if (v !== null) body[key] = v;
     }
+    const rawLineItems = form.get("line_items");
+    if (typeof rawLineItems === "string" && rawLineItems.trim()) {
+      try {
+        body.line_items = JSON.parse(rawLineItems);
+      } catch {
+        return NextResponse.json(
+          { error: "line_items must be valid JSON" },
+          { status: 400 }
+        );
+      }
+    }
   } else {
     try {
       body = await request.json();

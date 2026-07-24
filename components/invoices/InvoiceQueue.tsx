@@ -1110,14 +1110,97 @@ function UploadForm({
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [invoiceDate, setInvoiceDate] = useState("");
   const [amount, setAmount] = useState("");
+  const [gst, setGst] = useState("");
+  const [notes, setNotes] = useState("");
+  const [lines, setLines] = useState<Array<{
+    key: string;
+    supplier_item_code: string;
+    description: string;
+    quantity: string;
+    unit: string;
+    unit_price_ex_gst: string;
+    amount_ex_gst: string;
+  }>>([]);
   const [submitting, setSubmitting] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
+  function roundMoney(value: number) {
+    return Math.round((value + Number.EPSILON) * 100) / 100;
+  }
+
+  function addLine() {
+    setLines((current) => [
+      ...current,
+      {
+        key: `manual-line-${Date.now()}-${current.length}`,
+        supplier_item_code: "",
+        description: "",
+        quantity: "1",
+        unit: "ea",
+        unit_price_ex_gst: "",
+        amount_ex_gst: "",
+      },
+    ]);
+  }
+
+  function updateLine(
+    key: string,
+    field: "supplier_item_code" | "description" | "quantity" | "unit" | "unit_price_ex_gst" | "amount_ex_gst",
+    value: string
+  ) {
+    setLines((current) =>
+      current.map((line) => {
+        if (line.key !== key) return line;
+        const next = { ...line, [field]: value };
+        if (field === "quantity" || field === "unit_price_ex_gst") {
+          const quantity = Number(next.quantity);
+          const unitPrice = Number(next.unit_price_ex_gst);
+          if (Number.isFinite(quantity) && quantity > 0 && Number.isFinite(unitPrice) && unitPrice >= 0) {
+            next.amount_ex_gst = String(roundMoney(quantity * unitPrice));
+          }
+        }
+        return next;
+      })
+    );
+  }
+
+  const lineSubtotal = roundMoney(
+    lines.reduce((sum, line) => {
+      const value = Number(line.amount_ex_gst);
+      return sum + (Number.isFinite(value) ? value : 0);
+    }, 0)
+  );
+  const amountNum = lines.length > 0 ? lineSubtotal : Number(amount);
+  const gstNum = gst === "" ? roundMoney((Number.isFinite(amountNum) ? amountNum : 0) * 0.1) : Number(gst);
+  const totalNum = roundMoney(
+    (Number.isFinite(amountNum) ? amountNum : 0) + (Number.isFinite(gstNum) ? gstNum : 0)
+  );
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    const amountNum = Number(amount);
-    if (!supplier.trim() || !invoiceNumber.trim() || !Number.isFinite(amountNum)) {
-      onError("Supplier, invoice number and a valid amount are required.");
+    if (
+      !supplier.trim() ||
+      !invoiceNumber.trim() ||
+      !invoiceDate ||
+      !Number.isFinite(amountNum) ||
+      amountNum <= 0 ||
+      !Number.isFinite(gstNum) ||
+      gstNum < 0
+    ) {
+      onError("Supplier, invoice number, date and a valid amount are required.");
+      return;
+    }
+    if (
+      lines.some(
+        (line) =>
+          !line.description.trim() ||
+          !Number.isFinite(Number(line.quantity)) ||
+          Number(line.quantity) <= 0 ||
+          !Number.isFinite(Number(line.amount_ex_gst)) ||
+          Number(line.amount_ex_gst) <= 0
+      )
+    ) {
+      onError("Every invoice line needs a description, quantity and ex-GST amount.");
       return;
     }
     setSubmitting(true);
@@ -1126,8 +1209,29 @@ function UploadForm({
       const fd = new FormData();
       fd.append("supplier", supplier.trim());
       fd.append("invoice_number", invoiceNumber.trim());
-      if (invoiceDate) fd.append("invoice_date", invoiceDate);
+      fd.append("invoice_date", invoiceDate);
       fd.append("amount_ex_gst", String(amountNum));
+      fd.append("gst", String(gstNum));
+      fd.append("total", String(totalNum));
+      if (notes.trim()) fd.append("confidence_note", notes.trim());
+      if (lines.length > 0) {
+        fd.append(
+          "line_items",
+          JSON.stringify(
+            lines.map((line) => ({
+              supplier_item_code: line.supplier_item_code.trim() || null,
+              description: line.description.trim(),
+              quantity: Number(line.quantity),
+              unit: line.unit.trim() || null,
+              unit_price_ex_gst:
+                line.unit_price_ex_gst === "" ? null : Number(line.unit_price_ex_gst),
+              amount_ex_gst: Number(line.amount_ex_gst),
+              gst: null,
+              amount_inc_gst: null,
+            }))
+          )
+        );
+      }
       const file = fileInput.current?.files?.[0];
       if (file) fd.append("file", file);
 
@@ -1141,6 +1245,9 @@ function UploadForm({
       setInvoiceNumber("");
       setInvoiceDate("");
       setAmount("");
+      setGst("");
+      setNotes("");
+      setLines([]);
       if (fileInput.current) fileInput.current.value = "";
       setOpen(false);
       onCreated();
@@ -1158,7 +1265,7 @@ function UploadForm({
         onClick={() => setOpen(true)}
         className="border border-nearblack px-5 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white"
       >
-        + Add invoice
+        + Enter manual invoice
       </button>
     );
   }
@@ -1166,7 +1273,12 @@ function UploadForm({
   return (
     <form onSubmit={submit} className="space-y-3 border border-[#dcd6cc] bg-offwhite p-4">
       <div className="flex items-center justify-between">
-        <p className="label-caps">New invoice</p>
+        <div>
+          <p className="label-caps">Manual supplier invoice</p>
+          <p className="mt-1 text-caption text-charcoal/55">
+            Enter the invoice exactly as issued. It will remain unapproved until you allocate and approve it.
+          </p>
+        </div>
         <button
           type="button"
           onClick={() => setOpen(false)}
@@ -1175,10 +1287,11 @@ function UploadForm({
           Cancel
         </button>
       </div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <label className="block">
           <p className="label-caps mb-1">Supplier</p>
           <input
+            required
             value={supplier}
             onChange={(e) => setSupplier(e.target.value)}
             className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
@@ -1187,6 +1300,7 @@ function UploadForm({
         <label className="block">
           <p className="label-caps mb-1">Invoice #</p>
           <input
+            required
             value={invoiceNumber}
             onChange={(e) => setInvoiceNumber(e.target.value)}
             className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
@@ -1195,33 +1309,172 @@ function UploadForm({
         <label className="block">
           <p className="label-caps mb-1">Date</p>
           <input
+            required
             type="date"
             value={invoiceDate}
             onChange={(e) => setInvoiceDate(e.target.value)}
             className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
           />
         </label>
+      </div>
+
+      <div className="space-y-3 border border-[#dcd6cc] bg-nearwhite p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="label-caps">Invoice line items</p>
+            <p className="mt-1 text-caption text-charcoal/55">
+              Optional, but recommended—each product can later be matched to a cost line, specification item or component.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={addLine}
+            className="border border-nearblack px-3 py-1.5 text-caption text-nearblack hover:bg-nearblack hover:text-white"
+          >
+            + Add line
+          </button>
+        </div>
+
+        {lines.length === 0 ? (
+          <p className="border border-dashed border-[#c9c2b4] p-3 text-caption text-charcoal/55">
+            No individual lines added. You can enter one invoice total below.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {lines.map((line, index) => (
+              <div key={line.key} className="grid grid-cols-12 gap-2 border-t border-[#e4ded3] pt-2 first:border-0 first:pt-0">
+                <input
+                  aria-label={`Line ${index + 1} code`}
+                  placeholder="SKU / code"
+                  value={line.supplier_item_code}
+                  onChange={(e) => updateLine(line.key, "supplier_item_code", e.target.value)}
+                  className="col-span-12 border border-[#c9c2b4] bg-white px-2 py-1.5 text-body sm:col-span-2"
+                />
+                <input
+                  required
+                  aria-label={`Line ${index + 1} description`}
+                  placeholder="Item description"
+                  value={line.description}
+                  onChange={(e) => updateLine(line.key, "description", e.target.value)}
+                  className="col-span-12 border border-[#c9c2b4] bg-white px-2 py-1.5 text-body sm:col-span-4"
+                />
+                <input
+                  required
+                  aria-label={`Line ${index + 1} quantity`}
+                  type="number"
+                  min="0.001"
+                  step="0.001"
+                  placeholder="Qty"
+                  value={line.quantity}
+                  onChange={(e) => updateLine(line.key, "quantity", e.target.value)}
+                  className="col-span-3 border border-[#c9c2b4] bg-white px-2 py-1.5 text-body sm:col-span-1"
+                />
+                <input
+                  aria-label={`Line ${index + 1} unit`}
+                  placeholder="Unit"
+                  value={line.unit}
+                  onChange={(e) => updateLine(line.key, "unit", e.target.value)}
+                  className="col-span-3 border border-[#c9c2b4] bg-white px-2 py-1.5 text-body sm:col-span-1"
+                />
+                <input
+                  aria-label={`Line ${index + 1} unit price ex GST`}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="Unit $ ex"
+                  value={line.unit_price_ex_gst}
+                  onChange={(e) => updateLine(line.key, "unit_price_ex_gst", e.target.value)}
+                  className="col-span-6 border border-[#c9c2b4] bg-white px-2 py-1.5 text-body sm:col-span-2"
+                />
+                <div className="col-span-10 flex items-center border border-[#c9c2b4] bg-white sm:col-span-2">
+                  <span className="px-2 text-caption text-charcoal/50">$</span>
+                  <input
+                    required
+                    aria-label={`Line ${index + 1} amount ex GST`}
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    placeholder="Line ex GST"
+                    value={line.amount_ex_gst}
+                    onChange={(e) => updateLine(line.key, "amount_ex_gst", e.target.value)}
+                    className="min-w-0 flex-1 bg-transparent py-1.5 pr-2 text-body focus:outline-none"
+                  />
+                </div>
+                <button
+                  type="button"
+                  aria-label={`Remove line ${index + 1}`}
+                  onClick={() => setLines((current) => current.filter((row) => row.key !== line.key))}
+                  className="col-span-2 text-caption text-red-700 sm:col-span-12 sm:justify-self-end"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <label className="block">
           <p className="label-caps mb-1">Amount ex GST</p>
           <input
+            required
             type="number"
+            min="0.01"
             step="0.01"
-            value={amount}
+            readOnly={lines.length > 0}
+            value={lines.length > 0 ? lineSubtotal : amount}
             onChange={(e) => setAmount(e.target.value)}
+            className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body read-only:bg-[#eee9df] focus:border-nearblack focus:outline-none"
+          />
+        </label>
+        <label className="block">
+          <p className="label-caps mb-1">GST</p>
+          <input
+            required
+            type="number"
+            min="0"
+            step="0.01"
+            value={gst === "" ? gstNum : gst}
+            onChange={(e) => setGst(e.target.value)}
             className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
           />
         </label>
+        <label className="block">
+          <p className="label-caps mb-1">Total inc GST</p>
+          <input
+            readOnly
+            value={totalNum.toFixed(2)}
+            className="w-full border border-[#c9c2b4] bg-[#eee9df] px-2 py-1.5 text-body"
+          />
+        </label>
       </div>
+
       <label className="block">
-        <p className="label-caps mb-1">PDF (optional)</p>
-        <input ref={fileInput} type="file" accept="application/pdf" className="text-body" />
+        <p className="label-caps mb-1">Notes (optional)</p>
+        <textarea
+          rows={2}
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="Project context, delivery details or anything needed for allocation"
+          className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
+        />
+      </label>
+      <label className="block">
+        <p className="label-caps mb-1">Invoice or receipt (optional)</p>
+        <input
+          ref={fileInput}
+          type="file"
+          accept="application/pdf,image/jpeg,image/png"
+          className="text-body"
+        />
       </label>
       <button
         type="submit"
         disabled={submitting}
         className="bg-nearblack px-5 py-2 text-subhead text-white transition-colors hover:bg-charcoal disabled:opacity-60"
       >
-        {submitting ? "Saving…" : "Add to queue"}
+        {submitting ? "Saving…" : "Save manual invoice"}
       </button>
     </form>
   );
