@@ -32,7 +32,7 @@ export async function POST(
 
   const { data: existing, error: fetchError } = await supabase
     .from("client_invoices")
-    .select("id,status,stripe_payment_link_id")
+    .select("id,status,stripe_payment_link_id,payment_schedule_item_id")
     .eq("id", id)
     .is("deleted_at", null)
     .maybeSingle();
@@ -53,6 +53,14 @@ export async function POST(
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  if (existing.payment_schedule_item_id) {
+    await supabase
+      .from("client_payment_schedule")
+      .update({ client_invoice_id: null })
+      .eq("id", existing.payment_schedule_item_id)
+      .eq("client_invoice_id", id);
+  }
 
   // A voided invoice must not stay payable at a still-live Stripe link
   // — see lib/client-invoices.ts's deactivateStripePaymentLink() for

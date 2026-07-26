@@ -192,6 +192,41 @@ const styles = StyleSheet.create({
   grandTotalLabel: { fontSize: 11, fontFamily: "Helvetica-Bold", color: NEARBLACK },
   grandTotalValue: { fontSize: 11, fontFamily: "Helvetica-Bold", color: NEARBLACK },
 
+  statement: {
+    marginTop: 24,
+    borderTopWidth: 1,
+    borderTopColor: NEARBLACK,
+    paddingTop: 12,
+  },
+  statementTitle: {
+    fontSize: 8,
+    fontFamily: "Helvetica-Bold",
+    letterSpacing: 2,
+    textTransform: "uppercase",
+    color: SAND,
+    marginBottom: 8,
+  },
+  statementRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    borderBottomWidth: 1,
+    borderBottomColor: LINE,
+    paddingVertical: 4,
+  },
+  statementLabel: { flex: 1, fontSize: 8.5, color: CHARCOAL, paddingRight: 12 },
+  statementDate: { width: 90, fontSize: 8, color: CHARCOAL },
+  statementAmount: { width: 86, textAlign: "right", fontSize: 8.5, color: CHARCOAL },
+  statementStrong: { fontFamily: "Helvetica-Bold", color: NEARBLACK },
+  statementSubhead: {
+    marginTop: 10,
+    marginBottom: 3,
+    fontSize: 7,
+    fontFamily: "Helvetica-Bold",
+    letterSpacing: 1.4,
+    textTransform: "uppercase",
+    color: SAND,
+  },
+
   // ── Payment panel ──
   paymentPanel: {
     marginTop: 32,
@@ -352,6 +387,100 @@ export function InvoicePdf({ invoice, bankDetails, dateLabel }: Props) {
           </View>
         </View>
 
+        {invoice.contract_snapshot?.original_contract_inc_gst !== undefined ? (
+          <View style={styles.statement}>
+            <Text style={styles.statementTitle}>Contract position</Text>
+            <View style={styles.statementRow}>
+              <Text style={styles.statementLabel}>
+                Original {invoice.contract_snapshot.contract_label ?? "contract package"}
+              </Text>
+              <Text style={styles.statementAmount}>
+                {formatMoney(invoice.contract_snapshot.original_contract_inc_gst ?? 0)}
+              </Text>
+            </View>
+
+            {(invoice.contract_snapshot.variations?.length ?? 0) > 0 ? (
+              <>
+                <Text style={styles.statementSubhead}>Approved variations - separate to contract</Text>
+                {invoice.contract_snapshot.variations?.map((variation) => (
+                  <View key={variation.id} style={styles.statementRow}>
+                    <Text style={styles.statementLabel}>
+                      Variation {variation.var_number} - {variation.description}
+                    </Text>
+                    <Text style={styles.statementAmount}>
+                      {formatMoney(variation.amount_inc_gst)}
+                    </Text>
+                  </View>
+                ))}
+              </>
+            ) : null}
+
+            <View style={styles.statementRow}>
+              <Text style={[styles.statementLabel, styles.statementStrong]}>Adjusted contract total</Text>
+              <Text style={[styles.statementAmount, styles.statementStrong]}>
+                {formatMoney(invoice.contract_snapshot.adjusted_contract_inc_gst ?? 0)}
+              </Text>
+            </View>
+
+            {(invoice.contract_snapshot.previous_payments?.length ?? 0) > 0 ? (
+              <>
+                <Text style={styles.statementSubhead}>Previous invoices and payments</Text>
+                {invoice.contract_snapshot.previous_payments?.map((payment) => (
+                  <View key={payment.id ?? payment.label} style={styles.statementRow}>
+                    <Text style={styles.statementLabel}>
+                      {payment.label}
+                      {payment.invoice_number ? ` - ${payment.invoice_number}` : ""}
+                    </Text>
+                    <Text style={styles.statementDate}>
+                      {payment.paid_at ? `Paid ${formatShortDate(payment.paid_at)}` : "Outstanding"}
+                    </Text>
+                    <Text style={styles.statementAmount}>{formatMoney(payment.amount_inc_gst)}</Text>
+                  </View>
+                ))}
+              </>
+            ) : null}
+
+            <Text style={styles.statementSubhead}>This invoice</Text>
+            <View style={styles.statementRow}>
+              <Text style={[styles.statementLabel, styles.statementStrong]}>
+                {invoice.contract_snapshot.current_claim?.label ?? invoice.line_items[0]?.description}
+              </Text>
+              <Text style={styles.statementDate}>
+                {invoice.contract_snapshot.current_claim?.paid_at
+                  ? `Paid ${formatShortDate(invoice.contract_snapshot.current_claim.paid_at)}`
+                  : "Current claim"}
+              </Text>
+              <Text style={[styles.statementAmount, styles.statementStrong]}>
+                {formatMoney(
+                  invoice.contract_snapshot.current_claim?.amount_inc_gst ?? invoice.total_inc_gst
+                )}
+              </Text>
+            </View>
+
+            {(invoice.contract_snapshot.future_payments?.length ?? 0) > 0 ? (
+              <>
+                <Text style={styles.statementSubhead}>Future package payments</Text>
+                {invoice.contract_snapshot.future_payments?.map((payment) => (
+                  <View key={payment.id ?? payment.label} style={styles.statementRow}>
+                    <Text style={styles.statementLabel}>{payment.label}</Text>
+                    <Text style={styles.statementDate}>Future</Text>
+                    <Text style={styles.statementAmount}>{formatMoney(payment.amount_inc_gst)}</Text>
+                  </View>
+                ))}
+              </>
+            ) : null}
+
+            <View style={styles.statementRow}>
+              <Text style={[styles.statementLabel, styles.statementStrong]}>
+                Remaining after this claim
+              </Text>
+              <Text style={[styles.statementAmount, styles.statementStrong]}>
+                {formatMoney(invoice.contract_snapshot.remaining_after_claim_inc_gst ?? 0)}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+
         <View style={styles.paymentPanel} wrap={false}>
           <Text style={styles.paymentTitle}>Payment — Direct Transfer</Text>
           {invoice.status === "paid" || invoice.status === "void" ? (
@@ -435,4 +564,12 @@ function formatMoney(value: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+function formatShortDate(value: string): string {
+  return new Date(value).toLocaleDateString("en-AU", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
 }

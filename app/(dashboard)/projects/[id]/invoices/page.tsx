@@ -80,11 +80,10 @@ export default async function ProjectInvoicesPage({
         <section>
           <h2 className="mb-1 text-subhead text-nearblack">Client invoices — money in</h2>
           <p className="mb-4 text-body text-charcoal/60">
-            Tax invoices RESLU raises against this client (design fees to start — phase 1).
-            Numbered off this project's job number, GST-compliant, emailed with the branded
-            PDF attached. Bank transfer is the standard payment method (Settings → Client
-            invoicing); an optional Stripe payment link can be added per invoice for small
-            amounts.
+            Package and progress-claim invoices against the signed design or construction
+            contract. Each invoice shows the full contract, previous payments and dates,
+            this claim, future payments and approved variations separately. Bank transfer
+            is standard; an optional Stripe link can be added per RESLU invoice.
           </p>
           <ClientInvoiceQueue
             projectId={id}
@@ -98,7 +97,7 @@ export default async function ProjectInvoicesPage({
         <section>
           <h2 className="mb-1 text-subhead text-nearblack">Supplier invoices — money out</h2>
           <p className="mb-4 text-body text-charcoal/60">
-            Trade/supplier bills against this project's estimate, matched to a cost line or
+            Trade/supplier bills against this project&apos;s estimate, matched to a cost line or
             spec item and approved before actuals update.
           </p>
           <InvoiceQueue projectId={id} />

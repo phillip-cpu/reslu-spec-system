@@ -17,6 +17,8 @@
 
 export type ClientInvoiceKind = "design_fee" | "other";
 export type ClientInvoiceStatus = "draft" | "sent" | "paid" | "void";
+export type ClientInvoiceSource = "reslu" | "manual";
+export type ClientContractType = "design" | "construction" | "other";
 
 /** One row of client_invoices.line_items (jsonb array). */
 export interface ClientInvoiceLineItem {
@@ -34,6 +36,9 @@ export interface ClientInvoice {
    * project_id. See that column's own migration comment. */
   lead_id?: string | null;
   invoice_number: string;
+  source?: ClientInvoiceSource;
+  payment_schedule_item_id?: string | null;
+  contract_snapshot?: ClientContractSnapshot;
   kind: ClientInvoiceKind;
   client_name: string;
   client_email: string | null;
@@ -58,6 +63,79 @@ export interface ClientInvoice {
 /** GET /api/projects/[id]/client-invoices response. */
 export interface ClientInvoicesListResponse {
   invoices: ClientInvoice[];
+  billing_profile: ClientBillingProfile | null;
+  payment_schedule: ClientPaymentScheduleItem[];
+  approved_variations: ClientApprovedVariation[];
+}
+
+export interface ClientBillingProfile {
+  project_id: string;
+  contract_type: ClientContractType;
+  contract_label: string;
+  contract_amount_inc_gst: number;
+  due_days: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ClientPaymentScheduleItem {
+  id: string;
+  project_id: string;
+  label: string;
+  percentage: number | null;
+  amount_inc_gst: number;
+  milestone_date: string | null;
+  sort: number;
+  client_invoice_id: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ClientApprovedVariation {
+  id: string;
+  var_number: number;
+  description: string;
+  amount_ex_gst: number;
+  amount_inc_gst: number;
+  approved_at?: string | null;
+}
+
+export interface ClientContractSnapshotEntry {
+  id?: string;
+  label: string;
+  amount_inc_gst: number;
+  invoice_number?: string | null;
+  issued_at?: string | null;
+  paid_at?: string | null;
+  status?: ClientInvoiceStatus | "planned";
+}
+
+export interface ClientContractSnapshot {
+  contract_type?: ClientContractType;
+  contract_label?: string;
+  original_contract_inc_gst?: number;
+  approved_variations_inc_gst?: number;
+  adjusted_contract_inc_gst?: number;
+  variations?: ClientApprovedVariation[];
+  previous_payments?: ClientContractSnapshotEntry[];
+  current_claim?: ClientContractSnapshotEntry | null;
+  future_payments?: ClientContractSnapshotEntry[];
+  remaining_after_claim_inc_gst?: number;
+}
+
+export interface SaveClientBillingInput {
+  contract_type: ClientContractType;
+  contract_label: string;
+  contract_amount_inc_gst: number;
+  due_days: number;
+  payment_schedule: Array<{
+    id?: string;
+    label: string;
+    percentage?: number | null;
+    amount_inc_gst: number;
+    milestone_date?: string | null;
+    sort: number;
+  }>;
 }
 
 /** GET /api/client-invoices/unlinked response — QA fix round (r27)
@@ -73,6 +151,12 @@ export interface UnlinkedClientInvoicesResponse {
 /** POST /api/projects/[id]/client-invoices body. Server computes
  * invoice_number + totals — never accepted from the client. */
 export interface CreateClientInvoiceInput {
+  source?: ClientInvoiceSource;
+  invoice_number?: string;
+  status?: Extract<ClientInvoiceStatus, "sent" | "paid">;
+  issued_at?: string;
+  paid_at?: string | null;
+  payment_schedule_item_id?: string | null;
   kind?: ClientInvoiceKind;
   client_name: string;
   client_email?: string | null;

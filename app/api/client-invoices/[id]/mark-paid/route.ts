@@ -31,7 +31,7 @@ export async function POST(
 
   const { data: existing, error: fetchError } = await supabase
     .from("client_invoices")
-    .select("id,status,stripe_payment_link_id")
+    .select("id,status,stripe_payment_link_id,payment_schedule_item_id,contract_snapshot")
     .eq("id", id)
     .is("deleted_at", null)
     .maybeSingle();
@@ -44,14 +44,31 @@ export async function POST(
     );
   }
 
+  const paidAt = new Date().toISOString();
+  const snapshot = (existing.contract_snapshot ?? {}) as Record<string, unknown>;
+  const currentClaim = (snapshot.current_claim ?? {}) as Record<string, unknown>;
   const { data: invoice, error } = await supabase
     .from("client_invoices")
-    .update({ status: "paid", paid_at: new Date().toISOString() })
+    .update({
+      status: "paid",
+      paid_at: paidAt,
+      contract_snapshot: {
+        ...snapshot,
+        current_claim: { ...currentClaim, status: "paid", paid_at: paidAt },
+      },
+    })
     .eq("id", id)
     .select()
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  if (existing.payment_schedule_item_id) {
+    await supabase
+      .from("client_payment_schedule")
+      .update({ client_invoice_id: id })
+      .eq("id", existing.payment_schedule_item_id);
+  }
 
   // Once marked paid (e.g. reconciled against a bank transfer), any
   // live Stripe link must not stay payable — otherwise a client could

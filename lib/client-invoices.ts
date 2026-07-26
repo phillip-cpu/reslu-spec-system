@@ -1,5 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { ClientInvoiceLineItem } from "@/types/client-invoices";
+import type {
+  ClientApprovedVariation,
+  ClientBillingProfile,
+  ClientContractSnapshot,
+  ClientInvoice,
+  ClientInvoiceLineItem,
+  ClientPaymentScheduleItem,
+} from "@/types/client-invoices";
 import { reportError } from "@/lib/report-error";
 
 // ============================================================
@@ -167,6 +174,69 @@ export function cleanLineItems(raw: unknown): ClientInvoiceLineItem[] | null {
     cleaned.push({ description, amount_ex_gst: roundHalfUpCents(amount) });
   }
   return cleaned;
+}
+
+/** Contract schedules are entered inclusive of GST, matching the signed
+ * RESLU agreements. Invoice storage remains ex-GST + GST, so the package
+ * claim is converted once on the server. */
+export function inclusiveToExclusive(amountIncGst: number): number {
+  return roundHalfUpCents(Number(amountIncGst) / 1.1);
+}
+
+export function buildContractSnapshot(input: {
+  profile: ClientBillingProfile;
+  schedule: ClientPaymentScheduleItem[];
+  variations: ClientApprovedVariation[];
+  invoices: ClientInvoice[];
+  currentScheduleItemId: string;
+  currentInvoice?: Pick<ClientInvoice, "invoice_number" | "issued_at" | "paid_at" | "status"> | null;
+}): ClientContractSnapshot {
+  const invoiceById = new Map(input.invoices.map((invoice) => [invoice.id, invoice]));
+  const currentIndex = input.schedule.findIndex((item) => item.id === input.currentScheduleItemId);
+  const current = currentIndex >= 0 ? input.schedule[currentIndex] : null;
+
+  const entryFor = (item: ClientPaymentScheduleItem) => {
+    const invoice = item.client_invoice_id ? invoiceById.get(item.client_invoice_id) : undefined;
+    const isCurrent = item.id === input.currentScheduleItemId;
+    const currentInvoice = isCurrent ? input.currentInvoice : null;
+    return {
+      id: item.id,
+      label: item.label,
+      amount_inc_gst: Number(item.amount_inc_gst),
+      invoice_number: currentInvoice?.invoice_number ?? invoice?.invoice_number ?? null,
+      issued_at: currentInvoice?.issued_at ?? invoice?.issued_at ?? null,
+      paid_at: currentInvoice?.paid_at ?? invoice?.paid_at ?? null,
+      status: currentInvoice?.status ?? invoice?.status ?? ("planned" as const),
+    };
+  };
+
+  const previous = input.schedule
+    .filter((item, index) => index < currentIndex && item.client_invoice_id)
+    .map(entryFor);
+  const future = input.schedule
+    .filter((item, index) => index > currentIndex && !item.client_invoice_id)
+    .map(entryFor);
+  const approvedVariationsInc = roundHalfUpCents(
+    input.variations.reduce((sum, variation) => sum + Number(variation.amount_inc_gst), 0)
+  );
+  const adjusted = roundHalfUpCents(
+    Number(input.profile.contract_amount_inc_gst) + approvedVariationsInc
+  );
+  const claimedBefore = previous.reduce((sum, entry) => sum + entry.amount_inc_gst, 0);
+  const currentAmount = current ? Number(current.amount_inc_gst) : 0;
+
+  return {
+    contract_type: input.profile.contract_type,
+    contract_label: input.profile.contract_label,
+    original_contract_inc_gst: Number(input.profile.contract_amount_inc_gst),
+    approved_variations_inc_gst: approvedVariationsInc,
+    adjusted_contract_inc_gst: adjusted,
+    variations: input.variations,
+    previous_payments: previous,
+    current_claim: current ? entryFor(current) : null,
+    future_payments: future,
+    remaining_after_claim_inc_gst: roundHalfUpCents(adjusted - claimedBefore - currentAmount),
+  };
 }
 
 /**
