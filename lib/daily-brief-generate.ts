@@ -132,7 +132,7 @@ export async function generateDailyBrief(
   // matched preset) grouping GET /api/my-work's own source #9 uses. ----
   const { data: unorderedItems } = await supabase
     .from("items")
-    .select("id,project_id,category,lead_time_weeks,ordered_at")
+    .select("id,project_id,category,lead_time_weeks,ordered_at,cost_scope")
     .is("deleted_at", null)
     .is("ordered_at", null);
   const itemRows = (unorderedItems ?? []) as OrderByItemInput[];

@@ -92,6 +92,7 @@ const EDITABLE_FIELDS = new Set([
   "supplier_contact_id",
   "brand",
   "quantity",
+  "cost_scope",
   "unit",
   "location",
   "application_note",
@@ -319,6 +320,17 @@ export async function PATCH(
         );
       }
       update.item_code = normalized;
+      continue;
+    }
+
+    if (key === "cost_scope") {
+      if (raw !== "direct" && raw !== "trade_package") {
+        return NextResponse.json(
+          { error: "cost_scope must be direct or trade_package" },
+          { status: 400 }
+        );
+      }
+      update.cost_scope = raw;
       continue;
     }
 

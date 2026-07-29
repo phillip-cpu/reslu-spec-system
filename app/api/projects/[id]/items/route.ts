@@ -35,6 +35,7 @@ const SPEC_VIEW_COLUMNS = [
   "supplier_email",
   "brand",
   "quantity",
+  "cost_scope",
   "unit",
   "location",
   "application_note",
@@ -275,6 +276,16 @@ export async function POST(
   if (!category?.trim()) {
     return NextResponse.json({ error: "category is required" }, { status: 400 });
   }
+  if (
+    body.cost_scope !== undefined &&
+    body.cost_scope !== "direct" &&
+    body.cost_scope !== "trade_package"
+  ) {
+    return NextResponse.json(
+      { error: "cost_scope must be direct or trade_package" },
+      { status: 400 }
+    );
+  }
 
   const pick = (bodyVal: string | undefined, libKey: string) =>
     bodyVal?.trim() || (libraryDefaults[libKey] as string | null) || null;
@@ -290,6 +301,7 @@ export async function POST(
       supplier_email: pick(body.supplier_email, "supplier_email"),
       brand: pick(body.brand, "brand"),
       quantity: toNum(body.quantity) ?? 1,
+      cost_scope: body.cost_scope ?? "direct",
       location: body.location?.trim() || null,
       application_note: body.application_note?.trim() || null,
       colour: pick(body.colour, "colour"),

@@ -54,7 +54,7 @@ export async function buildLiveSnapshot(
       .is("deleted_at", null),
     supabase
       .from("items")
-      .select("id, category, quantity, price_trade, price_rrp")
+      .select("id, category, quantity, price_trade, price_rrp, cost_scope")
       .eq("project_id", projectId)
       .is("deleted_at", null),
     supabase

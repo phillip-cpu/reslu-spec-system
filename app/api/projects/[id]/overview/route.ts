@@ -53,7 +53,7 @@ export async function GET(
   ] = await Promise.all([
     supabase
       .from("items")
-      .select("id, status, client_approved, client_flagged, category, quantity, price_trade, price_rrp")
+      .select("id, status, client_approved, client_flagged, category, quantity, price_trade, price_rrp, cost_scope")
       .eq("project_id", projectId)
       .is("deleted_at", null),
     supabase
@@ -95,6 +95,7 @@ export async function GET(
     approved_count: (items ?? []).filter((it) => it.client_approved).length,
     flagged_count: (items ?? []).filter((it) => it.client_flagged).length,
     ordered_count: (items ?? []).filter((it) =>
+      it.cost_scope !== "trade_package" &&
       ["Ordered", "On Site", "Installed"].includes(it.status)
     ).length,
   };
@@ -160,6 +161,7 @@ export async function GET(
         quantity: it.quantity,
         price_trade: it.price_trade,
         price_rrp: it.price_rrp,
+        cost_scope: it.cost_scope,
       }))
     );
     const wholeJob = wholeJobSummary(rollup, ffeForEstimate);

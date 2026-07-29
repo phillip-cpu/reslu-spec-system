@@ -32,6 +32,7 @@ function item(overrides: Partial<ProjectDataQualityInput["items"][number]> = {})
     category: "DR",
     name: "Sliding door",
     quantity: 1,
+    cost_scope: "direct" as const,
     status: "Specced",
     supplier: "Bone Timber",
     supplier_contact_id: null,
@@ -49,6 +50,42 @@ test("reports an empty register without inventing pricing coverage", () => {
   assert.equal(report.issues[0]?.code, "register_empty");
   assert.equal(report.pricing.total_items, 0);
   assert.equal(report.pricing.priced_item_pct, 0);
+});
+
+test("trade-package reference items do not create room, price or procurement warnings", () => {
+  const input = baseInput();
+  input.items = [
+    item({
+      cost_scope: "trade_package",
+      quantity: 0,
+      supplier: null,
+      price_trade: null,
+      price_rrp: null,
+      lead_time_weeks: null,
+    }),
+  ];
+  input.order_by = [
+    {
+      item_id: "item-1",
+      status: "overdue",
+      order_by: "2026-07-01",
+      works_date: "2026-07-10",
+    },
+  ];
+
+  const report = deriveProjectDataQuality(input);
+  const ignoredCodes = new Set([
+    "quantity_zero",
+    "room_missing",
+    "supplier_missing",
+    "price_missing",
+    "quoted_without_price",
+    "lead_time_missing",
+    "ordering_overdue",
+  ]);
+
+  assert.equal(report.pricing.total_items, 0);
+  assert.equal(report.issues.some((issue) => ignoredCodes.has(issue.code)), false);
 });
 
 test("separates item pricing coverage from quoted share of known value", () => {

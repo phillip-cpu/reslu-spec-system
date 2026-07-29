@@ -43,7 +43,7 @@ export async function loadProjectDataQuality(
       supabase
         .from("items")
         .select(
-          "id,item_code,category,name,quantity,status,supplier,supplier_contact_id,price_trade,price_rrp,lead_time_weeks,ordered_at,delivered_at"
+          "id,item_code,category,name,quantity,cost_scope,status,supplier,supplier_contact_id,price_trade,price_rrp,lead_time_weeks,ordered_at,delivered_at"
         )
         .eq("project_id", projectId)
         .is("deleted_at", null),
@@ -125,6 +125,7 @@ export async function loadProjectDataQuality(
     category: item.category,
     lead_time_weeks: item.lead_time_weeks,
     ordered_at: item.ordered_at,
+    cost_scope: item.cost_scope,
   }));
   const presets = resolveExportPresets(presetResult.data?.value);
   const orderBy = deriveOrderBy(

@@ -75,6 +75,7 @@ interface Props {
 
 /** Client sell price = trade × (1 + markup%). Null if no trade price. */
 function clientPrice(item: Item): number | null {
+  if (item.cost_scope === "trade_package") return null;
   if (item.price_trade === null || item.price_trade === undefined) return null;
   return item.price_trade * (1 + (item.markup_pct ?? 0) / 100);
 }
@@ -93,6 +94,7 @@ function lineTotal(item: Item, qtyOverride?: number): number | null {
 }
 
 function tradeTotal(item: Item, qtyOverride?: number): number | null {
+  if (item.cost_scope === "trade_package") return null;
   if (item.price_trade === null || item.price_trade === undefined) return null;
   return item.price_trade * (qtyOverride ?? item.quantity);
 }
@@ -136,6 +138,7 @@ type Risk = { label: string; tone: "late" | "risk" } | null;
  * executing environment's own clock happens to be in.
  */
 function riskFlag(item: Item): Risk {
+  if (item.cost_scope === "trade_package") return null;
   if (item.delivered_at || item.status === "Installed") return null;
   if (!item.eta) return null;
   const parseUTC = (dateStr: string) => {
@@ -477,6 +480,7 @@ export function ProcurementView({
   }, [items, sortedCategories, categoryName, measurementsById]);
 
   const totals = useMemo(() => {
+    const directItems = items.filter((item) => item.cost_scope !== "trade_package");
     const sell = items.reduce(
       (s, it) => s + (lineTotal(it, resolvedQuantity(it as ItemWithQtyLink, measurementsById)) ?? 0),
       0
@@ -491,7 +495,8 @@ export function ProcurementView({
       margin: sell - cost,
       gst: sell * GST_RATE,
       incGst: sell * (1 + GST_RATE),
-      priced: items.filter((it) => it.price_trade !== null).length,
+      priced: directItems.filter((it) => it.price_trade !== null).length,
+      directCount: directItems.length,
     };
   }, [items, measurementsById]);
 
@@ -529,7 +534,7 @@ export function ProcurementView({
         />
         <Stat
           label="Items priced"
-          value={`${totals.priced} / ${items.length}`}
+          value={`${totals.priced} / ${totals.directCount}`}
         />
         <Stat label="Line items" value={String(items.length)} />
       </div>
@@ -569,6 +574,7 @@ export function ProcurementView({
                   const risk = riskFlag(item);
                   const itemComponents = componentsByItem.get(item.id) ?? [];
                   const isAssembly = itemComponents.length > 0;
+                  const packageIncluded = item.cost_scope === "trade_package";
                   return (
                     <Fragment key={item.id}>
                       <tr
@@ -591,6 +597,11 @@ export function ProcurementView({
                       </td>
                       <td className="max-w-[240px] px-2 py-1.5 text-body">
                         <span className="block truncate">{item.name}</span>
+                        {packageIncluded && (
+                          <span className="mt-0.5 block text-caption uppercase tracking-wide text-sand">
+                            Included in trade package
+                          </span>
+                        )}
                         {isAdmin && (
                           <button
                             type="button"
@@ -625,7 +636,9 @@ export function ProcurementView({
                         />
                       </td>
                       <td className="px-2 py-1">
-                        {isAssembly ? (
+                        {packageIncluded ? (
+                          <span className="block text-right text-body text-charcoal/40">Included</span>
+                        ) : isAssembly ? (
                           <div className="text-right">
                             <span className="text-body text-nearblack">{money(item.price_trade)}</span>
                             <span className="block text-caption text-sand">from parts</span>
@@ -638,20 +651,28 @@ export function ProcurementView({
                         )}
                       </td>
                       <td className="px-2 py-1">
-                        <NumCell
-                          value={item.markup_pct}
-                          width="w-20"
-                          onCommit={(v) => onPatch(item.id, { markup_pct: v })}
-                        />
+                        {packageIncluded ? (
+                          <span className="block text-right text-body text-charcoal/40">—</span>
+                        ) : (
+                          <NumCell
+                            value={item.markup_pct}
+                            width="w-20"
+                            onCommit={(v) => onPatch(item.id, { markup_pct: v })}
+                          />
+                        )}
                       </td>
                       <td className="px-2 py-1.5 text-right text-body text-charcoal/70">
-                        {money(clientPrice(item))}
+                        {packageIncluded ? "—" : money(clientPrice(item))}
                       </td>
                       <td className="px-2 py-1.5 text-right text-body text-nearblack">
-                        {money(lineTotal(item, resolvedQuantity(item as ItemWithQtyLink, measurementsById)))}
+                        {packageIncluded
+                          ? "—"
+                          : money(lineTotal(item, resolvedQuantity(item as ItemWithQtyLink, measurementsById)))}
                       </td>
                       <td className="px-2 py-1">
-                        {isAssembly ? (
+                        {packageIncluded ? (
+                          <span className="block text-right text-body text-charcoal/40">—</span>
+                        ) : isAssembly ? (
                           <span className="block text-right text-body text-charcoal/70">
                             {item.lead_time_weeks ?? "—"}
                           </span>
@@ -666,7 +687,9 @@ export function ProcurementView({
                         )}
                       </td>
                       <td className="px-2 py-1">
-                        {isAssembly ? (
+                        {packageIncluded ? (
+                          <span className="text-body text-charcoal/40">—</span>
+                        ) : isAssembly ? (
                           <span className="text-body text-charcoal/70">{item.ordered_at ?? "—"}</span>
                         ) : (
                           <DateCell
@@ -676,7 +699,9 @@ export function ProcurementView({
                         )}
                       </td>
                       <td className="px-2 py-1">
-                        {isAssembly ? (
+                        {packageIncluded ? (
+                          <span className="text-body text-charcoal/40">—</span>
+                        ) : isAssembly ? (
                           <span className="text-body text-charcoal/70">{item.eta ?? "—"}</span>
                         ) : (
                           <DateCell
@@ -686,7 +711,9 @@ export function ProcurementView({
                         )}
                       </td>
                       <td className="px-2 py-1">
-                        {isAssembly ? (
+                        {packageIncluded ? (
+                          <span className="text-body text-charcoal/40">—</span>
+                        ) : isAssembly ? (
                           <span className="text-body text-charcoal/70">
                             {item.delivered_at ?? "—"}
                           </span>
@@ -698,10 +725,14 @@ export function ProcurementView({
                         )}
                       </td>
                       <td className="px-2 py-1.5">
-                        <OrderByCell
-                          row={orderByRowById.get(item.id)}
-                          missingLeadTime={missingLeadTimeIds.has(item.id)}
-                        />
+                        {packageIncluded ? (
+                          <span className="block text-right text-body text-charcoal/40">—</span>
+                        ) : (
+                          <OrderByCell
+                            row={orderByRowById.get(item.id)}
+                            missingLeadTime={missingLeadTimeIds.has(item.id)}
+                          />
+                        )}
                       </td>
                       <td className="px-2 py-1">
                         <select

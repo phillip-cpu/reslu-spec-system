@@ -80,6 +80,7 @@ export async function GET(
           .from("items")
           .select("item_code, name, quantity, price_trade, price_rrp")
           .eq("project_id", projectId)
+          .neq("cost_scope", "trade_package")
           .is("deleted_at", null)
       : Promise.resolve({ data: null }),
     bParam === "current"
@@ -87,6 +88,7 @@ export async function GET(
           .from("items")
           .select("item_code, name, quantity, price_trade, price_rrp")
           .eq("project_id", projectId)
+          .neq("cost_scope", "trade_package")
           .is("deleted_at", null)
       : Promise.resolve({ data: null }),
   ]);

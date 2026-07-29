@@ -363,6 +363,7 @@ export interface FfeItemInput {
   quantity: number;
   price_trade: number | null;
   price_rrp: number | null;
+  cost_scope?: "direct" | "trade_package";
   /**
    * Round B additive — takeoff → FF&E quantity link (migration 027:
    * items.measurement_id/wastage_pct/coverage_per_unit). All three are
@@ -494,6 +495,9 @@ export function ffeRollup(
 ): FfeRollup {
   const byCategory = new Map<string, FfeItemInput[]>();
   for (const item of items) {
+    // Reference selections remain in the schedule, but their price and
+    // procurement are already carried by another trade package.
+    if (item.cost_scope === "trade_package") continue;
     const list = byCategory.get(item.category);
     if (list) list.push(item);
     else byCategory.set(item.category, [item]);

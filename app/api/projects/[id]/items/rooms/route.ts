@@ -114,7 +114,13 @@ export async function POST(
 
   // Validate ownership: only item/room ids that belong to this project.
   const [{ data: validItems }, { data: validRooms }] = await Promise.all([
-    supabase.from("items").select("id").eq("project_id", projectId).is("deleted_at", null).in("id", itemIds),
+    supabase
+      .from("items")
+      .select("id")
+      .eq("project_id", projectId)
+      .neq("cost_scope", "trade_package")
+      .is("deleted_at", null)
+      .in("id", itemIds),
     supabase.from("rooms").select("id").eq("project_id", projectId).is("deleted_at", null).in("id", roomIds),
   ]);
   const okItemIds = (validItems ?? []).map((i) => i.id);

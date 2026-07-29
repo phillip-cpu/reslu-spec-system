@@ -81,6 +81,7 @@ const PDF_ITEM_FIELDS = [
   "supplier",
   "brand",
   "quantity",
+  "cost_scope",
   "unit",
   "location",
   "application_note",

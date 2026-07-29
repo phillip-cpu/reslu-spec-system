@@ -611,7 +611,14 @@ function ItemRow({
           />
         </td>
         <td className="w-16 px-0 py-0">
-          {roomQty !== null ? (
+          {item.cost_scope === "trade_package" ? (
+            <div
+              className="px-2 py-1.5 text-center text-caption uppercase tracking-wide text-sand"
+              title="Shown in the schedule; included within another trade's package"
+            >
+              Included
+            </div>
+          ) : roomQty !== null ? (
             // Room grouping: show this item's per-room quantity (edit it in
             // the row's Rooms editor, not here — this is the room total).
             <div className="px-2 py-1.5 text-right text-body text-nearblack" title="Quantity in this room">
@@ -660,15 +667,44 @@ function ItemRow({
           <td />
           <td colSpan={9} className="px-2 py-4">
             <div className="mb-4 border-b border-[#e5e0d6] pb-4">
-              <ItemRoomsEditor
-                projectId={projectId}
-                itemId={item.id}
-                itemQuantity={item.quantity}
-                rooms={rooms}
-                allocations={itemAllocations}
-                onChanged={onRoomsChanged}
-                onError={onError}
-              />
+              <label className="label-caps mb-2 block">Costing & procurement</label>
+              <select
+                value={item.cost_scope ?? "direct"}
+                onChange={(event) =>
+                  onPatch({
+                    cost_scope: event.target.value as Item["cost_scope"],
+                  })
+                }
+                className="border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body text-nearblack focus:border-nearblack focus:outline-none"
+              >
+                <option value="direct">Direct project item</option>
+                <option value="trade_package">Included in trade package</option>
+              </select>
+              <p className="mt-2 max-w-2xl text-caption text-charcoal/60">
+                {item.cost_scope === "trade_package"
+                  ? "This selection stays in the schedule for documentation, but does not require a room, separate cost, supplier, lead time or ordering."
+                  : "This item is separately assigned, costed and procured for the project."}
+              </p>
+            </div>
+            <div className="mb-4 border-b border-[#e5e0d6] pb-4">
+              {item.cost_scope === "trade_package" ? (
+                <div>
+                  <p className="label-caps !text-sand">Included in trade package</p>
+                  <p className="mt-1 text-body text-charcoal/60">
+                    This reference item is not assigned to a room.
+                  </p>
+                </div>
+              ) : (
+                <ItemRoomsEditor
+                  projectId={projectId}
+                  itemId={item.id}
+                  itemQuantity={item.quantity}
+                  rooms={rooms}
+                  allocations={itemAllocations}
+                  onChanged={onRoomsChanged}
+                  onError={onError}
+                />
+              )}
             </div>
             <div className="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
               <DetailField label="Application note">
@@ -1088,6 +1124,7 @@ function AddItemForm({
   const [category, setCategory] = useState(categories[0]?.prefix ?? "");
   const [location, setLocation] = useState("");
   const [quantity, setQuantity] = useState("1");
+  const [costScope, setCostScope] = useState<Item["cost_scope"]>("direct");
   const [productUrl, setProductUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -1134,6 +1171,7 @@ function AddItemForm({
           category,
           location: location.trim() || undefined,
           quantity: Number(quantity) || 1,
+          cost_scope: costScope,
           product_url: productUrl.trim() || undefined,
           library_item_id: libraryItemId ?? undefined,
         }),
@@ -1157,6 +1195,7 @@ function AddItemForm({
       setName("");
       setLocation("");
       setQuantity("1");
+      setCostScope("direct");
       setProductUrl("");
       setDuplicates([]);
       setLibraryItemId(null);
@@ -1248,12 +1287,28 @@ function AddItemForm({
         </select>
       </div>
       <div>
+        <label className="label-caps mb-1 block">Costing</label>
+        <select
+          value={costScope}
+          onChange={(event) => {
+            const next = event.target.value as Item["cost_scope"];
+            setCostScope(next);
+            if (next === "trade_package") setLocation("");
+          }}
+          className="border border-[#c9c2b4] bg-nearwhite px-2 py-2 text-body focus:border-nearblack focus:outline-none"
+        >
+          <option value="direct">Direct item</option>
+          <option value="trade_package">Included in trade package</option>
+        </select>
+      </div>
+      <div>
         <label className="label-caps mb-1 block">Location</label>
         <input
           value={location}
           onChange={(e) => setLocation(e.target.value)}
+          disabled={costScope === "trade_package"}
           placeholder="e.g. Ensuite"
-          className="w-36 border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none"
+          className="w-36 border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none disabled:opacity-40"
         />
       </div>
       <div>
@@ -1275,8 +1330,9 @@ function AddItemForm({
         {submitting ? "Adding…" : "Add"}
       </button>
       <p className="w-full text-caption text-charcoal/40">
-        The item code (e.g. {category || "TW"}-01) is generated automatically per
-        project.
+        {costScope === "trade_package"
+          ? "This item will appear in the schedule but will not require a room, separate cost or ordering."
+          : `The item code (e.g. ${category || "TW"}-01) is generated automatically per project.`}
       </p>
     </form>
   );

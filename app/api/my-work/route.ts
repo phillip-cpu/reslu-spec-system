@@ -517,7 +517,7 @@ export async function GET() {
   if (isAdmin) {
     const { data: unorderedItems } = await supabase
       .from("items")
-      .select("id,project_id,category,lead_time_weeks,ordered_at")
+      .select("id,project_id,category,lead_time_weeks,ordered_at,cost_scope")
       .is("deleted_at", null)
       .is("ordered_at", null);
 

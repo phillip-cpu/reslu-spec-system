@@ -27,6 +27,7 @@ const SCRAPE_RESULT_COLUMNS = [
   "supplier_email",
   "brand",
   "quantity",
+  "cost_scope",
   "unit",
   "location",
   "application_note",

@@ -279,6 +279,7 @@ export async function POST(
         .from("items")
         .select("id")
         .eq("project_id", projectId)
+        .neq("cost_scope", "trade_package")
         .is("deleted_at", null)
         .in("id", itemIds);
       if ((targets ?? []).length !== new Set(itemIds).size) {
@@ -290,6 +291,7 @@ export async function POST(
         .from("item_components")
         .select("id,items!inner(project_id)")
         .eq("items.project_id", projectId)
+        .neq("items.cost_scope", "trade_package")
         .is("deleted_at", null)
         .in("id", componentIds);
       if ((targets ?? []).length !== new Set(componentIds).size) {

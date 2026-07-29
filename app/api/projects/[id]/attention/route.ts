@@ -56,7 +56,7 @@ export async function GET(
   const [{ data: itemRows, error: itemsError }, { data: presetSetting }] = await Promise.all([
     supabase
       .from("items")
-      .select("id,project_id,item_code,name,category,lead_time_weeks,ordered_at")
+      .select("id,project_id,item_code,name,category,lead_time_weeks,ordered_at,cost_scope")
       .eq("project_id", projectId)
       .is("deleted_at", null)
       .is("ordered_at", null),

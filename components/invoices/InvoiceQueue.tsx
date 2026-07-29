@@ -681,9 +681,17 @@ function AllocationEditor({
     ])
       .then(([estimateBody, itemsBody, componentsBody]) => {
         if (cancelled) return;
+        const directItems = (itemsBody.items ?? []).filter(
+          (item: Item) => item.cost_scope !== "trade_package"
+        );
+        const directItemIds = new Set(directItems.map((item: Item) => item.id));
         setSections(estimateBody.sections ?? []);
-        setItems(itemsBody.items ?? []);
-        setComponents(componentsBody.components ?? []);
+        setItems(directItems);
+        setComponents(
+          (componentsBody.components ?? []).filter((component: ItemComponent) =>
+            directItemIds.has(component.item_id)
+          )
+        );
       })
       .catch(() => {})
       .finally(() => !cancelled && setLoading(false));

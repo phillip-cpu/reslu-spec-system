@@ -57,7 +57,7 @@
 // ------------------------------------------------------------
 
 import type { ExportPresetRow } from "@/types/round-export-batch";
-import { pickPresetForContactCategory } from "@/lib/export-presets";
+import { pickPresetForContactCategory } from "./export-presets.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -79,6 +79,7 @@ export interface OrderByItemInput {
   category: string; // references categories(prefix), e.g. "TW"
   lead_time_weeks: number | null;
   ordered_at: string | null; // date-only, null = not yet ordered
+  cost_scope?: "direct" | "trade_package";
 }
 
 /** The subset of a `contacts` row this module needs. */
@@ -373,6 +374,7 @@ export function deriveOrderBy(
   const results: OrderByResult[] = [];
 
   for (const item of items) {
+    if (item.cost_scope === "trade_package") continue;
     if (item.ordered_at) continue; // already ordered — out of scope entirely, per spec.
 
     const coveringPresets = coveringPresetsFor(item.category);
@@ -448,6 +450,7 @@ export interface MissingLeadTimeItem {
 export function missingLeadTimes(items: OrderByItemInput[]): MissingLeadTimeItem[] {
   const results: MissingLeadTimeItem[] = [];
   for (const item of items) {
+    if (item.cost_scope === "trade_package") continue;
     if (item.ordered_at) continue;
     if (item.lead_time_weeks === null || item.lead_time_weeks === undefined) {
       results.push({ item_id: item.id, project_id: item.project_id });

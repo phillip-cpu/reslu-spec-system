@@ -50,7 +50,7 @@ export const metadata: Metadata = {
 };
 
 const PORTAL_FIELDS =
-  "id,item_code,name,description,supplier,quantity,location,status,selected_image_url,client_approved,client_flagged,client_flag_note,decision_needed_by";
+  "id,item_code,name,description,supplier,quantity,cost_scope,location,status,selected_image_url,client_approved,client_flagged,client_flag_note,decision_needed_by";
 
 const SIGNED_URL_TTL_SECONDS = 60 * 60;
 

@@ -88,7 +88,7 @@ export async function GET(
     supabase
       .from("items")
       .select(
-        "id, category, quantity, price_trade, price_rrp, measurement_id, wastage_pct, coverage_per_unit"
+        "id, category, quantity, price_trade, price_rrp, cost_scope, measurement_id, wastage_pct, coverage_per_unit"
       )
       .eq("project_id", projectId)
       .is("deleted_at", null),

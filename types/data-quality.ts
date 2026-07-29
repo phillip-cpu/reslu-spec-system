@@ -84,6 +84,7 @@ export interface DataQualityItemInput {
   category: string;
   name: string;
   quantity: number;
+  cost_scope?: "direct" | "trade_package";
   status: string;
   supplier: string | null;
   supplier_contact_id: string | null;

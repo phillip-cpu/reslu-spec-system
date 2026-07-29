@@ -54,6 +54,10 @@ function effectivePrice(item: DataQualityItemInput): { value: number | null; quo
   return { value: null, quoted: false };
 }
 
+function requiresDirectCost(item: DataQualityItemInput): boolean {
+  return item.cost_scope !== "trade_package";
+}
+
 function percent(part: number, whole: number): number {
   return whole > 0 ? Math.round((part / whole) * 100) : 0;
 }
@@ -63,13 +67,14 @@ function roundMoney(value: number): number {
 }
 
 function pricingCoverage(items: DataQualityItemInput[]): ProjectPricingCoverage {
+  const directItems = items.filter(requiresDirectCost);
   let pricedItems = 0;
   let quotedItems = 0;
   let placeholderItems = 0;
   let knownValue = 0;
   let quotedValue = 0;
 
-  for (const item of items) {
+  for (const item of directItems) {
     const price = effectivePrice(item);
     if (price.value === null) continue;
     pricedItems += 1;
@@ -84,12 +89,12 @@ function pricingCoverage(items: DataQualityItemInput[]): ProjectPricingCoverage 
   }
 
   return {
-    total_items: items.length,
+    total_items: directItems.length,
     priced_items: pricedItems,
-    priced_item_pct: percent(pricedItems, items.length),
+    priced_item_pct: percent(pricedItems, directItems.length),
     quoted_items: quotedItems,
     placeholder_items: placeholderItems,
-    unpriced_items: items.length - pricedItems,
+    unpriced_items: directItems.length - pricedItems,
     known_value_ex_gst: roundMoney(knownValue),
     quoted_value_ex_gst: roundMoney(quotedValue),
     // Deliberately labelled as the share of KNOWN value, not total
@@ -184,6 +189,7 @@ export function deriveProjectDataQuality(input: ProjectDataQualityInput): Projec
   const seeds: IssueSeed[] = [];
   const roomItemIds = new Set(input.room_item_ids);
   const itemById = new Map(items.map((item) => [item.id, item]));
+  const directItems = items.filter(requiresDirectCost);
   const columnNameById = new Map(input.columns.map((column) => [column.id, column.name.trim().toLowerCase()]));
 
   if (items.length === 0) {
@@ -197,7 +203,7 @@ export function deriveProjectDataQuality(input: ProjectDataQualityInput): Projec
     });
   }
 
-  const zeroQuantity = items.filter((item) => !Number.isFinite(item.quantity) || item.quantity <= 0);
+  const zeroQuantity = directItems.filter((item) => !Number.isFinite(item.quantity) || item.quantity <= 0);
   seeds.push({
     code: "quantity_zero",
     severity: "critical",
@@ -207,7 +213,7 @@ export function deriveProjectDataQuality(input: ProjectDataQualityInput): Projec
     entities: zeroQuantity.map(itemRef),
   });
 
-  const missingRoom = items.filter((item) => !roomItemIds.has(item.id));
+  const missingRoom = directItems.filter((item) => !roomItemIds.has(item.id));
   seeds.push({
     code: "room_missing",
     severity: "warning",
@@ -217,7 +223,7 @@ export function deriveProjectDataQuality(input: ProjectDataQualityInput): Projec
     entities: missingRoom.map(itemRef),
   });
 
-  const missingSupplier = items.filter(
+  const missingSupplier = directItems.filter(
     (item) => !item.supplier?.trim() && !item.supplier_contact_id
   );
   seeds.push({
@@ -259,7 +265,7 @@ export function deriveProjectDataQuality(input: ProjectDataQualityInput): Projec
     entities: duplicateCodes.map(itemRef),
   });
 
-  const unpriced = items.filter((item) => effectivePrice(item).value === null);
+  const unpriced = directItems.filter((item) => effectivePrice(item).value === null);
   seeds.push({
     code: "price_missing",
     severity: "warning",
@@ -269,7 +275,7 @@ export function deriveProjectDataQuality(input: ProjectDataQualityInput): Projec
     entities: unpriced.map(itemRef),
   });
 
-  const quotedWithoutPrice = items.filter(
+  const quotedWithoutPrice = directItems.filter(
     (item) => ["Quoted", "Ordered", "On Site", "Installed"].includes(item.status) && effectivePrice(item).value === null
   );
   seeds.push({
@@ -281,7 +287,7 @@ export function deriveProjectDataQuality(input: ProjectDataQualityInput): Projec
     entities: quotedWithoutPrice.map(itemRef),
   });
 
-  const missingLeadTime = items.filter(
+  const missingLeadTime = directItems.filter(
     (item) => !item.ordered_at && !["Ordered", "On Site", "Installed"].includes(item.status) && !isPositive(item.lead_time_weeks)
   );
   seeds.push({
@@ -296,7 +302,10 @@ export function deriveProjectDataQuality(input: ProjectDataQualityInput): Projec
   const orderingOverdue = orderBy
     .filter((row) => row.status === "overdue")
     .map((row) => itemById.get(row.item_id))
-    .filter((item): item is DataQualityItemInput => Boolean(item));
+    .filter(
+      (item): item is DataQualityItemInput =>
+        Boolean(item) && requiresDirectCost(item as DataQualityItemInput)
+    );
   seeds.push({
     code: "ordering_overdue",
     severity: "critical",
@@ -309,7 +318,10 @@ export function deriveProjectDataQuality(input: ProjectDataQualityInput): Projec
   const orderingDueSoon = orderBy
     .filter((row) => row.status === "due_soon")
     .map((row) => itemById.get(row.item_id))
-    .filter((item): item is DataQualityItemInput => Boolean(item));
+    .filter(
+      (item): item is DataQualityItemInput =>
+        Boolean(item) && requiresDirectCost(item as DataQualityItemInput)
+    );
   seeds.push({
     code: "ordering_due_soon",
     severity: "warning",
@@ -319,7 +331,7 @@ export function deriveProjectDataQuality(input: ProjectDataQualityInput): Projec
     entities: orderingDueSoon.map(itemRef),
   });
 
-  const statusDateConflict = items.filter((item) => {
+  const statusDateConflict = directItems.filter((item) => {
     const advanced = ["Ordered", "On Site", "Installed"].includes(item.status);
     const early = ["Specced", "Quoted"].includes(item.status);
     return (advanced && !item.ordered_at) || (early && Boolean(item.ordered_at)) || (item.delivered_at && !["On Site", "Installed"].includes(item.status));

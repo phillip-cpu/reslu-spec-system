@@ -412,7 +412,11 @@ export function SchedulePdf({
                         <Text style={styles.specLine}>{specLine}</Text>
                       ) : null}
                       {dims ? <Text style={styles.specLine}>{dims}</Text> : null}
-                      <Text style={styles.qtyLine}>QTY {trimNum(item.quantity)}</Text>
+                      <Text style={styles.qtyLine}>
+                        {item.cost_scope === "trade_package"
+                          ? "INCLUDED IN TRADE PACKAGE"
+                          : `QTY ${trimNum(item.quantity)}`}
+                      </Text>
                       {item.hasDocs ? (
                         <Text style={styles.docsLine}>
                           Docs: spec sheet available in portal

@@ -125,6 +125,7 @@ export interface LibraryItem {
 }
 
 export type ItemStatus = "Specced" | "Quoted" | "Ordered" | "On Site" | "Installed";
+export type ItemCostScope = "direct" | "trade_package";
 
 export type ScrapeStatus = "pending" | "success" | "partial" | "failed" | "vision" | "skipped";
 
@@ -150,6 +151,8 @@ export interface Item {
   brand: string | null;
   quantity: number;
   unit: string;
+  /** Whether this is directly costed/procured or documented within another trade's package. */
+  cost_scope: ItemCostScope;
 
   // Location / application
   location: string | null;
@@ -234,6 +237,7 @@ export interface PortalItem {
   description: string | null;
   supplier: string | null;
   quantity: number;
+  cost_scope: ItemCostScope;
   location: string | null;
   status: ItemStatus;
   selected_image_url: string | null;
@@ -297,6 +301,7 @@ export interface CreateItemInput {
   name: string;
   category: string;
   quantity?: number;
+  cost_scope?: ItemCostScope;
   supplier?: string;
   supplier_email?: string;
   brand?: string;

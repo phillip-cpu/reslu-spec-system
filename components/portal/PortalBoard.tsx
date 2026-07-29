@@ -138,7 +138,11 @@ export function PortalBoard({ token, initialItems }: Props) {
                   )}
                   <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-body text-charcoal/60">
                     {item.supplier && <span>{item.supplier}</span>}
-                    <span>Qty {item.quantity}</span>
+                    <span>
+                      {item.cost_scope === "trade_package"
+                        ? "Included in trade package"
+                        : `Qty ${item.quantity}`}
+                    </span>
                     <span>{item.status}</span>
                   </div>
 
