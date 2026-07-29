@@ -1,6 +1,7 @@
 import { PDFDocument } from "pdf-lib";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { callClaude, type ClaudeContentBlock, type ClaudeTool } from "@/lib/second-brain/claude";
+import { buildExtractedAttachmentTextBlocks } from "@/lib/second-brain/attachment-context";
 import { ASSET_BUCKET } from "@/lib/storage";
 
 /**
@@ -32,11 +33,12 @@ const EXTRACTION_SYSTEM_PROMPT = `You are the extraction step for RESLU, an inte
 Extract every price fact, lead-time fact, job/project mention, item/product mention, requested action, and supplier invoice candidate you can find, following the exact schema given by the extract_email tool. Rules:
 
 - EVERY fact (price_facts, lead_time_facts, job_mentions, item_mentions, actions_requested) MUST carry a source_quote — an EXACT, VERBATIM substring copied character-for-character from the email body text or from an attachment. Do not paraphrase, summarise, or reconstruct a quote from memory — copy it directly. A fact with no genuine verbatim quote to point to should not be included at all.
-- If an attachment is included, ALSO transcribe the relevant text/prices/lead-times you can read from it into attachment_transcriptions, one entry per attachment you were given (identified by the attachment_id provided), so that facts sourced from that attachment can have a source_quote that matches something on record. Transcribe accurately — this transcription itself becomes the "source of truth" your own source_quotes for that attachment will be checked against.
+- Attachments may arrive in two forms. An <attachment_text> block is text already recovered from a PDF by pdftotext/OCR: read it as primary source evidence and copy source_quote values verbatim from it, but do NOT add it to attachment_transcriptions because it is already stored. A binary <attachment> image/PDF is a vision attachment: transcribe the relevant text/prices/lead-times into attachment_transcriptions, one entry per binary attachment (identified by attachment_id), so facts sourced from it can be verified later.
 - Never invent a project/job name, item name, price, or lead time that isn't genuinely present in the text or attachment. If nothing extractable is present, return empty arrays — do not force a fact to justify calling the tool.
 - confidence is your overall confidence (0.0-1.0) in this extraction as a whole, not per-fact.
 - Currency defaults to AUD unless the text says otherwise. gst_inclusive should be your best read of whether the stated price includes GST — if genuinely ambiguous, use null rather than guessing.
 - When the message or attachment is an invoice, tax invoice, credit note, or payment request issued by a supplier/trade, populate supplier_invoice. This is only a review candidate: never infer that it is approved or paid. Do not also turn the invoice total into a price_fact; price_facts are product/service price intelligence, while supplier_invoice records the financial document itself.
+- A delivery or pickup address is evidence about where goods moved, not necessarily which project should bear the cost. In particular, delivery to RESLU Studio must not be treated as proof that the purchase is a Reslu Studio overhead. Preserve the address or customer job reference in job_hints, but do not invent a project assignment when the invoice has no reliable job name, job number, or other project evidence.
 
 Call the extract_email tool exactly once.`;
 
@@ -173,6 +175,8 @@ export type ExtractionAttachment = {
   filename: string | null;
   mime: string | null;
   storage_ref: string | null;
+  extracted_text: string | null;
+  extraction_method: string | null;
   needs_vision: boolean;
   kept_pages: number[] | null;
 };
@@ -253,6 +257,7 @@ async function buildVisionBlocks(
 ): Promise<ClaudeContentBlock[]> {
   const blocks: ClaudeContentBlock[] = [];
   for (const att of attachments) {
+    if (att.extracted_text?.trim()) continue;
     if (!att.needs_vision || !att.storage_ref || !att.mime) continue;
     const { data, error } = await supabase.storage.from(ASSET_BUCKET).download(att.storage_ref);
     if (error || !data) {
@@ -291,6 +296,7 @@ export async function extractEmail(
   email: { id: string; from_addr: string; subject: string | null; clean_text: string | null },
   attachments: ExtractionAttachment[]
 ): Promise<{ result: ExtractionResult; usage: Record<string, unknown>; xeroUrl: string | null }> {
+  const extractedTextBlocks = buildExtractedAttachmentTextBlocks(attachments);
   const visionBlocks = await buildVisionBlocks(supabase, attachments);
 
   // Xero invoice emails: detect the public view URL and fetch live HTML so
@@ -314,6 +320,7 @@ export async function extractEmail(
       type: "text",
       text: `From: ${email.from_addr}\nSubject: ${email.subject ?? "(no subject)"}\n\n${email.clean_text ?? "(no body text)"}`,
     },
+    ...extractedTextBlocks,
     ...visionBlocks,
   ];
 

@@ -68,7 +68,7 @@ export async function GET(request: NextRequest) {
     try {
       const { data: attachments, error: attError } = await supabase
         .from("email_attachments")
-        .select("id,filename,mime,storage_ref,needs_vision,kept_pages,content_sha256")
+        .select("id,filename,mime,storage_ref,extracted_text,extraction_method,needs_vision,kept_pages,content_sha256")
         .eq("email_id", email.id);
       if (attError) throw new Error(`attachment fetch failed: ${attError.message}`);
 
@@ -91,7 +91,7 @@ export async function GET(request: NextRequest) {
               candidate: result.supplier_invoice,
               xero_url: xeroUrl ?? null,
               instruction:
-                "Match this invoice candidate to the correct RESLU project and specification context, then call propose_supplier_invoice. Do not approve, apply, mark paid, or alter project financials.",
+                "Match this invoice candidate to the correct RESLU project and specification context, then call propose_supplier_invoice. A delivery or pickup address alone, including RESLU Studio, is not proof of the cost project. If reliable project evidence is absent, propose it as unmatched for Phillip to assign manually. Do not approve, apply, mark paid, or alter project financials.",
             },
           },
           { onConflict: "dedupe_key", ignoreDuplicates: true }
