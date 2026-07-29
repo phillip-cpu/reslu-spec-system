@@ -39,6 +39,7 @@ export interface SupplierLineCostLineInput {
   unit: string | null;
   rate_ex_gst: number | null;
   cost_ex_gst: number;
+  quoted_to_client_ex_gst: 0;
   notes: string;
 }
 
@@ -58,9 +59,13 @@ function optionalMoney(value: unknown): number | null | undefined {
 }
 
 /**
- * Turns immutable supplier evidence into a new project estimate line. The
- * invoice amount becomes the forecast cost, while actual_paid_ex_gst is left
- * untouched until the separate invoice approval step.
+ * Turns immutable supplier evidence into a new project estimate line.
+ *
+ * This is unplanned scope discovered from a supplier invoice, so the amount
+ * quoted to the client is explicitly zero. The supplier amount becomes the
+ * cost reference, while actual_paid_ex_gst remains untouched until the
+ * separate human approval step posts the invoice allocation. Once approved,
+ * variance is therefore 0 - actual: the real project loss is visible.
  */
 export function supplierLineCostLineInput(
   line: Pick<
@@ -83,6 +88,7 @@ export function supplierLineCostLineInput(
         ? null
         : moneyToCents(Number(line.unit_price_ex_gst)) / 100,
     cost_ex_gst: moneyToCents(Number(line.amount_ex_gst)) / 100,
+    quoted_to_client_ex_gst: 0,
     notes: `Created from supplier invoice line${supplierCode ? ` (SKU ${supplierCode})` : ""}.`,
   };
 }

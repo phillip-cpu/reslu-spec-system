@@ -4,6 +4,7 @@ import {
   supplierLineCostLineInput,
   validateSupplierInvoiceLines,
 } from "./supplier-invoice-lines.ts";
+import { lineVariance } from "./estimate.ts";
 
 const bunningsLines = [
   { supplier_item_code: "9920161", description: "Standard metro UTE delivery", quantity: 1, unit: "EACH", unit_price_ex_gst: 50, amount_ex_gst: 50, gst: 5, amount_inc_gst: 55 },
@@ -100,13 +101,25 @@ test("accepts manually entered itemised invoice lines without project matches", 
   }
 });
 
-test("creates an estimate line payload from a supplier line without posting an actual", () => {
+test("creates an unquoted estimate line without posting an actual before approval", () => {
   assert.deepEqual(supplierLineCostLineInput(bunningsLines[8]), {
     description: "RamBoard temporary floor protection",
     qty: 2,
     unit: "EACH",
     rate_ex_gst: 115.87,
     cost_ex_gst: 231.75,
+    quoted_to_client_ex_gst: 0,
     notes: "Created from supplier invoice line (SKU 1090813).",
   });
+});
+
+test("an approved invoice-created line exposes the full amount as a loss", () => {
+  const created = supplierLineCostLineInput(bunningsLines[8]);
+  assert.equal(
+    lineVariance({
+      quoted_to_client_ex_gst: created.quoted_to_client_ex_gst,
+      actual_paid_ex_gst: bunningsLines[8].amount_ex_gst,
+    }),
+    -231.75
+  );
 });

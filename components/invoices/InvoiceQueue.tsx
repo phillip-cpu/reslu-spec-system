@@ -984,8 +984,8 @@ function AllocationEditor({
                         ))}
                       </select>
                       <span className="mt-1 block text-caption text-charcoal/50">
-                        Choosing an area creates the line with this description, quantity and supplier cost,
-                        then selects it automatically.
+                        Choosing an area creates an unplanned-cost line with a $0 client quote.
+                        Approval posts this invoice amount as the actual paid cost and exposes the loss.
                       </span>
                       {createLineErrors[draft.key] && (
                         <span className="mt-1 block text-caption text-red-700">
