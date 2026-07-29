@@ -146,7 +146,15 @@ export async function GET(
       const lines = (
         (section as unknown as { cost_lines: CostSectionWithLines["lines"] }).cost_lines ?? []
       ).filter((l) => !l.deleted_at);
-      return { ...(section as unknown as CostSectionWithLines), lines, rollup: sectionRollup(lines) };
+      return {
+        ...(section as unknown as CostSectionWithLines),
+        lines,
+        rollup: sectionRollup(
+          lines,
+          undefined,
+          typedProject.estimate_markup_pct ?? 0
+        ),
+      };
     });
     const allLines = sectionsWithLines.flatMap((s) => s.lines);
     const rollup = projectRollup({

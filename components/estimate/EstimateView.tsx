@@ -3,7 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import type { Contact, CostLine, EstimateResponse, FfeCategoryRollup, MeasurementWithGroup, QuoteStatus } from "@/types";
-import { effectiveQty, lineCost, lineVariance } from "@/lib/estimate";
+import {
+  effectiveQty,
+  lineClientPrice,
+  lineCost,
+  lineProfitLoss,
+} from "@/lib/estimate";
 import { formatMoney } from "./EstimateWorkspace";
 import { ItemLinkPicker } from "./ItemLinkPicker";
 import { MeasurementLinkPicker } from "./MeasurementLinkPicker";
@@ -33,6 +38,10 @@ const QUOTE_STATUSES: { value: QuoteStatus; label: string }[] = [
 
 function num(v: number | null): string {
   return v === null || v === undefined ? "" : String(v);
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(value * 10000) / 100}%`;
 }
 
 /**
@@ -244,13 +253,16 @@ export function EstimateView({
       {/* Sticky summary block replicating the Excel's summary layer */}
       <div className="sticky top-0 z-10 border border-nearblack bg-cream px-6 py-4 shadow-sm">
         <div className="grid grid-cols-2 gap-x-8 gap-y-2 sm:grid-cols-3 lg:grid-cols-6">
-          <SummaryCell label="All trades subtotal" value={formatMoney(estimate.rollup.allTradesSubtotalExGst)} />
+          <SummaryCell
+            label="Internal cost budget"
+            value={formatMoney(estimate.rollup.allTradesSubtotalExGst)}
+          />
           <SummaryCell
             label="Approved variations"
             value={formatMoney(approvedVariationsTotal)}
           />
           <div>
-            <p className="label-caps mb-1">Markup %</p>
+            <p className="label-caps mb-1">Default markup %</p>
             <div className="flex items-center gap-1">
               <input
                 type="number"
@@ -266,7 +278,10 @@ export function EstimateView({
               <span className="text-body text-charcoal/50">%</span>
             </div>
           </div>
-          <SummaryCell label="Markup $" value={formatMoney(estimate.rollup.markupExGst)} />
+          <SummaryCell
+            label="Client price uplift"
+            value={formatMoney(estimate.rollup.markupExGst)}
+          />
           <SummaryCell
             label="Total to client ex GST"
             value={formatMoney(estimate.rollup.totalToClientExGst)}
@@ -277,6 +292,29 @@ export function EstimateView({
           <p className="label-caps mb-1">Total inc GST</p>
           <p className="font-display text-section text-nearblack">
             {formatMoney(estimate.rollup.totalIncGst)}
+          </p>
+        </div>
+      </div>
+
+      <div className="border border-[#dcd6cc] bg-offwhite px-4 py-3">
+        <p className="label-caps mb-2">How each estimate line works</p>
+        <div className="grid gap-2 text-caption text-charcoal/65 md:grid-cols-4">
+          <p>
+            <span className="text-nearblack">Budget cost</span> = quantity × unit cost,
+            unless you enter an override.
+          </p>
+          <p>
+            <span className="text-nearblack">Client price</span> = budget cost +{" "}
+            {formatPercent(estimate.markup_pct)} default markup. Click it to override;
+            clear it to return to automatic.
+          </p>
+          <p>
+            <span className="text-nearblack">Actual cost</span> comes from approved
+            supplier invoices.
+          </p>
+          <p>
+            <span className="text-nearblack">Profit / loss</span> = client price −
+            actual cost. A negative result is shown red.
           </p>
         </div>
       </div>
@@ -304,7 +342,7 @@ export function EstimateView({
                 {section.lines.length} {section.lines.length === 1 ? "line" : "lines"}
               </span>
               <span className="text-body text-nearblack">
-                {formatMoney(section.rollup.costExGst)}
+                Budget {formatMoney(section.rollup.costExGst)}
               </span>
               {section.rollup.variance !== null && (
                 <span
@@ -313,7 +351,7 @@ export function EstimateView({
                     section.rollup.variance < 0 ? "text-red-700" : "text-charcoal/60"
                   )}
                 >
-                  var {formatMoney(section.rollup.variance)}
+                  P/L {formatMoney(section.rollup.variance)}
                 </span>
               )}
               <button
@@ -335,11 +373,31 @@ export function EstimateView({
                     <th className="label-caps px-2 py-1.5">Description</th>
                     <th className="label-caps px-2 py-1.5 text-right">Qty</th>
                     <th className="label-caps px-2 py-1.5">Unit</th>
-                    <th className="label-caps px-2 py-1.5 text-right">Rate ex GST</th>
-                    <th className="label-caps px-2 py-1.5 text-right">Cost ex GST</th>
-                    <th className="label-caps px-2 py-1.5 text-right">Quoted ex GST</th>
-                    <th className="label-caps px-2 py-1.5 text-right">Actual ex GST</th>
-                    <th className="label-caps px-2 py-1.5 text-right">Variance</th>
+                    <EstimateColumnHeading
+                      label="Unit cost"
+                      detail="each · ex GST"
+                      title="What RESLU expects to pay for one unit, day or item."
+                    />
+                    <EstimateColumnHeading
+                      label="Budget cost"
+                      detail="qty × unit · ex GST"
+                      title="Internal expected cost. Automatically quantity × unit cost unless manually overridden."
+                    />
+                    <EstimateColumnHeading
+                      label="Client price"
+                      detail="auto + markup · ex GST"
+                      title="Amount included in the client estimate. Automatically budget cost plus the default markup; click to override."
+                    />
+                    <EstimateColumnHeading
+                      label="Actual cost"
+                      detail="approved invoices · ex GST"
+                      title="What RESLU has actually incurred, populated by approved supplier invoices."
+                    />
+                    <EstimateColumnHeading
+                      label="Profit / loss"
+                      detail="client − actual"
+                      title="Client price less actual cost. Negative values are losses."
+                    />
                     <th className="label-caps px-2 py-1.5">Status</th>
                     <th className="label-caps px-2 py-1.5">Notes</th>
                     <th className="w-8" />
@@ -351,12 +409,14 @@ export function EstimateView({
                       key={line.id}
                       line={line}
                       measurements={measurements}
+                      markupPct={estimate.markup_pct}
                       onPatch={(patch) => patchLine(line, patch)}
                       onDelete={() => deleteLine(line)}
                     />
                   ))}
                   <DraftLineRow
                     sectionId={section.id}
+                    markupPct={estimate.markup_pct}
                     onAdd={(draft) => addLineDraft(section.id, draft)}
                   />
                 </tbody>
@@ -422,6 +482,25 @@ function SummaryCell({ label, value }: { label: string; value: string }) {
   );
 }
 
+function EstimateColumnHeading({
+  label,
+  detail,
+  title,
+}: {
+  label: string;
+  detail: string;
+  title: string;
+}) {
+  return (
+    <th className="w-28 px-2 py-1.5 text-right" title={title}>
+      <span className="label-caps block">{label}</span>
+      <span className="mt-0.5 block text-[10px] font-normal normal-case tracking-normal text-charcoal/45">
+        {detail}
+      </span>
+    </th>
+  );
+}
+
 function SectionNameEditor({ name, onRename }: { name: string; onRename: (name: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(name);
@@ -483,11 +562,13 @@ function SectionNameEditor({ name, onRename }: { name: string; onRename: (name: 
 function LineRow({
   line,
   measurements,
+  markupPct,
   onPatch,
   onDelete,
 }: {
   line: CostLine;
   measurements: MeasurementWithGroup[];
+  markupPct: number;
   onPatch: (patch: Partial<CostLine>) => Promise<CostLine>;
   onDelete: () => void;
 }) {
@@ -604,7 +685,8 @@ function LineRow({
     ? measurements.find((m) => m.id === draft.measurement_id) ?? null
     : null;
   const cost = lineCost(draft, linkedMeasurement);
-  const variance = lineVariance(draft);
+  const clientPrice = lineClientPrice(draft, markupPct, linkedMeasurement);
+  const profitLoss = lineProfitLoss(draft, markupPct, linkedMeasurement);
   const qty = effectiveQty(draft, linkedMeasurement);
 
   return (
@@ -751,6 +833,9 @@ function LineRow({
         <td className="w-28 px-0 py-0">
           <EditableNumber
             value={draft.quoted_to_client_ex_gst}
+            placeholder={
+              clientPrice !== null ? `Auto ${formatMoney(clientPrice)}` : "—"
+            }
             onCommit={(v) => setField("quoted_to_client_ex_gst", v)}
           />
         </td>
@@ -760,8 +845,14 @@ function LineRow({
             onCommit={(v) => setField("actual_paid_ex_gst", v)}
           />
         </td>
-        <td className={clsx("w-24 px-2 py-1.5 text-right text-body", variance !== null && variance < 0 && "text-red-700")}>
-          {variance !== null ? formatMoney(variance) : "—"}
+        <td
+          className={clsx(
+            "w-24 px-2 py-1.5 text-right text-body",
+            profitLoss !== null && profitLoss < 0 && "text-red-700",
+            profitLoss !== null && profitLoss > 0 && "text-green-800"
+          )}
+        >
+          {profitLoss !== null ? formatMoney(profitLoss) : "—"}
         </td>
         <td className="px-1 py-1">
           <select
@@ -892,9 +983,11 @@ const BLANK_DRAFT: NewLineDraft = {
 
 function DraftLineRow({
   sectionId,
+  markupPct,
   onAdd,
 }: {
   sectionId: string;
+  markupPct: number;
   onAdd: (draft: NewLineInput) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<NewLineDraft>(BLANK_DRAFT);
@@ -936,6 +1029,26 @@ function DraftLineRow({
       submit();
     }
   }
+
+  const draftQty = draft.qty === "" ? null : Number(draft.qty);
+  const draftRate = draft.rate_ex_gst === "" ? null : Number(draft.rate_ex_gst);
+  const automaticClientPrice =
+    draftQty !== null &&
+    draftRate !== null &&
+    Number.isFinite(draftQty) &&
+    Number.isFinite(draftRate)
+      ? lineClientPrice(
+          {
+            qty: draftQty,
+            rate_ex_gst: draftRate,
+            cost_ex_gst: null,
+            measurement_id: null,
+            wastage_pct: null,
+            quoted_to_client_ex_gst: null,
+          },
+          markupPct
+        )
+      : null;
 
   return (
     <tr id={`draft-line-${sectionId}`} className="border-b border-[#e5e0d6] bg-offwhite/60 align-top">
@@ -992,7 +1105,11 @@ function DraftLineRow({
           value={draft.quoted_to_client_ex_gst}
           onChange={(e) => setField("quoted_to_client_ex_gst", e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Quoted"
+          placeholder={
+            automaticClientPrice !== null
+              ? `Auto ${formatMoney(automaticClientPrice)}`
+              : "Auto client price"
+          }
           className="w-full border-none bg-transparent px-2 py-1.5 text-right text-body text-charcoal placeholder:text-charcoal/35 focus:outline-none focus:bg-nearwhite"
         />
       </td>

@@ -112,7 +112,7 @@ export function EstimateWorkspace({ projectId }: Props) {
     const measurementsById = new Map(est.measurements.map((m) => [m.id, { value: m.value }]));
     const sectionsWithRollups = sections.map((s) => ({
       ...s,
-      rollup: sectionRollup(s.lines, measurementsById),
+      rollup: sectionRollup(s.lines, measurementsById, est.markup_pct),
     }));
     const allLines = sectionsWithRollups.flatMap((s) => s.lines);
     const rollup = projectRollup({

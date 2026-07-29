@@ -131,7 +131,11 @@ export async function GET(
     return {
       ...(rest as unknown as CostSectionWithLines),
       lines,
-      rollup: sectionRollup(lines, measurementsById),
+      rollup: sectionRollup(
+        lines,
+        measurementsById,
+        project.estimate_markup_pct ?? 0
+      ),
     };
   });
 

@@ -161,6 +161,52 @@ export function lineVariance(line: {
   return roundMoney(line.quoted_to_client_ex_gst - line.actual_paid_ex_gst);
 }
 
+/**
+ * The ex-GST amount carried into the client estimate for one line.
+ *
+ * A stored quoted_to_client_ex_gst is a deliberate manual override
+ * (including an explicit zero for an unplanned invoice-created cost).
+ * When it is null, the client price follows the project's default
+ * markup and therefore continues to recalculate when qty, rate, cost
+ * or the project markup changes.
+ */
+export function lineClientPrice(
+  line: LineCostInput & { quoted_to_client_ex_gst: number | null },
+  markupPct: number,
+  measurement?: EffectiveQtyMeasurementInput | null
+): number | null {
+  if (
+    line.quoted_to_client_ex_gst !== null &&
+    line.quoted_to_client_ex_gst !== undefined
+  ) {
+    return roundMoney(line.quoted_to_client_ex_gst);
+  }
+  const cost = lineCost(line, measurement);
+  if (cost === null) return null;
+  return roundMoney(cost * (1 + markupPct));
+}
+
+/**
+ * Client price less approved supplier cost. Positive is retained
+ * margin; negative is a loss. It remains unknown until an actual cost
+ * has been posted from an approved invoice.
+ */
+export function lineProfitLoss(
+  line: LineCostInput & {
+    quoted_to_client_ex_gst: number | null;
+    actual_paid_ex_gst: number | null;
+  },
+  markupPct: number,
+  measurement?: EffectiveQtyMeasurementInput | null
+): number | null {
+  if (line.actual_paid_ex_gst === null || line.actual_paid_ex_gst === undefined) {
+    return null;
+  }
+  const clientPrice = lineClientPrice(line, markupPct, measurement);
+  if (clientPrice === null) return null;
+  return roundMoney(clientPrice - line.actual_paid_ex_gst);
+}
+
 // ------------------------------------------------------------
 // Section-level rollup
 // ------------------------------------------------------------
@@ -185,7 +231,8 @@ export interface SectionRollup {
  */
 export function sectionRollup(
   lines: LineForRollup[],
-  measurementsById?: Map<string, EffectiveQtyMeasurementInput>
+  measurementsById?: Map<string, EffectiveQtyMeasurementInput>,
+  markupPct?: number
 ): SectionRollup {
   let costExGst = 0;
   let quotedExGst = 0;
@@ -199,13 +246,20 @@ export function sectionRollup(
       : null;
     const cost = lineCost(line, measurement);
     if (cost !== null) costExGst += cost;
-    if (line.quoted_to_client_ex_gst !== null && line.quoted_to_client_ex_gst !== undefined) {
-      quotedExGst += line.quoted_to_client_ex_gst;
+    const clientPrice =
+      markupPct === undefined
+        ? line.quoted_to_client_ex_gst
+        : lineClientPrice(line, markupPct, measurement);
+    if (clientPrice !== null && clientPrice !== undefined) {
+      quotedExGst += clientPrice;
     }
     if (line.actual_paid_ex_gst !== null && line.actual_paid_ex_gst !== undefined) {
       actualExGst += line.actual_paid_ex_gst;
     }
-    const lv = lineVariance(line);
+    const lv =
+      markupPct === undefined
+        ? lineVariance(line)
+        : lineProfitLoss(line, markupPct, measurement);
     if (lv !== null) {
       variance += lv;
       hasVariance = true;
@@ -297,12 +351,22 @@ export function projectRollup({
   measurementsById,
 }: ProjectRollupInput): ProjectRollup {
   const { costExGst: allTradesSubtotalExGst, quotedExGst, actualExGst } =
-    sectionRollup(lines, measurementsById);
+    sectionRollup(lines, measurementsById, markupPct);
   const approvedVariationsExGst = approvedVariationsTotal(variations);
 
-  const preMarkupBase = allTradesSubtotalExGst + approvedVariationsExGst;
-  const markupExGst = roundMoney(preMarkupBase * markupPct);
-  const totalToClientExGst = roundMoney(preMarkupBase + markupExGst);
+  // Lines without a manual client-price override use cost + the
+  // project's default markup. Explicit overrides are respected in the
+  // total, so editing "Client price" is no longer informational only.
+  // Approved variations continue to receive the default markup.
+  const approvedVariationsClientExGst = roundMoney(
+    approvedVariationsExGst * (1 + markupPct)
+  );
+  const totalToClientExGst = roundMoney(
+    quotedExGst + approvedVariationsClientExGst
+  );
+  const markupExGst = roundMoney(
+    totalToClientExGst - allTradesSubtotalExGst - approvedVariationsExGst
+  );
   const gst = roundMoney(totalToClientExGst * GST_RATE);
   const totalIncGst = roundMoney(totalToClientExGst + gst);
 
