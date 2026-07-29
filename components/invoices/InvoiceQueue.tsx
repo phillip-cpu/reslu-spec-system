@@ -54,6 +54,7 @@ export function InvoiceQueue({ projectId }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -83,22 +84,29 @@ export function InvoiceQueue({ projectId }: Props) {
     load();
   }, [load]);
 
-  /**
-   * Booking selection v2 + Aria supplier invoices (r24), item 7:
-   * `applyToLibraryCost` is the per-line "update the linked library
-   * product's cost record" toggle (MatchedItemLibraryToggle below) —
-   * omitted (undefined) lets the server apply its own default (ON when
-   * the matched item carries a library_item_id, per POST
-   * /api/invoices/[id]/approve's own doc comment); passed explicitly
-   * once the admin has touched the checkbox in the expanded row.
-   */
-  async function approve(id: string, applyToLibraryCost?: boolean) {
+  async function approve(id: string, allocations: InvoiceAllocationInput[]) {
+    setBusyId(id);
     setError(null);
     try {
+      // One user action, two guarded server writes: persist the exact
+      // line matches currently visible in the editor, then approve the
+      // invoice against those saved allocations. If the save fails,
+      // approval is never attempted. If approval fails, the allocations
+      // remain safely saved so the same button can be retried.
+      const saveResponse = await fetch(`/api/invoices/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ allocations }),
+      });
+      const saveBody = await saveResponse.json().catch(() => ({}));
+      if (!saveResponse.ok) {
+        throw new Error(saveBody.error ?? "Could not save invoice line matches.");
+      }
+
       const res = await fetch(`/api/invoices/${id}/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(applyToLibraryCost === undefined ? {} : { apply_to_library_cost: applyToLibraryCost }),
+        body: JSON.stringify({}),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Could not approve invoice.");
@@ -106,6 +114,8 @@ export function InvoiceQueue({ projectId }: Props) {
       await refreshFinancialSummary();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not approve invoice.");
+    } finally {
+      setBusyId(null);
     }
   }
 
@@ -230,8 +240,9 @@ export function InvoiceQueue({ projectId }: Props) {
                   invoice={inv}
                   projectId={projectId}
                   expanded={expandedId === inv.id}
+                  busy={busyId === inv.id}
                   onToggle={() => setExpandedId((cur) => (cur === inv.id ? null : inv.id))}
-                  onApprove={(applyToLibraryCost) => approve(inv.id, applyToLibraryCost)}
+                  onApprove={(allocations) => approve(inv.id, allocations)}
                   onReject={() => reject(inv.id)}
                   onVoid={() => voidInvoice(inv.id)}
                   onSaveAllocations={(allocations) => saveAllocations(inv.id, allocations)}
@@ -250,6 +261,7 @@ function InvoiceRow({
   invoice,
   projectId,
   expanded,
+  busy,
   onToggle,
   onApprove,
   onReject,
@@ -260,8 +272,9 @@ function InvoiceRow({
   invoice: InvoiceWithAllocations;
   projectId: string;
   expanded: boolean;
+  busy: boolean;
   onToggle: () => void;
-  onApprove: (applyToLibraryCost?: boolean) => void;
+  onApprove: (allocations: InvoiceAllocationInput[]) => Promise<void>;
   onReject: () => void;
   onVoid: () => void;
   onSaveAllocations: (allocations: InvoiceAllocationInput[]) => void;
@@ -273,13 +286,6 @@ function InvoiceRow({
     invoice.status !== "voided";
   const savedAllocations = invoice.invoice_allocations ?? [];
   const hasSavedAllocations = savedAllocations.length > 0;
-  const hasLegacyMatch = Boolean(invoice.proposed_match_type && invoice.proposed_match_id);
-  const canApprove = hasSavedAllocations || hasLegacyMatch;
-  // r24 item 7's per-line toggle — undefined means "let the server pick
-  // its own default" (see POST /api/invoices/[id]/approve's own doc
-  // comment); starts checked so the UI's own default reads as ON,
-  // matching the server's stated default.
-  const [applyToLibraryCost, setApplyToLibraryCost] = useState(true);
   const [editingFields, setEditingFields] = useState(false);
   const [fieldDrafts, setFieldDrafts] = useState({
     supplier: invoice.supplier,
@@ -363,17 +369,17 @@ function InvoiceRow({
               <>
                 <button
                   type="button"
-                  disabled={!canApprove}
-                  title={!canApprove ? "Save allocations before approving" : undefined}
-                  onClick={() => onApprove(hasSavedAllocations ? undefined : applyToLibraryCost)}
+                  disabled={busy}
+                  onClick={onToggle}
                   className="border border-nearblack px-2 py-1 text-caption text-nearblack transition-colors hover:bg-nearblack hover:text-white disabled:opacity-40"
                 >
-                  Approve & apply
+                  {expanded ? "Hide review" : "Review & approve"}
                 </button>
                 <button
                   type="button"
+                  disabled={busy}
                   onClick={onReject}
-                  className="border border-red-700/40 px-2 py-1 text-caption text-red-700 hover:bg-red-700 hover:text-white"
+                  className="border border-red-700/40 px-2 py-1 text-caption text-red-700 hover:bg-red-700 hover:text-white disabled:opacity-40"
                 >
                   Reject
                 </button>
@@ -519,22 +525,6 @@ function InvoiceRow({
                 )}
               </div>
 
-              {editable && !hasSavedAllocations && invoice.proposed_match_type && (
-                <label className="flex items-start gap-2 text-caption text-charcoal/70">
-                  <input
-                    type="checkbox"
-                    checked={applyToLibraryCost}
-                    onChange={(e) => setApplyToLibraryCost(e.target.checked)}
-                    className="mt-0.5 h-3.5 w-3.5"
-                  />
-                  <span>
-                    On approve, also update the matched item&apos;s linked library product&apos;s cost (so future
-                    quotes use this real price) — only applies when the matched item is linked to a library product;
-                    otherwise this is a no-op.
-                  </span>
-                </label>
-              )}
-
               {invoice.library_cost_applied && (
                 <p className="text-caption text-charcoal/50">Library product cost was updated from this invoice.</p>
               )}
@@ -555,7 +545,7 @@ function InvoiceRow({
                         match_type: invoice.proposed_match_type,
                         match_id: invoice.proposed_match_id,
                         amount_ex_gst: invoice.amount_ex_gst,
-                        apply_to_library_cost: false,
+                        apply_to_library_cost: true,
                       }
                     : null
                 }
@@ -565,6 +555,8 @@ function InvoiceRow({
                   invoice.status === "voided"
                 }
                 onSave={onSaveAllocations}
+                onApprove={onApprove}
+                approving={busy}
               />
             </div>
           </td>
@@ -634,6 +626,8 @@ function AllocationEditor({
   legacyMatch,
   disabled,
   onSave,
+  onApprove,
+  approving,
 }: {
   projectId: string;
   invoiceAmountExGst: number;
@@ -642,6 +636,8 @@ function AllocationEditor({
   legacyMatch: InvoiceAllocationInput | null;
   disabled: boolean;
   onSave: (allocations: InvoiceAllocationInput[]) => void;
+  onApprove: (allocations: InvoiceAllocationInput[]) => Promise<void>;
+  approving: boolean;
 }) {
   const [drafts, setDrafts] = useState<AllocationDraft[]>(() =>
     allocationDrafts(savedAllocations, legacyMatch, sourceLines)
@@ -653,6 +649,7 @@ function AllocationEditor({
   const [creatingLineKey, setCreatingLineKey] = useState<string | null>(null);
   const [createLineErrors, setCreateLineErrors] = useState<Record<string, string>>({});
   const [createdInArea, setCreatedInArea] = useState<Record<string, string>>({});
+  const locked = disabled || approving;
 
   useEffect(() => {
     let cancelled = false;
@@ -732,7 +729,7 @@ function AllocationEditor({
   }
 
   async function createCostLineInArea(draft: AllocationDraft, sectionId: string) {
-    if (!draft.source_line || !sectionId || disabled || creatingLineKey) return;
+    if (!draft.source_line || !sectionId || locked || creatingLineKey) return;
     setCreatingLineKey(draft.key);
     setCreateLineErrors((current) => ({ ...current, [draft.key]: "" }));
 
@@ -770,9 +767,9 @@ function AllocationEditor({
     }
   }
 
-  function save() {
+  async function approveAndApply() {
     if (!complete) return;
-    onSave(
+    await onApprove(
       drafts.map((draft) => ({
         source_line_id: draft.source_line_id,
         match_type: draft.match_type,
@@ -877,7 +874,7 @@ function AllocationEditor({
                       {sourceLine ? "Match to project" : `Allocation ${index + 1} match`}
                     </span>
                     <select
-                      disabled={disabled}
+                      disabled={locked}
                       value={draft.match_id ? `${draft.match_type}:${draft.match_id}` : ""}
                       onChange={(event) => {
                         const [matchType, matchId] = event.target.value.split(":");
@@ -937,7 +934,7 @@ function AllocationEditor({
                     <label className="block border border-dashed border-[#c9c2b4] bg-nearwhite p-2">
                       <span className="label-caps mb-1 block !text-charcoal/50">No destination yet?</span>
                       <select
-                        disabled={disabled || Boolean(creatingLineKey) || sections.length === 0}
+                        disabled={locked || Boolean(creatingLineKey) || sections.length === 0}
                         value=""
                         onChange={(event) => {
                           const sectionId = event.target.value;
@@ -994,7 +991,7 @@ function AllocationEditor({
                       }
                     >
                       <input
-                        disabled={disabled || !libraryItem}
+                        disabled={locked || !libraryItem}
                         type="checkbox"
                         checked={draft.apply_to_library_cost && Boolean(libraryItem)}
                         onChange={(event) =>
@@ -1022,7 +1019,7 @@ function AllocationEditor({
                   <label>
                     <span className="sr-only">Allocation {index + 1} ex-GST amount</span>
                     <input
-                      disabled={disabled}
+                      disabled={locked}
                       type="number"
                       min="0.01"
                       step="0.01"
@@ -1037,7 +1034,7 @@ function AllocationEditor({
                 {!sourceLine && (
                   <label className="flex items-center gap-1.5 text-caption text-charcoal/60">
                     <input
-                      disabled={disabled || !libraryItem}
+                      disabled={locked || !libraryItem}
                       type="checkbox"
                       checked={draft.apply_to_library_cost && Boolean(libraryItem)}
                       onChange={(event) =>
@@ -1048,7 +1045,7 @@ function AllocationEditor({
                   </label>
                 )}
 
-                {!disabled && !sourceLine && (
+                {!locked && !sourceLine && (
                   <button
                     type="button"
                     onClick={() => setDrafts((current) => current.filter((row) => row.key !== draft.key))}
@@ -1068,27 +1065,29 @@ function AllocationEditor({
           {!sourceBacked && (
             <button
               type="button"
+              disabled={approving}
               onClick={addAllocation}
-              className="border border-[#c9c2b4] px-3 py-1.5 text-caption text-charcoal hover:border-nearblack"
+              className="border border-[#c9c2b4] px-3 py-1.5 text-caption text-charcoal hover:border-nearblack disabled:opacity-40"
             >
               + Add allocation
             </button>
           )}
           <button
             type="button"
-            disabled={!complete}
-            onClick={save}
+            disabled={!complete || approving}
+            onClick={() => void approveAndApply()}
             className="border border-nearblack bg-nearblack px-3 py-1.5 text-caption text-white disabled:cursor-not-allowed disabled:opacity-35"
           >
-            Save allocations
+            {approving ? "Saving & approving…" : "Approve & apply invoice"}
           </button>
           {savedAllocations.length > 0 && (
             <button
               type="button"
+              disabled={approving}
               onClick={() => {
                 if (confirm("Clear every saved allocation from this invoice?")) onSave([]);
               }}
-              className="text-caption text-charcoal/50 hover:text-red-700"
+              className="text-caption text-charcoal/50 hover:text-red-700 disabled:opacity-40"
             >
               Clear saved allocations
             </button>
