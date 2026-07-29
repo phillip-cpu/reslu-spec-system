@@ -17,12 +17,19 @@ export interface DataQualityEntityRef {
 
 export interface ProjectDataQualityIssue {
   code: string;
+  /** Stable for the exact affected entity set. A dismissed issue
+   * returns automatically when that set changes. */
+  fingerprint: string;
   severity: DataQualitySeverity;
   area: DataQualityArea;
   title: string;
   detail: string;
   count: number;
   samples: DataQualityEntityRef[];
+  /** Full bounded set used to recompute unique affected-record counts
+   * after UI-only dismissals are applied. Company-wide compact
+   * responses intentionally omit this field. */
+  entity_keys: string[];
   href: string;
 }
 
@@ -49,6 +56,9 @@ export interface ProjectDataQualityResponse {
   };
   pricing: ProjectPricingCoverage;
   issues: ProjectDataQualityIssue[];
+  /** Present on the project endpoint after persisted UI dismissals are
+   * applied; omitted from raw/company-wide health reports. */
+  dismissed_count?: number;
 }
 
 /**

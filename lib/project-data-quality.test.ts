@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  applyProjectDataQualityDismissals,
   compactProjectDataQuality,
+  dataQualityIssueFingerprint,
   deriveProjectDataQuality,
 } from "./project-data-quality.ts";
 import type { ProjectDataQualityInput } from "../types/data-quality.ts";
@@ -163,4 +165,56 @@ test("compact company feed keeps every issue without verbose samples", () => {
   assert.equal(compact.pricing.total_items, 2);
   assert.ok(!("samples" in compact.issues[0]));
   assert.ok(!("detail" in compact.issues[0]));
+});
+
+test("issue fingerprints are stable regardless of entity order", () => {
+  const entities = [
+    { id: "item-2", label: "Second", kind: "item" as const },
+    { id: "item-1", label: "First", kind: "item" as const },
+  ];
+
+  assert.equal(
+    dataQualityIssueFingerprint("price_missing", entities),
+    dataQualityIssueFingerprint("price_missing", [...entities].reverse())
+  );
+});
+
+test("an exact dismissal hides the issue but changed affected data resurfaces it", () => {
+  const input = baseInput();
+  input.items = [
+    item({ price_trade: null, price_rrp: null }),
+    item({
+      id: "item-2",
+      item_code: "DR-02",
+      price_trade: null,
+      price_rrp: null,
+    }),
+  ];
+  input.room_item_ids = input.items.map((row) => row.id);
+  const report = deriveProjectDataQuality(input);
+  const issue = report.issues.find((row) => row.code === "price_missing");
+  assert.ok(issue);
+
+  const hidden = applyProjectDataQualityDismissals(
+    report,
+    new Map([[issue.code, issue.fingerprint]])
+  );
+  assert.equal(hidden.issues.some((row) => row.code === "price_missing"), false);
+  assert.equal(hidden.dismissed_count, 1);
+
+  input.items.push(
+    item({
+      id: "item-3",
+      item_code: "DR-03",
+      price_trade: null,
+      price_rrp: null,
+    })
+  );
+  input.room_item_ids.push("item-3");
+  const changed = deriveProjectDataQuality(input);
+  const resurfaced = applyProjectDataQualityDismissals(
+    changed,
+    new Map([[issue.code, issue.fingerprint]])
+  );
+  assert.equal(resurfaced.issues.some((row) => row.code === "price_missing"), true);
 });

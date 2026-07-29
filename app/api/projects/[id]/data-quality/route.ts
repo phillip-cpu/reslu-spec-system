@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { getUserRole } from "@/lib/auth";
-import { compactProjectDataQuality } from "@/lib/project-data-quality";
+import {
+  applyProjectDataQualityDismissals,
+  compactProjectDataQuality,
+} from "@/lib/project-data-quality";
 import { loadProjectDataQuality } from "@/lib/project-data-quality-server";
 import { createClient } from "@/lib/supabase/server";
 
@@ -33,9 +36,28 @@ export async function GET(
   }
 
   try {
-    const report = await loadProjectDataQuality(supabase, projectId);
+    const [report, dismissalsResult] = await Promise.all([
+      loadProjectDataQuality(supabase, projectId),
+      supabase
+        .from("project_data_quality_dismissals")
+        .select("issue_code,issue_fingerprint")
+        .eq("project_id", projectId),
+    ]);
+    if (dismissalsResult.error) throw new Error(dismissalsResult.error.message);
+    const dismissedFingerprints = new Map(
+      (dismissalsResult.data ?? []).map((row) => [
+        row.issue_code,
+        row.issue_fingerprint,
+      ])
+    );
+    const visibleReport = applyProjectDataQualityDismissals(
+      report,
+      dismissedFingerprints
+    );
     const concise = new URL(request.url).searchParams.get("response_format") === "concise";
-    return NextResponse.json(concise ? compactProjectDataQuality(report) : report);
+    return NextResponse.json(
+      concise ? compactProjectDataQuality(visibleReport) : visibleReport
+    );
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Could not load project health" },

@@ -110,17 +110,63 @@ function issueHref(projectId: string, entities: DataQualityEntityRef[]): string 
   return `/projects/${projectId}/timeline`;
 }
 
+export function dataQualityIssueFingerprint(
+  code: string,
+  entities: DataQualityEntityRef[]
+): string {
+  const source = `${code}|${entities
+    .map((entity) => `${entity.kind}:${entity.id}`)
+    .sort()
+    .join("|")}`;
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
 function issueFrom(seed: IssueSeed, projectId: string): ProjectDataQualityIssue | null {
   if (seed.entities.length === 0) return null;
   return {
     code: seed.code,
+    fingerprint: dataQualityIssueFingerprint(seed.code, seed.entities),
     severity: seed.severity,
     area: seed.area,
     title: seed.title,
     detail: seed.detail,
     count: seed.entities.length,
     samples: seed.entities.slice(0, SAMPLE_LIMIT),
+    entity_keys: seed.entities.map((entity) => `${entity.kind}:${entity.id}`),
     href: issueHref(projectId, seed.entities),
+  };
+}
+
+/**
+ * Project-overview-only presentation filter. The underlying report
+ * used by Aria, Office actions and company health remains untouched.
+ * A dismissal matches both rule code and the exact affected-record
+ * fingerprint, so changed/new data automatically resurfaces it.
+ */
+export function applyProjectDataQualityDismissals(
+  report: ProjectDataQualityResponse,
+  dismissedFingerprints: ReadonlyMap<string, string>
+): ProjectDataQualityResponse {
+  const issues = report.issues.filter(
+    (issue) => dismissedFingerprints.get(issue.code) !== issue.fingerprint
+  );
+  const affectedRecords = new Set(issues.flatMap((issue) => issue.entity_keys)).size;
+
+  return {
+    ...report,
+    summary: {
+      critical: issues.filter((issue) => issue.severity === "critical").length,
+      warning: issues.filter((issue) => issue.severity === "warning").length,
+      info: issues.filter((issue) => issue.severity === "info").length,
+      affected_records: affectedRecords,
+    },
+    issues,
+    dismissed_count: report.issues.length - issues.length,
   };
 }
 
@@ -368,7 +414,7 @@ export function deriveProjectDataQuality(input: ProjectDataQualityInput): Projec
       // Count every affected entity, not only the three samples retained
       // on each issue for compact display.
       affected_records: new Set(
-        seeds.flatMap((seed) => seed.entities.map((entity) => `${entity.kind}:${entity.id}`))
+        issues.flatMap((issue) => issue.entity_keys)
       ).size,
     },
     pricing: pricingCoverage(items),

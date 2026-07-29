@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type {
   DataQualitySeverity,
   ProjectDataQualityIssue,
@@ -27,7 +27,17 @@ function formatMoney(value: number): string {
   }).format(value);
 }
 
-function IssueRow({ issue }: { issue: ProjectDataQualityIssue }) {
+function IssueRow({
+  issue,
+  busy,
+  onDismiss,
+}: {
+  issue: ProjectDataQualityIssue;
+  busy: boolean;
+  onDismiss: () => void;
+}) {
+  const dismissible = issue.area === "register" || issue.area === "pricing";
+
   return (
     <li className="border-t border-[#e5e0d6] py-3 first:border-t-0">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -50,12 +60,25 @@ function IssueRow({ issue }: { issue: ProjectDataQualityIssue }) {
             </p>
           )}
         </div>
-        <a
-          href={issue.href}
-          className="shrink-0 text-caption text-sand underline decoration-sand/40 underline-offset-2 hover:decoration-sand"
-        >
-          Review
-        </a>
+        <div className="flex shrink-0 items-center gap-3">
+          <a
+            href={issue.href}
+            className="text-caption text-sand underline decoration-sand/40 underline-offset-2 hover:decoration-sand"
+          >
+            Review
+          </a>
+          {dismissible && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onDismiss}
+              title="Hide this issue until its affected records change"
+              className="text-caption text-charcoal/45 underline decoration-charcoal/20 underline-offset-2 hover:text-nearblack disabled:opacity-40"
+            >
+              {busy ? "Dismissing…" : "Dismiss"}
+            </button>
+          )}
+        </div>
       </div>
     </li>
   );
@@ -64,25 +87,78 @@ function IssueRow({ issue }: { issue: ProjectDataQualityIssue }) {
 export function ProjectDataQualityPanel({ projectId }: { projectId: string }) {
   const [data, setData] = useState<ProjectDataQualityResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busyCode, setBusyCode] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(false);
+
+  const load = useCallback(async () => {
+    const response = await fetch(`/api/projects/${projectId}/data-quality`, {
+      cache: "no-store",
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      throw new Error(body.error ?? "Could not load project health.");
+    }
+    setData(body as ProjectDataQualityResponse);
+    setError(null);
+  }, [projectId]);
 
   useEffect(() => {
     let active = true;
-    fetch(`/api/projects/${projectId}/data-quality`)
-      .then(async (response) => {
-        const body = await response.json();
-        if (!response.ok) throw new Error(body.error ?? "Could not load project health.");
-        return body as ProjectDataQualityResponse;
-      })
-      .then((body) => active && setData(body))
-      .catch((reason) => {
-        if (active) {
-          setError(reason instanceof Error ? reason.message : "Could not load project health.");
-        }
-      });
+    // Initial project-scoped diagnostics request; state changes occur
+    // only from the awaited external response.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    load().catch((reason) => {
+      if (active) {
+        setError(reason instanceof Error ? reason.message : "Could not load project health.");
+      }
+    });
     return () => {
       active = false;
     };
-  }, [projectId]);
+  }, [load]);
+
+  async function dismissIssue(issue: ProjectDataQualityIssue) {
+    setBusyCode(issue.code);
+    setError(null);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/data-quality/dismiss`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: issue.code,
+          fingerprint: issue.fingerprint,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body.error ?? "Could not dismiss this issue.");
+      }
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not dismiss this issue.");
+    } finally {
+      setBusyCode(null);
+    }
+  }
+
+  async function restoreDismissed() {
+    setRestoring(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/data-quality/dismiss`, {
+        method: "DELETE",
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body.error ?? "Could not restore dismissed issues.");
+      }
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not restore dismissed issues.");
+    } finally {
+      setRestoring(false);
+    }
+  }
 
   if (error) {
     return (
@@ -101,6 +177,7 @@ export function ProjectDataQualityPanel({ projectId }: { projectId: string }) {
   }
 
   const issueCount = data.summary.critical + data.summary.warning + data.summary.info;
+  const dismissedCount = data.dismissed_count ?? 0;
   const openByDefault = data.summary.critical > 0;
 
   return (
@@ -109,7 +186,7 @@ export function ProjectDataQualityPanel({ projectId }: { projectId: string }) {
         <div>
           <p className="label-caps">Project health</p>
           <p className="mt-1 text-body text-charcoal/60">
-            Read-only checks across the register, pricing, purchasing and trade programme.
+            Checks across the register, pricing, purchasing and trade programme.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -127,6 +204,18 @@ export function ProjectDataQualityPanel({ projectId }: { projectId: string }) {
             <span className="border border-emerald-700/30 bg-emerald-50 px-2.5 py-1 text-caption text-emerald-800">
               No data gaps found
             </span>
+          )}
+          {dismissedCount > 0 && (
+            <button
+              type="button"
+              disabled={restoring}
+              onClick={() => void restoreDismissed()}
+              className="border border-[#c9c2b4] px-2.5 py-1 text-caption text-charcoal/55 hover:border-nearblack hover:text-nearblack disabled:opacity-40"
+            >
+              {restoring
+                ? "Restoring…"
+                : `Restore ${dismissedCount} dismissed`}
+            </button>
           )}
         </div>
       </div>
@@ -159,11 +248,22 @@ export function ProjectDataQualityPanel({ projectId }: { projectId: string }) {
           </summary>
           <ul className="mt-2">
             {data.issues.map((issue) => (
-              <IssueRow key={issue.code} issue={issue} />
+              <IssueRow
+                key={issue.code}
+                issue={issue}
+                busy={busyCode === issue.code}
+                onDismiss={() => void dismissIssue(issue)}
+              />
             ))}
           </ul>
         </details>
       )}
+
+      <p className="mt-4 text-caption leading-relaxed text-charcoal/45">
+        Register and pricing gaps can be dismissed from this overview. They return automatically
+        if the affected records change. Procurement deadlines and programme risks remain active
+        until the underlying issue is resolved.
+      </p>
     </section>
   );
 }
