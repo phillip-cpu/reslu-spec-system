@@ -14,8 +14,8 @@ import type { DocumentPackChoices } from "@/types/trade-doc-pack";
 
 export type TradeBookingRequestStatus = "draft" | "sent" | "responded" | "closed";
 
-/** Migration 049's trade_visits.line_status — see that column's own comment for the full state description. Null on this type is never valid for a grouped line (every row created by POST /api/projects/[id]/trade-requests always sets one) — the plain trade_visits row shape (lib/trade-visits.ts's TradeVisit) keeps line_status as `string | null` since an ORDINARY r15 visit's line_status is genuinely null forever. */
-export type TradeVisitLineStatus = "proposed" | "accepted" | "date_suggested";
+/** Migration 049's trade_visits.line_status, widened by migration 075 with terminal `voided`. Null on this type is never valid for a grouped line (every row created by POST /api/projects/[id]/trade-requests always sets one) — the plain trade_visits row shape (lib/trade-visits.ts's TradeVisit) keeps line_status as `string | null` since an ORDINARY r15 visit's line_status is genuinely null forever. */
+export type TradeVisitLineStatus = "proposed" | "accepted" | "date_suggested" | "voided";
 
 /** A trade_booking_requests row, verbatim. */
 export interface TradeBookingRequestRow {
@@ -43,6 +43,7 @@ export type TradeBookingRequestStage =
   | "link_opened"
   | "partial_response"
   | "responded"
+  | "closed"
   | "delivery_problem";
 
 export interface TradeBookingProgress {
@@ -77,6 +78,7 @@ export interface TradeBookingLineCounts {
   total: number;
   accepted: number;
   date_suggested: number;
+  voided: number;
   outstanding: number;
 }
 
@@ -110,7 +112,14 @@ export interface CreateTradeBookingRequestInput {
 
 export interface CreateTradeBookingRequestSkippedTask {
   task_id: string;
-  reason: "no_booking_dates" | "no_phase" | "wrong_contact" | "not_found" | "already_in_open_request";
+  reason:
+    | "no_booking_dates"
+    | "no_phase"
+    | "wrong_contact"
+    | "not_found"
+    | "already_in_open_request"
+    | "task_done"
+    | "visit_completed";
 }
 
 /** POST /api/projects/[id]/trade-requests response. */
@@ -137,7 +146,7 @@ export interface TradeBookingRequestLine {
   phase_name: string;
   start_date: string;
   end_date: string;
-  /** The existing r15 trade_visits.status (unconfirmed/confirmed/tentative/declined/proposed_change) — kept alongside line_status so the admin detail view can show both the grouped-flow state AND whatever the existing per-visit machinery (reminders, "who else is on site") currently has it as. */
+  /** trade_visits.status (including terminal `completed`, migration 075) — kept alongside line_status so the admin detail view can show both the grouped-flow state and the underlying visit lifecycle. */
   status: string;
   line_status: TradeVisitLineStatus;
   suggested_start: string | null;

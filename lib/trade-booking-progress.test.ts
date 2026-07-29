@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deriveTradeBookingProgress } from "./trade-booking-progress.ts";
+import { countTradeBookingLines, deriveTradeBookingProgress } from "./trade-booking-progress.ts";
 import type { TradeBookingEmailEvidence } from "../types/round-grouped-trade-booking.ts";
 
 const request = {
@@ -11,7 +11,7 @@ const request = {
   responded_at: null,
 };
 
-const counts = { total: 2, accepted: 0, date_suggested: 0, outstanding: 2 };
+const counts = { total: 2, accepted: 0, date_suggested: 0, voided: 0, outstanding: 2 };
 
 function email(patch: Partial<TradeBookingEmailEvidence>): TradeBookingEmailEvidence {
   return {
@@ -71,14 +71,35 @@ test("partial and complete responses outrank transport evidence", () => {
   const partial = deriveTradeBookingProgress({
     request,
     email: email({ failed_at: "2026-07-14T00:02:00.000Z" }),
-    counts: { total: 2, accepted: 1, date_suggested: 0, outstanding: 1 },
+    counts: { total: 2, accepted: 1, date_suggested: 0, voided: 0, outstanding: 1 },
   });
   assert.equal(partial.stage, "partial_response");
 
   const complete = deriveTradeBookingProgress({
     request: { ...request, status: "responded" },
     email: null,
-    counts: { total: 2, accepted: 2, date_suggested: 0, outstanding: 0 },
+    counts: { total: 2, accepted: 2, date_suggested: 0, voided: 0, outstanding: 0 },
   });
   assert.equal(complete.stage, "responded");
+});
+
+test("a closed request reports that confirmation is no longer required", () => {
+  const progress = deriveTradeBookingProgress({
+    request: { ...request, status: "closed" },
+    email: null,
+    counts: { total: 1, accepted: 0, date_suggested: 0, voided: 1, outstanding: 0 },
+  });
+  assert.equal(progress.stage, "closed");
+  assert.match(progress.label, /no confirmation required/i);
+});
+
+test("voided lines are resolved rather than outstanding", () => {
+  assert.deepEqual(
+    countTradeBookingLines([
+      { line_status: "accepted" },
+      { line_status: "voided" },
+      { line_status: "proposed" },
+    ]),
+    { total: 3, accepted: 1, date_suggested: 0, voided: 1, outstanding: 1 }
+  );
 });

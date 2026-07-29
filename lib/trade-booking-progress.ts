@@ -26,7 +26,9 @@ export function deriveTradeBookingProgress({
 }): TradeBookingProgress {
   let stage: TradeBookingRequestStage;
 
-  if (request.status === "responded" || (counts.total > 0 && counts.outstanding === 0)) {
+  if (request.status === "closed") {
+    stage = "closed";
+  } else if (request.status === "responded" || (counts.total > 0 && counts.outstanding === 0)) {
     stage = "responded";
   } else if (counts.accepted + counts.date_suggested > 0) {
     stage = "partial_response";
@@ -98,8 +100,15 @@ export function deriveTradeBookingProgress({
       label: "Trade responded",
       explanation: counts.date_suggested > 0
         ? `All lines answered; ${counts.date_suggested} date suggestion${counts.date_suggested === 1 ? "" : "s"} need review.`
-        : "Every booking line has been confirmed.",
+        : counts.voided > 0
+          ? `${counts.accepted} confirmed · ${counts.voided} no longer required.`
+          : "Every booking line has been confirmed.",
       tone: counts.date_suggested > 0 ? "warning" : "positive",
+    },
+    closed: {
+      label: "Closed — no confirmation required",
+      explanation: "The linked work was marked done, so the outstanding confirmation request was voided.",
+      tone: "neutral",
     },
     delivery_problem: {
       label: "Delivery problem",
@@ -120,12 +129,14 @@ export function countTradeBookingLines(
 ): TradeBookingLineCounts {
   const accepted = lines.filter((line) => line.line_status === "accepted").length;
   const date_suggested = lines.filter((line) => line.line_status === "date_suggested").length;
+  const voided = lines.filter((line) => line.line_status === "voided").length;
   const total = lines.length;
   return {
     total,
     accepted,
     date_suggested,
-    outstanding: Math.max(0, total - accepted - date_suggested),
+    voided,
+    outstanding: Math.max(0, total - accepted - date_suggested - voided),
   };
 }
 

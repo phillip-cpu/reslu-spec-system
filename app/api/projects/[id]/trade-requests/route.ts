@@ -4,6 +4,7 @@ import { queueTradeCalendarSync } from "@/lib/trade-calendar-sync";
 import { sendOrQueue } from "@/lib/visit-emails";
 import { buildTaskRowsHtml } from "@/lib/trade-booking";
 import { documentPackMentionLine } from "@/lib/trade-doc-pack";
+import { isDoneColumnName } from "@/lib/board-constants";
 import {
   countTradeBookingLines,
   deriveTradeBookingProgress,
@@ -208,7 +209,7 @@ export async function POST(
 
   const { data: taskRows } = await supabase
     .from("board_tasks")
-    .select("id,title,project_id,contact_id,booking_date,booking_end_date,phase_group_id,visit_id")
+    .select("id,title,project_id,column_id,contact_id,booking_date,booking_end_date,phase_group_id,visit_id")
     .in("id", taskIds)
     .is("deleted_at", null);
   const taskById = new Map((taskRows ?? []).map((t) => [t.id, t]));
@@ -220,6 +221,16 @@ export async function POST(
     ? await supabase.from("board_groups").select("id,phase_id").in("id", groupIds)
     : { data: [] as { id: string; phase_id: string | null }[] };
   const phaseIdByGroup = new Map((groupRows ?? []).map((g) => [g.id, g.phase_id]));
+
+  const columnIds = [
+    ...new Set((taskRows ?? []).map((t) => t.column_id).filter((v): v is string => !!v)),
+  ];
+  const { data: columnRows } = columnIds.length
+    ? await supabase.from("board_columns").select("id,name").in("id", columnIds)
+    : { data: [] as { id: string; name: string }[] };
+  const doneColumnIds = new Set(
+    (columnRows ?? []).filter((column) => isDoneColumnName(column.name)).map((column) => column.id)
+  );
 
   // Review fix: a task's EXISTING visit (visit_id set) may already be
   // linked to a DIFFERENT, still-open ('sent') trade_booking_requests
@@ -236,8 +247,8 @@ export async function POST(
     ...new Set((taskRows ?? []).map((t) => t.visit_id).filter((v): v is string => !!v)),
   ];
   const { data: existingVisitRows } = existingVisitIds.length
-    ? await supabase.from("trade_visits").select("id,booking_request_id").in("id", existingVisitIds)
-    : { data: [] as { id: string; booking_request_id: string | null }[] };
+    ? await supabase.from("trade_visits").select("id,booking_request_id,status").in("id", existingVisitIds)
+    : { data: [] as { id: string; booking_request_id: string | null; status: string }[] };
   const priorRequestIdByVisitId = new Map(
     (existingVisitRows ?? []).filter((v) => v.booking_request_id).map((v) => [v.id, v.booking_request_id as string])
   );
@@ -252,6 +263,9 @@ export async function POST(
     const priorRequestId = priorRequestIdByVisitId.get(visitId);
     return !!priorRequestId && openPriorRequestIds.has(priorRequestId);
   }
+  const completedVisitIds = new Set(
+    (existingVisitRows ?? []).filter((visit) => visit.status === "completed").map((visit) => visit.id)
+  );
 
   const skipped: CreateTradeBookingRequestSkippedTask[] = [];
   const eligible: { task: NonNullable<ReturnType<typeof taskById.get>>; phase_id: string }[] = [];
@@ -264,6 +278,14 @@ export async function POST(
     }
     if (task.contact_id !== body.contact_id) {
       skipped.push({ task_id: taskId, reason: "wrong_contact" });
+      continue;
+    }
+    if (doneColumnIds.has(task.column_id)) {
+      skipped.push({ task_id: taskId, reason: "task_done" });
+      continue;
+    }
+    if (task.visit_id && completedVisitIds.has(task.visit_id)) {
+      skipped.push({ task_id: taskId, reason: "visit_completed" });
       continue;
     }
     if (!task.booking_date || !task.booking_end_date) {
@@ -284,7 +306,7 @@ export async function POST(
 
   if (eligible.length === 0) {
     return NextResponse.json(
-      { error: "No eligible tasks selected — every task needs booking dates and a phase.", skipped },
+      { error: "No eligible tasks selected — completed work cannot be booked, and every task needs booking dates and a phase.", skipped },
       { status: 400 }
     );
   }

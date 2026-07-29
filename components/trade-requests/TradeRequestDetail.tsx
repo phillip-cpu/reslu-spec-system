@@ -220,7 +220,9 @@ export function TradeRequestDetail({ requestId }: { requestId: string }) {
           <div>
             <p className="label-caps">Booking lines</p>
             <p className="mt-1 text-caption text-charcoal/50">
-              {detail.counts.accepted} confirmed · {detail.counts.date_suggested} date suggested · {detail.counts.outstanding} awaiting response
+              {detail.counts.accepted} confirmed · {detail.counts.date_suggested} date suggested
+              {detail.counts.voided > 0 ? ` · ${detail.counts.voided} no longer required` : ""}
+              {" · "}{detail.counts.outstanding} awaiting response
             </p>
           </div>
         </div>
@@ -244,6 +246,7 @@ const lineStatusLabels: Record<TradeBookingRequestLine["line_status"], string> =
   proposed: "Awaiting trade",
   accepted: "Confirmed",
   date_suggested: "New date suggested",
+  voided: "No confirmation required",
 };
 
 function LineCard({

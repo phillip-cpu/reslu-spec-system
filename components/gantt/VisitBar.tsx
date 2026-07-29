@@ -8,6 +8,7 @@ const STATUS_DOT: Record<VisitStatus, string> = {
   confirmed: "#5F8A82",
   declined: "#8a3f3f",
   proposed_change: "#A08C72",
+  completed: "#5F8A82",
 };
 
 const STATUS_LABEL: Record<VisitStatus, string> = {
@@ -16,6 +17,7 @@ const STATUS_LABEL: Record<VisitStatus, string> = {
   confirmed: "Confirmed",
   declined: "Declined",
   proposed_change: "Proposed change",
+  completed: "Completed",
 };
 
 /**

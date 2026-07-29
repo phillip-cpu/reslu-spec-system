@@ -504,11 +504,22 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     // VISIT SYNC doc comment) — flagged here so every caller of
     // updateTaskField (not just the WorksDateCell popover) gets the
     // affordance for free the moment it happens to touch booking dates.
-    const { task: updated, reconfirm_visit_ids: reconfirmVisitIds } = await res.json();
+    const {
+      task: updated,
+      reconfirm_visit_ids: reconfirmVisitIds,
+      voided_confirmation_visit_ids: voidedConfirmationVisitIds,
+    } = await res.json();
     if (Array.isArray(reconfirmVisitIds) && reconfirmVisitIds.length > 0) {
       setReconfirmPrompts((cur) => {
         const next = new Set(cur);
         for (const visitId of reconfirmVisitIds) next.add(visitId);
+        return next;
+      });
+    }
+    if (Array.isArray(voidedConfirmationVisitIds) && voidedConfirmationVisitIds.length > 0) {
+      setReconfirmPrompts((cur) => {
+        const next = new Set(cur);
+        for (const visitId of voidedConfirmationVisitIds) next.delete(visitId);
         return next;
       });
     }

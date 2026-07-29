@@ -77,7 +77,14 @@ export interface BookingsOverdueSourceTask {
   kind: "task" | "milestone";
   due_date: string | null;
   booking_date: string | null;
-  visit_status: "unconfirmed" | "confirmed" | "tentative" | "declined" | "proposed_change" | null;
+  visit_status:
+    | "unconfirmed"
+    | "confirmed"
+    | "tentative"
+    | "declined"
+    | "proposed_change"
+    | "completed"
+    | null;
   contact_id: string | null;
 }
 

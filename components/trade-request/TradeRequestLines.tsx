@@ -8,7 +8,7 @@ export interface TradeRequestLineView {
   task_title: string;
   start_date: string;
   end_date: string;
-  line_status: "proposed" | "accepted" | "date_suggested";
+  line_status: "proposed" | "accepted" | "date_suggested" | "voided";
   suggested_start: string | null;
   suggested_end: string | null;
   response_note: string | null;
@@ -94,6 +94,12 @@ function LineRow({ token, line: initialLine }: { token: string; line: TradeReque
         <p className="mt-3 border border-sand bg-cream px-3 py-2 text-caption text-charcoal">Accepted — locked in.</p>
       )}
 
+      {line.line_status === "voided" && (
+        <p className="mt-3 border border-sand bg-cream px-3 py-2 text-caption text-charcoal">
+          No confirmation required — RESLU has marked this work as completed.
+        </p>
+      )}
+
       {line.line_status === "date_suggested" && mode === "idle" && (
         <div className="mt-3 border border-[#c9c2b4] bg-nearwhite px-3 py-2">
           <p className="label-caps">You suggested</p>
@@ -110,7 +116,7 @@ function LineRow({ token, line: initialLine }: { token: string; line: TradeReque
 
       {error && <p className="mt-2 border border-red-700/40 bg-red-50 px-3 py-2 text-body text-red-700">{error}</p>}
 
-      {line.line_status !== "accepted" && mode === "idle" && (
+      {line.line_status !== "accepted" && line.line_status !== "voided" && mode === "idle" && (
         <div className="mt-3 flex gap-2">
           <button
             type="button"
@@ -130,7 +136,7 @@ function LineRow({ token, line: initialLine }: { token: string; line: TradeReque
         </div>
       )}
 
-      {line.line_status !== "accepted" && mode === "suggest" && (
+      {line.line_status !== "accepted" && line.line_status !== "voided" && mode === "suggest" && (
         <div className="mt-3 border border-[#dcd6cc] bg-nearwhite px-3 py-3">
           <p className="label-caps mb-2">Suggest a different date</p>
           <div className="grid grid-cols-2 gap-2">

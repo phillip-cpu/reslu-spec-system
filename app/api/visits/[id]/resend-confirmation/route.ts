@@ -91,6 +91,12 @@ export async function POST(
   if (!existing) {
     return NextResponse.json({ error: "Visit not found" }, { status: 404 });
   }
+  if (existing.status === "completed") {
+    return NextResponse.json(
+      { error: "Completed work does not require confirmation." },
+      { status: 409 }
+    );
+  }
   if (existing.status !== "confirmed") {
     return NextResponse.json(
       { error: "Only a previously confirmed visit can be re-sent for confirmation" },

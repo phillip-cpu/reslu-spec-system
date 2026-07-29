@@ -6,6 +6,7 @@ import { rollupPhaseDatesForGroup } from "@/lib/phase-rollup";
 import { queueTradeCalendarSync } from "@/lib/trade-calendar-sync";
 import { sendOrQueue } from "@/lib/visit-emails";
 import { formatArrival } from "@/lib/trade-visits";
+import { isDoneColumnName } from "@/lib/board-constants";
 import { hasAnyDocumentPackChoice, documentPackMentionLine } from "@/lib/trade-doc-pack";
 import type { BookVisitInput } from "@/types/board-cockpit";
 import type { BookVisitEmailSkipReason } from "@/types/board-v3-3";
@@ -243,12 +244,23 @@ export async function POST(
 
   const { data: task } = await supabase
     .from("board_tasks")
-    .select("id,title,project_id,visit_id")
+    .select("id,title,project_id,column_id,visit_id")
     .eq("id", taskId)
     .is("deleted_at", null)
     .single();
   if (!task) {
     return NextResponse.json({ error: "Card not found" }, { status: 404 });
+  }
+  const { data: taskColumn } = await supabase
+    .from("board_columns")
+    .select("name")
+    .eq("id", task.column_id)
+    .maybeSingle();
+  if (taskColumn && isDoneColumnName(taskColumn.name)) {
+    return NextResponse.json(
+      { error: "Completed work cannot be sent for confirmation." },
+      { status: 409 }
+    );
   }
   if (task.visit_id) {
     return NextResponse.json(
@@ -300,13 +312,19 @@ export async function POST(
   if ("existing_visit_id" in body) {
     const { data: existingVisit } = await supabase
       .from("trade_visits")
-      .select("id,project_id,phase_id,contact_id,start_date,end_date,arrival_slot,arrival_time,confirm_token,document_pack")
+      .select("id,project_id,phase_id,contact_id,start_date,end_date,arrival_slot,arrival_time,status,confirm_token,document_pack")
       .eq("id", body.existing_visit_id)
       .eq("project_id", task.project_id)
       .is("deleted_at", null)
       .maybeSingle();
     if (!existingVisit) {
       return NextResponse.json({ error: "Visit not found in this project" }, { status: 404 });
+    }
+    if (existingVisit.status === "completed") {
+      return NextResponse.json(
+        { error: "A completed visit cannot be sent for confirmation again." },
+        { status: 409 }
+      );
     }
     const { data: alreadyLinked } = await supabase
       .from("board_tasks")

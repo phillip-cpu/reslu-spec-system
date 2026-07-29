@@ -7,6 +7,7 @@ import { rateLimit } from "@/lib/rate-limit";
 import { isVisitExpired, findOverlappingVisits, formatArrival } from "@/lib/trade-visits";
 import { formatShortDateAU, formatDateRangeAU } from "@/lib/gantt-window";
 import { ExpiredNotice } from "@/components/trade/ExpiredNotice";
+import { ConfirmationClosedNotice } from "@/components/trade/ConfirmationClosedNotice";
 import { WhoElseOnSite } from "@/components/trade/WhoElseOnSite";
 import { TradeRespondForm } from "@/components/trade/TradeRespondForm";
 import { TradeDocuments } from "@/components/trade/TradeDocuments";
@@ -79,6 +80,17 @@ export default async function TradePage({
 
   if (!visit) {
     notFound();
+  }
+
+  if (visit.status === "completed") {
+    return (
+      <div className="min-h-screen bg-cream">
+        <TradeHeader />
+        <main className="mx-auto max-w-md px-6 py-10">
+          <ConfirmationClosedNotice completed />
+        </main>
+      </div>
+    );
   }
 
   if (isVisitExpired(visit)) {

@@ -81,6 +81,12 @@ export async function POST(
   if (!bookingRequest) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
+  if (bookingRequest.status === "closed") {
+    return NextResponse.json(
+      { error: "This booking request is closed. No confirmation is required." },
+      { status: 410 }
+    );
+  }
 
   const { data: lineRows } = await supabase
     .from("trade_visits")
@@ -103,6 +109,12 @@ export async function POST(
   const line = lines.find((l) => l.id === body.line_id);
   if (!line) {
     return NextResponse.json({ error: "Line not found on this request." }, { status: 404 });
+  }
+  if (line.line_status === "voided" || line.status === "completed") {
+    return NextResponse.json(
+      { error: "This work has been marked completed. No confirmation is required." },
+      { status: 410 }
+    );
   }
 
   if (body.action === "accept") {

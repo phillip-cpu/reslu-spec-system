@@ -44,7 +44,7 @@ export interface LinkedVisitSummary {
   end_date: string;
   contact: ContactSummary | null;
   /** Grouped trade booking round (r20, migration 049) — non-null only for a line that belongs to a trade_booking_requests row; drives ProjectBoard's "trade suggested a new date" card badge. Null for every ordinary (non-grouped) visit. */
-  line_status: "proposed" | "accepted" | "date_suggested" | null;
+  line_status: "proposed" | "accepted" | "date_suggested" | "voided" | null;
 }
 
 /**

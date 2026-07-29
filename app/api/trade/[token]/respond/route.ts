@@ -73,6 +73,12 @@ export async function POST(
   if (!visit) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
+  if (visit.status === "completed") {
+    return NextResponse.json(
+      { error: "This work has been marked completed. No confirmation is required." },
+      { status: 410 }
+    );
+  }
   if (isVisitExpired(visit)) {
     return NextResponse.json({ error: "This link has expired." }, { status: 410 });
   }

@@ -31,7 +31,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // callers; this file defines everything new for trade visits locally).
 // ------------------------------------------------------------
 
-export type VisitStatus = "unconfirmed" | "confirmed" | "tentative" | "declined" | "proposed_change";
+export type VisitStatus =
+  | "unconfirmed"
+  | "confirmed"
+  | "tentative"
+  | "declined"
+  | "proposed_change"
+  | "completed";
 export type ArrivalSlot = "first_thing" | "midday" | "afternoon";
 
 export interface TradeVisit {

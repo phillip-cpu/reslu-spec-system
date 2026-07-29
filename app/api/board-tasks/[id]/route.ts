@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { isBookedColumnName } from "@/lib/board-constants";
+import { isBookedColumnName, isDoneColumnName } from "@/lib/board-constants";
 import { rollupPhaseDatesForGroup } from "@/lib/phase-rollup";
 import { queueTradeCalendarSync } from "@/lib/trade-calendar-sync";
 import type { PatchBoardTaskV33Input } from "@/types/board-v3-3";
@@ -229,10 +229,14 @@ export async function PATCH(
     }
   }
 
-  // A due date is the reminder to get this card booked. Once the card
-  // enters a real Booked/Re-booked status, clear that reminder at the
-  // source so My Work clears immediately. Works dates remain separate.
-  if (targetColumn && isBookedColumnName(targetColumn.name)) {
+  // A due date is the reminder to action this card. Once it enters a
+  // real Booked/Re-booked status, or the terminal Done status, clear
+  // that reminder at the source so My Work clears immediately. Works
+  // dates remain separate.
+  if (
+    targetColumn &&
+    (isBookedColumnName(targetColumn.name) || isDoneColumnName(targetColumn.name))
+  ) {
     update.due_date = null;
     update.due_time = null;
   }
@@ -328,7 +332,16 @@ export async function PATCH(
     console.error("rollupPhaseDatesForGroup failed after board-task PATCH:", rollupError);
   }
 
-  return NextResponse.json({ task, reconfirm_visit_ids: reconfirmVisitIds });
+  const voidedConfirmationVisitIds =
+    targetColumn && isDoneColumnName(targetColumn.name) && task.visit_id
+      ? [task.visit_id]
+      : [];
+
+  return NextResponse.json({
+    task,
+    reconfirm_visit_ids: reconfirmVisitIds,
+    voided_confirmation_visit_ids: voidedConfirmationVisitIds,
+  });
 }
 
 /**

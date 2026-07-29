@@ -37,12 +37,18 @@ export async function POST(
 
   const { data: existing } = await supabase
     .from("trade_visits")
-    .select("id,project_id,contact_id,booking_request_id,start_date,end_date,arrival_slot,arrival_time")
+    .select("id,project_id,contact_id,booking_request_id,start_date,end_date,arrival_slot,arrival_time,status")
     .eq("id", id)
     .is("deleted_at", null)
     .maybeSingle();
   if (!existing) {
     return NextResponse.json({ error: "Visit not found" }, { status: 404 });
+  }
+  if (existing.status === "completed") {
+    return NextResponse.json(
+      { error: "Completed work does not require confirmation." },
+      { status: 409 }
+    );
   }
 
   const confirmedAt = new Date().toISOString();

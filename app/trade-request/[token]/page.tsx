@@ -6,6 +6,7 @@ import { createServiceRoleClient } from "@/lib/supabase/server";
 import { rateLimit } from "@/lib/rate-limit";
 import { isRequestFullyExpired } from "@/lib/trade-request";
 import { ExpiredNotice } from "@/components/trade/ExpiredNotice";
+import { ConfirmationClosedNotice } from "@/components/trade/ConfirmationClosedNotice";
 import { TradeDocuments } from "@/components/trade/TradeDocuments";
 import { TradeRequestLines, type TradeRequestLineView } from "@/components/trade-request/TradeRequestLines";
 import { latestPlansFile, latestIssuedSow, findPresetNameForCategories, scheduleLabel, formatFileSize } from "@/lib/trade-doc-pack";
@@ -104,6 +105,20 @@ export default async function TradeRequestPage({
   }
 
   const lines = lineRows ?? [];
+
+  if (bookingRequest.status === "closed") {
+    const closedBecauseCompleted =
+      lines.length > 0 &&
+      lines.every((line) => line.status === "completed" || line.line_status === "voided");
+    return (
+      <div className="min-h-screen bg-cream">
+        <TradeRequestHeader />
+        <main className="mx-auto max-w-md px-6 py-10">
+          <ConfirmationClosedNotice completed={closedBecauseCompleted} />
+        </main>
+      </div>
+    );
+  }
 
   if (isRequestFullyExpired(lines)) {
     return (
