@@ -106,6 +106,7 @@ const EDITABLE_FIELDS = new Set([
   "product_url",
   "selected_image_url",
   "image_options",
+  "product_details",
   "scrape_status",
   "scraped_documents",
   // Pricing & Procurement view (accepted here; never surfaced on portal/PDF)
@@ -193,7 +194,7 @@ const TEXT_FIELDS = new Set([
 ]);
 
 /** JSON/array fields — pass through as-is (already validated shape by callers). */
-const JSON_FIELDS = new Set(["image_options", "scraped_documents"]);
+const JSON_FIELDS = new Set(["image_options", "product_details", "scraped_documents"]);
 
 /**
  * GET /api/items/[id]

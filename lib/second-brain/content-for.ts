@@ -45,6 +45,7 @@ export type IndexableItem = {
   name: string;
   category: string | null;
   description: string | null;
+  product_details: { label: string; value: string }[] | null;
   supplier: string | null;
   brand: string | null;
   location: string | null;
@@ -116,12 +117,18 @@ export function contentForLead(l: IndexableLead): { title: string; content: stri
 
 export function contentForItem(i: IndexableItem): { title: string; content: string } {
   const title = `${i.item_code} — ${i.name}`;
+  const productDetails = Array.isArray(i.product_details)
+    ? i.product_details
+        .map((detail) => `${detail.label}: ${detail.value}`)
+        .join("; ")
+    : null;
   return {
     title,
     content: joinFields([
       title,
       i.category,
       i.description,
+      productDetails,
       i.supplier,
       i.brand,
       i.location,

@@ -111,7 +111,7 @@ async function fetchItemPage(supabase: SupabaseClient, offset: number): Promise<
   const { data, error } = await supabase
     .from("items")
     .select(
-      "id,item_code,name,category,description,supplier,brand,location,colour,material,finish,status,price_rrp,price_trade"
+      "id,item_code,name,category,description,product_details,supplier,brand,location,colour,material,finish,status,price_rrp,price_trade"
     )
     .is("deleted_at", null)
     .order("id")

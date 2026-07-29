@@ -20,7 +20,11 @@ import net from "node:net";
 
 const MAX_REDIRECTS = 3;
 const MAX_BYTES = 5 * 1024 * 1024; // 5 MB — page scrape (documents use a separate, larger cap)
-const TIMEOUT_MS = 5_000;
+// Supplier product pages (notably Bunnings Trade) can take more than
+// five seconds to stream their server-rendered product payload even
+// though they are healthy. Twelve seconds still bounds the request
+// tightly while avoiding false failures on those larger pages.
+const TIMEOUT_MS = 12_000;
 
 // A realistic desktop browser UA — many supplier sites block/soft-fail
 // on obvious bot/empty user agents.

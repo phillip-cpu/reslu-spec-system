@@ -17,6 +17,11 @@ export interface DetectedDocument {
   label: string;
 }
 
+export interface ExtractedProductDetail {
+  label: string;
+  value: string;
+}
+
 /**
  * Dimensions in millimetres, best-effort-extracted (BUILD-SPEC.md
  * "Dimension extraction (best-effort)"). Any subset may be present —
@@ -38,11 +43,57 @@ export interface ExtractResult {
   images: string[];
   documents: DetectedDocument[];
   dimensions: ExtractedDimensions;
+  title: string | null;
+  description: string | null;
+  brand: string | null;
+  details: ExtractedProductDetail[];
 }
 
 const MIN_PRICE = 1;
 const MAX_PRICE = 500_000;
 const MAX_IMAGES = 12;
+const MAX_DETAILS = 30;
+
+function decodeHtml(value: string): string {
+  return value
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#(\d+);/g, (_match, code: string) => String.fromCharCode(Number(code)));
+}
+
+function cleanText(value: unknown): string | null {
+  if (
+    typeof value !== "string" &&
+    typeof value !== "number" &&
+    typeof value !== "boolean"
+  ) {
+    return null;
+  }
+  const cleaned = decodeHtml(String(value))
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || null;
+}
+
+function dedupeDetails(details: ExtractedProductDetail[]): ExtractedProductDetail[] {
+  const seen = new Set<string>();
+  const result: ExtractedProductDetail[] = [];
+  for (const detail of details) {
+    const label = cleanText(detail.label);
+    const value = cleanText(detail.value);
+    if (!label || !value) continue;
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({ label, value });
+    if (result.length >= MAX_DETAILS) break;
+  }
+  return result;
+}
 
 // ------------------------------------------------------------
 // Dimension extraction (best-effort)
@@ -182,6 +233,21 @@ function dimensionsFromText(html: string): ExtractedDimensions {
     if (out.depth_mm === undefined && d !== null) out.depth_mm = d;
   }
 
+  // Timber and sheet-goods titles commonly use a mixed-unit form:
+  // "90 x 45mm 5.4m". The final value is a length in metres, not
+  // 5.4 millimetres. Keeping this as a dedicated pattern avoids the
+  // unit ambiguity that caused the 5.4m LVL in the register to show
+  // as a length of 5.4mm.
+  const mixedTimber = /\b([\d.]+)\s*x\s*([\d.]+)\s*mm\s*(?:x\s*)?([\d.]+)\s*m\b/i.exec(text);
+  if (mixedTimber) {
+    const w = toMm(Number(mixedTimber[1]), "mm");
+    const h = toMm(Number(mixedTimber[2]), "mm");
+    const l = toMm(Number(mixedTimber[3]), "m");
+    if (out.width_mm === undefined && w !== null) out.width_mm = w;
+    if (out.height_mm === undefined && h !== null) out.height_mm = h;
+    if (out.length_mm === undefined && l !== null) out.length_mm = l;
+  }
+
   return out;
 }
 
@@ -203,10 +269,18 @@ interface JsonLdOffer {
   price?: string | number;
   priceCurrency?: string;
 }
+interface JsonLdPropertyValue {
+  name?: string;
+  value?: string | number | boolean;
+}
 interface JsonLdProduct {
   "@type"?: string | string[];
+  name?: string;
+  description?: string;
+  brand?: string | { name?: string };
   image?: string | string[] | { url?: string };
   offers?: JsonLdOffer | JsonLdOffer[];
+  additionalProperty?: JsonLdPropertyValue | JsonLdPropertyValue[];
 }
 
 function extractJsonLdBlocks(html: string): unknown[] {
@@ -276,6 +350,40 @@ function imagesFromJsonLd(products: JsonLdProduct[]): string[] {
   return out;
 }
 
+function contentFromJsonLd(products: JsonLdProduct[]): {
+  title: string | null;
+  description: string | null;
+  brand: string | null;
+  details: ExtractedProductDetail[];
+} {
+  let title: string | null = null;
+  let description: string | null = null;
+  let brand: string | null = null;
+  const details: ExtractedProductDetail[] = [];
+
+  for (const product of products) {
+    title ??= cleanText(product.name);
+    description ??= cleanText(product.description);
+    brand ??=
+      typeof product.brand === "string"
+        ? cleanText(product.brand)
+        : cleanText(product.brand?.name);
+
+    const properties = Array.isArray(product.additionalProperty)
+      ? product.additionalProperty
+      : product.additionalProperty
+        ? [product.additionalProperty]
+        : [];
+    for (const property of properties) {
+      if (property.name && property.value !== undefined) {
+        details.push({ label: property.name, value: String(property.value) });
+      }
+    }
+  }
+
+  return { title, description, brand, details: dedupeDetails(details) };
+}
+
 // ------------------------------------------------------------
 // OpenGraph / meta tags (second priority)
 // ------------------------------------------------------------
@@ -316,6 +424,47 @@ function priceFromMeta(html: string): number | null {
 
 function imagesFromMeta(html: string): string[] {
   return metaContent(html, "og:image");
+}
+
+// Conservative specification-table fallback for suppliers that do not
+// publish JSON-LD additionalProperty. Only recognised product-spec
+// labels are accepted so delivery tables, navigation and account data
+// do not leak into the item record.
+const PRODUCT_DETAIL_LABEL_RE =
+  /\b(model|sku|item|product|colour|color|finish|material|dimension|width|height|length|depth|weight|capacity|warranty|pressure|flow|rating|grade|size|style|type|mount|installation|power|voltage|energy|composition|treatment)\b/i;
+
+function detailsFromHtml(html: string): ExtractedProductDetail[] {
+  const details: ExtractedProductDetail[] = [];
+  const add = (rawLabel: unknown, rawValue: unknown) => {
+    const label = cleanText(rawLabel);
+    const value = cleanText(rawValue);
+    if (
+      !label ||
+      !value ||
+      label.length > 80 ||
+      value.length > 600 ||
+      !PRODUCT_DETAIL_LABEL_RE.test(label)
+    ) {
+      return;
+    }
+    details.push({ label, value });
+  };
+
+  const rowRe = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
+  let row: RegExpExecArray | null;
+  while ((row = rowRe.exec(html))) {
+    const cells = [...row[1].matchAll(/<(?:th|td)\b[^>]*>([\s\S]*?)<\/(?:th|td)>/gi)];
+    if (cells.length >= 2) add(cells[0][1], cells[1][1]);
+  }
+
+  const definitionRe =
+    /<dt\b[^>]*>([\s\S]*?)<\/dt>\s*<dd\b[^>]*>([\s\S]*?)<\/dd>/gi;
+  let definition: RegExpExecArray | null;
+  while ((definition = definitionRe.exec(html))) {
+    add(definition[1], definition[2]);
+  }
+
+  return dedupeDetails(details);
 }
 
 // ------------------------------------------------------------
@@ -555,19 +704,16 @@ function extractDocuments(html: string, baseUrl: string): DetectedDocument[] {
 // a Next.js `__NEXT_DATA__` script tag carrying the exact same React
 // Query result the client hydrates from, including a
 // `product-retail-price` query (data.value, a clean float, already in
-// dollars) and a `retail-product` query (data.images[].url, full-res
-// CDN URLs). Parsed first, ahead of the generic chain in
+// dollars) and a `retail-product` OR `trade-product` query containing
+// images, brand, description/features, classification specifications
+// and dimensions. Parsed first, ahead of the generic chain in
 // extractFromHtml below, since it's the most structured source
 // available for this specific site — not a general per-site plugin
 // system (only one site needs this today; see this file's own header
 // comment on why a real HTML parser isn't available here either).
-// Deliberately does NOT attempt dimensions: Bunnings' own dimension
-// object uses width/height/depth keys whose real-world meaning varies
-// by product category (for timber, "depth" is actually the cut
-// length; for a cabinet it would be genuine depth) — guessing wrong
-// would silently corrupt a field, worse than leaving it for the
-// existing best-effort text fallback (dimensionsFromText, unaffected
-// by this block) to maybe pick up instead.
+// Dimensions are read conservatively: mixed-unit product titles such
+// as "90 x 45mm 5.4m" take priority and map the final value to length;
+// otherwise Bunnings' explicit width/height/depth object is used.
 // ------------------------------------------------------------
 
 function isBunningsUrl(pageUrl: string): boolean {
@@ -583,8 +729,26 @@ interface BunningsNextDataQuery {
   state?: { data?: unknown };
 }
 
-function extractBunningsNextData(html: string): { price: number | null; images: string[] } {
-  const result: { price: number | null; images: string[] } = { price: null, images: [] };
+interface BunningsExtract {
+  price: number | null;
+  images: string[];
+  dimensions: ExtractedDimensions;
+  title: string | null;
+  description: string | null;
+  brand: string | null;
+  details: ExtractedProductDetail[];
+}
+
+function extractBunningsNextData(html: string): BunningsExtract {
+  const result: BunningsExtract = {
+    price: null,
+    images: [],
+    dimensions: {},
+    title: null,
+    description: null,
+    brand: null,
+    details: [],
+  };
   const m = /<script id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i.exec(html);
   if (!m) return result;
 
@@ -611,17 +775,90 @@ function extractBunningsNextData(html: string): { price: number | null; images: 
       const value = (data as { value?: unknown }).value;
       const n = typeof value === "number" ? value : Number(value);
       if (Number.isFinite(n) && n >= MIN_PRICE && n <= MAX_PRICE) result.price = n;
-    } else if (key === "retail-product") {
-      const images = (data as { images?: unknown }).images;
+    } else if (key === "retail-product" || key === "trade-product") {
+      const product = data as {
+        name?: unknown;
+        summary?: unknown;
+        brand?: { name?: unknown };
+        code?: unknown;
+        itemNumber?: unknown;
+        unitofprice?: unknown;
+        images?: unknown;
+        feature?: { description?: unknown; pointers?: unknown };
+        classifications?: unknown;
+        dimension?: { product?: unknown };
+      };
+      const images = product.images;
       if (Array.isArray(images)) {
         for (const img of images) {
           const url = (img as { url?: unknown })?.url;
           if (typeof url === "string" && url) result.images.push(url);
         }
       }
+
+      result.title ??= cleanText(product.name);
+      result.description ??=
+        cleanText(product.feature?.description) ?? cleanText(product.summary);
+      result.brand ??= cleanText(product.brand?.name);
+
+      const itemNumber = cleanText(product.itemNumber) ?? cleanText(product.code);
+      if (itemNumber) result.details.push({ label: "Item number", value: itemNumber });
+      const unit = cleanText(product.unitofprice);
+      if (unit) result.details.push({ label: "Unit of sale", value: unit });
+
+      if (Array.isArray(product.feature?.pointers)) {
+        const pointers = product.feature.pointers
+          .map(cleanText)
+          .filter((value): value is string => !!value);
+        if (pointers.length) {
+          result.details.push({ label: "Features", value: pointers.join(" · ") });
+        }
+      }
+
+      if (Array.isArray(product.classifications)) {
+        for (const classification of product.classifications) {
+          const features = (classification as { features?: unknown })?.features;
+          if (!Array.isArray(features)) continue;
+          for (const feature of features) {
+            const typed = feature as {
+              name?: unknown;
+              featureValues?: unknown;
+            };
+            const label = cleanText(typed.name);
+            const values = Array.isArray(typed.featureValues)
+              ? typed.featureValues
+                  .map((entry) => cleanText((entry as { value?: unknown })?.value))
+                  .filter((value): value is string => !!value)
+              : [];
+            if (label && values.length) {
+              result.details.push({ label, value: values.join(", ") });
+            }
+          }
+        }
+      }
+
+      // Product title is the safest source for mixed-unit timber sizes.
+      // If it does not carry a recognisable dimension string, fall back
+      // to Bunnings' explicit product dimension object.
+      const fromTitle = result.title ? dimensionsFromText(result.title) : {};
+      result.dimensions = mergeDimensions(result.dimensions, fromTitle);
+      const explicit = Array.isArray(product.dimension?.product)
+        ? (product.dimension?.product[0] as
+            | { width?: unknown; height?: unknown; depth?: unknown }
+            | undefined)
+        : undefined;
+      if (explicit && Object.keys(fromTitle).length === 0) {
+        const width = toMm(Number(explicit.width), "mm");
+        const height = toMm(Number(explicit.height), "mm");
+        const depth = toMm(Number(explicit.depth), "mm");
+        if (width !== null) result.dimensions.width_mm = width;
+        if (height !== null) result.dimensions.height_mm = height;
+        if (depth !== null) result.dimensions.depth_mm = depth;
+      }
     }
   }
 
+  result.details = dedupeDetails(result.details);
   return result;
 }
 
@@ -646,15 +883,43 @@ export function extractFromHtml(html: string, pageUrl: string): ExtractResult {
     // comment for why this runs ahead of the generic chain.
     const bunnings = isBunningsUrl(pageUrl)
       ? extractBunningsNextData(html)
-      : { price: null as number | null, images: [] as string[] };
+      : {
+          price: null as number | null,
+          images: [] as string[],
+          dimensions: {} as ExtractedDimensions,
+          title: null as string | null,
+          description: null as string | null,
+          brand: null as string | null,
+          details: [] as ExtractedProductDetail[],
+        };
 
     const ldBlocks = extractJsonLdBlocks(html);
     const products: JsonLdProduct[] = [];
     for (const block of ldBlocks) findProductNodes(block, products);
+    const jsonLdContent = contentFromJsonLd(products);
 
     let price: number | null = bunnings.price;
     let priceConfidence: ExtractResult["priceConfidence"] = bunnings.price !== null ? "high" : "none";
     let images: string[] = [...bunnings.images];
+    const title =
+      bunnings.title ??
+      jsonLdContent.title ??
+      cleanText(metaContent(html, "og:title")[0]) ??
+      cleanText(/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1]);
+    const description =
+      bunnings.description ??
+      jsonLdContent.description ??
+      cleanText(metaContent(html, "og:description")[0]) ??
+      cleanText(metaContent(html, "description")[0]);
+    const brand =
+      bunnings.brand ??
+      jsonLdContent.brand ??
+      cleanText(metaContent(html, "product:brand")[0]);
+    const details = dedupeDetails([
+      ...bunnings.details,
+      ...jsonLdContent.details,
+      ...detailsFromHtml(html),
+    ]);
 
     // 1. JSON-LD
     if (price === null) {
@@ -723,12 +988,35 @@ export function extractFromHtml(html: string, pageUrl: string): ExtractResult {
     // (b) spec-table/text patterns as a fallback for any field JSON-LD
     // didn't provide (including `length`, which schema.org's Product
     // type has no dedicated property for).
-    const dimensions = mergeDimensions(dimensionsFromJsonLd(products), dimensionsFromText(html));
+    const dimensions = mergeDimensions(
+      bunnings.dimensions,
+      mergeDimensions(dimensionsFromJsonLd(products), dimensionsFromText(html))
+    );
 
-    return { price, priceConfidence, images: dedupedImages, documents, dimensions };
+    return {
+      price,
+      priceConfidence,
+      images: dedupedImages,
+      documents,
+      dimensions,
+      title,
+      description,
+      brand,
+      details,
+    };
   } catch {
     // Extraction must never throw — a malformed page degrades to "nothing
     // found", which the pipeline treats as a partial/failed scrape.
-    return { price: null, priceConfidence: "none", images: [], documents: [], dimensions: {} };
+    return {
+      price: null,
+      priceConfidence: "none",
+      images: [],
+      documents: [],
+      dimensions: {},
+      title: null,
+      description: null,
+      brand: null,
+      details: [],
+    };
   }
 }

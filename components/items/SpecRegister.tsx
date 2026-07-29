@@ -761,6 +761,21 @@ function ItemRow({
                 />
               </DetailField>
 
+              {(item.product_details?.length ?? 0) > 0 && (
+                <DetailField label="Product details" full>
+                  <dl className="grid gap-x-6 gap-y-2 border border-[#dcd6cc] bg-nearwhite/50 p-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {item.product_details.map((detail, index) => (
+                      <div key={`${detail.label}-${index}`} className="min-w-0">
+                        <dt className="label-caps text-charcoal/55">{detail.label}</dt>
+                        <dd className="mt-0.5 break-words text-body text-charcoal">
+                          {detail.value}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                </DetailField>
+              )}
+
               <DetailField label="Product URL" full>
                 <div className="flex items-center gap-2">
                   <div className="flex-1">
@@ -769,6 +784,17 @@ function ItemRow({
                       onCommit={(v) => onPatch({ product_url: v || null })}
                     />
                   </div>
+                  {safeExternalUrl(item.product_url) && (
+                    <a
+                      href={safeExternalUrl(item.product_url)!}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="shrink-0 border border-[#c9c2b4] px-3 py-1.5 text-subhead text-charcoal transition-colors hover:border-nearblack hover:text-nearblack"
+                      aria-label="Open supplier product page in a new tab"
+                    >
+                      Open product ↗
+                    </a>
+                  )}
                   <FetchDetailsButton
                     itemId={item.id}
                     scrapeStatus={item.scrape_status}
@@ -863,6 +889,16 @@ function DetailField({
       {children}
     </div>
   );
+}
+
+function safeExternalUrl(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -983,6 +1019,13 @@ function ScrapeStatusLine({ item }: { item: Item }) {
   // success / partial / vision / skipped — all "the scraper ran" states.
   const imageCount = item.image_options?.length ?? 0;
   const priceFound = item.price_rrp !== null && item.price_rrp !== undefined;
+  const detailCount = item.product_details?.length ?? 0;
+  const dimensionCount = [
+    item.width_mm,
+    item.height_mm,
+    item.length_mm,
+    item.depth_mm,
+  ].filter((value) => value !== null && value !== undefined).length;
   const partial = item.scrape_status === "partial";
 
   return (
@@ -991,6 +1034,12 @@ function ScrapeStatusLine({ item }: { item: Item }) {
         {partial ? "Partial — " : ""}
         {imageCount} {imageCount === 1 ? "image" : "images"}
         {priceFound ? ", price found" : ", no price found"}
+        {dimensionCount > 0
+          ? `, ${dimensionCount} ${dimensionCount === 1 ? "dimension" : "dimensions"}`
+          : ""}
+        {detailCount > 0
+          ? `, ${detailCount} ${detailCount === 1 ? "product detail" : "product details"}`
+          : ""}
         {attemptedAt ? ` · ${attemptedAt}` : ""}
       </p>
       {item.scrape_flagged && (

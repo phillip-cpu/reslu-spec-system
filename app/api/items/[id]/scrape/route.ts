@@ -42,6 +42,7 @@ const SCRAPE_RESULT_COLUMNS = [
   "product_url_normalized",
   "selected_image_url",
   "image_options",
+  "product_details",
   "price_rrp",
   "scrape_status",
   "scrape_attempted_at",

@@ -2,7 +2,11 @@ import { createServiceRoleClient } from "@/lib/supabase/server";
 import { ensureStoredImage } from "@/lib/images";
 import { reportError } from "@/lib/report-error";
 import { fetchSafely, UnsafeUrlError } from "./guard";
-import { extractFromHtml, type DetectedDocument } from "./extract";
+import {
+  extractFromHtml,
+  type DetectedDocument,
+  type ExtractedProductDetail,
+} from "./extract";
 import { normalizeProductUrl } from "./normalize";
 import type { ScrapeStatus } from "@/types";
 
@@ -15,9 +19,10 @@ import type { ScrapeStatus } from "@/types";
  *   - image_options: merged with any existing options, deduped
  *   - price_rrp: only set if currently null — a manual entry is never
  *     overwritten by a scrape
- *   - scrape_status: 'success' if images were found, 'partial' if only
- *     some data (e.g. price but no images, or vice versa), 'failed'
- *     otherwise
+ *   - product_details / description / brand / dimensions: filled from
+ *     structured supplier data without overwriting manual values
+ *   - scrape_status: 'success' if images were found, 'partial' if useful
+ *     product data was found without an image, 'failed' otherwise
  *   - scrape_attempted_at: always stamped
  *   - scrape_flagged + scrape_flag_note: set on failure so the register
  *     surfaces "add images manually"
@@ -38,10 +43,72 @@ export interface ScrapeOutcome {
   note?: string;
 }
 
-const FAILURE_NOTE = "Auto-fetch failed — add images manually";
+const FAILURE_NOTE = "Auto-fetch failed — open the product page or add details manually";
 
 /** Note appended to scrape_flag_note when at least one dimension was auto-filled (BUILD-SPEC.md "Dimension extraction (best-effort)"). */
-const DIMENSIONS_NOTE = "Dimensions auto-read — please verify";
+const DIMENSIONS_NOTE = "Dimensions and product details auto-read — please verify";
+
+function mergeProductDetails(
+  current: unknown,
+  scraped: ExtractedProductDetail[]
+): ExtractedProductDetail[] {
+  const existing = Array.isArray(current)
+    ? current.filter(
+        (entry): entry is ExtractedProductDetail =>
+          !!entry &&
+          typeof entry === "object" &&
+          typeof (entry as ExtractedProductDetail).label === "string" &&
+          typeof (entry as ExtractedProductDetail).value === "string"
+      )
+    : [];
+  const seen = new Set(existing.map((entry) => entry.label.trim().toLowerCase()));
+  const merged = [...existing];
+  for (const entry of scraped) {
+    const key = entry.label.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(entry);
+  }
+  return merged;
+}
+
+function detailValue(
+  details: ExtractedProductDetail[],
+  labels: string[]
+): string | null {
+  const wanted = new Set(labels.map((label) => label.toLowerCase()));
+  return (
+    details.find((detail) => wanted.has(detail.label.trim().toLowerCase()))?.value ??
+    null
+  );
+}
+
+function isLikelyMetresStoredAsMillimetres(current: unknown, scraped: number): boolean {
+  const value = Number(current);
+  if (!Number.isFinite(value) || value <= 0 || value >= 10 || scraped < 1000) return false;
+  return Math.abs(scraped / value - 1000) < 0.01;
+}
+
+function friendlyFailureNote(note: string): string {
+  if (/abort|timed?\s*out|timeout/i.test(note)) {
+    return "The supplier page took too long to respond — retry or open it manually";
+  }
+  const upstream = /Upstream returned (\d{3})/i.exec(note);
+  if (upstream) {
+    return `The supplier page returned error ${upstream[1]} — open it manually or retry later`;
+  }
+  if (/response too large/i.test(note)) {
+    return "The supplier page was too large to read safely — open it manually";
+  }
+  if (
+    /did not return an HTML page|disallowed address|host did not resolve|item not found/i.test(
+      note
+    )
+  ) {
+    return note.replace(/\.$/, "");
+  }
+  return FAILURE_NOTE;
+}
 
 export async function scrapeProductUrl(itemId: string, url: string): Promise<ScrapeOutcome> {
   const supabase = createServiceRoleClient();
@@ -59,12 +126,22 @@ export async function scrapeProductUrl(itemId: string, url: string): Promise<Scr
     }
 
     const html = bytes.toString("utf-8");
-    const { price, images, documents, dimensions } = extractFromHtml(html, finalUrl);
+    const {
+      price,
+      images,
+      documents,
+      dimensions,
+      description,
+      brand,
+      details,
+    } = extractFromHtml(html, finalUrl);
 
     // Fetch current item state so we merge (never overwrite manual data).
     const { data: current, error: fetchError } = await supabase
       .from("items")
-      .select("image_options, price_rrp, selected_image_url, width_mm, height_mm, length_mm, depth_mm")
+      .select(
+        "image_options, product_details, price_rrp, selected_image_url, description, brand, colour, material, finish, width_mm, height_mm, length_mm, depth_mm"
+      )
       .eq("id", itemId)
       .single();
 
@@ -79,10 +156,25 @@ export async function scrapeProductUrl(itemId: string, url: string): Promise<Scr
 
     const foundImages = images.length > 0;
     const foundPrice = price !== null;
-    const status: ScrapeStatus = foundImages ? "success" : foundPrice || documents.length > 0 ? "partial" : "failed";
+    const foundDimensions = Object.values(dimensions).some(
+      (value) => value !== undefined
+    );
+    const foundProductContent = !!description || !!brand || details.length > 0;
+    const foundAnything =
+      foundImages ||
+      foundPrice ||
+      documents.length > 0 ||
+      foundDimensions ||
+      foundProductContent;
+    const status: ScrapeStatus = foundImages
+      ? "success"
+      : foundAnything
+        ? "partial"
+        : "failed";
 
     const update: Record<string, unknown> = {
       image_options: mergedImages,
+      product_details: mergeProductDetails(current.product_details, details),
       scrape_status: status,
       scrape_attempted_at: new Date().toISOString(),
       scraped_documents: documents as DetectedDocument[],
@@ -91,6 +183,20 @@ export async function scrapeProductUrl(itemId: string, url: string): Promise<Scr
     // price_rrp: only fill if currently null — never overwrite a manual entry.
     if (current.price_rrp === null && price !== null) {
       update.price_rrp = price;
+    }
+    if (!current.description && description) update.description = description;
+    if (!current.brand && brand) update.brand = brand;
+    if (!current.colour) {
+      const colour = detailValue(details, ["colour", "color"]);
+      if (colour) update.colour = colour;
+    }
+    if (!current.material) {
+      const material = detailValue(details, ["material", "materials"]);
+      if (material) update.material = material;
+    }
+    if (!current.finish) {
+      const finish = detailValue(details, ["finish", "surface finish"]);
+      if (finish) update.finish = finish;
     }
 
     // Auto-select the best scraped image (first extracted = highest
@@ -108,7 +214,11 @@ export async function scrapeProductUrl(itemId: string, url: string): Promise<Scr
     const DIM_FIELDS = ["width_mm", "height_mm", "length_mm", "depth_mm"] as const;
     let anyDimensionFilled = false;
     for (const field of DIM_FIELDS) {
-      if (current[field] === null && dimensions[field] !== undefined) {
+      if (
+        dimensions[field] !== undefined &&
+        (current[field] === null ||
+          isLikelyMetresStoredAsMillimetres(current[field], dimensions[field]))
+      ) {
         update[field] = dimensions[field];
         anyDimensionFilled = true;
       }
@@ -116,7 +226,8 @@ export async function scrapeProductUrl(itemId: string, url: string): Promise<Scr
 
     if (status === "failed") {
       update.scrape_flagged = true;
-      update.scrape_flag_note = FAILURE_NOTE;
+      update.scrape_flag_note =
+        "No price, image, dimensions or product specifications were found";
     } else {
       // A successful/partial scrape clears any previous failure flag —
       // UNLESS dimensions were auto-filled this run, in which case the
@@ -128,14 +239,34 @@ export async function scrapeProductUrl(itemId: string, url: string): Promise<Scr
     }
 
     const { error: updateError } = await supabase.from("items").update(update).eq("id", itemId);
+    if (updateError) {
+      return { ok: false, status: "failed", note: updateError.message };
+    }
 
     // Auto-select: copy the best scraped image into our storage when the
     // item has none. Durable against supplier hotlink-blocking/URL rot.
     if (!current.selected_image_url && images.length > 0) {
-      await ensureStoredImage(supabase, itemId, images[0]);
-    }
-    if (updateError) {
-      return { ok: false, status: "failed", note: updateError.message };
+      try {
+        await ensureStoredImage(supabase, itemId, images[0]);
+      } catch (imageError) {
+        // Image hotlinking/storage is a separate stage. Do not discard a
+        // successfully extracted price, description or dimensions just
+        // because the supplier blocked the image copy.
+        await reportError("scrape-image-storage", imageError);
+        await supabase
+          .from("items")
+          .update({
+            scrape_flagged: true,
+            scrape_flag_note:
+              "Product details were found, but the image could not be stored — upload it manually",
+          })
+          .eq("id", itemId);
+        return {
+          ok: true,
+          status,
+          note: "Product details found; image storage failed.",
+        };
+      }
     }
 
     return { ok: status !== "failed", status };
@@ -172,7 +303,7 @@ async function markFailed(
         scrape_status: "failed",
         scrape_attempted_at: new Date().toISOString(),
         scrape_flagged: true,
-        scrape_flag_note: FAILURE_NOTE,
+        scrape_flag_note: friendlyFailureNote(note),
       })
       .eq("id", itemId);
   } catch {

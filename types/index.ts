@@ -128,6 +128,11 @@ export type ItemStatus = "Specced" | "Quoted" | "Ordered" | "On Site" | "Install
 
 export type ScrapeStatus = "pending" | "success" | "partial" | "failed" | "vision" | "skipped";
 
+export interface ProductDetail {
+  label: string;
+  value: string;
+}
+
 export interface Item {
   id: string;
   project_id: string;
@@ -166,6 +171,7 @@ export interface Item {
   product_url: string | null;
   selected_image_url: string | null;
   image_options: string[];
+  product_details: ProductDetail[];
 
   // Pricing — Pricing & Procurement view only, never client portal / builder PDF
   price_rrp: number | null;

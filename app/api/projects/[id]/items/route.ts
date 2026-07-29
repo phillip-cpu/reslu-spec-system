@@ -49,6 +49,7 @@ const SPEC_VIEW_COLUMNS = [
   "product_url",
   "selected_image_url",
   "image_options",
+  "product_details",
   "scrape_status",
   "scrape_attempted_at",
   "scrape_flagged",
