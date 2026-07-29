@@ -16,10 +16,10 @@ import { formatMoney } from "@/components/estimate/EstimateWorkspace";
 import type { ItemComponent } from "@/types/item-components";
 
 const STATUS_TABS: { value: InvoiceStatus | "all"; label: string }[] = [
-  { value: "all", label: "All" },
   { value: "unmatched", label: "Unmatched" },
   { value: "proposed", label: "Proposed" },
   { value: "approved", label: "Approved" },
+  { value: "all", label: "All" },
   { value: "rejected", label: "Rejected" },
   { value: "voided", label: "Voided" },
 ];
@@ -50,7 +50,11 @@ interface Props {
  */
 export function InvoiceQueue({ projectId }: Props) {
   const [invoices, setInvoices] = useState<InvoiceWithAllocations[]>([]);
-  const [statusFilter, setStatusFilter] = useState<InvoiceStatus | "all">("all");
+  // Attention-first queue: land on work that still needs matching.
+  // `load()` below automatically falls through to Approved when there
+  // is no unmatched work, so the normal view never starts on the noisy
+  // All tab (which also contains rejected and voided history).
+  const [statusFilter, setStatusFilter] = useState<InvoiceStatus | "all">("unmatched");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -62,8 +66,23 @@ export function InvoiceQueue({ projectId }: Props) {
     try {
       const qs = statusFilter !== "all" ? `?status=${statusFilter}` : "";
       const res = await fetch(`/api/projects/${projectId}/invoices${qs}`);
-      const body = await res.json();
+      let body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "Could not load invoices.");
+
+      // When the working queue is clear, show the useful approved
+      // record automatically instead of an empty Unmatched state. Keep
+      // Rejected/Voided available as deliberate history filters only.
+      if (statusFilter === "unmatched" && (body.invoices ?? []).length === 0) {
+        const approvedResponse = await fetch(
+          `/api/projects/${projectId}/invoices?status=approved`
+        );
+        body = await approvedResponse.json();
+        if (!approvedResponse.ok) {
+          throw new Error(body.error ?? "Could not load approved invoices.");
+        }
+        setStatusFilter("approved");
+      }
+
       setInvoices(body.invoices ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load invoices.");
