@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import clsx from "clsx";
+import { FINANCIAL_SUMMARY_CHANGED_EVENT } from "@/lib/project-financial-position";
 import type {
   ClientApprovedVariation,
   ClientBillingProfile,
@@ -89,6 +90,11 @@ export function ClientInvoiceQueue({
     }
   }, [projectId]);
 
+  const refreshFinancialSummary = useCallback(async () => {
+    await load();
+    window.dispatchEvent(new Event(FINANCIAL_SUMMARY_CHANGED_EVENT));
+  }, [load]);
+
   useEffect(() => {
     // Fetching this project-scoped queue is the effect's external synchronization.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -103,7 +109,7 @@ export function ClientInvoiceQueue({
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? `Could not ${action.replace("-", " ")} invoice.`);
       if (body.warning) setError(body.warning);
-      await load();
+      await refreshFinancialSummary();
     } catch (err) {
       setError(err instanceof Error ? err.message : `Could not ${action.replace("-", " ")} invoice.`);
     } finally {
@@ -123,7 +129,7 @@ export function ClientInvoiceQueue({
         profile={billingProfile}
         schedule={paymentSchedule}
         variations={approvedVariations}
-        onSaved={load}
+        onSaved={refreshFinancialSummary}
         onError={setError}
       />
 
@@ -134,7 +140,7 @@ export function ClientInvoiceQueue({
         projectAddress={projectAddress}
         billingProfile={billingProfile}
         paymentSchedule={paymentSchedule}
-        onCreated={load}
+        onCreated={refreshFinancialSummary}
         onError={setError}
       />
 

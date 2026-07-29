@@ -11,6 +11,7 @@ import type {
 import type { InvoiceAllocationInput } from "@/lib/invoice-allocations";
 import { invoiceAllocationBalance } from "@/lib/invoice-allocations";
 import { supplierLineCostLineInput } from "@/lib/supplier-invoice-lines";
+import { FINANCIAL_SUMMARY_CHANGED_EVENT } from "@/lib/project-financial-position";
 import { formatMoney } from "@/components/estimate/EstimateWorkspace";
 import type { ItemComponent } from "@/types/item-components";
 
@@ -70,6 +71,11 @@ export function InvoiceQueue({ projectId }: Props) {
     }
   }, [projectId, statusFilter]);
 
+  const refreshFinancialSummary = useCallback(async () => {
+    await load();
+    window.dispatchEvent(new Event(FINANCIAL_SUMMARY_CHANGED_EVENT));
+  }, [load]);
+
   useEffect(() => {
     // Initial/filter-triggered network load; state updates happen after
     // the awaited request inside load(), not as derived render state.
@@ -97,7 +103,7 @@ export function InvoiceQueue({ projectId }: Props) {
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Could not approve invoice.");
       if (body.warning) setError(body.warning);
-      await load();
+      await refreshFinancialSummary();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not approve invoice.");
     }
@@ -114,7 +120,7 @@ export function InvoiceQueue({ projectId }: Props) {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Could not save changes.");
-      await load();
+      await refreshFinancialSummary();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save changes.");
     }
@@ -127,7 +133,7 @@ export function InvoiceQueue({ projectId }: Props) {
       const res = await fetch(`/api/invoices/${id}/reject`, { method: "POST" });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Could not reject invoice.");
-      await load();
+      await refreshFinancialSummary();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not reject invoice.");
     }
@@ -144,7 +150,7 @@ export function InvoiceQueue({ projectId }: Props) {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Could not void invoice.");
-      await load();
+      await refreshFinancialSummary();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not void invoice.");
     }
@@ -160,7 +166,7 @@ export function InvoiceQueue({ projectId }: Props) {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Could not save allocations.");
-      await load();
+      await refreshFinancialSummary();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save allocations.");
     }
@@ -174,7 +180,11 @@ export function InvoiceQueue({ projectId }: Props) {
         </p>
       )}
 
-      <UploadForm projectId={projectId} onCreated={load} onError={setError} />
+      <UploadForm
+        projectId={projectId}
+        onCreated={refreshFinancialSummary}
+        onError={setError}
+      />
 
       <div className="flex border border-[#c9c2b4]">
         {STATUS_TABS.map((t) => (

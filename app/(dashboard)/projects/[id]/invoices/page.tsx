@@ -5,6 +5,7 @@ import { Header } from "@/components/layout/Header";
 import { ProjectTabs } from "@/components/projects/ProjectTabs";
 import { InvoiceQueue } from "@/components/invoices/InvoiceQueue";
 import { ClientInvoiceQueue } from "@/components/invoices/ClientInvoiceQueue";
+import { FinancialPositionSummary } from "@/components/invoices/FinancialPositionSummary";
 import { portalUrlFor } from "@/lib/portal-link";
 
 /**
@@ -71,6 +72,8 @@ export default async function ProjectInvoicesPage({
       <Header title={project.name} subtitle={`${project.client_name} · Invoices`} titleHref={`/projects/${id}`} />
       <ProjectTabs projectId={id} active="invoices" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
       <main className="flex-1 space-y-10 px-8 py-8">
+        <FinancialPositionSummary projectId={id} />
+
         {/* Client invoicing round — money IN (RESLU bills THIS client).
             Deliberately its own clearly-labelled section above the
             pre-existing supplier queue below (money OUT, trade/supplier
