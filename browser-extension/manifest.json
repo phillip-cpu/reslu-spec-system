@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "RESLU Product Importer",
+  "version": "0.1.0",
+  "description": "Review and import product details from a supplier page you have opened into RESLU Spec System.",
+  "permissions": ["activeTab", "storage", "tabs"],
+  "host_permissions": [
+    "https://www.bunnings.com.au/*",
+    "https://trade.bunnings.com.au/*",
+    "https://spec.reslu.com.au/*"
+  ],
+  "action": {
+    "default_title": "Import product to RESLU",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.bunnings.com.au/*",
+        "https://trade.bunnings.com.au/*",
+        "https://spec.reslu.com.au/*"
+      ],
+      "js": ["extractors.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
