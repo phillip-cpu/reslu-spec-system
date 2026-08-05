@@ -1041,13 +1041,20 @@ function ScrapeStatusLine({ item }: { item: Item }) {
   }
 
   if (item.scrape_status === "failed") {
+    const accessBlocked = /blocked automatic server access \(403\)/i.test(
+      item.scrape_flag_note ?? ""
+    );
     return (
       <div className="mt-1 text-caption text-red-700">
         <p>
           ⚠ Scrape failed{attemptedAt ? ` (${attemptedAt})` : ""}
           {item.scrape_flag_note ? ` — ${item.scrape_flag_note}` : ""}.
         </p>
-        <p className="text-charcoal/50">Use Retry above to try again.</p>
+        <p className="text-charcoal/50">
+          {accessBlocked
+            ? "Automatic access is unavailable for this supplier; use Open product above and enter the price/details manually."
+            : "Use Retry above to try again."}
+        </p>
       </div>
     );
   }

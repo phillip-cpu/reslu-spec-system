@@ -8,6 +8,7 @@ import {
   type ExtractedProductDetail,
 } from "./extract";
 import { normalizeProductUrl } from "./normalize";
+import { friendlyFailureNote } from "./failure-note";
 import type { ScrapeStatus } from "@/types";
 
 /**
@@ -42,8 +43,6 @@ export interface ScrapeOutcome {
   status: ScrapeStatus;
   note?: string;
 }
-
-const FAILURE_NOTE = "Auto-fetch failed — open the product page or add details manually";
 
 /** Note appended to scrape_flag_note when at least one dimension was auto-filled (BUILD-SPEC.md "Dimension extraction (best-effort)"). */
 const DIMENSIONS_NOTE = "Dimensions and product details auto-read — please verify";
@@ -87,27 +86,6 @@ function isLikelyMetresStoredAsMillimetres(current: unknown, scraped: number): b
   const value = Number(current);
   if (!Number.isFinite(value) || value <= 0 || value >= 10 || scraped < 1000) return false;
   return Math.abs(scraped / value - 1000) < 0.01;
-}
-
-function friendlyFailureNote(note: string): string {
-  if (/abort|timed?\s*out|timeout/i.test(note)) {
-    return "The supplier page took too long to respond — retry or open it manually";
-  }
-  const upstream = /Upstream returned (\d{3})/i.exec(note);
-  if (upstream) {
-    return `The supplier page returned error ${upstream[1]} — open it manually or retry later`;
-  }
-  if (/response too large/i.test(note)) {
-    return "The supplier page was too large to read safely — open it manually";
-  }
-  if (
-    /did not return an HTML page|disallowed address|host did not resolve|item not found/i.test(
-      note
-    )
-  ) {
-    return note.replace(/\.$/, "");
-  }
-  return FAILURE_NOTE;
 }
 
 export async function scrapeProductUrl(itemId: string, url: string): Promise<ScrapeOutcome> {
