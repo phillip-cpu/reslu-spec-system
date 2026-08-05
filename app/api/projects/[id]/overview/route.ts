@@ -53,7 +53,7 @@ export async function GET(
   ] = await Promise.all([
     supabase
       .from("items")
-      .select("id, status, client_approved, client_flagged, category, quantity, price_trade, price_rrp, cost_scope")
+      .select("id, status, client_approved, client_flagged, category, quantity, price_trade, price_rrp, markup_pct, cost_scope")
       .eq("project_id", projectId)
       .is("deleted_at", null),
     supabase
@@ -169,6 +169,7 @@ export async function GET(
         quantity: it.quantity,
         price_trade: it.price_trade,
         price_rrp: it.price_rrp,
+        markup_pct: it.markup_pct,
         cost_scope: it.cost_scope,
       }))
     );

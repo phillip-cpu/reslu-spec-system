@@ -123,3 +123,24 @@ test("allows an explicit empty allocation set only when clearing a draft", () =>
     allocated_cents: 0,
   });
 });
+
+test("keeps delivery FF&E context separate from library price updates", () => {
+  const result = validateInvoiceAllocations(
+    [
+      {
+        source_line_id: "freight-line",
+        match_type: "cost_line",
+        match_id: "delivery-allowance",
+        amount_ex_gst: 125,
+        apply_to_library_cost: false,
+        delivery_item_ids: ["basin", "tap", "basin"],
+      },
+    ],
+    125
+  );
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.allocations[0].delivery_item_ids, ["basin", "tap"]);
+    assert.equal(result.allocations[0].apply_to_library_cost, false);
+  }
+});

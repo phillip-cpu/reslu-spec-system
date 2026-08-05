@@ -4,6 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import type { CreateCostLineInput } from "@/types";
 
 const VALID_QUOTE_STATUS = new Set(["Q", "S", "NA"]);
+const VALID_LINE_KINDS = new Set(["standard", "delivery_allowance"]);
 
 /**
  * POST /api/estimate/sections/[sectionId]/lines
@@ -57,6 +58,18 @@ export async function POST(
       { status: 400 }
     );
   }
+  if (body.line_kind && !VALID_LINE_KINDS.has(body.line_kind)) {
+    return NextResponse.json(
+      { error: "line_kind must be standard or delivery_allowance" },
+      { status: 400 }
+    );
+  }
+  if (body.line_kind === "delivery_allowance" && body.item_id) {
+    return NextResponse.json(
+      { error: "A Delivery allowance cannot be a reusable FF&E product line" },
+      { status: 400 }
+    );
+  }
 
   const { data: existing } = await supabase
     .from("cost_lines")
@@ -83,6 +96,7 @@ export async function POST(
       quote_status: body.quote_status ?? null,
       item_id: body.item_id ?? null,
       notes: body.notes?.trim() || null,
+      line_kind: body.line_kind ?? "standard",
       sort: nextSort,
     })
     .select()

@@ -88,6 +88,7 @@ test("trade-package reference items stay out of FF&E cost rollups", () => {
       quantity: 2,
       price_trade: 10,
       price_rrp: null,
+      markup_pct: 30,
       cost_scope: "direct",
     },
     {
@@ -101,6 +102,40 @@ test("trade-package reference items stay out of FF&E cost rollups", () => {
   ]);
 
   assert.equal(rollup.total, 20);
+  assert.equal(rollup.client_total, 26);
   assert.equal(rollup.item_count, 1);
   assert.equal(rollup.categories[0]?.item_count, 1);
+  assert.equal(rollup.categories[0]?.client_total, 26);
+});
+
+test("legacy/custom FF&E markups remain explicit and RRP stays a placeholder", () => {
+  const rollup = ffeRollup([
+    {
+      id: "legacy",
+      category: "FA",
+      quantity: 1,
+      price_trade: 100,
+      price_rrp: null,
+      markup_pct: null,
+    },
+    {
+      id: "custom",
+      category: "FA",
+      quantity: 2,
+      price_trade: 50,
+      price_rrp: null,
+      markup_pct: 10,
+    },
+    {
+      id: "placeholder",
+      category: "FA",
+      quantity: 1,
+      price_trade: null,
+      price_rrp: 200,
+      markup_pct: 30,
+    },
+  ]);
+
+  assert.equal(rollup.total, 400);
+  assert.equal(rollup.client_total, 410);
 });

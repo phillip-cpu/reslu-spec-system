@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { validateInvoiceAllocations } from "@/lib/invoice-allocations";
 import { DUPLICATE_INVOICE_MESSAGE } from "@/lib/invoice-duplicates";
+import { saveInvoiceDeliveryItemLinks } from "@/lib/invoice-delivery-links";
 import type { InvoiceMatchType } from "@/types";
 import type { InvoiceWithAllocations, InvoiceWithIntake } from "@/types/round-supplier-invoice-intake";
 
@@ -97,9 +98,19 @@ export async function PATCH(
       return NextResponse.json({ error: allocationError.message }, { status: 400 });
     }
 
+    const deliveryLinks = await saveInvoiceDeliveryItemLinks(
+      supabase,
+      id,
+      existing.project_id,
+      validation.allocations
+    );
+    if (deliveryLinks.error) {
+      return NextResponse.json({ error: deliveryLinks.error }, { status: 400 });
+    }
+
     const { data: invoice, error: reloadError } = await supabase
       .from("invoices")
-      .select("*, invoice_allocations(*), supplier_invoice_lines(*)")
+      .select("*, invoice_allocations(*, invoice_allocation_delivery_items(item_id)), supplier_invoice_lines(*)")
       .eq("id", id)
       .single();
     if (reloadError || !invoice) {

@@ -301,11 +301,11 @@ export function EstimateWorkspace({ projectId }: Props) {
               </p>
             </div>
             <p className="max-w-sm text-caption text-charcoal/50">
-              Trades {formatMoney(estimate.rollup.totalIncGst)} inc GST + FF&E{" "}
-              {formatMoney(estimate.ffe.total)} ex GST. FF&E is priced
+              Trades {formatMoney(estimate.rollup.totalIncGst)} inc GST + FF&amp;E client quote{" "}
+              {formatMoney(estimate.ffe.client_total)} ex GST (base product cost{" "}
+              {formatMoney(estimate.ffe.total)}). FF&amp;E is priced
               separately from the trade estimate and is not marked up by
-              the trade markup % below — see the FF&E section for its own
-              quoted/placeholder split.
+              the trade markup % below; it uses each item&apos;s FF&amp;E markup.
             </p>
           </div>
         </div>

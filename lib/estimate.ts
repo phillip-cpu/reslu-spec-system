@@ -13,6 +13,7 @@
 // ============================================================
 
 import type { CostLine, Measurement, Variation } from "@/types";
+import { ffeClientQuoteUnitPrice } from "./ffe-pricing.ts";
 
 /** GST rate, fixed at 10% per BUILD-SPEC.md ("GST 10%" everywhere it's mentioned). */
 export const GST_RATE = 0.1;
@@ -427,6 +428,7 @@ export interface FfeItemInput {
   quantity: number;
   price_trade: number | null;
   price_rrp: number | null;
+  markup_pct?: number | null;
   cost_scope?: "direct" | "trade_package";
   /**
    * Round B additive — takeoff → FF&E quantity link (migration 027:
@@ -506,6 +508,8 @@ export interface FfeCategoryRollup {
   item_count: number;
   /** Sum of qty × bestPrice across the category's priced items (unpriced items contribute 0). */
   total: number;
+  /** Client quote after the item's project-specific FF&E markup. */
+  client_total: number;
   /** quoted_total / total, 0 if total is 0. Informational — same idea as the overall split but per-row. */
   quoted_share: number;
   quoted_count: number;
@@ -517,6 +521,8 @@ export interface FfeRollup {
   categories: FfeCategoryRollup[];
   /** Sum of every category's total — the "FF&E — from schedule" headline figure, ex GST. */
   total: number;
+  /** Sum of client quote prices, kept separate from base product cost. */
+  client_total: number;
   quoted_total: number;
   placeholder_total: number;
   item_count: number;
@@ -569,6 +575,7 @@ export function ffeRollup(
 
   const categories: FfeCategoryRollup[] = [];
   let total = 0;
+  let clientTotal = 0;
   let quotedTotal = 0;
   let placeholderTotal = 0;
   let itemCount = 0;
@@ -578,6 +585,7 @@ export function ffeRollup(
 
   for (const [category, catItems] of byCategory) {
     let catTotal = 0;
+    let catClientTotal = 0;
     let catQuotedTotal = 0;
     let catQuotedCount = 0;
     let catPlaceholderCount = 0;
@@ -589,7 +597,10 @@ export function ffeRollup(
         item.measurement_id ? measurementsById?.get(item.measurement_id) ?? null : null;
       const effectiveQuantity = ffeDerivedQuantity(item, measurement);
       const lineTotal = bestPrice !== null ? effectiveQuantity * bestPrice : 0;
+      const clientUnitPrice = ffeClientQuoteUnitPrice(item);
+      const clientLineTotal = clientUnitPrice !== null ? effectiveQuantity * clientUnitPrice : 0;
       catTotal += lineTotal;
+      catClientTotal += clientLineTotal;
       if (confidence === "quoted") {
         catQuotedTotal += lineTotal;
         catQuotedCount += 1;
@@ -605,6 +616,7 @@ export function ffeRollup(
       category,
       item_count: catItems.length,
       total: roundMoney(catTotal),
+      client_total: roundMoney(catClientTotal),
       quoted_share: catTotal > 0 ? roundMoney(catQuotedTotal / catTotal) : 0,
       quoted_count: catQuotedCount,
       placeholder_count: catPlaceholderCount,
@@ -612,6 +624,7 @@ export function ffeRollup(
     });
 
     total += catTotal;
+    clientTotal += catClientTotal;
     quotedTotal += catQuotedTotal;
     itemCount += catItems.length;
     quotedCount += catQuotedCount;
@@ -628,6 +641,7 @@ export function ffeRollup(
   return {
     categories,
     total: roundMoney(total),
+    client_total: roundMoney(clientTotal),
     quoted_total: roundMoney(quotedTotal),
     placeholder_total: roundMoney(placeholderTotal),
     item_count: itemCount,
@@ -655,8 +669,7 @@ export function ffeRollup(
 // FF&E figure, and would silently conflate two different profit
 // mechanisms the business tracks separately (trade margin vs. product
 // margin). So: FF&E's `total` (already the best-known ex-GST product
-// cost, NOT yet client-marked-up — items.markup_pct is applied
-// elsewhere, e.g. the P&P view/PDF, not by this module) is added to
+// cost, while `client_total` carries each item's explicit markup) is added to
 // the cascade AFTER totalToClientExGst is computed, not folded into
 // the pre-markup base like approved variations are. GST is then
 // re-derived over the combined (trades + FF&E) total so the headline
@@ -666,9 +679,9 @@ export function ffeRollup(
 export interface WholeJobSummary {
   /** The existing trades-only rollup (all-trades subtotal, approved variations, markup, GST) — unchanged. */
   trades: ProjectRollup;
-  /** The FF&E — from schedule rollup (ex GST, no trade markup applied — see cascade comment above). */
+  /** The FF&E — from schedule rollup (base cost plus per-item client quote). */
   ffe: FfeRollup;
-  /** trades.totalToClientExGst + ffe.total — the combined ex-GST figure BEFORE re-deriving GST. */
+  /** trades.totalToClientExGst + ffe.client_total before re-deriving GST. */
   combinedExGst: number;
   /** GST at 10% of combinedExGst. */
   combinedGst: number;
@@ -684,7 +697,7 @@ export interface WholeJobSummary {
  * the FF&E block ships.
  */
 export function wholeJobSummary(trades: ProjectRollup, ffe: FfeRollup): WholeJobSummary {
-  const combinedExGst = roundMoney(trades.totalToClientExGst + ffe.total);
+  const combinedExGst = roundMoney(trades.totalToClientExGst + ffe.client_total);
   const combinedGst = roundMoney(combinedExGst * GST_RATE);
   const combinedIncGst = roundMoney(combinedExGst + combinedGst);
   return { trades, ffe, combinedExGst, combinedGst, combinedIncGst };

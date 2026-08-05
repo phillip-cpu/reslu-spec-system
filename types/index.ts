@@ -459,6 +459,7 @@ export interface CostSection {
 }
 
 export type QuoteStatus = "Q" | "S" | "NA";
+export type CostLineKind = "standard" | "delivery_allowance";
 
 export interface CostLine {
   id: string;
@@ -492,6 +493,10 @@ export interface CostLine {
   // Who's quoting/doing the trade for this line — BUILD-SPEC.md
   // "Address Book" link points. See components/estimate/ContactLinkPicker.tsx.
   contact_id: string | null;
+  // ---- additive (migration 078_delivery_allowances.sql) ----
+  // Delivery allowance lines keep quote and actual freight separate
+  // and never represent a reusable catalogue product price.
+  line_kind: CostLineKind;
 }
 
 /** A cost_sections row with its (non-deleted) cost_lines nested, as returned by GET /api/projects/[id]/estimate. */
@@ -597,6 +602,7 @@ export interface FfeCategoryRollup {
   category: string;
   item_count: number;
   total: number;
+  client_total: number;
   quoted_share: number;
   quoted_count: number;
   placeholder_count: number;
@@ -606,6 +612,7 @@ export interface FfeCategoryRollup {
 export interface FfeRollup {
   categories: FfeCategoryRollup[];
   total: number;
+  client_total: number;
   quoted_total: number;
   placeholder_total: number;
   item_count: number;
@@ -677,6 +684,7 @@ export interface PatchCostLineInput {
   wastage_pct?: number | null;
   /** Week 9 — link/unlink an Address Book contact (who's quoting/doing the trade). */
   contact_id?: string | null;
+  line_kind?: CostLineKind;
 }
 
 /**
@@ -703,6 +711,7 @@ export interface CreateCostLineInput {
   quote_status?: QuoteStatus | null;
   item_id?: string | null;
   notes?: string | null;
+  line_kind?: CostLineKind;
 }
 
 /** body accepted by POST /api/projects/[id]/estimate/sections. */

@@ -14,6 +14,10 @@ import { supplierLineCostLineInput } from "@/lib/supplier-invoice-lines";
 import { FINANCIAL_SUMMARY_CHANGED_EVENT } from "@/lib/project-financial-position";
 import { formatMoney } from "@/components/estimate/EstimateWorkspace";
 import type { ItemComponent } from "@/types/item-components";
+import {
+  deliveryAllowanceLineInput,
+  isDeliveryDescription,
+} from "@/lib/delivery-costs";
 
 const STATUS_TABS: { value: InvoiceStatus | "all"; label: string }[] = [
   { value: "unmatched", label: "Unmatched" },
@@ -593,6 +597,8 @@ interface AllocationDraft {
   match_id: string;
   amount: string;
   apply_to_library_cost: boolean;
+  is_delivery: boolean;
+  delivery_item_ids: string[];
 }
 
 function allocationDrafts(
@@ -610,15 +616,28 @@ function allocationDrafts(
       .sort((a, b) => a.sort - b.sort || a.created_at.localeCompare(b.created_at))
       .map((line) => {
         const allocation = savedBySource.get(line.id);
+        const delivery = isDeliveryDescription(line.description);
+        const savedDeliveryTarget =
+          delivery && allocation?.match_type === "cost_line" ? allocation.match_id : "";
         return {
           key: line.id,
           source_line_id: line.id,
           source_line: line,
-          match_type: allocation?.match_type ?? line.suggested_match_type ?? "cost_line",
-          match_id: allocation?.match_id ?? line.suggested_match_id ?? "",
+          match_type: delivery
+            ? "cost_line"
+            : allocation?.match_type ?? line.suggested_match_type ?? "cost_line",
+          match_id: delivery
+            ? savedDeliveryTarget
+            : allocation?.match_id ?? line.suggested_match_id ?? "",
           amount: String(line.amount_ex_gst),
-          apply_to_library_cost:
-            allocation?.apply_to_library_cost ?? line.apply_to_library_cost ?? false,
+          apply_to_library_cost: delivery
+            ? false
+            : allocation?.apply_to_library_cost ?? line.apply_to_library_cost ?? false,
+          is_delivery:
+            isDeliveryDescription(line.description) ||
+            Boolean(allocation?.invoice_allocation_delivery_items?.length),
+          delivery_item_ids:
+            allocation?.invoice_allocation_delivery_items?.map((link) => link.item_id) ?? [],
         };
       });
   }
@@ -632,6 +651,14 @@ function allocationDrafts(
     match_id: allocation.match_id,
     amount: String(allocation.amount_ex_gst),
     apply_to_library_cost: allocation.apply_to_library_cost === true,
+    is_delivery: Boolean(
+      "invoice_allocation_delivery_items" in allocation &&
+        allocation.invoice_allocation_delivery_items?.length
+    ),
+    delivery_item_ids:
+      "invoice_allocation_delivery_items" in allocation
+        ? allocation.invoice_allocation_delivery_items?.map((link) => link.item_id) ?? []
+        : [],
   }));
 }
 
@@ -681,12 +708,13 @@ function AllocationEditor({
     ])
       .then(([estimateBody, itemsBody, componentsBody]) => {
         if (cancelled) return;
-        const directItems = (itemsBody.items ?? []).filter(
+        const allItems = (itemsBody.items ?? []) as Item[];
+        const directItems = allItems.filter(
           (item: Item) => item.cost_scope !== "trade_package"
         );
         const directItemIds = new Set(directItems.map((item: Item) => item.id));
         setSections(estimateBody.sections ?? []);
-        setItems(directItems);
+        setItems(allItems);
         setComponents(
           (componentsBody.components ?? []).filter((component: ItemComponent) =>
             directItemIds.has(component.item_id)
@@ -706,7 +734,18 @@ function AllocationEditor({
   const unmatchedCount = drafts.filter((draft) => !draft.match_id).length;
   const complete =
     drafts.length > 0 &&
-    drafts.every((draft) => draft.match_id && Number(draft.amount) > 0) &&
+    drafts.every((draft) => {
+      if (!draft.match_id || Number(draft.amount) <= 0) return false;
+      if (!draft.is_delivery) return true;
+      return (
+        draft.match_type === "cost_line" &&
+        sections.some((section) =>
+          section.lines.some(
+            (line) => line.id === draft.match_id && line.line_kind === "delivery_allowance"
+          )
+        )
+      );
+    }) &&
     balance === 0;
 
   function linkedLibraryItem(
@@ -751,6 +790,8 @@ function AllocationEditor({
         match_id: "",
         amount: remaining > 0 ? remaining.toFixed(2) : "",
         apply_to_library_cost: false,
+        is_delivery: false,
+        delivery_item_ids: [],
       },
     ]);
   }
@@ -794,6 +835,44 @@ function AllocationEditor({
     }
   }
 
+  async function createDeliveryAllowanceInArea(draft: AllocationDraft, sectionId: string) {
+    if (!sectionId || locked || creatingLineKey) return;
+    setCreatingLineKey(draft.key);
+    setCreateLineErrors((current) => ({ ...current, [draft.key]: "" }));
+    try {
+      const response = await fetch(`/api/estimate/sections/${sectionId}/lines`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(deliveryAllowanceLineInput()),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body.line) {
+        throw new Error(body.error ?? "Could not create the Delivery allowance.");
+      }
+      const line = body.line as CostSectionWithLines["lines"][number];
+      const areaName = sections.find((section) => section.id === sectionId)?.name ?? "the selected area";
+      setSections((current) =>
+        current.map((section) =>
+          section.id === sectionId ? { ...section, lines: [...section.lines, line] } : section
+        )
+      );
+      updateDraft(draft.key, {
+        is_delivery: true,
+        match_type: "cost_line",
+        match_id: line.id,
+        apply_to_library_cost: false,
+      });
+      setCreatedInArea((current) => ({ ...current, [draft.key]: areaName }));
+    } catch (error) {
+      setCreateLineErrors((current) => ({
+        ...current,
+        [draft.key]: error instanceof Error ? error.message : "Could not create the Delivery allowance.",
+      }));
+    } finally {
+      setCreatingLineKey(null);
+    }
+  }
+
   async function approveAndApply() {
     if (!complete) return;
     await onApprove(
@@ -803,8 +882,9 @@ function AllocationEditor({
         match_id: draft.match_id,
         amount_ex_gst: Number(draft.amount),
         apply_to_library_cost:
-          draft.apply_to_library_cost &&
+          !draft.is_delivery && draft.apply_to_library_cost &&
           Boolean(linkedLibraryItem(draft.match_type, draft.match_id)),
+        delivery_item_ids: draft.is_delivery ? draft.delivery_item_ids : [],
       }))
     );
   }
@@ -855,6 +935,12 @@ function AllocationEditor({
               ? linkedLibraryItem(draft.match_type, draft.match_id)
               : null;
             const sourceLine = draft.source_line;
+            const matchedCostLine = sections
+              .flatMap((section) => section.lines)
+              .find((line) => draft.match_type === "cost_line" && line.id === draft.match_id);
+            const deliveryMode =
+              draft.is_delivery || matchedCostLine?.line_kind === "delivery_allowance";
+            const directItems = items.filter((item) => item.cost_scope !== "trade_package");
 
             return (
               <div
@@ -896,6 +982,128 @@ function AllocationEditor({
                 )}
 
                 <div className="space-y-1.5">
+                  {!locked && (
+                    <label className="flex items-center gap-2 text-caption text-charcoal/65">
+                      <input
+                        type="checkbox"
+                        checked={deliveryMode}
+                        onChange={(event) =>
+                          updateDraft(draft.key, {
+                            is_delivery: event.target.checked,
+                            match_type: "cost_line",
+                            match_id: "",
+                            apply_to_library_cost: false,
+                            delivery_item_ids: event.target.checked ? draft.delivery_item_ids : [],
+                          })
+                        }
+                      />
+                      This is Actual delivery / freight
+                    </label>
+                  )}
+
+                  {deliveryMode ? (
+                    <div className="space-y-2 border border-sand/50 bg-offwhite p-2">
+                      <label className="block">
+                        <span className="label-caps mb-1 block !text-charcoal/50">Actual delivery</span>
+                        <select
+                          disabled={locked}
+                          value={draft.match_id}
+                          onChange={(event) =>
+                            updateDraft(draft.key, {
+                              is_delivery: true,
+                              match_type: "cost_line",
+                              match_id: event.target.value,
+                              apply_to_library_cost: false,
+                            })
+                          }
+                          className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+                        >
+                          <option value="">Choose a Delivery allowance…</option>
+                          {sections.map((section) => {
+                            const allowances = section.lines.filter(
+                              (line) => line.line_kind === "delivery_allowance"
+                            );
+                            return allowances.length > 0 ? (
+                              <optgroup key={section.id} label={`Estimate · ${section.name}`}>
+                                {allowances.map((line) => (
+                                  <option key={line.id} value={line.id}>
+                                    {line.description} · allowed {formatMoney(
+                                      line.quoted_to_client_ex_gst ?? line.cost_ex_gst ?? 0
+                                    )} · actual {formatMoney(line.actual_paid_ex_gst ?? 0)}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            ) : null;
+                          })}
+                        </select>
+                      </label>
+
+                      {!draft.match_id && (
+                        <label className="block">
+                          <span className="label-caps mb-1 block !text-charcoal/50">
+                            No allowance yet?
+                          </span>
+                          <select
+                            disabled={locked || Boolean(creatingLineKey) || sections.length === 0}
+                            value=""
+                            onChange={(event) => {
+                              if (event.target.value) {
+                                void createDeliveryAllowanceInArea(draft, event.target.value);
+                              }
+                            }}
+                            className="w-full border border-[#c9c2b4] bg-cream px-2 py-1.5 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+                          >
+                            <option value="">
+                              {creatingLineKey === draft.key
+                                ? "Creating Delivery allowance…"
+                                : "Create a $0 Delivery allowance in…"}
+                            </option>
+                            {sections.map((section) => (
+                              <option key={section.id} value={section.id}>{section.name}</option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+
+                      <fieldset>
+                        <legend className="label-caps mb-1 !text-charcoal/50">
+                          Related FF&amp;E items (optional)
+                        </legend>
+                        <div className="max-h-36 space-y-1 overflow-y-auto border border-[#e5e0d6] bg-nearwhite p-2">
+                          {items.length === 0 ? (
+                            <p className="text-caption text-charcoal/45">No FF&amp;E items available.</p>
+                          ) : items.map((item) => (
+                            <label key={item.id} className="flex items-start gap-2 text-caption text-charcoal/70">
+                              <input
+                                type="checkbox"
+                                disabled={locked}
+                                checked={draft.delivery_item_ids.includes(item.id)}
+                                onChange={(event) =>
+                                  updateDraft(draft.key, {
+                                    delivery_item_ids: event.target.checked
+                                      ? [...draft.delivery_item_ids, item.id]
+                                      : draft.delivery_item_ids.filter((id) => id !== item.id),
+                                  })
+                                }
+                              />
+                              <span>
+                                {item.item_code} — {item.name}
+                                {item.cost_scope === "trade_package" ? " · included in trade package" : ""}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </fieldset>
+                      <p className="text-caption text-charcoal/55">
+                        Actual delivery posts to the allowance. Related FF&amp;E items are traceability only;
+                        their reusable base and library prices are not changed.
+                      </p>
+                      {createLineErrors[draft.key] && (
+                        <p className="text-caption text-red-700">{createLineErrors[draft.key]}</p>
+                      )}
+                    </div>
+                  ) : (
+                    <>
                   <label>
                     <span className={sourceLine ? "label-caps mb-1 block !text-charcoal/50" : "sr-only"}>
                       {sourceLine ? "Match to project" : `Allocation ${index + 1} match`}
@@ -919,16 +1127,16 @@ function AllocationEditor({
                       <option value="">Choose a cost line, item or component…</option>
                       {sections.map((section) => (
                         <optgroup key={section.id} label={`Estimate · ${section.name}`}>
-                          {section.lines.map((line) => (
+                          {section.lines.filter((line) => line.line_kind !== "delivery_allowance").map((line) => (
                             <option key={line.id} value={`cost_line:${line.id}`}>
                               {line.description}
                             </option>
                           ))}
                         </optgroup>
                       ))}
-                      {items.length > 0 && (
+                      {directItems.length > 0 && (
                         <optgroup label="Specification items">
-                          {items.map((item) => (
+                          {directItems.map((item) => (
                             <option key={item.id} value={`item:${item.id}`}>
                               {item.item_code} — {item.name}
                             </option>
@@ -1033,6 +1241,8 @@ function AllocationEditor({
                       </span>
                     </label>
                   )}
+                    </>
+                  )}
                 </div>
 
                 {sourceLine ? (
@@ -1058,7 +1268,7 @@ function AllocationEditor({
                   </label>
                 )}
 
-                {!sourceLine && (
+                {!sourceLine && !deliveryMode && (
                   <label className="flex items-center gap-1.5 text-caption text-charcoal/60">
                     <input
                       disabled={locked || !libraryItem}

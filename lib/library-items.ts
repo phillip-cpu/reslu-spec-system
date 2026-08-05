@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { normalizeProductUrl } from "@/lib/scraper";
+import { DEFAULT_FFE_MARKUP_PERCENT } from "@/lib/ffe-pricing";
 
 export async function copyLibraryAssemblyComponentsToItem(
   supabase: SupabaseClient,
@@ -111,6 +112,7 @@ export async function copyLibraryItemToProject(
       selected_image_url: lib.default_image_url,
       price_rrp: lib.price_rrp,
       price_trade: lib.price_trade,
+      markup_pct: DEFAULT_FFE_MARKUP_PERCENT,
       library_item_id: lib.id,
       created_by: createdBy,
     })

@@ -126,7 +126,7 @@ export async function POST(
 
   const { data: existing, error: fetchError } = await supabase
     .from("invoices")
-    .select("*, invoice_allocations(*), supplier_invoice_lines(*)")
+    .select("*, invoice_allocations(*, invoice_allocation_delivery_items(item_id)), supplier_invoice_lines(*)")
     .eq("id", id)
     .single();
   if (fetchError || !existing) {
@@ -166,7 +166,7 @@ export async function POST(
 
     const { data: approved, error: reloadError } = await supabase
       .from("invoices")
-      .select("*, invoice_allocations(*), supplier_invoice_lines(*)")
+      .select("*, invoice_allocations(*, invoice_allocation_delivery_items(item_id)), supplier_invoice_lines(*)")
       .eq("id", id)
       .single();
     if (reloadError || !approved) {

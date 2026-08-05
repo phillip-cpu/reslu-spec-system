@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { parseCsvTable, categoryFromItemCode } from "@/lib/csv";
+import { DEFAULT_FFE_MARKUP_PERCENT } from "@/lib/ffe-pricing";
 import type { ImportItemsInput, ImportRowResult } from "@/types";
 
 /**
@@ -195,6 +196,9 @@ export async function POST(
         : {}),
       price_rrp: toMoney(cell(row, "price_rrp")),
       price_trade: toMoney(cell(row, "price_trade")),
+      // Blank/unmapped imports receive the normal project FF&E markup;
+      // an explicitly mapped value (including 0) remains authoritative.
+      markup_pct: toNum(cell(row, "markup_pct")) ?? DEFAULT_FFE_MARKUP_PERCENT,
       created_by: user.id,
     };
 

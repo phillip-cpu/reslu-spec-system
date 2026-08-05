@@ -82,6 +82,9 @@ export interface InvoiceAllocation {
   sort: number;
   created_at: string;
   updated_at: string;
+  /** Optional FF&E context for delivery. Financial actuals still post
+   * only to the matched Delivery allowance cost line. */
+  invoice_allocation_delivery_items?: Array<{ item_id: string }>;
 }
 
 /** GET invoice responses include their saved splits in display order. */

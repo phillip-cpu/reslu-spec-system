@@ -176,6 +176,7 @@ export const IMPORT_TARGET_FIELDS = [
   "image_url",
   "price_rrp",
   "price_trade",
+  "markup_pct",
   "notes", // free-text import notes column — not persisted, shown in the review step only
 ] as const;
 
@@ -204,6 +205,7 @@ export const IMPORT_FIELD_LABELS: Record<ImportTargetField, string> = {
   image_url: "Image URL",
   price_rrp: "RRP (ex GST)",
   price_trade: "Trade price (ex GST)",
+  markup_pct: "FF&E markup (%)",
   notes: "Notes (import only)",
 };
 
@@ -247,6 +249,7 @@ const FIELD_SYNONYMS: Record<ImportTargetField, string[]> = {
     "trade", "trade price", "trade cost", "cost", "cost price", "wholesale",
     "trade ex gst", "buy price",
   ],
+  markup_pct: ["markup", "markup %", "markup pct", "markup_pct", "margin markup"],
   notes: ["notes", "note", "comment", "comments"],
 };
 

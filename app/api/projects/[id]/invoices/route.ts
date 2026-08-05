@@ -9,6 +9,7 @@ import type { NormalizedInvoiceAllocation } from "@/lib/invoice-allocations";
 import { validateSupplierInvoiceLines } from "@/lib/supplier-invoice-lines";
 import type { NormalizedSupplierInvoiceLine } from "@/lib/supplier-invoice-lines";
 import { DUPLICATE_INVOICE_MESSAGE } from "@/lib/invoice-duplicates";
+import { saveInvoiceDeliveryItemLinks } from "@/lib/invoice-delivery-links";
 import type { CreateInvoiceResponse, Invoice, InvoiceMatchType, InvoiceStatus } from "@/types";
 import type { InvoiceSource, InvoiceWithAllocations, SupplierInvoiceExtracted } from "@/types/round-supplier-invoice-intake";
 
@@ -51,7 +52,7 @@ export async function GET(
 
   let query = supabase
     .from("invoices")
-    .select("*, invoice_allocations(*), supplier_invoice_lines(*)")
+    .select("*, invoice_allocations(*, invoice_allocation_delivery_items(item_id)), supplier_invoice_lines(*)")
     .eq("project_id", projectId)
     .order("created_at", { ascending: false });
 
@@ -494,9 +495,21 @@ export async function POST(
       return NextResponse.json({ error: allocationError.message }, { status: 400 });
     }
 
+    const deliveryLinks = await saveInvoiceDeliveryItemLinks(
+      supabase,
+      invoice.id,
+      projectId,
+      initialAllocations
+    );
+    if (deliveryLinks.error) {
+      await supabase.from("invoices").delete().eq("id", invoice.id);
+      if (storage_path) await supabase.storage.from(ASSET_BUCKET).remove([storage_path]);
+      return NextResponse.json({ error: deliveryLinks.error }, { status: 400 });
+    }
+
     const { data: allocatedInvoice, error: allocationReloadError } = await supabase
       .from("invoices")
-      .select("*, invoice_allocations(*), supplier_invoice_lines(*)")
+      .select("*, invoice_allocations(*, invoice_allocation_delivery_items(item_id)), supplier_invoice_lines(*)")
       .eq("id", invoice.id)
       .single();
     if (allocationReloadError || !allocatedInvoice) {
@@ -509,7 +522,7 @@ export async function POST(
   } else if (insertedLines.length > 0) {
     const { data: invoiceWithLines, error: lineReloadError } = await supabase
       .from("invoices")
-      .select("*, invoice_allocations(*), supplier_invoice_lines(*)")
+      .select("*, invoice_allocations(*, invoice_allocation_delivery_items(item_id)), supplier_invoice_lines(*)")
       .eq("id", invoice.id)
       .single();
     if (lineReloadError || !invoiceWithLines) {

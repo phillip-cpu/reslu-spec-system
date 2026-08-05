@@ -8,6 +8,10 @@ export interface InvoiceAllocationInput {
   match_id: string;
   amount_ex_gst: number;
   apply_to_library_cost?: boolean;
+  /** FF&E items whose procurement this freight relates to. The money
+   * still posts to a Delivery allowance cost line, never to product or
+   * library pricing. */
+  delivery_item_ids?: string[];
 }
 
 export interface NormalizedInvoiceAllocation extends InvoiceAllocationInput {
@@ -80,6 +84,28 @@ export function validateInvoiceAllocations(
       typeof record.source_line_id === "string" && record.source_line_id.trim()
         ? record.source_line_id.trim()
         : null;
+    const deliveryItemIds = Array.isArray(record.delivery_item_ids)
+      ? [...new Set(record.delivery_item_ids.filter((id): id is string => typeof id === "string" && Boolean(id.trim())).map((id) => id.trim()))]
+      : [];
+
+    if (record.delivery_item_ids !== undefined && !Array.isArray(record.delivery_item_ids)) {
+      return { ok: false, error: `Allocation ${index + 1} delivery items must be an array` };
+    }
+    if (deliveryItemIds.length > 100) {
+      return { ok: false, error: `Allocation ${index + 1} has too many related FF&E items` };
+    }
+    if (deliveryItemIds.length > 0 && matchType !== "cost_line") {
+      return {
+        ok: false,
+        error: `Allocation ${index + 1} actual delivery must match a Delivery allowance`,
+      };
+    }
+    if (deliveryItemIds.length > 0 && record.apply_to_library_cost === true) {
+      return {
+        ok: false,
+        error: `Allocation ${index + 1} actual delivery cannot update a library price`,
+      };
+    }
 
     if (
       matchType !== "cost_line" &&
@@ -118,6 +144,7 @@ export function validateInvoiceAllocations(
       match_id: matchId,
       amount_ex_gst: amountCents / 100,
       apply_to_library_cost: record.apply_to_library_cost === true,
+      delivery_item_ids: deliveryItemIds,
     });
   }
 

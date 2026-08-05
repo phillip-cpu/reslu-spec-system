@@ -4,6 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import type { PatchCostLineInput } from "@/types";
 
 const VALID_QUOTE_STATUS = new Set(["Q", "S", "NA"]);
+const VALID_LINE_KINDS = new Set(["standard", "delivery_allowance"]);
 
 const EDITABLE_FIELDS = new Set([
   "description",
@@ -23,6 +24,7 @@ const EDITABLE_FIELDS = new Set([
   // Week 9 — Address Book link point (migration 013_boards_contacts.sql):
   // who's quoting/doing the trade for this line.
   "contact_id",
+  "line_kind",
 ]);
 
 const NUMERIC_FIELDS = new Set([
@@ -76,6 +78,23 @@ export async function PATCH(
   ) {
     return NextResponse.json(
       { error: "quote_status must be one of Q, S, NA" },
+      { status: 400 }
+    );
+  }
+
+  if (
+    body.line_kind !== undefined &&
+    body.line_kind !== null &&
+    !VALID_LINE_KINDS.has(body.line_kind)
+  ) {
+    return NextResponse.json(
+      { error: "line_kind must be standard or delivery_allowance" },
+      { status: 400 }
+    );
+  }
+  if (body.line_kind === "delivery_allowance" && body.item_id) {
+    return NextResponse.json(
+      { error: "A Delivery allowance cannot be a reusable FF&E product line" },
       { status: 400 }
     );
   }

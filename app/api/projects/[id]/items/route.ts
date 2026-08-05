@@ -2,6 +2,7 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { scrapeProductUrl, normalizeProductUrl } from "@/lib/scraper";
 import { copyLibraryAssemblyComponentsToItem } from "@/lib/library-items";
+import { DEFAULT_FFE_MARKUP_PERCENT } from "@/lib/ffe-pricing";
 import type { CreateItemInput } from "@/types";
 import type { ItemWithLinkedMeasurement } from "@/types/round-b";
 
@@ -320,6 +321,9 @@ export async function POST(
       selected_image_url: (libraryDefaults.selected_image_url as string | null) ?? null,
       price_rrp: (libraryDefaults.price_rrp as number | null) ?? null,
       price_trade: (libraryDefaults.price_trade as number | null) ?? null,
+      // Project selling policy, not reusable library data. Existing
+      // items are untouched and the P&P markup cell remains editable.
+      markup_pct: DEFAULT_FFE_MARKUP_PERCENT,
       library_item_id: body.library_item_id ?? null,
       created_by: user.id,
     })

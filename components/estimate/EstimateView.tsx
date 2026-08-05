@@ -13,6 +13,7 @@ import { formatMoney } from "./EstimateWorkspace";
 import { ItemLinkPicker } from "./ItemLinkPicker";
 import { MeasurementLinkPicker } from "./MeasurementLinkPicker";
 import { ContactLinkPicker } from "./ContactLinkPicker";
+import { deliveryAllowanceLineInput } from "@/lib/delivery-costs";
 
 interface Props {
   projectId: string;
@@ -207,6 +208,16 @@ export function EstimateView({
     onLineAdded(line as CostLine);
   }
 
+  async function addDeliveryAllowance(sectionId: string) {
+    setError(null);
+    try {
+      await addLineDraft(sectionId, deliveryAllowanceLineInput());
+      setExpanded((current) => new Set(current).add(sectionId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not add the Delivery allowance.");
+    }
+  }
+
   // Optimistic single-row PATCH: the row itself (LineRow) has already
   // updated its own local draft state before calling this, so on
   // success we just fold the server's canonical row back in; on
@@ -354,6 +365,14 @@ export function EstimateView({
                   P/L {formatMoney(section.rollup.variance)}
                 </span>
               )}
+              <button
+                type="button"
+                onClick={() => void addDeliveryAllowance(section.id)}
+                className="border border-[#c9c2b4] px-2 py-1 text-caption text-charcoal hover:border-nearblack"
+                title="Add a project delivery allowance. Actual supplier freight will reconcile here without changing FF&E library prices."
+              >
+                + Delivery allowance
+              </button>
               <button
                 type="button"
                 onClick={() => deleteSection(section.id, section.name)}
@@ -763,6 +782,11 @@ function LineRow({
             value={draft.description}
             onCommit={(v) => v && setField("description", v)}
           />
+          {draft.line_kind === "delivery_allowance" && (
+            <p className="px-2 pb-1 text-caption text-sand">
+              Delivery allowance · project cost only · no catalogue price
+            </p>
+          )}
           {/* Double-counting rule (BUILD-SPEC.md "Estimate ↔ Schedule
               integration"): a line linked to a spec register item means
               this line is labour/install only — the product's own cost
@@ -838,12 +862,18 @@ function LineRow({
             }
             onCommit={(v) => setField("quoted_to_client_ex_gst", v)}
           />
+          {draft.line_kind === "delivery_allowance" && (
+            <p className="px-2 pb-1 text-right text-[10px] text-charcoal/45">Delivery allowance</p>
+          )}
         </td>
         <td className="w-28 px-0 py-0">
           <EditableNumber
             value={draft.actual_paid_ex_gst}
             onCommit={(v) => setField("actual_paid_ex_gst", v)}
           />
+          {draft.line_kind === "delivery_allowance" && (
+            <p className="px-2 pb-1 text-right text-[10px] text-charcoal/45">Actual delivery</p>
+          )}
         </td>
         <td
           className={clsx(
@@ -852,6 +882,9 @@ function LineRow({
             profitLoss !== null && profitLoss > 0 && "text-green-800"
           )}
         >
+          {draft.line_kind === "delivery_allowance" && (
+            <span className="block text-[10px] text-charcoal/45">Delivery variance</span>
+          )}
           {profitLoss !== null ? formatMoney(profitLoss) : "—"}
         </td>
         <td className="px-1 py-1">
@@ -1242,7 +1275,8 @@ function FfeBlock({ ffe }: { ffe: EstimateResponse["ffe"] }) {
                 <tr className="border-b border-[#dcd6cc] text-left">
                   <th className="label-caps px-2 py-1.5">Category</th>
                   <th className="label-caps px-2 py-1.5 text-right">Items</th>
-                  <th className="label-caps px-2 py-1.5 text-right">Total ex GST</th>
+                  <th className="label-caps px-2 py-1.5 text-right">Product cost ex GST</th>
+                  <th className="label-caps px-2 py-1.5 text-right">Client quote ex GST</th>
                   <th className="label-caps px-2 py-1.5">Confidence</th>
                 </tr>
               </thead>
@@ -1260,6 +1294,7 @@ function FfeBlock({ ffe }: { ffe: EstimateResponse["ffe"] }) {
                     </td>
                     <td className="px-2 py-1.5 text-right text-body">{cat.item_count}</td>
                     <td className="px-2 py-1.5 text-right text-body">{formatMoney(cat.total)}</td>
+                    <td className="px-2 py-1.5 text-right text-body">{formatMoney(cat.client_total)}</td>
                     <td className="px-2 py-1.5">
                       <FfeConfidenceBadges cat={cat} />
                     </td>
@@ -1270,7 +1305,7 @@ function FfeBlock({ ffe }: { ffe: EstimateResponse["ffe"] }) {
           )}
           <div className="border-t border-[#dcd6cc] px-4 py-3">
             <p className="text-body text-nearblack">
-              FF&E {formatMoney(ffe.total)} —{" "}
+              FF&amp;E client quote {formatMoney(ffe.client_total)} · product cost {formatMoney(ffe.total)} —{" "}
               {Math.round(ffe.quoted_share * 100)}% quoted /{" "}
               {Math.round(ffe.placeholder_share * 100)}% placeholder
               {ffe.unpriced_count > 0 && (
