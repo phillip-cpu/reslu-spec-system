@@ -208,7 +208,15 @@ export function BrowserProductImportReview() {
     <div className="mx-auto max-w-5xl space-y-6">
       {error && (
         <div className="border border-red-300 bg-red-50 px-5 py-4 text-sm text-red-700">
-          {error}
+          <p>{error}</p>
+          {!payload && (
+            <a
+              href="/product-import/setup"
+              className="mt-2 inline-block font-medium underline underline-offset-2"
+            >
+              Install or set up the browser importer →
+            </a>
+          )}
         </div>
       )}
       {saved && item && (

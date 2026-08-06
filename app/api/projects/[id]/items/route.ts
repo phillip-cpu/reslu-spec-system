@@ -3,6 +3,10 @@ import { createClient } from "@/lib/supabase/server";
 import { scrapeProductUrl, normalizeProductUrl } from "@/lib/scraper";
 import { copyLibraryAssemblyComponentsToItem } from "@/lib/library-items";
 import { DEFAULT_FFE_MARKUP_PERCENT } from "@/lib/ffe-pricing";
+import {
+  isSupportedBrowserImportUrl,
+  shouldAutoScrapeProductUrl,
+} from "@/lib/browser-product-import";
 import type { CreateItemInput } from "@/types";
 import type { ItemWithLinkedMeasurement } from "@/types/round-b";
 
@@ -290,6 +294,9 @@ export async function POST(
 
   const pick = (bodyVal: string | undefined, libKey: string) =>
     bodyVal?.trim() || (libraryDefaults[libKey] as string | null) || null;
+  const productUrl = pick(body.product_url, "product_url");
+  const requiresBrowserImport = isSupportedBrowserImportUrl(productUrl);
+  const shouldAutoScrape = shouldAutoScrapeProductUrl(productUrl);
 
   const { data: item, error } = await supabase
     .from("items")
@@ -312,12 +319,20 @@ export async function POST(
       height_mm: toNum(body.height_mm) ?? (libraryDefaults.height_mm as number | null) ?? null,
       length_mm: toNum(body.length_mm) ?? (libraryDefaults.length_mm as number | null) ?? null,
       depth_mm: toNum(body.depth_mm) ?? (libraryDefaults.depth_mm as number | null) ?? null,
-      product_url: pick(body.product_url, "product_url"),
+      product_url: productUrl,
       // Duplicate detection (BUILD-SPEC.md "Library — trade price capture
       // & duplicate detection"): keep normalised URL in sync wherever
       // product_url is set. Never blocks creation — normalize returns
       // null on unparsable input.
-      product_url_normalized: normalizeProductUrl(pick(body.product_url, "product_url")),
+      product_url_normalized: normalizeProductUrl(productUrl),
+      // Bunnings rejects Vercel-origin product fetches with 403. Mark it
+      // as intentionally skipped so quick-add does not present a known
+      // failure as if it were still loading; product details come from
+      // the user-installed browser importer instead.
+      scrape_status: requiresBrowserImport ? "skipped" : "pending",
+      scrape_flag_note: requiresBrowserImport
+        ? "Bunnings product — use the RESLU browser importer"
+        : null,
       selected_image_url: (libraryDefaults.selected_image_url as string | null) ?? null,
       price_rrp: (libraryDefaults.price_rrp as number | null) ?? null,
       price_trade: (libraryDefaults.price_trade as number | null) ?? null,
@@ -371,7 +386,7 @@ export async function POST(
   // response is sent on serverless runtimes (Vercel) — plain
   // `void scrapeProductUrl(...)` is not guaranteed to complete post-response
   // outside a long-lived server.
-  if (item?.product_url) {
+  if (item?.product_url && shouldAutoScrape) {
     after(() => scrapeProductUrl(item.id, item.product_url));
   }
 

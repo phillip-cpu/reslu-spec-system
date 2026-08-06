@@ -23,6 +23,9 @@ choices only; this workflow does not hotlink or download an image automatically.
 
 ## Chrome installation (development)
 
+The prepared Chrome ZIP and the in-app setup guide are available from
+`https://spec.reslu.com.au/product-import/setup`.
+
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. Choose **Load unpacked** and select this `browser-extension` directory.
@@ -48,6 +51,10 @@ identity, build the containing macOS app, then enable the extension in Safari
 Settings → Extensions. App Store distribution requires an Apple Developer
 account and Apple's normal signing/review process. No Safari-specific scraper or
 server is required.
+
+The setup page provides the generated Xcode project as source. It intentionally
+does not distribute an unsigned `.app`; a valid RESLU Apple signing identity is
+required before Safari can install it.
 
 ## Permissions and privacy
 

@@ -112,6 +112,16 @@ export function isSupportedBrowserImportUrl(value: unknown): value is string {
   }
 }
 
+/**
+ * Supplier pages that are handled by the user's browser must never be queued
+ * for the server scraper. Other valid product URLs keep the existing automatic
+ * scrape workflow.
+ */
+export function shouldAutoScrapeProductUrl(value: unknown): value is string {
+  if (typeof value !== "string" || !value.trim()) return false;
+  return !isSupportedBrowserImportUrl(value.trim());
+}
+
 function cleanImageUrl(value: unknown): string | null {
   if (typeof value !== "string") return null;
   try {

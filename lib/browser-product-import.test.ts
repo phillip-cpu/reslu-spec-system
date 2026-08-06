@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   importedFieldValues,
   isSupportedBrowserImportUrl,
+  shouldAutoScrapeProductUrl,
   validateBrowserProductImport,
 } from "./browser-product-import.ts";
 
@@ -55,6 +56,18 @@ test("rejects unsupported hosts and non-HTTPS source URLs", () => {
     source: { ...payload.source, pageUrl: "https://example.com/product" },
   });
   assert.equal(result.ok, false);
+});
+
+test("routes Bunnings through browser import while retaining other supplier scraping", () => {
+  assert.equal(
+    shouldAutoScrapeProductUrl("https://www.bunnings.com.au/product"),
+    false
+  );
+  assert.equal(
+    shouldAutoScrapeProductUrl("https://www.example-supplier.com.au/product"),
+    true
+  );
+  assert.equal(shouldAutoScrapeProductUrl(""), false);
 });
 
 test("does not accept an empty product payload", () => {

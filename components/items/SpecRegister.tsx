@@ -19,6 +19,7 @@ import { SupplierContactPicker } from "./SupplierContactPicker";
 import { RoomAssignBar } from "./RoomAssignBar";
 import { ItemRoomsEditor } from "./ItemRoomsEditor";
 import { RoomBuilder } from "./RoomBuilder";
+import { isSupportedBrowserImportUrl } from "@/lib/browser-product-import";
 
 interface Props {
   projectId: string;
@@ -544,6 +545,7 @@ function ItemRow({
 
   const dims = formatDimensions(item);
   const warning = dimensionWarning(item);
+  const requiresBrowserImport = isSupportedBrowserImportUrl(item.product_url);
 
   return (
     <>
@@ -833,28 +835,34 @@ function ItemRow({
                       Open product ↗
                     </a>
                   )}
-                  <FetchDetailsButton
-                    itemId={item.id}
-                    scrapeStatus={item.scrape_status}
-                    // The scraper (POST /api/items/[id]/scrape) writes
-                    // image_options/scrape_status/scraped_documents etc.
-                    // server-side via the service-role client, then
-                    // returns the updated item. Persisting that through
-                    // the normal onPatch round-trip (rather than a
-                    // local-only override) re-PATCHes the same
-                    // already-correct values back — a harmless no-op
-                    // write — and, more importantly, syncs this row's
-                    // state from the PATCH response, exactly like any
-                    // other field edit on this row.
-                    onScraped={(patch) => onPatch(patch)}
-                    onError={onError}
-                  />
+                  {!requiresBrowserImport && (
+                    <FetchDetailsButton
+                      itemId={item.id}
+                      scrapeStatus={item.scrape_status}
+                      // The scraper (POST /api/items/[id]/scrape) writes
+                      // image_options/scrape_status/scraped_documents etc.
+                      // server-side via the service-role client, then
+                      // returns the updated item. Persisting that through
+                      // the normal onPatch round-trip (rather than a
+                      // local-only override) re-PATCHes the same
+                      // already-correct values back — a harmless no-op
+                      // write — and, more importantly, syncs this row's
+                      // state from the PATCH response, exactly like any
+                      // other field edit on this row.
+                      onScraped={(patch) => onPatch(patch)}
+                      onError={onError}
+                    />
+                  )}
                 </div>
                 {/* Scrape status visibility (Week 7, user-reported:
                     "not sure if the scraper is working") — shows the
                     outcome of the last scrape attempt explicitly rather
                     than leaving it silently invisible. */}
-                <ScrapeStatusLine item={item} />
+                {requiresBrowserImport ? (
+                  <BrowserImportGuide />
+                ) : (
+                  <ScrapeStatusLine item={item} />
+                )}
               </DetailField>
 
               <div className="border-t border-[#dcd6cc] pt-4 sm:col-span-2 lg:col-span-3">
@@ -937,6 +945,25 @@ function safeExternalUrl(value: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+function BrowserImportGuide() {
+  return (
+    <div className="mt-2 border border-sand/50 bg-sand/5 px-4 py-3 text-caption text-charcoal/70">
+      <p className="font-medium text-nearblack">
+        Bunnings requires the RESLU browser importer.
+      </p>
+      <p className="mt-1">
+        Open the product page, select the RESLU toolbar extension, then review and confirm the fields in Spec.
+      </p>
+      <a
+        href="/product-import/setup"
+        className="mt-2 inline-block font-medium text-nearblack underline underline-offset-2"
+      >
+        Install or set up the importer →
+      </a>
+    </div>
+  );
 }
 
 /**
@@ -1139,6 +1166,7 @@ function AddItemForm({
   const [quantity, setQuantity] = useState("1");
   const [costScope, setCostScope] = useState<Item["cost_scope"]>("direct");
   const [productUrl, setProductUrl] = useState("");
+  const requiresBrowserImport = isSupportedBrowserImportUrl(productUrl.trim());
   const [submitting, setSubmitting] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -1231,7 +1259,7 @@ function AddItemForm({
       // Re-fetch this one item a few seconds later so its row can pick
       // up the real result (images found, price found, or a failure/
       // flag) without the user manually reloading the page.
-      if (productUrl.trim()) {
+      if (productUrl.trim() && !requiresBrowserImport) {
         onAddRefetch(item.id);
       }
       // keep the row open for rapid entry — reset name/room, keep category
@@ -1316,6 +1344,14 @@ function AddItemForm({
               </p>
             ))}
           </div>
+        )}
+        {requiresBrowserImport && (
+          <p className="mt-1 text-caption text-sand">
+            Bunnings detected — the item will be added without a server retry. Open the product page and use the RESLU browser importer.{" "}
+            <a href="/product-import/setup" className="underline">
+              Setup instructions
+            </a>
+          </p>
         )}
       </div>
       <div>

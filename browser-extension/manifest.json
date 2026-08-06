@@ -3,6 +3,10 @@
   "name": "RESLU Product Importer",
   "version": "0.1.0",
   "description": "Review and import product details from a supplier page you have opened into RESLU Spec System.",
+  "icons": {
+    "192": "icons/icon-192.png",
+    "512": "icons/icon-512.png"
+  },
   "permissions": ["activeTab", "storage", "tabs"],
   "host_permissions": [
     "https://www.bunnings.com.au/*",
@@ -11,6 +15,7 @@
   ],
   "action": {
     "default_title": "Import product to RESLU",
+    "default_icon": "icons/icon-192.png",
     "default_popup": "popup.html"
   },
   "content_scripts": [
