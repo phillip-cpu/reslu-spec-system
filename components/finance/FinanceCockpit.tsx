@@ -331,7 +331,7 @@ export function FinanceCockpit() {
             <MetricCard
               label="Dated outflows"
               value={projection ? formatMinorCurrency(projection.totalOutflowMinor) : "—"}
-              detail={`${data?.counts.active_projects ?? 0} active project${data?.counts.active_projects === 1 ? "" : "s"} + ${data?.counts.active_recurring_commitments ?? 0} recurring`}
+              detail={`${data?.counts.active_projects ?? 0} active project${data?.counts.active_projects === 1 ? "" : "s"} · ${data?.counts.connected_client_claims ?? 0} client claims · ${data?.counts.active_recurring_commitments ?? 0} recurring costs`}
             />
             <MetricCard
               label="Exceptions"

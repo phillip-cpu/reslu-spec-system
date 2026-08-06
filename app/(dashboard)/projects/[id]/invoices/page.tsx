@@ -81,12 +81,10 @@ export default async function ProjectInvoicesPage({
             one page — see components/invoices/ClientInvoiceQueue.tsx's
             own header comment. */}
         <section>
-          <h2 className="mb-1 text-subhead text-nearblack">Client invoices — money in</h2>
+          <h2 className="mb-1 text-subhead text-nearblack">Contract claims & client payments — money in</h2>
           <p className="mb-4 text-body text-charcoal/60">
-            Package and progress-claim invoices against the signed design or construction
-            contract. Each invoice shows the full contract, previous payments and dates,
-            this claim, future payments and approved variations separately. Bank transfer
-            is standard; an optional Stripe link can be added per RESLU invoice.
+            Contract milestones set the amount; the linked construction program sets each
+            forecast claim date. Issued claims and actual receipts then replace the forecast.
           </p>
           <ClientInvoiceQueue
             projectId={id}

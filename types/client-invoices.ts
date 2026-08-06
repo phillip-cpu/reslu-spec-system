@@ -19,6 +19,7 @@ export type ClientInvoiceKind = "design_fee" | "other";
 export type ClientInvoiceStatus = "draft" | "sent" | "paid" | "void";
 export type ClientInvoiceSource = "reslu" | "manual";
 export type ClientContractType = "design" | "construction" | "other";
+export type ClientPaymentTriggerType = "contract_signed" | "schedule_phase" | "manual";
 
 /** One row of client_invoices.line_items (jsonb array). */
 export interface ClientInvoiceLineItem {
@@ -65,6 +66,7 @@ export interface ClientInvoicesListResponse {
   invoices: ClientInvoice[];
   billing_profile: ClientBillingProfile | null;
   payment_schedule: ClientPaymentScheduleItem[];
+  schedule_phases: ClientSchedulePhase[];
   approved_variations: ClientApprovedVariation[];
 }
 
@@ -87,10 +89,21 @@ export interface ClientPaymentScheduleItem {
   percentage: number | null;
   amount_inc_gst: number;
   milestone_date: string | null;
+  trigger_type: ClientPaymentTriggerType;
+  schedule_phase_id: string | null;
   sort: number;
   client_invoice_id: string | null;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface ClientSchedulePhase {
+  id: string;
+  project_id?: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+  sort: number;
 }
 
 export interface ClientApprovedVariation {
@@ -136,6 +149,8 @@ export interface SaveClientBillingInput {
     percentage?: number | null;
     amount_inc_gst: number;
     milestone_date?: string | null;
+    trigger_type: ClientPaymentTriggerType;
+    schedule_phase_id?: string | null;
     sort: number;
   }>;
 }
