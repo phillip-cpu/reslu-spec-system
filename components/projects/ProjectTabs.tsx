@@ -15,6 +15,7 @@ export type ProjectTabKey =
   | "diary"
   | "client"
   | "estimate"
+  | "finance"
   | "invoices"
   | "settings";
 
@@ -34,6 +35,7 @@ const GROUP_FOR_TAB: Partial<Record<ProjectTabKey, ProjectNavGroup>> = {
   gallery: "site",
   diary: "site",
   estimate: "finance",
+  finance: "finance",
   invoices: "finance",
 };
 
@@ -51,7 +53,7 @@ export function ProjectTabs({ projectId, active, isAdmin, portalUrl }: Props) {
     { key: "site", label: "Site", href: `/projects/${projectId}/diary`, active: activeGroup === "site" },
     { key: "client", label: "Client", href: `/projects/${projectId}/client`, active: active === "client" },
     ...(isAdmin
-      ? [{ key: "finance", label: "Finance", href: `/projects/${projectId}/estimate`, active: activeGroup === "finance" }]
+      ? [{ key: "finance", label: "Finance", href: `/projects/${projectId}/finance`, active: activeGroup === "finance" }]
       : []),
     { key: "settings", label: "Settings", href: `/projects/${projectId}/settings`, active: active === "settings" },
   ];
@@ -68,6 +70,7 @@ export function ProjectTabs({ projectId, active, isAdmin, portalUrl }: Props) {
       { key: "gallery", label: "Gallery", href: `/projects/${projectId}/gallery` },
     ],
     finance: [
+      { key: "finance", label: "Position", href: `/projects/${projectId}/finance` },
       { key: "estimate", label: "Estimate", href: `/projects/${projectId}/estimate` },
       { key: "invoices", label: "Invoices", href: `/projects/${projectId}/invoices` },
     ],

@@ -50,22 +50,30 @@ function HealthDot({ level }: { level: HealthPillLevel }) {
  * shortcuts. The three boxes update only when a project is actually visited;
  * they never auto-animate or change beneath the user while idle.
  */
-export function Sidebar({ isAdmin = false }: { isAdmin?: boolean }) {
+export function Sidebar({
+  isAdmin = false,
+  financeEnabled = false,
+}: {
+  isAdmin?: boolean;
+  financeEnabled?: boolean;
+}) {
   const pathname = usePathname();
   const [badges, setBadges] = useState<BadgeCounts>({
     leads_followups: 0,
     my_work_due: 0,
     health_level: "amber",
   });
-  const [sidebarOrder, setSidebarOrder] = useState(() => normalizeSidebarOrder([], isAdmin));
+  const [sidebarOrder, setSidebarOrder] = useState(() =>
+    normalizeSidebarOrder([], isAdmin, financeEnabled)
+  );
   const [recentProjects, setRecentProjects] = useState<RecentProjectShortcut[]>([]);
   const [arranging, setArranging] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
 
   const itemById = useMemo(
-    () => new Map(visibleSidebarItems(isAdmin).map((item) => [item.id, item])),
-    [isAdmin]
+    () => new Map(visibleSidebarItems(isAdmin, financeEnabled).map((item) => [item.id, item])),
+    [isAdmin, financeEnabled]
   );
   const orderedItems = sidebarOrder.map((id) => itemById.get(id)).filter(Boolean);
 
@@ -91,7 +99,7 @@ export function Sidebar({ isAdmin = false }: { isAdmin?: boolean }) {
       })
       .then((body) => {
         if (!body || cancelled) return;
-        setSidebarOrder(normalizeSidebarOrder(body.sidebar_order, isAdmin));
+        setSidebarOrder(normalizeSidebarOrder(body.sidebar_order, isAdmin, financeEnabled));
         setRecentProjects(body.recent_projects ?? []);
       })
       .catch(() => {
@@ -100,7 +108,7 @@ export function Sidebar({ isAdmin = false }: { isAdmin?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [pathname, isAdmin]);
+  }, [pathname, isAdmin, financeEnabled]);
 
   useEffect(() => {
     let cancelled = false;
@@ -130,7 +138,7 @@ export function Sidebar({ isAdmin = false }: { isAdmin?: boolean }) {
   }, [pathname]);
 
   async function persistOrder(next: string[]) {
-    const normalized = normalizeSidebarOrder(next, isAdmin);
+    const normalized = normalizeSidebarOrder(next, isAdmin, financeEnabled);
     setSidebarOrder(normalized);
     try {
       await fetch("/api/navigation-preferences", {

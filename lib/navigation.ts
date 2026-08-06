@@ -7,6 +7,7 @@ export interface SidebarNavItem {
   adminOnly?: boolean;
   badgeKey?: SidebarBadgeKey;
   external?: boolean;
+  feature?: "finance";
 }
 
 /** Stable ids are persisted in user_navigation_preferences.sidebar_order. */
@@ -14,6 +15,7 @@ export const SIDEBAR_NAV_ITEMS: SidebarNavItem[] = [
   { id: "my-work", label: "My Work", href: "/my-work", badgeKey: "my_work_due" },
   { id: "friday-review", label: "Friday Review", href: "/friday-review" },
   { id: "projects", label: "Projects", href: "/" },
+  { id: "finance", label: "Finance", href: "/finance", adminOnly: true, feature: "finance" },
   { id: "office", label: "Office", href: "/office" },
   { id: "search", label: "Search", href: "/search" },
   { id: "library", label: "Library", href: "/library" },
@@ -31,8 +33,15 @@ export const SIDEBAR_NAV_ITEMS: SidebarNavItem[] = [
   },
 ];
 
-export function visibleSidebarItems(isAdmin: boolean): SidebarNavItem[] {
-  return SIDEBAR_NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin);
+export function visibleSidebarItems(
+  isAdmin: boolean,
+  financeEnabled = false
+): SidebarNavItem[] {
+  return SIDEBAR_NAV_ITEMS.filter(
+    (item) =>
+      (!item.adminOnly || isAdmin) &&
+      (!item.feature || (item.feature === "finance" && financeEnabled))
+  );
 }
 
 /**
@@ -40,8 +49,12 @@ export function visibleSidebarItems(isAdmin: boolean): SidebarNavItem[] {
  * navigation entries in their product-default order. Duplicate and stale
  * ids are discarded, so a future nav addition never strands a user's menu.
  */
-export function normalizeSidebarOrder(value: unknown, isAdmin: boolean): string[] {
-  const visible = visibleSidebarItems(isAdmin).map((item) => item.id);
+export function normalizeSidebarOrder(
+  value: unknown,
+  isAdmin: boolean,
+  financeEnabled = false
+): string[] {
+  const visible = visibleSidebarItems(isAdmin, financeEnabled).map((item) => item.id);
   const allowed = new Set(visible);
   const saved = Array.isArray(value)
     ? value.filter((id): id is string => typeof id === "string" && allowed.has(id))

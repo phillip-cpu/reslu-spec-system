@@ -112,6 +112,19 @@ This downloads everything the app needs. It can take a few minutes the first tim
      new DOCUMENTS section; no RLS change, additive column on an
      already-permissive table — see `docs/API.md`'s "Trade booking
      document pack" section)
+   - Continue applying the numbered migrations in order through
+     `supabase/migrations/080_finance_foundation.sql`. Migration 080 is
+     the feature-flagged Finance Milestone 1 foundation: explicit
+     database capabilities/RLS, project finance lifecycle, immutable
+     activation baselines, integer-minor-unit contribution inputs and
+     projection storage for later milestones. It seeds only a **draft**
+     policy; no project can activate until the M0 confirmations are
+     published deliberately.
+     After applying it, leave both finance environment flags off until the
+     staging permission checks pass. Enabling the foundation flag exposes
+     the Finance navigation; enabling the separate shadow flag allows the
+     non-persisting company and project 13-week previews. See
+     `docs/FINANCE-M1-HANDOFF.md` for the controlled rollout order.
    - `supabase/seed.sql` (adds the category codes and a demo project)
    - `supabase/seed_contacts.sql` (optional — Address Book seed data
      parsed from RESLU's Monday.com export, ~109 companies across 30

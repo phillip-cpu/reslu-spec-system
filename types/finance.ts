@@ -1,0 +1,252 @@
+export const FINANCE_CAPABILITIES = [
+  "finance.view_company",
+  "finance.view_project",
+  "finance.activate_project",
+  "finance.edit_forecast",
+  "finance.resolve_match",
+  "finance.manage_policy",
+  "finance.manage_xero",
+  "finance.run_sync",
+  "finance.view_audit",
+  "finance.export",
+  "finance.use_ai",
+  "finance.manage_access",
+] as const;
+
+export type FinanceCapability = (typeof FINANCE_CAPABILITIES)[number];
+
+export type ProjectFinanceState =
+  | "design_only"
+  | "candidate"
+  | "ready"
+  | "active"
+  | "suspended"
+  | "closed"
+  | "cancelled";
+
+export interface FinancePolicyVersion {
+  id: string;
+  policy_key: string;
+  version_number: number;
+  status: "draft" | "published" | "superseded";
+  effective_from: string;
+  configuration: Record<string, unknown>;
+  confirmations: Record<string, unknown>;
+  note: string | null;
+  created_by: string | null;
+  approved_by: string | null;
+  created_at: string;
+  approved_at: string | null;
+}
+
+export interface ProjectFinanceProfile {
+  project_id: string;
+  finance_state: ProjectFinanceState;
+  policy_version_id: string | null;
+  active_baseline_id: string | null;
+  current_projection_id: string | null;
+  activated_at: string | null;
+  activated_by: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SignedContractEvidence {
+  reference: string;
+  signed_at: string;
+  document_id?: string | null;
+  storage_path?: string | null;
+  note?: string | null;
+}
+
+export type FinanceReadinessCode =
+  | "signed_contract"
+  | "saved_estimate"
+  | "dated_program"
+  | "published_policy"
+  | "lifecycle_state";
+
+export interface FinanceReadinessCheck {
+  code: FinanceReadinessCode;
+  ready: boolean;
+  message: string;
+}
+
+export interface FinanceActivationReadiness {
+  ready: boolean;
+  checks: FinanceReadinessCheck[];
+  project_id: string;
+  finance_state: ProjectFinanceState;
+  profile_version: number;
+  estimate_version_id: string | null;
+  estimate_label: string | null;
+  policy_version_id: string | null;
+  program_watermark: string | null;
+  program_phase_count: number;
+}
+
+export interface FinanceReadinessRequest {
+  effective_date?: string;
+  estimate_version_id?: string;
+  policy_version_id?: string;
+  contract_evidence?: Partial<SignedContractEvidence>;
+}
+
+export interface PublishFinancePolicyRequest {
+  effective_from: string;
+  configuration: Record<string, unknown>;
+  confirmations: Record<string, unknown>;
+  reason: string;
+}
+
+export interface ActivateProjectFinanceRequest extends FinanceReadinessRequest {
+  effective_date: string;
+  estimate_version_id: string;
+  policy_version_id: string;
+  contract_evidence: SignedContractEvidence;
+  reason: string;
+  idempotency_key: string;
+  expected_profile_version: number;
+  program_watermark: string;
+}
+
+export type FinanceDirection = "inflow" | "outflow";
+export type FinanceContributionState =
+  | "planned"
+  | "committed"
+  | "actual_accrued"
+  | "actual_paid";
+export type FinanceConfidence =
+  | "confirmed"
+  | "high"
+  | "medium"
+  | "low"
+  | "unknown";
+
+export interface FinanceContributionInput {
+  contributionKey: string;
+  direction: FinanceDirection;
+  description: string;
+  plannedMinor: number;
+  committedMinor?: number;
+  actualAccruedMinor?: number;
+  actualPaidMinor?: number;
+  plannedDate?: string | null;
+  committedDate?: string | null;
+  actualDueDate?: string | null;
+  actualPaidDate?: string | null;
+  baseEligible?: boolean;
+  confidence?: FinanceConfidence;
+  sourceTrace?: Record<string, unknown>;
+}
+
+export interface EffectiveFinanceContribution {
+  contributionKey: string;
+  direction: FinanceDirection;
+  description: string;
+  state: FinanceContributionState;
+  amountMinor: number;
+  effectiveDate: string | null;
+  confidence: FinanceConfidence;
+  sourceTrace: Record<string, unknown>;
+}
+
+export interface FinanceProjectionPeriod {
+  periodKind: "week";
+  periodIndex: number;
+  startsOn: string;
+  endsOn: string;
+  openingCashMinor: number;
+  inflowMinor: number;
+  outflowMinor: number;
+  actualInflowMinor: number;
+  actualOutflowMinor: number;
+  closingCashMinor: number;
+  contributions: EffectiveFinanceContribution[];
+}
+
+export interface FinanceShadowProjection {
+  calculationVersion: "finance-shadow-v1";
+  asOfDate: string;
+  openingCashMinor: number;
+  periods: FinanceProjectionPeriod[];
+  effectiveContributions: EffectiveFinanceContribution[];
+  unknownTimingMinor: number;
+  outsideHorizonMinor: number;
+  excludedFromBaseMinor: number;
+  lowestCashMinor: number;
+  lowestCashPeriodIndex: number | null;
+  totalInflowMinor: number;
+  totalOutflowMinor: number;
+}
+
+export interface FinanceShadowProjectionRequest {
+  as_of_date: string;
+  opening_cash_minor?: number;
+  estimate_version_id?: string;
+  timing_overrides?: Record<string, string>;
+}
+
+export interface FinanceShadowProjectionResponse {
+  mode: "shadow";
+  persisted: false;
+  committed_base_eligible: boolean;
+  finance_state: ProjectFinanceState;
+  source: {
+    estimate_version_id: string;
+    estimate_label: string;
+    timing_override_count: number;
+    opening_cash_source: "not_configured" | "request_preview";
+  };
+  projection: FinanceShadowProjection;
+}
+
+export interface FinanceCockpitProject {
+  project_id: string;
+  name: string;
+  job_number: string | null;
+  finance_state: ProjectFinanceState;
+  baseline_id: string | null;
+  baseline_effective_date: string | null;
+  exposure_minor: number;
+  forecast_line_count: number;
+  unknown_timing_minor: number;
+}
+
+export interface FinanceCockpitResponse {
+  mode: "shadow";
+  persisted: false;
+  shadow_enabled: boolean;
+  can_manage_policy: boolean;
+  source_status: {
+    xero: "not_configured" | "connecting" | "healthy" | "degraded";
+    opening_cash: "request_preview" | "not_configured";
+    calculated_at: string;
+  };
+  counts: {
+    active_projects: number;
+    candidate_projects: number;
+    design_only_projects: number;
+  };
+  projects: FinanceCockpitProject[];
+  projection: FinanceShadowProjection | null;
+}
+
+export interface ProjectFinanceResponse {
+  project: {
+    id: string;
+    name: string;
+    job_number: string | null;
+  };
+  finance: ProjectFinanceProfile & {
+    active_baseline?: {
+      id: string;
+      effective_date: string;
+      estimate_version_id: string;
+      program_watermark: string;
+      content_hash: string;
+      created_at: string;
+    } | null;
+  };
+}

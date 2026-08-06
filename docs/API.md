@@ -7650,3 +7650,75 @@ preview's own `.overlay`/`.ink`/`.date` rules), `docs/API.md` (this
 section). No migration, no protected file touched, no r23 signing/PDF/
 editor machinery touched — cssfold/static/reduced-motion paths verified
 unchanged by trace.
+
+## Finance foundation - Milestone 1 (migration 080)
+
+All endpoints below are server-feature-flagged. Set
+`FINANCE_FOUNDATION_ENABLED=true` only after migration 080 is applied;
+set `FINANCE_SHADOW_PROJECTION_ENABLED=true` separately for the
+non-persisting calculation preview. Both default off.
+
+### `GET /api/finance/cockpit`
+
+Returns the permission-scoped company shadow cockpit for an `as_of_date`
+and optional request-only `opening_cash_minor`. Only active immutable
+project baselines enter the base. The response includes 13 weekly periods,
+project lifecycle/exposure summaries, Xero/opening-cash source states and
+unknown/outside-horizon amounts. It requires `finance.view_company` and
+never persists or promotes the preview.
+
+### `GET /api/finance/policies`
+
+Returns company finance policy versions for the controlled Governance tab.
+Requires `finance.manage_policy`; the subsequent publish command remains a
+separate audited POST with all three external confirmations.
+
+### `POST /api/finance/policies/:id/publish`
+
+Publishes an existing draft policy through the capability-gated database
+function. The body carries the complete configuration, effective date,
+reason and explicit `owner`, `accountant` and `legal` confirmations. A
+missing confirmation fails closed; the seeded M0 draft is never published
+automatically.
+
+### `GET /api/projects/:id/finance`
+
+Returns the project finance lifecycle profile and active immutable
+baseline metadata. Requires `finance.view_project` for the project (or
+the company-wide equivalent). Permission is evaluated by the database,
+not inferred from UI visibility.
+
+### `POST /api/projects/:id/finance/readiness`
+
+Read-only activation preview. Body includes `effective_date`, selected
+`estimate_version_id`/`policy_version_id`, and signed-contract evidence.
+The response reports five independent gates: contract, saved estimate,
+dated program, published effective policy and eligible lifecycle state.
+
+### `POST /api/projects/:id/finance/activate`
+
+Calls the atomic `activate_project_finance(...)` database function.
+Requires `finance.activate_project`, the readiness watermark/profile
+version, reason and idempotency key. The function locks the profile,
+revalidates every prerequisite, freezes estimate/program/policy evidence,
+creates contribution lines and appends activation/audit events in one
+transaction. Published rows cannot be updated or deleted.
+
+### `POST /api/projects/:id/finance/shadow-projection`
+
+Runs deterministic `finance-shadow-v1` without persisting anything. It
+uses a saved estimate version and optional request-only timing overrides.
+Because the current estimate schema has no cost-line-to-phase mapping,
+unmapped amounts are returned as `unknownTimingMinor`; they are never
+assigned a fabricated date or silently converted to zero.
+
+### Finance UI routes
+
+- `/finance` - executive shadow cockpit, weekly cash drill-down, project
+  lifecycle register and capability-gated policy governance.
+- `/projects/:id/finance` - project cost position, timing preview,
+  activation readiness and atomic activation command.
+
+The top-level Finance navigation entry is admin-visible only while
+`FINANCE_FOUNDATION_ENABLED=true`. API and database capability checks remain
+the enforcement boundary; hiding navigation is only a convenience.
