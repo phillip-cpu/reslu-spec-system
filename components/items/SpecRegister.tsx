@@ -390,9 +390,11 @@ export function SpecRegister({
         <AddItemForm
           projectId={projectId}
           categories={sortedCategories}
+          rooms={rooms}
           onAdd={onAdd}
           onAddRefetch={onAddRefetch}
           onError={onError}
+          onRoomsChanged={onRoomsChanged}
         />
       )}
 
@@ -1117,19 +1119,23 @@ function SpinnerDot() {
 function AddItemForm({
   projectId,
   categories,
+  rooms,
   onAdd,
   onAddRefetch,
   onError,
+  onRoomsChanged,
 }: {
   projectId: string;
   categories: Category[];
+  rooms: RoomWithCount[];
   onAdd: (item: Item) => void;
   onAddRefetch: (itemId: string, delayMs?: number) => void;
   onError: (msg: string | null) => void;
+  onRoomsChanged: () => void;
 }) {
   const [name, setName] = useState("");
   const [category, setCategory] = useState(categories[0]?.prefix ?? "");
-  const [location, setLocation] = useState("");
+  const [roomId, setRoomId] = useState("");
   const [quantity, setQuantity] = useState("1");
   const [costScope, setCostScope] = useState<Item["cost_scope"]>("direct");
   const [productUrl, setProductUrl] = useState("");
@@ -1167,6 +1173,7 @@ function AddItemForm({
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim() || !category) return;
+    const selectedRoom = rooms.find((room) => room.id === roomId) ?? null;
     setSubmitting(true);
     onError(null);
     try {
@@ -1176,7 +1183,10 @@ function AddItemForm({
         body: JSON.stringify({
           name: name.trim(),
           category,
-          location: location.trim() || undefined,
+          // Keep the legacy location value aligned with the canonical
+          // room allocation so search/PDF consumers that still read
+          // items.location see the same room name.
+          location: selectedRoom?.name,
           quantity: Number(quantity) || 1,
           cost_scope: costScope,
           product_url: productUrl.trim() || undefined,
@@ -1188,6 +1198,32 @@ function AddItemForm({
         throw new Error(body.error ?? "Could not add item.");
       }
       const { item } = await res.json();
+
+      // Room grouping is driven by item_rooms, not items.location. Assign
+      // the newly-created direct item immediately so it appears under the
+      // selected room rather than Unassigned. The item itself remains
+      // successfully created if this secondary allocation fails; surface a
+      // precise warning instead of inviting a duplicate quick-add retry.
+      let roomAssignmentError: string | null = null;
+      if (selectedRoom && costScope === "direct") {
+        const roomRes = await fetch(`/api/projects/${projectId}/items/rooms`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            item_ids: [item.id],
+            room_ids: [selectedRoom.id],
+            quantity: Number(quantity) || 1,
+            mode: "replace",
+          }),
+        });
+        if (!roomRes.ok) {
+          const roomBody = await roomRes.json().catch(() => ({}));
+          roomAssignmentError =
+            roomBody.error ?? "The selected room could not be assigned.";
+        } else {
+          onRoomsChanged();
+        }
+      }
       onAdd(item);
       // Scrape status visibility (Week 7): the scrape kicked off by
       // POST /api/projects/[id]/items runs fire-and-forget — `item` here
@@ -1198,14 +1234,17 @@ function AddItemForm({
       if (productUrl.trim()) {
         onAddRefetch(item.id);
       }
-      // keep the row open for rapid entry — reset name/location, keep category
+      // keep the row open for rapid entry — reset name/room, keep category
       setName("");
-      setLocation("");
+      setRoomId("");
       setQuantity("1");
       setCostScope("direct");
       setProductUrl("");
       setDuplicates([]);
       setLibraryItemId(null);
+      if (roomAssignmentError) {
+        onError(`Item added, but its room was not assigned: ${roomAssignmentError}`);
+      }
       nameRef.current?.focus();
     } catch (err) {
       onError(err instanceof Error ? err.message : "Could not add item.");
@@ -1300,7 +1339,7 @@ function AddItemForm({
           onChange={(event) => {
             const next = event.target.value as Item["cost_scope"];
             setCostScope(next);
-            if (next === "trade_package") setLocation("");
+            if (next === "trade_package") setRoomId("");
           }}
           className="border border-[#c9c2b4] bg-nearwhite px-2 py-2 text-body focus:border-nearblack focus:outline-none"
         >
@@ -1309,14 +1348,22 @@ function AddItemForm({
         </select>
       </div>
       <div>
-        <label className="label-caps mb-1 block">Location</label>
-        <input
-          value={location}
-          onChange={(e) => setLocation(e.target.value)}
-          disabled={costScope === "trade_package"}
-          placeholder="e.g. Ensuite"
-          className="w-36 border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none disabled:opacity-40"
-        />
+        <label className="label-caps mb-1 block">Room</label>
+        <select
+          value={roomId}
+          onChange={(e) => setRoomId(e.target.value)}
+          disabled={costScope === "trade_package" || rooms.length === 0}
+          className="w-44 border border-[#c9c2b4] bg-nearwhite px-2 py-2 text-body focus:border-nearblack focus:outline-none disabled:opacity-40"
+        >
+          <option value="">
+            {rooms.length === 0 ? "No rooms set up" : "Choose room…"}
+          </option>
+          {rooms.map((room) => (
+            <option key={room.id} value={room.id}>
+              {room.name}
+            </option>
+          ))}
+        </select>
       </div>
       <div>
         <label className="label-caps mb-1 block">Qty</label>
