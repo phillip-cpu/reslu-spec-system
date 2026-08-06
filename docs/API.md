@@ -7722,3 +7722,39 @@ assigned a fabricated date or silently converted to zero.
 The top-level Finance navigation entry is admin-visible only while
 `FINANCE_FOUNDATION_ENABLED=true`. API and database capability checks remain
 the enforcement boundary; hiding navigation is only a convenience.
+
+## Finance recurring commitments - Milestone 2 (migration 081)
+
+Migration `081_finance_recurring_commitments.sql` adds the company-level
+register for repeating overhead cash commitments. `amount_minor` is the cash
+amount of each occurrence; GST treatment is recorded as classification and
+does not silently alter that amount. Active rules are expanded at read time
+using their first due date as the calendar anchor. Monthly and quarterly
+month-end dates clamp to the final valid day without drifting the anchor.
+
+### `GET /api/finance/recurring-commitments`
+
+Returns all non-archived company commitments plus the active count, next due
+date and total recurring outflow inside the requested 13-week window. Requires
+`finance.view_company` or `finance.edit_forecast`.
+
+### `POST /api/finance/recurring-commitments`
+
+Creates or updates a rule through `save_finance_recurring_commitment(...)`.
+Requires `finance.edit_forecast`, a change reason and optimistic
+`expected_version` for updates. The database appends an immutable finance audit
+event; authenticated clients have no direct insert/update/delete table grant.
+
+### `DELETE /api/finance/recurring-commitments/:id`
+
+Archives a rule through `archive_finance_recurring_commitment(...)`. Requires
+the current version and an archive reason. Archived rows are retained for
+history and no longer contribute occurrences.
+
+### Cockpit integration
+
+The Finance cockpit includes a **Recurring commitments** tab. Active company
+rules are added to active project-baseline contributions before the
+non-persisting `finance-shadow-v1` calculation. Draft, paused and archived rules
+stay outside the cash base. Past recurrence dates are assumed to be represented
+in opening cash and are not re-counted.

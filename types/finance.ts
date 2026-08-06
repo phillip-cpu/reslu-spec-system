@@ -124,6 +124,82 @@ export type FinanceConfidence =
   | "low"
   | "unknown";
 
+export type FinanceRecurringCategory =
+  | "wages"
+  | "superannuation"
+  | "rent"
+  | "marketing"
+  | "software"
+  | "insurance"
+  | "utilities"
+  | "professional_fees"
+  | "vehicles"
+  | "other";
+
+export type FinanceRecurringFrequency =
+  | "weekly"
+  | "fortnightly"
+  | "monthly"
+  | "quarterly"
+  | "annually";
+
+export type FinanceRecurringStatus = "draft" | "active" | "paused" | "archived";
+export type FinanceGstTreatment =
+  | "inclusive"
+  | "exclusive"
+  | "gst_free"
+  | "not_applicable";
+
+export interface FinanceRecurringCommitment {
+  id: string;
+  name: string;
+  category: FinanceRecurringCategory;
+  supplier_or_payee: string | null;
+  amount_minor: number;
+  frequency: FinanceRecurringFrequency;
+  first_due_date: string;
+  end_date: string | null;
+  gst_treatment: FinanceGstTreatment;
+  annual_escalation_bps: number;
+  confidence: FinanceConfidence;
+  status: FinanceRecurringStatus;
+  notes: string | null;
+  version: number;
+  created_by: string | null;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SaveFinanceRecurringCommitmentRequest {
+  id?: string | null;
+  name: string;
+  category: FinanceRecurringCategory;
+  supplier_or_payee?: string | null;
+  amount_minor: number;
+  frequency: FinanceRecurringFrequency;
+  first_due_date: string;
+  end_date?: string | null;
+  gst_treatment: FinanceGstTreatment;
+  annual_escalation_bps: number;
+  confidence: FinanceConfidence;
+  status: Exclude<FinanceRecurringStatus, "archived">;
+  notes?: string | null;
+  expected_version?: number | null;
+  reason: string;
+}
+
+export interface FinanceRecurringCommitmentsResponse {
+  commitments: FinanceRecurringCommitment[];
+  can_edit: boolean;
+  as_of_date: string;
+  summary: {
+    active_count: number;
+    projected_outflow_minor: number;
+    next_due_date: string | null;
+  };
+}
+
 export interface FinanceContributionInput {
   contributionKey: string;
   direction: FinanceDirection;
@@ -219,6 +295,7 @@ export interface FinanceCockpitResponse {
   persisted: false;
   shadow_enabled: boolean;
   can_manage_policy: boolean;
+  can_edit_forecast: boolean;
   source_status: {
     xero: "not_configured" | "connecting" | "healthy" | "degraded";
     opening_cash: "request_preview" | "not_configured";
@@ -228,6 +305,11 @@ export interface FinanceCockpitResponse {
     active_projects: number;
     candidate_projects: number;
     design_only_projects: number;
+    active_recurring_commitments: number;
+  };
+  recurring_summary: {
+    projected_outflow_minor: number;
+    next_due_date: string | null;
   };
   projects: FinanceCockpitProject[];
   projection: FinanceShadowProjection | null;
