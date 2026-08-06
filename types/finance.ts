@@ -24,6 +24,30 @@ export type ProjectFinanceState =
   | "closed"
   | "cancelled";
 
+export const PROJECT_STAGES = [
+  "design",
+  "quoting",
+  "preconstruction",
+  "construction",
+  "handover",
+  "complete",
+  "on_hold",
+] as const;
+
+export type ProjectStage = (typeof PROJECT_STAGES)[number];
+
+export interface ProjectCommercialProfile {
+  project_stage: ProjectStage;
+  contract_type: "design" | "construction" | "other";
+  contract_label: string;
+  contract_amount_inc_gst: number;
+  contract_reference: string | null;
+  contract_signed_at: string | null;
+  due_days: number;
+}
+
+export type SaveProjectCommercialProfileRequest = ProjectCommercialProfile;
+
 export interface FinancePolicyVersion {
   id: string;
   policy_key: string;
@@ -320,7 +344,9 @@ export interface ProjectFinanceResponse {
     id: string;
     name: string;
     job_number: string | null;
+    project_stage: ProjectStage;
   };
+  commercial: ProjectCommercialProfile;
   finance: ProjectFinanceProfile & {
     active_baseline?: {
       id: string;

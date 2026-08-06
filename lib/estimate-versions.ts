@@ -26,25 +26,6 @@ import type {
   SectionDiffEntry,
 } from "@/types/phase-12a-a";
 
-/**
- * Suggests the next version label given existing labels for a project —
- * NOT enforced (estimate_versions.label has no auto-numbering, per the
- * migration's comment: "free text, team-chosen"). Looks for the
- * highest bare "V<n>" among existing labels and offers "V<n+1>"; if the
- * caller is starting a VM revision off that, "VM_V<n+1>" is offered
- * for the same number instead. Falls back to "V1" for a project with no
- * versions yet.
- */
-export function suggestNextLabel(existingLabels: string[], kind: "issue" | "vm" = "issue"): string {
-  let maxN = 0;
-  for (const label of existingLabels) {
-    const match = /^(?:VM_)?V(\d+)$/i.exec(label.trim());
-    if (match) maxN = Math.max(maxN, Number(match[1]));
-  }
-  const n = maxN + 1;
-  return kind === "vm" ? `VM_V${n}` : `V${n}`;
-}
-
 // ------------------------------------------------------------
 // Section/line diffing
 // ------------------------------------------------------------

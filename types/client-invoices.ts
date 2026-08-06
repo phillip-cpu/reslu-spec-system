@@ -74,6 +74,8 @@ export interface ClientBillingProfile {
   contract_label: string;
   contract_amount_inc_gst: number;
   due_days: number;
+  contract_reference: string | null;
+  contract_signed_at: string | null;
   created_at?: string;
   updated_at?: string;
 }
