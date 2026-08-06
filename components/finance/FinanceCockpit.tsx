@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FinanceCashCurve } from "./FinanceCashCurve";
 import { FinancePolicyPanel } from "./FinancePolicyPanel";
+import { FinanceRecurringCommitmentsPanel } from "./FinanceRecurringCommitmentsPanel";
 import { FinanceStatePill } from "./FinanceStatePill";
 import {
   adelaideToday,
@@ -13,7 +14,7 @@ import {
 } from "@/lib/finance/presentation";
 import type { FinanceCockpitResponse, FinanceProjectionPeriod } from "@/types/finance";
 
-type CockpitTab = "cash" | "projects" | "governance";
+type CockpitTab = "cash" | "commitments" | "projects" | "governance";
 
 function MetricCard({
   label,
@@ -84,7 +85,7 @@ function PeriodDetail({ period }: { period: FinanceProjectionPeriod }) {
                       <span>
                         <span className="block text-nearblack">{item.description}</span>
                         <span className="mt-1 block text-caption text-charcoal/50">
-                          {String(item.sourceTrace.project_name ?? item.state)} · {item.confidence} confidence
+                          {String(item.sourceTrace.project_name ?? item.sourceTrace.supplier_or_payee ?? item.sourceTrace.category ?? item.state)} · {item.confidence} confidence
                         </span>
                       </span>
                       <span className="shrink-0 text-nearblack">{formatMinorCurrency(item.amountMinor)}</span>
@@ -220,6 +221,7 @@ export function FinanceCockpit() {
         <div className="flex overflow-x-auto border-b border-charcoal/20 px-4 md:px-7" role="tablist" aria-label="Finance cockpit views">
           {[
             ["cash", "Cash timeline"],
+            ["commitments", "Recurring commitments"],
             ["projects", "Projects"],
             ...(data?.can_manage_policy ? [["governance", "Governance"]] : []),
           ].map(([key, label]) => (
@@ -256,6 +258,12 @@ export function FinanceCockpit() {
         </div>
       ) : activeTab === "governance" && data?.can_manage_policy ? (
         <FinancePolicyPanel />
+      ) : activeTab === "commitments" && data ? (
+        <FinanceRecurringCommitmentsPanel
+          asOfDate={asOfDate}
+          canEdit={data.can_edit_forecast}
+          onChanged={() => void loadCockpit()}
+        />
       ) : activeTab === "projects" ? (
         <section className="border border-charcoal/20 bg-offwhite" aria-labelledby="finance-projects-heading">
           <div className="border-b border-charcoal/20 p-5 md:p-7">
@@ -323,7 +331,7 @@ export function FinanceCockpit() {
             <MetricCard
               label="Dated outflows"
               value={projection ? formatMinorCurrency(projection.totalOutflowMinor) : "—"}
-              detail={`${data?.counts.active_projects ?? 0} active project${data?.counts.active_projects === 1 ? "" : "s"} in base`}
+              detail={`${data?.counts.active_projects ?? 0} active project${data?.counts.active_projects === 1 ? "" : "s"} + ${data?.counts.active_recurring_commitments ?? 0} recurring`}
             />
             <MetricCard
               label="Exceptions"

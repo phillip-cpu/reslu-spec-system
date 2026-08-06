@@ -125,6 +125,12 @@ This downloads everything the app needs. It can take a few minutes the first tim
      the Finance navigation; enabling the separate shadow flag allows the
      non-persisting company and project 13-week previews. See
      `docs/FINANCE-M1-HANDOFF.md` for the controlled rollout order.
+   - `supabase/migrations/081_finance_recurring_commitments.sql` adds the
+     audited company recurring-commitments register for wages, super, rent,
+     marketing and other repeating overheads. Apply it after 080. Active
+     rules expand deterministically into the same 13-week shadow cash curve;
+     direct table writes remain disabled. See
+     `docs/FINANCE-M2-RECURRING-HANDOFF.md` for rollout and acceptance checks.
    - `supabase/seed.sql` (adds the category codes and a demo project)
    - `supabase/seed_contacts.sql` (optional — Address Book seed data
      parsed from RESLU's Monday.com export, ~109 companies across 30

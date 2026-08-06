@@ -6,12 +6,14 @@ import {
 } from "@/lib/finance/feature-flags";
 import { hasFinanceCapability } from "@/lib/finance/permissions";
 import { calculateShadowProjection } from "@/lib/finance/projection";
+import { generateRecurringContributions } from "@/lib/finance/recurrence";
 import { isIsoDate } from "@/lib/finance/readiness";
 import { createClient } from "@/lib/supabase/server";
 import type {
   FinanceCockpitProject,
   FinanceConfidence,
   FinanceContributionInput,
+  FinanceRecurringCommitment,
   ProjectFinanceState,
 } from "@/types/finance";
 
@@ -112,9 +114,10 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Finance foundation is not enabled" }, { status: 404 });
   }
 
-  const [viewPermission, policyPermission] = await Promise.all([
+  const [viewPermission, policyPermission, editPermission] = await Promise.all([
     hasFinanceCapability(supabase, "finance.view_company"),
     hasFinanceCapability(supabase, "finance.manage_policy"),
+    hasFinanceCapability(supabase, "finance.edit_forecast"),
   ]);
   if (viewPermission.error) {
     return NextResponse.json({ error: viewPermission.error }, { status: 500 });
@@ -165,13 +168,30 @@ export async function GET(request: NextRequest) {
     lines = (data ?? []) as unknown as ForecastLineRow[];
   }
 
+  const { data: rawRecurring, error: recurringError } = await supabase
+    .from("finance_recurring_commitments")
+    .select("*")
+    .eq("status", "active")
+    .order("first_due_date", { ascending: true });
+  if (recurringError) {
+    return NextResponse.json({ error: recurringError.message }, { status: 500 });
+  }
+
   try {
     const projectNameById = new Map(
       profiles.map((profile) => [profile.project_id, profile.project?.name ?? "Project"])
     );
-    const contributions = lines.map((line) =>
+    const projectContributions = lines.map((line) =>
       toContribution(line, projectNameById.get(line.project_id) ?? "Project")
     );
+    const recurringCommitments = ((rawRecurring ?? []) as Record<string, unknown>[]).map(
+      (row) => ({ ...row, amount_minor: safeMinor(row.amount_minor as number | string, `${String(row.id)}.amount`) }) as unknown as FinanceRecurringCommitment
+    );
+    const recurringContributions = generateRecurringContributions({
+      commitments: recurringCommitments,
+      asOfDate,
+    });
+    const contributions = [...projectContributions, ...recurringContributions];
     const shadowEnabled = financeShadowProjectionEnabled();
     const projection = shadowEnabled
       ? calculateShadowProjection({
@@ -220,6 +240,7 @@ export async function GET(request: NextRequest) {
       persisted: false,
       shadow_enabled: shadowEnabled,
       can_manage_policy: !policyPermission.error && policyPermission.allowed,
+      can_edit_forecast: !editPermission.error && editPermission.allowed,
       source_status: {
         xero: "not_configured",
         opening_cash: openingRaw === null ? "not_configured" : "request_preview",
@@ -233,6 +254,14 @@ export async function GET(request: NextRequest) {
         design_only_projects: profiles.filter(
           (profile) => profile.finance_state === "design_only"
         ).length,
+        active_recurring_commitments: recurringCommitments.length,
+      },
+      recurring_summary: {
+        projected_outflow_minor: recurringContributions.reduce(
+          (sum, item) => sum + item.plannedMinor,
+          0
+        ),
+        next_due_date: recurringContributions[0]?.plannedDate ?? null,
       },
       projects,
       projection,
