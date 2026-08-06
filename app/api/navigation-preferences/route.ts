@@ -3,6 +3,7 @@ import { getUserRole } from "@/lib/auth";
 import { normalizeSidebarOrder } from "@/lib/navigation";
 import { createClient } from "@/lib/supabase/server";
 import type { NavigationPreferencesResponse, RecentProjectShortcut } from "@/types/navigation";
+import { financeFoundationEnabled } from "@/lib/finance/feature-flags";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,7 +30,11 @@ async function responseFor(
   const projectById = new Map((projects ?? []).map((project) => [project.id, project]));
 
   return {
-    sidebar_order: normalizeSidebarOrder(preference?.sidebar_order, isAdmin),
+    sidebar_order: normalizeSidebarOrder(
+      preference?.sidebar_order,
+      isAdmin,
+      financeFoundationEnabled()
+    ),
     recent_projects: recentIds
       .map((id) => projectById.get(id))
       .filter((project): project is RecentProjectShortcut => Boolean(project)),
@@ -71,7 +76,11 @@ export async function PATCH(request: NextRequest) {
   } = { user_id: info.userId };
 
   if (Array.isArray(body.sidebar_order)) {
-    update.sidebar_order = normalizeSidebarOrder(body.sidebar_order, info.role === "admin");
+    update.sidebar_order = normalizeSidebarOrder(
+      body.sidebar_order,
+      info.role === "admin",
+      financeFoundationEnabled()
+    );
   }
 
   if (typeof body.visited_project_id === "string") {
@@ -107,4 +116,3 @@ export async function PATCH(request: NextRequest) {
 
   return NextResponse.json(await responseFor(supabase, info.userId, info.role === "admin"));
 }
-

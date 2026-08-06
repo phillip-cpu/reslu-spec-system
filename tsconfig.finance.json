@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false
+  },
+  "include": [
+    "next-env.d.ts",
+    "types/finance.ts",
+    "lib/finance/**/*.ts",
+    "components/finance/**/*.tsx",
+    "app/(dashboard)/finance/**/*.tsx",
+    "app/(dashboard)/projects/**/finance/**/*.tsx",
+    "app/api/projects/**/finance/**/*.ts",
+    "app/api/finance/**/*.ts"
+  ],
+  "exclude": [".next", "node_modules"]
+}

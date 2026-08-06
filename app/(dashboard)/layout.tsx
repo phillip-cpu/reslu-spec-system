@@ -4,6 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import { ScrollMemory } from "@/components/shared/ScrollMemory";
 import { FocusOnLoad } from "@/components/shared/FocusOnLoad";
 import { Suspense } from "react";
+import { financeFoundationEnabled } from "@/lib/finance/feature-flags";
 
 /**
  * Dashboard shell (server component). Week 10 adds `isAdmin` here so
@@ -28,7 +29,7 @@ export default async function DashboardLayout({
 
   return (
     <div className="flex min-h-screen bg-cream">
-      <Sidebar isAdmin={isAdmin} />
+      <Sidebar isAdmin={isAdmin} financeEnabled={financeFoundationEnabled()} />
       {/* Bug fix, 7 July 2026: min-w-0 is required here — a flex item's
           default min-width is `auto` (its content's intrinsic width),
           not 0, so without this a wide-content page (e.g. the Timeline's
