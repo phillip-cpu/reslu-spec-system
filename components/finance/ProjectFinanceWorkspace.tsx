@@ -12,10 +12,12 @@ import {
 import type {
   FinanceActivationReadiness,
   FinanceShadowProjectionResponse,
+  ProjectCommercialProfile,
   ProjectFinanceResponse,
+  ProjectStage,
 } from "@/types/finance";
 
-type WorkspaceTab = "position" | "timing" | "activation";
+type WorkspaceTab = "setup" | "position" | "timing" | "activation";
 
 type ApiError = { error?: string; readiness?: FinanceActivationReadiness };
 
@@ -29,12 +31,154 @@ function checkLabel(code: FinanceActivationReadiness["checks"][number]["code"]):
   }[code];
 }
 
+const STAGE_OPTIONS: Array<{ value: ProjectStage; label: string }> = [
+  { value: "design", label: "Design" },
+  { value: "quoting", label: "Quote" },
+  { value: "preconstruction", label: "Pre-construction" },
+  { value: "construction", label: "Construction" },
+  { value: "handover", label: "Handover" },
+  { value: "complete", label: "Complete" },
+  { value: "on_hold", label: "On hold" },
+];
+
+function stageLabel(stage: ProjectStage): string {
+  return STAGE_OPTIONS.find((option) => option.value === stage)?.label ?? stage;
+}
+
+function CommercialSetup({
+  projectId,
+  profile,
+  onSaved,
+  onError,
+}: {
+  projectId: string;
+  profile: ProjectCommercialProfile;
+  onSaved: (profile: ProjectFinanceResponse) => void;
+  onError: (message: string | null) => void;
+}) {
+  const [projectStage, setProjectStage] = useState(profile.project_stage);
+  const [contractType, setContractType] = useState(profile.contract_type);
+  const [contractLabel, setContractLabel] = useState(profile.contract_label);
+  const [contractAmount, setContractAmount] = useState(String(profile.contract_amount_inc_gst || ""));
+  const [contractReference, setContractReference] = useState(profile.contract_reference ?? "");
+  const [signed, setSigned] = useState(Boolean(profile.contract_signed_at));
+  const [contractSignedAt, setContractSignedAt] = useState(profile.contract_signed_at ?? "");
+  const [dueDays, setDueDays] = useState(String(profile.due_days));
+  const [saving, setSaving] = useState(false);
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    const amount = Number(contractAmount);
+    if (!contractLabel.trim() || !Number.isFinite(amount) || amount < 0) {
+      onError("Enter a contract name and valid amount.");
+      return;
+    }
+    if (signed && (!contractReference.trim() || !contractSignedAt)) {
+      onError("A signed contract needs its agreement reference and signed date.");
+      return;
+    }
+    setSaving(true);
+    onError(null);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/commercial`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_stage: projectStage,
+          contract_type: contractType,
+          contract_label: contractLabel.trim(),
+          contract_amount_inc_gst: amount,
+          contract_reference: signed ? contractReference.trim() : null,
+          contract_signed_at: signed ? contractSignedAt : null,
+          due_days: Number(dueDays),
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error ?? "Could not save commercial setup");
+      const refreshed = await fetch(`/api/projects/${projectId}/finance`, { cache: "no-store" });
+      const refreshedBody = (await refreshed.json()) as ProjectFinanceResponse & ApiError;
+      if (!refreshed.ok) throw new Error(refreshedBody.error ?? "Could not refresh project finance");
+      onSaved(refreshedBody);
+    } catch (saveError) {
+      onError(saveError instanceof Error ? saveError.message : "Could not save commercial setup");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="border border-charcoal/20 bg-offwhite" aria-labelledby="commercial-heading">
+      <div className="border-b border-charcoal/20 p-5 md:p-7">
+        <p className="label-caps">Project setup</p>
+        <h2 id="commercial-heading" className="mt-2 font-display text-section text-nearblack">
+          Stage and signed contract
+        </h2>
+        <p className="mt-2 max-w-2xl text-body text-charcoal/55">
+          This is the project&apos;s commercial source of truth. Payment claims and finance activation use the same contract record.
+        </p>
+      </div>
+      <form onSubmit={save} className="grid gap-5 p-5 md:grid-cols-2 md:p-7 xl:grid-cols-3">
+        <label>
+          <span className="label-caps">Project stage</span>
+          <select value={projectStage} onChange={(event) => setProjectStage(event.target.value as ProjectStage)} className="mt-2 w-full border border-charcoal/20 bg-cream px-3 py-2 text-body">
+            {STAGE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <label>
+          <span className="label-caps">Contract type</span>
+          <select value={contractType} onChange={(event) => setContractType(event.target.value as ProjectCommercialProfile["contract_type"])} className="mt-2 w-full border border-charcoal/20 bg-cream px-3 py-2 text-body">
+            <option value="design">Design</option>
+            <option value="construction">Construction</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label>
+          <span className="label-caps">Contract name</span>
+          <input value={contractLabel} onChange={(event) => setContractLabel(event.target.value)} placeholder="Construction contract" className="mt-2 w-full border border-charcoal/20 bg-cream px-3 py-2 text-body" />
+        </label>
+        <label>
+          <span className="label-caps">Original contract inc GST</span>
+          <input type="number" min="0" step="0.01" value={contractAmount} onChange={(event) => setContractAmount(event.target.value)} placeholder="150000" className="mt-2 w-full border border-charcoal/20 bg-cream px-3 py-2 text-body" />
+        </label>
+        <label>
+          <span className="label-caps">Agreement status</span>
+          <select value={signed ? "signed" : "not_signed"} onChange={(event) => { const nextSigned = event.target.value === "signed"; setSigned(nextSigned); if (nextSigned && !contractSignedAt) setContractSignedAt(adelaideToday()); }} className="mt-2 w-full border border-charcoal/20 bg-cream px-3 py-2 text-body">
+            <option value="not_signed">Not signed</option>
+            <option value="signed">Signed</option>
+          </select>
+        </label>
+        <label>
+          <span className="label-caps">Payment terms (days)</span>
+          <input type="number" min="0" value={dueDays} onChange={(event) => setDueDays(event.target.value)} className="mt-2 w-full border border-charcoal/20 bg-cream px-3 py-2 text-body" />
+        </label>
+        {signed && (
+          <>
+            <label className="md:col-span-1 xl:col-span-2">
+              <span className="label-caps">Agreement reference</span>
+              <input value={contractReference} onChange={(event) => setContractReference(event.target.value)} placeholder="e.g. Goldsworthy construction contract" className="mt-2 w-full border border-charcoal/20 bg-cream px-3 py-2 text-body" />
+            </label>
+            <label>
+              <span className="label-caps">Signed date</span>
+              <input type="date" value={contractSignedAt} onChange={(event) => setContractSignedAt(event.target.value)} className="mt-2 w-full border border-charcoal/20 bg-cream px-3 py-2 text-body" />
+            </label>
+          </>
+        )}
+        <div className="md:col-span-2 xl:col-span-3">
+          <button type="submit" disabled={saving} className="bg-nearblack px-5 py-2.5 text-subhead text-white hover:bg-charcoal disabled:opacity-40">
+            {saving ? "Saving…" : "Save project setup"}
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
 export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
   const [finance, setFinance] = useState<ProjectFinanceResponse | null>(null);
   const [shadow, setShadow] = useState<FinanceShadowProjectionResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>("position");
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("setup");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [asOfDate, setAsOfDate] = useState(adelaideToday);
   const [openingCash, setOpeningCash] = useState("");
@@ -54,6 +198,8 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
     const body = (await response.json()) as ProjectFinanceResponse & ApiError;
     if (!response.ok) throw new Error(body.error ?? "Could not load project finance");
     setFinance(body);
+    setContractReference((current) => current || body.commercial.contract_reference || "");
+    setContractSignedAt((current) => current || body.commercial.contract_signed_at || "");
     return body;
   }, [projectId]);
 
@@ -243,6 +389,9 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <FinanceStatePill state={finance.finance.finance_state} />
+                <span className="border border-sand/60 bg-sand/10 px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] text-[#76570a]">
+                  {stageLabel(finance.project.project_stage)}
+                </span>
                 <span className="border border-charcoal/20 px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] text-charcoal/60">
                   Shadow calculation
                 </span>
@@ -276,6 +425,7 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
           </div>
           <div className="flex overflow-x-auto px-4 md:px-7" role="tablist" aria-label="Project finance views">
             {[
+              ["setup", "Project setup"],
               ["position", "Position"],
               ["timing", `Forecast timing${projection?.unknownTimingMinor ? " · needs review" : ""}`],
               ["activation", finance.finance.finance_state === "active" ? "Activation record" : "Activate finance"],
@@ -295,7 +445,20 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
         </section>
       )}
 
-      {finance && activeTab === "activation" ? (
+      {finance && activeTab === "setup" ? (
+        <CommercialSetup
+          key={`${finance.project.project_stage}-${finance.commercial.contract_amount_inc_gst}-${finance.commercial.contract_signed_at ?? "unsigned"}`}
+          projectId={projectId}
+          profile={finance.commercial}
+          onSaved={(updated) => {
+            setFinance(updated);
+            setContractReference(updated.commercial.contract_reference ?? "");
+            setContractSignedAt(updated.commercial.contract_signed_at ?? "");
+            setSuccess("Project stage and contract details saved.");
+          }}
+          onError={setError}
+        />
+      ) : finance && activeTab === "activation" ? (
         <section className="grid gap-5 lg:grid-cols-2" aria-labelledby="activation-heading">
           <div className="border border-charcoal/20 bg-offwhite p-5 md:p-7">
             <p className="label-caps">Committed base</p>

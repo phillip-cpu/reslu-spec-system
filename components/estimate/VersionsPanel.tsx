@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatMoney } from "./EstimateWorkspace";
 import { VersionCompare } from "./VersionCompare";
+import { suggestNextLabel } from "@/lib/estimate-version-labels";
 import type { EstimateVersion, EstimateVersionSummary } from "@/types/phase-12a-a";
 
 interface Props {
@@ -29,6 +30,7 @@ export function VersionsPanel({ projectId }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [labelDraft, setLabelDraft] = useState("");
+  const [labelManuallyEdited, setLabelManuallyEdited] = useState(false);
   const [kindDraft, setKindDraft] = useState<"issue" | "vm">("issue");
   const [noteDraft, setNoteDraft] = useState("");
   const [viewingId, setViewingId] = useState<string | null>(null);
@@ -53,23 +55,29 @@ export function VersionsPanel({ projectId }: Props) {
   }, [projectId]);
 
   useEffect(() => {
+    // Fetching the project-scoped list is this effect's external synchronization.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, [load]);
 
+  const effectiveLabel = labelManuallyEdited
+    ? labelDraft
+    : suggestNextLabel(versions.map((version) => version.label), kindDraft);
+
   async function saveVersion(e: React.FormEvent) {
     e.preventDefault();
-    if (!labelDraft.trim() || saving) return;
+    if (!effectiveLabel.trim() || saving) return;
     setSaving(true);
     setError(null);
     try {
       const res = await fetch(`/api/projects/${projectId}/versions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ label: labelDraft.trim(), kind: kindDraft, note: noteDraft.trim() || undefined }),
+        body: JSON.stringify({ label: effectiveLabel.trim(), kind: kindDraft, note: noteDraft.trim() || undefined }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Could not save this version.");
-      setLabelDraft("");
+      setLabelManuallyEdited(false);
       setNoteDraft("");
       await load();
     } catch (err) {
@@ -128,8 +136,11 @@ export function VersionsPanel({ projectId }: Props) {
         <div>
           <label className="label-caps mb-1 block">Label</label>
           <input
-            value={labelDraft}
-            onChange={(e) => setLabelDraft(e.target.value)}
+            value={effectiveLabel}
+            onChange={(e) => {
+              setLabelDraft(e.target.value);
+              setLabelManuallyEdited(true);
+            }}
             placeholder="e.g. V1, VM_V2"
             className="w-40 border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
           />
@@ -138,7 +149,10 @@ export function VersionsPanel({ projectId }: Props) {
           <label className="label-caps mb-1 block">Kind</label>
           <select
             value={kindDraft}
-            onChange={(e) => setKindDraft(e.target.value as "issue" | "vm")}
+            onChange={(e) => {
+              setKindDraft(e.target.value as "issue" | "vm");
+              setLabelManuallyEdited(false);
+            }}
             className="border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
           >
             <option value="issue">Issue</option>
@@ -156,7 +170,7 @@ export function VersionsPanel({ projectId }: Props) {
         </div>
         <button
           type="submit"
-          disabled={saving || !labelDraft.trim()}
+          disabled={saving || !effectiveLabel.trim()}
           className="bg-nearblack px-5 py-2 text-subhead text-white transition-colors hover:bg-charcoal disabled:opacity-60"
         >
           {saving ? "Saving…" : "Save version"}

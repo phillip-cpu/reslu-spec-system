@@ -26,6 +26,14 @@ export interface Category {
 }
 
 export type ProjectStatus = "active" | "completed" | "archived";
+export type ProjectStage =
+  | "design"
+  | "quoting"
+  | "preconstruction"
+  | "construction"
+  | "handover"
+  | "complete"
+  | "on_hold";
 
 export interface Project {
   id: string;
@@ -33,6 +41,7 @@ export interface Project {
   client_name: string;
   address: string | null;
   status: ProjectStatus;
+  project_stage: ProjectStage;
   budget: number | null;
   // Estimate trade markup as a fraction (e.g. 0.15 = 15%) — migration
   // 007_estimating.sql; not null default 0.

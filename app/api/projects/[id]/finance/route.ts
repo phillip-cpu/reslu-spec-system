@@ -28,21 +28,43 @@ export async function GET(
     return NextResponse.json({ error: "Project finance access denied" }, { status: 403 });
   }
 
-  const [{ data: project }, { data: profile, error: profileError }] = await Promise.all([
-    supabase.from("projects").select("id,name,job_number").eq("id", projectId).maybeSingle(),
+  const [
+    { data: project },
+    { data: profile, error: profileError },
+    { data: commercial, error: commercialError },
+  ] = await Promise.all([
+    supabase.from("projects").select("id,name,job_number,project_stage").eq("id", projectId).maybeSingle(),
     supabase
       .from("project_finance_profiles")
       .select("*,active_baseline:forecast_baselines(id,effective_date,estimate_version_id,program_watermark,content_hash,created_at)")
       .eq("project_id", projectId)
       .maybeSingle(),
+    supabase
+      .from("client_billing_profiles")
+      .select("contract_type,contract_label,contract_amount_inc_gst,contract_reference,contract_signed_at,due_days")
+      .eq("project_id", projectId)
+      .maybeSingle(),
   ]);
   if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
   if (profileError) return NextResponse.json({ error: profileError.message }, { status: 500 });
+  if (commercialError) return NextResponse.json({ error: commercialError.message }, { status: 500 });
   if (!profile) {
     return NextResponse.json(
       { error: "Finance profile is unavailable. Apply migration 080." },
       { status: 503 }
     );
   }
-  return NextResponse.json({ project, finance: profile });
+  return NextResponse.json({
+    project,
+    finance: profile,
+    commercial: commercial ? { ...commercial, project_stage: project.project_stage } : {
+      project_stage: project.project_stage,
+      contract_type: "design",
+      contract_label: "Design package",
+      contract_amount_inc_gst: 0,
+      contract_reference: null,
+      contract_signed_at: null,
+      due_days: 14,
+    },
+  });
 }

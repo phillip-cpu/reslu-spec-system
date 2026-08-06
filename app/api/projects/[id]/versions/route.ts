@@ -194,6 +194,9 @@ export async function POST(
   if (!label) {
     return NextResponse.json({ error: "label is required" }, { status: 400 });
   }
+  if (label.length > 80) {
+    return NextResponse.json({ error: "label must be 80 characters or fewer" }, { status: 400 });
+  }
   const kind = body.kind === "vm" ? "vm" : "issue";
 
   const snapshot = await buildLiveSnapshot(supabase, projectId);
@@ -216,9 +219,10 @@ export async function POST(
 
   if (error) {
     const status = error.code === "23505" ? 409 : 500;
-    const message =
-      error.code === "23505"
-        ? `A version labelled "${label}" already exists for this project.`
+    const message = error.code === "23505"
+      ? `A version labelled "${label}" already exists for this project.`
+      : error.code === "42P01"
+        ? "Estimate versioning is not installed. Apply database migration 019."
         : error.message;
     return NextResponse.json({ error: message }, { status });
   }
