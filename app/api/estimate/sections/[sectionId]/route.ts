@@ -4,7 +4,9 @@ import { getUserRole } from "@/lib/auth";
 
 /**
  * PATCH /api/estimate/sections/[sectionId]
- * body: { name?: string, sort?: number } — rename/reorder a section.
+ * body: { name?: string, sort?: number, forecast_phase_id?: string | null }
+ * — rename/reorder a section or connect it to the Timeline phase that
+ * drives its projected expense date.
  * Admin-only, per BUILD-SPEC.md §Financial visibility.
  */
 export async function PATCH(
@@ -30,6 +32,40 @@ export async function PATCH(
   if (typeof body?.name === "string" && body.name.trim()) update.name = body.name.trim();
   if (body?.sort !== undefined && Number.isFinite(Number(body.sort))) {
     update.sort = Number(body.sort);
+  }
+  if (body?.forecast_phase_id !== undefined) {
+    if (body.forecast_phase_id !== null && typeof body.forecast_phase_id !== "string") {
+      return NextResponse.json(
+        { error: "forecast_phase_id must be a phase id or null" },
+        { status: 400 }
+      );
+    }
+
+    const { data: section } = await supabase
+      .from("cost_sections")
+      .select("id,project_id")
+      .eq("id", sectionId)
+      .maybeSingle();
+    if (!section) {
+      return NextResponse.json({ error: "Section not found" }, { status: 404 });
+    }
+
+    if (body.forecast_phase_id) {
+      const { data: phase } = await supabase
+        .from("schedule_phases")
+        .select("id,project_id,kind")
+        .eq("id", body.forecast_phase_id)
+        .is("deleted_at", null)
+        .maybeSingle();
+      if (!phase || phase.project_id !== section.project_id || phase.kind !== "phase") {
+        return NextResponse.json(
+          { error: "The forecast phase must be an active phase in the same project" },
+          { status: 400 }
+        );
+      }
+    }
+
+    update.forecast_phase_id = body.forecast_phase_id || null;
   }
   if (Object.keys(update).length === 0) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });

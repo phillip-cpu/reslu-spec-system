@@ -66,7 +66,11 @@ export default async function ProjectTimelinePage({
 
   // ---- Cost-section binding refresh (link only — see doc comment
   // above and GET /api/projects/[id]/phases's identical logic) ----
-  const { data: sections } = await supabase.from("cost_sections").select("id,name").eq("project_id", id);
+  const { data: sections } = await supabase
+    .from("cost_sections")
+    .select("id,name,forecast_phase_id,sort")
+    .eq("project_id", id)
+    .order("sort", { ascending: true });
   const prelimSection = (sections ?? []).find((s) => s.name.trim().toLowerCase() === UMBRELLA_SECTION_NAME_MATCH);
 
   let sectionHasLines = false;
@@ -231,6 +235,11 @@ export default async function ProjectTimelinePage({
         <GanttChart
           projectId={id}
           initialPhases={initialPhasesWithGroupLink}
+          costSections={(isAdmin ? sections ?? [] : []).map((section) => ({
+            id: section.id,
+            name: section.name,
+            forecast_phase_id: section.forecast_phase_id,
+          }))}
           timelineMarkers={timelineMarkers}
           worksDatesLockedPhaseIds={worksDatesLockedPhaseIds}
         />

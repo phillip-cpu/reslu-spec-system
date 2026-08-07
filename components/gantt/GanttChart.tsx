@@ -90,9 +90,17 @@ const LONG_PRESS_MS = 500;
  */
 type PhaseWithGroupLink = SchedulePhaseWithVisits & { board_group_id?: string | null };
 
+export interface TimelineCostSection {
+  id: string;
+  name: string;
+  forecast_phase_id: string | null;
+}
+
 interface Props {
   projectId: string;
   initialPhases: SchedulePhaseWithVisits[];
+  /** Estimate sections available for schedule-driven cost forecasting. */
+  costSections?: TimelineCostSection[];
   /**
    * Board cockpit round — "timeline tick markers for task due/booking
    * dates" + milestone diamonds. Optional/defaults to [] so this prop
@@ -215,8 +223,15 @@ function toISO(d: Date): string {
  * sticky phase-name column for mobile horizontal scroll, and a mobile
  * bottom sheet for tapping a visit dot.
  */
-export function GanttChart({ projectId, initialPhases, timelineMarkers = [], worksDatesLockedPhaseIds = [] }: Props) {
+export function GanttChart({
+  projectId,
+  initialPhases,
+  costSections = [],
+  timelineMarkers = [],
+  worksDatesLockedPhaseIds = [],
+}: Props) {
   const [phases, setPhases] = useState<SchedulePhaseWithVisits[]>(initialPhases);
+  const [linkedCostSections, setLinkedCostSections] = useState(costSections);
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -470,6 +485,48 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [], wor
     } catch (err) {
       setPhases(prev);
       setError(err instanceof Error ? err.message : "Could not update phase.");
+    }
+  }
+
+  /**
+   * Autosaves the estimate-section link from the Timeline. The estimate owns
+   * the amount and this phase's end date owns timing; Finance only reads both.
+   */
+  async function linkCostSection(sectionId: string, phaseId: string | null) {
+    const previous = linkedCostSections;
+    setLinkedCostSections((current) =>
+      current.map((section) =>
+        section.id === sectionId
+          ? { ...section, forecast_phase_id: phaseId }
+          : section
+      )
+    );
+    setError(null);
+    try {
+      const response = await fetch(`/api/estimate/sections/${sectionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ forecast_phase_id: phaseId }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error ?? "Could not save projected expenses.");
+      setLinkedCostSections((current) =>
+        current.map((section) =>
+          section.id === sectionId
+            ? {
+                ...section,
+                forecast_phase_id: body.section?.forecast_phase_id ?? phaseId,
+              }
+            : section
+        )
+      );
+    } catch (linkError) {
+      setLinkedCostSections(previous);
+      setError(
+        linkError instanceof Error
+          ? linkError.message
+          : "Could not save projected expenses."
+      );
     }
   }
 
@@ -867,6 +924,8 @@ export function GanttChart({ projectId, initialPhases, timelineMarkers = [], wor
         key={phase.id}
         projectId={projectId}
         phase={phase}
+        costSections={linkedCostSections}
+        onLinkCostSection={linkCostSection}
         boardGroupId={boardGroupId}
         worksDatesLocked={worksDatesLocked}
         gridPos={pos}
@@ -1378,6 +1437,8 @@ function PhaseNameInline({
 function PhaseRow({
   projectId,
   phase,
+  costSections,
+  onLinkCostSection,
   boardGroupId,
   worksDatesLocked,
   gridPos,
@@ -1413,6 +1474,8 @@ function PhaseRow({
   /** Board cockpit round — needed to build the timeline marker click-through link (?focus=board_task-<id> on the Board tab). */
   projectId: string;
   phase: SchedulePhaseWithVisits;
+  costSections: TimelineCostSection[];
+  onLinkCostSection: (sectionId: string, phaseId: string | null) => void;
   /** Timeline Day-zoom polish round — item 5's phase-name -> Board deep link. Null for a phase with no linked board_groups row (legacy/unreconciled data) — the name then renders as plain text, same as before this round. */
   boardGroupId: string | null;
   /** Board v3.1 — display-first cells, item 8: true when this phase's linked group has at least one task with works dates set — its start/end dates are server-derived (lib/phase-rollup.ts) rather than directly editable. Threaded through to PhaseEditPanel, which disables its date inputs and shows a "dates come from items" hint in that case. */
@@ -1844,6 +1907,8 @@ function PhaseRow({
         <div className="col-span-full border-b border-[#dcd6cc] bg-offwhite px-3 py-3">
           <PhaseEditPanel
             phase={phase}
+            costSections={costSections}
+            onLinkCostSection={onLinkCostSection}
             worksDatesLocked={worksDatesLocked}
             onPatch={onPatch}
             onDelete={onDelete}
@@ -1861,6 +1926,8 @@ function PhaseRow({
 
 function PhaseEditPanel({
   phase,
+  costSections,
+  onLinkCostSection,
   worksDatesLocked,
   onPatch,
   onDelete,
@@ -1871,6 +1938,8 @@ function PhaseEditPanel({
   onAddVisitOpened,
 }: {
   phase: SchedulePhaseWithVisits;
+  costSections: TimelineCostSection[];
+  onLinkCostSection: (sectionId: string, phaseId: string | null) => void;
   /** Board v3.1 — display-first cells, item 8: see PhaseRow's own prop of the same name — disables the Start/End date inputs below and shows a "dates come from items" hint instead of letting a manual edit be silently overwritten by the next server-side rollup. */
   worksDatesLocked: boolean;
   onPatch: (patch: Record<string, unknown>, refUpdate?: Partial<SchedulePhaseWithVisits>) => void;
@@ -2047,6 +2116,60 @@ function PhaseEditPanel({
           </button>
         </div>
       </div>
+
+      {costSections.length > 0 && (
+        <section className="border border-[#dcd6cc] bg-nearwhite p-3">
+          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_280px] md:items-end">
+            <div>
+              <p className="label-caps">Costs in this phase</p>
+              <p className="mt-1 text-body text-charcoal/55">
+                Add sections from the existing estimate. Finance uses their saved costs on this phase&apos;s end date and moves them automatically with the schedule.
+              </p>
+            </div>
+            <label>
+              <span className="sr-only">Add an estimate section to {phase.name}</span>
+              <select
+                value=""
+                onChange={(event) => {
+                  if (event.target.value) {
+                    onLinkCostSection(event.target.value, phase.id);
+                  }
+                }}
+                className="w-full border border-[#c9c2b4] bg-offwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none"
+              >
+                <option value="">+ Add estimate section</option>
+                {costSections
+                  .filter((section) => section.forecast_phase_id !== phase.id)
+                  .map((section) => (
+                    <option key={section.id} value={section.id}>
+                      {section.name}{section.forecast_phase_id ? " — move from another phase" : ""}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {costSections
+              .filter((section) => section.forecast_phase_id === phase.id)
+              .map((section) => (
+                <span key={section.id} className="inline-flex items-center gap-2 border border-sand bg-sand/10 px-3 py-1.5 text-body text-nearblack">
+                  {section.name}
+                  <button
+                    type="button"
+                    onClick={() => onLinkCostSection(section.id, null)}
+                    aria-label={`Remove ${section.name} from ${phase.name}`}
+                    className="text-charcoal/45 hover:text-nearblack"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            {!costSections.some((section) => section.forecast_phase_id === phase.id) && (
+              <p className="text-caption text-charcoal/45">No estimate costs linked yet.</p>
+            )}
+          </div>
+        </section>
+      )}
 
       <VisitsPanel
         phase={phase}
