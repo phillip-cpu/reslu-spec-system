@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FinanceCashCurve } from "./FinanceCashCurve";
-import { FinanceStatePill } from "./FinanceStatePill";
 import {
   adelaideToday,
   dollarsInputToMinor,
@@ -10,26 +9,15 @@ import {
   formatMinorCurrency,
 } from "@/lib/finance/presentation";
 import type {
-  FinanceActivationReadiness,
   FinanceShadowProjectionResponse,
   ProjectCommercialProfile,
   ProjectFinanceResponse,
   ProjectStage,
 } from "@/types/finance";
 
-type WorkspaceTab = "setup" | "position" | "timing" | "activation";
+type WorkspaceTab = "setup" | "position" | "timing";
 
-type ApiError = { error?: string; readiness?: FinanceActivationReadiness };
-
-function checkLabel(code: FinanceActivationReadiness["checks"][number]["code"]): string {
-  return {
-    signed_contract: "Signed contract",
-    saved_estimate: "Approved estimate",
-    dated_program: "Dated program",
-    published_policy: "Published policy",
-    lifecycle_state: "Lifecycle state",
-  }[code];
-}
+type ApiError = { error?: string };
 
 const STAGE_OPTIONS: Array<{ value: ProjectStage; label: string }> = [
   { value: "design", label: "Design" },
@@ -114,7 +102,7 @@ function CommercialSetup({
           Stage and signed contract
         </h2>
         <p className="mt-2 max-w-2xl text-body text-charcoal/55">
-          This is the project&apos;s commercial source of truth. Payment claims and finance activation use the same contract record.
+          This is the project&apos;s commercial source of truth. Payment claims and cash forecasts use the same contract record.
         </p>
       </div>
       <form onSubmit={save} className="grid gap-5 p-5 md:grid-cols-2 md:p-7 xl:grid-cols-3">
@@ -184,13 +172,6 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
   const [openingCash, setOpeningCash] = useState("");
   const [timingOverrides, setTimingOverrides] = useState<Record<string, string>>({});
   const [previewing, setPreviewing] = useState(false);
-  const [effectiveDate, setEffectiveDate] = useState(adelaideToday);
-  const [contractReference, setContractReference] = useState("");
-  const [contractSignedAt, setContractSignedAt] = useState("");
-  const [activationReason, setActivationReason] = useState("");
-  const [readiness, setReadiness] = useState<FinanceActivationReadiness | null>(null);
-  const [checkingReadiness, setCheckingReadiness] = useState(false);
-  const [activating, setActivating] = useState(false);
   const [success, setSuccess] = useState<string | null>(null);
 
   const loadFinance = useCallback(async () => {
@@ -198,8 +179,6 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
     const body = (await response.json()) as ProjectFinanceResponse & ApiError;
     if (!response.ok) throw new Error(body.error ?? "Could not load project finance");
     setFinance(body);
-    setContractReference((current) => current || body.commercial.contract_reference || "");
-    setContractSignedAt((current) => current || body.commercial.contract_signed_at || "");
     return body;
   }, [projectId]);
 
@@ -291,6 +270,15 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
         .reduce((sum, contribution) => sum + contribution.amountMinor, 0)
     : 0;
   const selectedPeriod = projection?.periods[selectedIndex] ?? null;
+  const clientClaimContributions = projection?.effectiveContributions.filter(
+    (contribution) => contribution.sourceTrace.source_type === "client_claim"
+  ) ?? [];
+  const clientPaid = clientClaimContributions
+    .filter((contribution) => contribution.state === "actual_paid")
+    .reduce((sum, contribution) => sum + contribution.amountMinor, 0);
+  const clientRemaining = clientClaimContributions
+    .filter((contribution) => contribution.state !== "actual_paid")
+    .reduce((sum, contribution) => sum + contribution.amountMinor, 0);
 
   async function recalculate() {
     setPreviewing(true);
@@ -301,79 +289,6 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
       setError(previewError instanceof Error ? previewError.message : "Could not calculate preview");
     } finally {
       setPreviewing(false);
-    }
-  }
-
-  async function checkReadiness() {
-    setCheckingReadiness(true);
-    setError(null);
-    setSuccess(null);
-    try {
-      const response = await fetch(`/api/projects/${projectId}/finance/readiness`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          effective_date: effectiveDate,
-          contract_evidence: {
-            reference: contractReference.trim(),
-            signed_at: contractSignedAt,
-          },
-        }),
-      });
-      const body = (await response.json()) as { readiness?: FinanceActivationReadiness } & ApiError;
-      if (!response.ok) throw new Error(body.error ?? "Could not check activation readiness");
-      setReadiness(body.readiness ?? null);
-    } catch (readinessError) {
-      setError(readinessError instanceof Error ? readinessError.message : "Could not check readiness");
-    } finally {
-      setCheckingReadiness(false);
-    }
-  }
-
-  async function activate() {
-    if (
-      !readiness?.ready ||
-      !readiness.estimate_version_id ||
-      !readiness.policy_version_id ||
-      !readiness.program_watermark ||
-      !activationReason.trim()
-    ) {
-      return;
-    }
-    setActivating(true);
-    setError(null);
-    setSuccess(null);
-    try {
-      const response = await fetch(`/api/projects/${projectId}/finance/activate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          effective_date: effectiveDate,
-          estimate_version_id: readiness.estimate_version_id,
-          policy_version_id: readiness.policy_version_id,
-          contract_evidence: {
-            reference: contractReference.trim(),
-            signed_at: contractSignedAt,
-          },
-          reason: activationReason.trim(),
-          idempotency_key: crypto.randomUUID(),
-          expected_profile_version: readiness.profile_version,
-          program_watermark: readiness.program_watermark,
-        }),
-      });
-      const body = (await response.json()) as ApiError;
-      if (!response.ok) {
-        if (body.readiness) setReadiness(body.readiness);
-        throw new Error(body.error ?? "Could not activate project finance");
-      }
-      setSuccess("Project finance activated. The immutable baseline now forms part of the company base.");
-      setReadiness(null);
-      await loadWorkspace();
-      setActiveTab("position");
-    } catch (activationError) {
-      setError(activationError instanceof Error ? activationError.message : "Could not activate finance");
-    } finally {
-      setActivating(false);
     }
   }
 
@@ -399,12 +314,14 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
           <div className="flex flex-col gap-5 border-b border-charcoal/20 p-5 md:flex-row md:items-start md:justify-between md:p-7">
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <FinanceStatePill state={finance.finance.finance_state} />
+                <span className="border border-[#4c6b4f] bg-[#4c6b4f]/10 px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] text-[#304b33]">
+                  Finance connected
+                </span>
                 <span className="border border-sand/60 bg-sand/10 px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] text-[#76570a]">
                   {stageLabel(finance.project.project_stage)}
                 </span>
                 <span className="border border-charcoal/20 px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] text-charcoal/60">
-                  Shadow calculation
+                  Live forecast
                 </span>
               </div>
               <h1 className="mt-4 font-display text-[38px] font-light leading-none text-nearblack md:text-[46px]">
@@ -439,7 +356,6 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
               ["setup", "Project setup"],
               ["position", "Position"],
               ["timing", `Forecast timing${projection?.unknownTimingMinor ? " · needs review" : ""}`],
-              ["activation", finance.finance.finance_state === "active" ? "Activation record" : "Activate finance"],
             ].map(([key, label]) => (
               <button
                 key={key}
@@ -463,72 +379,14 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
           profile={finance.commercial}
           onSaved={(updated) => {
             setFinance(updated);
-            setContractReference(updated.commercial.contract_reference ?? "");
-            setContractSignedAt(updated.commercial.contract_signed_at ?? "");
             setSuccess("Project stage and contract details saved.");
           }}
           onError={setError}
         />
-      ) : finance && activeTab === "activation" ? (
-        <section className="grid gap-5 lg:grid-cols-2" aria-labelledby="activation-heading">
-          <div className="border border-charcoal/20 bg-offwhite p-5 md:p-7">
-            <p className="label-caps">Committed base</p>
-            <h2 id="activation-heading" className="mt-2 font-display text-section text-nearblack">
-              {finance.finance.finance_state === "active" ? "Activation record" : "Explicit activation act"}
-            </h2>
-            {finance.finance.finance_state === "active" ? (
-              <dl className="mt-6 space-y-4 text-body">
-                <div className="border-b border-charcoal/10 pb-3"><dt className="label-caps">Activated</dt><dd className="mt-1">{finance.finance.activated_at ? new Intl.DateTimeFormat("en-AU", { dateStyle: "long", timeStyle: "short" }).format(new Date(finance.finance.activated_at)) : "Not recorded"}</dd></div>
-                <div className="border-b border-charcoal/10 pb-3"><dt className="label-caps">Baseline</dt><dd className="mt-1 break-all">{finance.finance.active_baseline?.id ?? finance.finance.active_baseline_id}</dd></div>
-                <div className="border-b border-charcoal/10 pb-3"><dt className="label-caps">Effective date</dt><dd className="mt-1">{formatFinanceDate(finance.finance.active_baseline?.effective_date)}</dd></div>
-                <div><dt className="label-caps">Program watermark</dt><dd className="mt-1 break-all text-caption">{finance.finance.active_baseline?.program_watermark ?? "Not available"}</dd></div>
-              </dl>
-            ) : (
-              <div className="mt-6 space-y-4">
-                <label className="block"><span className="label-caps">Effective date</span><input type="date" value={effectiveDate} onChange={(event) => { setEffectiveDate(event.target.value); setReadiness(null); }} className="mt-2 w-full border border-charcoal/20 bg-cream px-3 py-2 text-body" /></label>
-                <label className="block"><span className="label-caps">Signed contract reference</span><input value={contractReference} onChange={(event) => { setContractReference(event.target.value); setReadiness(null); }} placeholder="Contract file, signing envelope or reference" className="mt-2 w-full border border-charcoal/20 bg-cream px-3 py-2 text-body" /></label>
-                <label className="block"><span className="label-caps">Contract signed date</span><input type="date" value={contractSignedAt} onChange={(event) => { setContractSignedAt(event.target.value); setReadiness(null); }} className="mt-2 w-full border border-charcoal/20 bg-cream px-3 py-2 text-body" /></label>
-                <button type="button" onClick={() => void checkReadiness()} disabled={checkingReadiness} className="w-full border border-nearblack px-4 py-3 text-subhead text-nearblack hover:bg-cream disabled:opacity-40">
-                  {checkingReadiness ? "Checking…" : "Check readiness"}
-                </button>
-              </div>
-            )}
-          </div>
-
-          <div className="border border-charcoal/20 bg-nearblack p-5 text-white md:p-7">
-            <p className="label-caps text-sand">First 13-week effect</p>
-            <p className="mt-3 font-display text-[34px] leading-none">-{formatMinorCurrency(projection?.totalOutflowMinor ?? 0)}</p>
-            <p className="mt-2 text-body text-white/55">{formatMinorCurrency(projection?.unknownTimingMinor ?? 0)} remains outside weekly cash until timing is approved.</p>
-
-            {finance.finance.finance_state !== "active" && (
-              <>
-                <div className="mt-6 space-y-2">
-                  {(readiness?.checks ?? [
-                    { code: "signed_contract" as const, ready: false, message: "Check readiness to validate current evidence." },
-                    { code: "saved_estimate" as const, ready: false, message: "Check readiness to validate current evidence." },
-                    { code: "dated_program" as const, ready: false, message: "Check readiness to validate current evidence." },
-                    { code: "published_policy" as const, ready: false, message: "Check readiness to validate current evidence." },
-                    { code: "lifecycle_state" as const, ready: false, message: "Check readiness to validate current evidence." },
-                  ]).map((check) => (
-                    <div key={check.code} className="flex items-start gap-3 border border-white/15 p-3 text-body">
-                      <span aria-hidden className={check.ready ? "text-[#91b294]" : "text-sand"}>{check.ready ? "✓" : "○"}</span>
-                      <span><span className="block text-white">{checkLabel(check.code)}</span><span className="mt-1 block text-caption text-white/45">{check.message}</span></span>
-                    </div>
-                  ))}
-                </div>
-                <label className="mt-5 block"><span className="label-caps text-sand">Activation reason</span><textarea value={activationReason} onChange={(event) => setActivationReason(event.target.value)} rows={3} placeholder="Why this project should enter the committed company base" className="mt-2 w-full border border-white/25 bg-charcoal px-3 py-2 text-body text-white placeholder:text-white/35" /></label>
-                <button type="button" onClick={() => void activate()} disabled={!readiness?.ready || !activationReason.trim() || activating} className="mt-4 w-full bg-sand px-4 py-3 text-subhead text-nearblack hover:bg-[#b09a7c] disabled:cursor-not-allowed disabled:opacity-35">
-                  {activating ? "Activating atomically…" : "Activate and publish baseline"}
-                </button>
-                <p className="mt-3 text-caption text-white/45">This adds construction commitments to the company base. Failure creates no partial finance records.</p>
-              </>
-            )}
-          </div>
-        </section>
       ) : activeTab === "timing" ? (
         <section className="border border-charcoal/20 bg-offwhite" aria-labelledby="timing-heading">
           <div className="flex flex-col gap-3 border-b border-charcoal/20 p-5 md:flex-row md:items-end md:justify-between md:p-7">
-            <div><p className="label-caps">Explicit timing</p><h2 id="timing-heading" className="mt-2 font-display text-section text-nearblack">Place forecast lines in time</h2><p className="mt-2 max-w-2xl text-body text-charcoal/55">These dates are shadow-only in this milestone. They recalculate the preview but do not alter the immutable estimate or baseline.</p></div>
+            <div><p className="label-caps">Forecast timing</p><h2 id="timing-heading" className="mt-2 font-display text-section text-nearblack">Place costs and claims in time</h2><p className="mt-2 max-w-2xl text-body text-charcoal/55">Client claim dates come from the contract and construction program. Add dates to any remaining cost lines to complete the cash forecast.</p></div>
             <button type="button" onClick={() => void recalculate()} disabled={previewing} className="bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal disabled:opacity-40">{previewing ? "Calculating…" : "Recalculate preview"}</button>
           </div>
           <div className="divide-y divide-charcoal/10">
@@ -554,9 +412,9 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {[
               ["Cost exposure", formatMinorCurrency(totalExposure), `${formatMinorCurrency(unknownOutflow)} cost timing unknown`],
-              ["Client receipts", formatMinorCurrency(projection?.totalInflowMinor ?? 0), "From contract claims and payment terms"],
-              ["13-week outflow", formatMinorCurrency(projection?.totalOutflowMinor ?? 0), `${formatMinorCurrency(projection?.outsideHorizonMinor ?? 0)} after horizon`],
-              ["13-week impact", formatMinorCurrency((projection?.periods.at(-1)?.closingCashMinor ?? 0) - (projection?.openingCashMinor ?? 0)), shadow?.committed_base_eligible ? "Included in company base" : "Candidate · excluded from company base"],
+              ["Client paid", formatMinorCurrency(clientPaid), "Confirmed client receipts"],
+              ["Still to receive", formatMinorCurrency(clientRemaining), "Issued and future contract claims"],
+              ["13-week impact", formatMinorCurrency((projection?.periods.at(-1)?.closingCashMinor ?? 0) - (projection?.openingCashMinor ?? 0)), "Flows automatically into company cashflow"],
             ].map(([label, value, detail]) => (
               <div key={label} className="border border-charcoal/20 bg-offwhite p-5"><p className="label-caps">{label}</p><p className="mt-3 font-display text-[30px] leading-none text-nearblack">{value}</p><p className="mt-3 text-caption text-charcoal/50">{detail}</p></div>
             ))}

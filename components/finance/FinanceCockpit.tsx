@@ -3,9 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FinanceCashCurve } from "./FinanceCashCurve";
-import { FinancePolicyPanel } from "./FinancePolicyPanel";
 import { FinanceRecurringCommitmentsPanel } from "./FinanceRecurringCommitmentsPanel";
-import { FinanceStatePill } from "./FinanceStatePill";
 import {
   adelaideToday,
   dollarsInputToMinor,
@@ -14,7 +12,7 @@ import {
 } from "@/lib/finance/presentation";
 import type { FinanceCockpitResponse, FinanceProjectionPeriod } from "@/types/finance";
 
-type CockpitTab = "cash" | "commitments" | "projects" | "governance";
+type CockpitTab = "cash" | "commitments" | "projects";
 
 function MetricCard({
   label,
@@ -145,9 +143,11 @@ export function FinanceCockpit() {
 
   const sortedProjects = useMemo(() => {
     if (!data) return [];
-    const order = { active: 0, ready: 1, candidate: 2, design_only: 3, suspended: 4, closed: 5, cancelled: 6 };
     return [...data.projects].sort(
-      (a, b) => order[a.finance_state] - order[b.finance_state] || b.exposure_minor - a.exposure_minor
+      (a, b) =>
+        b.client_paid_minor - a.client_paid_minor ||
+        b.client_inflow_minor - a.client_inflow_minor ||
+        b.exposure_minor - a.exposure_minor
     );
   }, [data]);
   const projection = data?.projection ?? null;
@@ -156,11 +156,6 @@ export function FinanceCockpit() {
     projection?.lowestCashPeriodIndex === null || projection?.lowestCashPeriodIndex === undefined
       ? null
       : projection.periods[projection.lowestCashPeriodIndex];
-  const exceptionCount = data
-    ? data.projects.filter((project) => project.unknown_timing_minor > 0).length +
-      (data.source_status.xero === "healthy" ? 0 : 1)
-    : 0;
-
   return (
     <div className="space-y-6">
       <section className="border border-charcoal/20 bg-offwhite">
@@ -168,7 +163,7 @@ export function FinanceCockpit() {
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="bg-nearblack px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] text-white">
-                Shadow base
+                Live cashflow
               </span>
               <span className="border border-[#c9971e] bg-[#c9971e]/10 px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] text-[#76570a]">
                 Xero not connected
@@ -178,8 +173,8 @@ export function FinanceCockpit() {
               Executive finance cockpit
             </h1>
             <p className="mt-3 max-w-2xl text-body text-charcoal/60">
-              Active construction commitments only. This preview is deterministic, never persisted,
-              and keeps unknown timing visible instead of treating it as zero.
+              Client payments, issued claims, scheduled contract milestones and recurring costs flow
+              here automatically. Locked cost forecasts remain read-only.
             </p>
           </div>
           <form
@@ -223,7 +218,6 @@ export function FinanceCockpit() {
             ["cash", "Cash timeline"],
             ["commitments", "Recurring commitments"],
             ["projects", "Projects"],
-            ...(data?.can_manage_policy ? [["governance", "Governance"]] : []),
           ].map(([key, label]) => (
             <button
               key={key}
@@ -256,8 +250,6 @@ export function FinanceCockpit() {
             <div key={index} className="h-32 animate-pulse border border-charcoal/10 bg-offwhite" />
           ))}
         </div>
-      ) : activeTab === "governance" && data?.can_manage_policy ? (
-        <FinancePolicyPanel />
       ) : activeTab === "commitments" && data ? (
         <FinanceRecurringCommitmentsPanel
           asOfDate={asOfDate}
@@ -269,10 +261,10 @@ export function FinanceCockpit() {
           <div className="border-b border-charcoal/20 p-5 md:p-7">
             <p className="label-caps">Portfolio scope</p>
             <h2 id="finance-projects-heading" className="mt-2 font-display text-section text-nearblack">
-              Project finance lifecycle
+              Connected project cashflow
             </h2>
             <p className="mt-2 text-body text-charcoal/60">
-              Only active projects enter the committed company base. Candidates remain explicitly excluded.
+              Saved contract claims appear automatically. A separate finance activation is not required.
             </p>
           </div>
           <div className="overflow-x-auto">
@@ -280,10 +272,10 @@ export function FinanceCockpit() {
               <thead className="bg-nearblack text-white">
                 <tr className="text-[7px] uppercase tracking-[0.14em]">
                   <th className="px-5 py-3">Project</th>
-                  <th className="px-5 py-3">State</th>
-                  <th className="px-5 py-3 text-right">Exposure</th>
-                  <th className="px-5 py-3 text-right">Unknown timing</th>
-                  <th className="px-5 py-3 text-right">Lines</th>
+                  <th className="px-5 py-3 text-right">Client paid</th>
+                  <th className="px-5 py-3 text-right">Contract claims</th>
+                  <th className="px-5 py-3 text-right">Remaining money in</th>
+                  <th className="px-5 py-3 text-right">Locked costs</th>
                   <th className="px-5 py-3"><span className="sr-only">Open</span></th>
                 </tr>
               </thead>
@@ -296,10 +288,10 @@ export function FinanceCockpit() {
                         {project.job_number ?? "No job number"}
                       </span>
                     </td>
-                    <td className="px-5 py-4"><FinanceStatePill state={project.finance_state} /></td>
+                    <td className="px-5 py-4 text-right">{formatMinorCurrency(project.client_paid_minor)}</td>
+                    <td className="px-5 py-4 text-right">{project.client_claim_count}</td>
+                    <td className="px-5 py-4 text-right text-[#76570a]">{formatMinorCurrency(Math.max(project.client_inflow_minor - project.client_paid_minor, 0))}</td>
                     <td className="px-5 py-4 text-right">{formatMinorCurrency(project.exposure_minor)}</td>
-                    <td className="px-5 py-4 text-right text-[#76570a]">{formatMinorCurrency(project.unknown_timing_minor)}</td>
-                    <td className="px-5 py-4 text-right">{project.forecast_line_count}</td>
                     <td className="px-5 py-4 text-right">
                       <Link href={`/projects/${project.project_id}/finance`} className="border-b border-charcoal/30 text-caption text-nearblack hover:border-nearblack">
                         Open finance
@@ -323,21 +315,22 @@ export function FinanceCockpit() {
               detail={data?.source_status.opening_cash === "request_preview" ? "Manual preview · not persisted" : "Connect approved bank source or enter preview"}
             />
             <MetricCard
+              label="Client paid"
+              value={formatMinorCurrency(data?.client_claims_summary.paid_minor ?? 0)}
+              detail={`${data?.counts.connected_client_claims ?? 0} connected contract claim${data?.counts.connected_client_claims === 1 ? "" : "s"}`}
+              tone={(data?.client_claims_summary.paid_minor ?? 0) > 0 ? "positive" : "default"}
+            />
+            <MetricCard
+              label="Awaiting payment"
+              value={formatMinorCurrency(data?.client_claims_summary.outstanding_minor ?? 0)}
+              detail={`${formatMinorCurrency(data?.client_claims_summary.forecast_remaining_minor ?? 0)} in future contract milestones`}
+              tone={(data?.client_claims_summary.outstanding_minor ?? 0) > 0 ? "attention" : "positive"}
+            />
+            <MetricCard
               label="13-week low"
               value={projection ? formatMinorCurrency(projection.lowestCashMinor) : "—"}
               detail={lowestPeriod ? `Week of ${formatFinanceDate(lowestPeriod.startsOn)}` : "No movement below opening cash"}
               tone={projection && projection.lowestCashMinor < 0 ? "attention" : "default"}
-            />
-            <MetricCard
-              label="Dated outflows"
-              value={projection ? formatMinorCurrency(projection.totalOutflowMinor) : "—"}
-              detail={`${data?.counts.active_projects ?? 0} active project${data?.counts.active_projects === 1 ? "" : "s"} · ${data?.counts.connected_client_claims ?? 0} client claims · ${data?.counts.active_recurring_commitments ?? 0} recurring costs`}
-            />
-            <MetricCard
-              label="Exceptions"
-              value={String(exceptionCount)}
-              detail={projection ? `${formatMinorCurrency(projection.unknownTimingMinor)} timing unknown` : "Shadow calculation switch is off"}
-              tone={exceptionCount > 0 ? "attention" : "positive"}
             />
           </div>
 
@@ -345,7 +338,7 @@ export function FinanceCockpit() {
             <div className="flex flex-col gap-3 border-b border-charcoal/20 p-5 md:flex-row md:items-end md:justify-between md:p-7">
               <div>
                 <p className="label-caps">Cash curve</p>
-                <h2 id="cash-curve-heading" className="mt-2 font-display text-section text-nearblack">Actual and base forecast</h2>
+                <h2 id="cash-curve-heading" className="mt-2 font-display text-section text-nearblack">Actual and forecast cash</h2>
               </div>
               <p className="text-caption text-charcoal/50">
                 Calculated {data ? new Intl.DateTimeFormat("en-AU", { dateStyle: "medium", timeStyle: "short" }).format(new Date(data.source_status.calculated_at)) : "—"}
@@ -357,8 +350,8 @@ export function FinanceCockpit() {
               </div>
             ) : (
               <div className="p-10 text-center">
-                <p className="text-subhead text-nearblack">Shadow projection is disabled.</p>
-                <p className="mt-2 text-body text-charcoal/55">Enable the server-side shadow flag only after migration and permission checks pass.</p>
+                <p className="text-subhead text-nearblack">Cash forecast is not enabled.</p>
+                <p className="mt-2 text-body text-charcoal/55">Client payment totals remain visible above.</p>
               </div>
             )}
           </section>
@@ -367,11 +360,11 @@ export function FinanceCockpit() {
 
           <section className="grid gap-4 md:grid-cols-3">
             <div className="border border-[#c9971e]/40 bg-[#c9971e]/5 p-5">
-              <p className="label-caps">Coverage</p>
+              <p className="label-caps">Timing to review</p>
               <p className="mt-3 text-subhead text-nearblack">
                 {projection ? formatMinorCurrency(projection.unknownTimingMinor) : "—"} unallocated
               </p>
-              <p className="mt-2 text-body text-charcoal/55">Unknown amounts remain outside weekly cash until an explicit date is approved.</p>
+              <p className="mt-2 text-body text-charcoal/55">Add a contract milestone or construction-program date to place these amounts in the cash timeline.</p>
             </div>
             <div className="border border-charcoal/20 bg-offwhite p-5">
               <p className="label-caps">Xero actuals</p>
@@ -379,9 +372,9 @@ export function FinanceCockpit() {
               <p className="mt-2 text-body text-charcoal/55">Opening cash, posted bills and bank freshness are not represented yet.</p>
             </div>
             <div className="border border-charcoal/20 bg-offwhite p-5">
-              <p className="label-caps">Base integrity</p>
-              <p className="mt-3 text-subhead text-nearblack">{data?.counts.active_projects ?? 0} activated</p>
-              <p className="mt-2 text-body text-charcoal/55">{data?.counts.candidate_projects ?? 0} candidate and {data?.counts.design_only_projects ?? 0} design-only projects are excluded.</p>
+              <p className="label-caps">Connected cashflow</p>
+              <p className="mt-3 text-subhead text-nearblack">{data?.counts.connected_projects ?? 0} project{data?.counts.connected_projects === 1 ? "" : "s"}</p>
+              <p className="mt-2 text-body text-charcoal/55">Contract claims flow automatically · {data?.counts.active_recurring_commitments ?? 0} recurring cost{data?.counts.active_recurring_commitments === 1 ? "" : "s"} active.</p>
             </div>
           </section>
         </>
