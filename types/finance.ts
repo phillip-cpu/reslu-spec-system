@@ -313,6 +313,9 @@ export interface FinanceCockpitProject {
   exposure_minor: number;
   forecast_line_count: number;
   unknown_timing_minor: number;
+  client_claim_count: number;
+  client_inflow_minor: number;
+  client_paid_minor: number;
 }
 
 export interface FinanceCockpitResponse {
@@ -332,6 +335,14 @@ export interface FinanceCockpitResponse {
     design_only_projects: number;
     active_recurring_commitments: number;
     connected_client_claims: number;
+    connected_projects: number;
+  };
+  client_claims_summary: {
+    contracted_minor: number;
+    issued_minor: number;
+    paid_minor: number;
+    outstanding_minor: number;
+    forecast_remaining_minor: number;
   };
   recurring_summary: {
     projected_outflow_minor: number;

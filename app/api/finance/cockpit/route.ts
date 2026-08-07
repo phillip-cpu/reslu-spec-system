@@ -6,7 +6,7 @@ import {
 } from "@/lib/finance/feature-flags";
 import { hasFinanceCapability } from "@/lib/finance/permissions";
 import { calculateShadowProjection } from "@/lib/finance/projection";
-import { buildClientClaimContributions } from "@/lib/finance/client-claims";
+import { buildCompanyClientClaimPortfolio } from "@/lib/finance/company-client-claims";
 import { generateRecurringContributions } from "@/lib/finance/recurrence";
 import { isIsoDate } from "@/lib/finance/readiness";
 import { createClient } from "@/lib/supabase/server";
@@ -61,6 +61,12 @@ type ForecastLineRow = {
   confidence: FinanceConfidence;
 };
 
+type ClaimProjectRow = {
+  id: string;
+  name: string;
+  job_number: string | null;
+};
+
 function safeMinor(value: number | string, label: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0) {
@@ -110,8 +116,9 @@ function toContribution(
 }
 
 /**
- * M1/M4 bridge: a read-only company shadow cockpit. It uses only active,
- * immutable baselines and never persists or promotes the calculated result.
+ * Read-only company cash cockpit. Locked cost baselines remain restricted to
+ * active projects, while client cash facts flow directly from saved contracts
+ * and invoices without a separate finance activation step.
  */
 export async function GET(request: NextRequest) {
   const supabase = await createClient();
@@ -184,47 +191,61 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: recurringError.message }, { status: 500 });
   }
 
-  const activeProjectIds = activeProfiles.map((profile) => profile.project_id);
-  let billingProfiles: ClientBillingProfile[] = [];
+  const { data: rawBillingProfiles, error: billingProfileError } = await supabase
+    .from("client_billing_profiles")
+    .select("*")
+    .order("updated_at", { ascending: false });
+  if (billingProfileError) {
+    return NextResponse.json({ error: billingProfileError.message }, { status: 500 });
+  }
+
+  const billingProfiles = (rawBillingProfiles ?? []) as ClientBillingProfile[];
+  const claimProjectIds = [...new Set(billingProfiles.map((profile) => profile.project_id))];
   let paymentSchedule: ClientPaymentScheduleItem[] = [];
   let schedulePhases: ClientSchedulePhase[] = [];
   let clientInvoices: ClientInvoice[] = [];
-  if (activeProjectIds.length > 0) {
-    const [billingResult, scheduleResult, phaseResult, invoiceResult] = await Promise.all([
-      supabase.from("client_billing_profiles").select("*").in("project_id", activeProjectIds),
+  let claimProjects: ClaimProjectRow[] = [];
+  if (claimProjectIds.length > 0) {
+    const [scheduleResult, phaseResult, invoiceResult, projectResult] = await Promise.all([
       supabase
         .from("client_payment_schedule")
         .select("*")
-        .in("project_id", activeProjectIds)
+        .in("project_id", claimProjectIds)
         .is("deleted_at", null)
         .order("sort"),
       supabase
         .from("schedule_phases")
         .select("id,project_id,name,start_date,end_date,sort")
-        .in("project_id", activeProjectIds)
+        .in("project_id", claimProjectIds)
         .is("deleted_at", null)
         .order("sort"),
       supabase
         .from("client_invoices")
         .select("*")
-        .in("project_id", activeProjectIds)
+        .in("project_id", claimProjectIds)
         .is("deleted_at", null)
         .neq("status", "void"),
+      supabase
+        .from("projects")
+        .select("id,name,job_number")
+        .in("id", claimProjectIds),
     ]);
-    const claimReadError = billingResult.error ?? scheduleResult.error ?? phaseResult.error ?? invoiceResult.error;
+    const claimReadError = scheduleResult.error ?? phaseResult.error ?? invoiceResult.error ?? projectResult.error;
     if (claimReadError) {
       return NextResponse.json({ error: claimReadError.message }, { status: 500 });
     }
-    billingProfiles = (billingResult.data ?? []) as ClientBillingProfile[];
     paymentSchedule = (scheduleResult.data ?? []) as ClientPaymentScheduleItem[];
     schedulePhases = (phaseResult.data ?? []) as ClientSchedulePhase[];
     clientInvoices = (invoiceResult.data ?? []) as ClientInvoice[];
+    claimProjects = (projectResult.data ?? []) as ClaimProjectRow[];
   }
 
   try {
-    const projectNameById = new Map(
-      profiles.map((profile) => [profile.project_id, profile.project?.name ?? "Project"])
-    );
+    const projectNameById = new Map<string, string>();
+    for (const profile of profiles) {
+      projectNameById.set(profile.project_id, profile.project?.name ?? "Project");
+    }
+    for (const project of claimProjects) projectNameById.set(project.id, project.name);
     const projectContributions = lines.map((line) =>
       toContribution(line, projectNameById.get(line.project_id) ?? "Project")
     );
@@ -235,15 +256,14 @@ export async function GET(request: NextRequest) {
       commitments: recurringCommitments,
       asOfDate,
     });
-    const clientClaimContributions = activeProjectIds.flatMap((projectId) =>
-      buildClientClaimContributions({
-        projectId,
-        profile: billingProfiles.find((profile) => profile.project_id === projectId) ?? null,
-        schedule: paymentSchedule.filter((stage) => stage.project_id === projectId),
-        phases: schedulePhases.filter((phase) => phase.project_id === projectId),
-        invoices: clientInvoices.filter((invoice) => invoice.project_id === projectId),
-      })
-    );
+    const clientClaimPortfolio = buildCompanyClientClaimPortfolio({
+      profiles: billingProfiles,
+      schedule: paymentSchedule,
+      phases: schedulePhases,
+      invoices: clientInvoices,
+      projectNames: projectNameById,
+    });
+    const clientClaimContributions = clientClaimPortfolio.contributions;
     const contributions = [
       ...projectContributions,
       ...clientClaimContributions,
@@ -264,8 +284,20 @@ export async function GET(request: NextRequest) {
       existing.push(line);
       linesByProject.set(line.project_id, existing);
     }
-    const projects: FinanceCockpitProject[] = profiles.map((profile) => {
-      const projectLines = linesByProject.get(profile.project_id) ?? [];
+    const profileByProjectId = new Map(profiles.map((profile) => [profile.project_id, profile]));
+    const claimProjectById = new Map(claimProjects.map((project) => [project.id, project]));
+    const claimSummaryByProjectId = new Map(
+      clientClaimPortfolio.projects.map((project) => [project.projectId, project])
+    );
+    const companyProjectIds = [...new Set([
+      ...profiles.map((profile) => profile.project_id),
+      ...claimProjectIds,
+    ])];
+    const projects: FinanceCockpitProject[] = companyProjectIds.map((projectId) => {
+      const profile = profileByProjectId.get(projectId);
+      const claimProject = claimProjectById.get(projectId);
+      const claimSummary = claimSummaryByProjectId.get(projectId);
+      const projectLines = linesByProject.get(projectId) ?? [];
       const exposureMinor = projectLines.reduce(
         (total, line) => total + effectiveExposure(line),
         0
@@ -280,15 +312,18 @@ export async function GET(request: NextRequest) {
         )
         .reduce((total, line) => total + effectiveExposure(line), 0);
       return {
-        project_id: profile.project_id,
-        name: profile.project?.name ?? "Unnamed project",
-        job_number: profile.project?.job_number ?? null,
-        finance_state: profile.finance_state,
-        baseline_id: profile.active_baseline_id,
-        baseline_effective_date: profile.active_baseline?.effective_date ?? null,
+        project_id: projectId,
+        name: profile?.project?.name ?? claimProject?.name ?? "Unnamed project",
+        job_number: profile?.project?.job_number ?? claimProject?.job_number ?? null,
+        finance_state: profile?.finance_state ?? "candidate",
+        baseline_id: profile?.active_baseline_id ?? null,
+        baseline_effective_date: profile?.active_baseline?.effective_date ?? null,
         exposure_minor: exposureMinor,
         forecast_line_count: projectLines.length,
         unknown_timing_minor: unknownTimingMinor,
+        client_claim_count: claimSummary?.claimCount ?? 0,
+        client_inflow_minor: claimSummary?.contractedMinor ?? 0,
+        client_paid_minor: claimSummary?.paidMinor ?? 0,
       };
     });
 
@@ -313,6 +348,14 @@ export async function GET(request: NextRequest) {
         ).length,
         active_recurring_commitments: recurringCommitments.length,
         connected_client_claims: clientClaimContributions.length,
+        connected_projects: clientClaimPortfolio.summary.projectCount,
+      },
+      client_claims_summary: {
+        contracted_minor: clientClaimPortfolio.summary.contractedMinor,
+        issued_minor: clientClaimPortfolio.summary.issuedMinor,
+        paid_minor: clientClaimPortfolio.summary.paidMinor,
+        outstanding_minor: clientClaimPortfolio.summary.outstandingMinor,
+        forecast_remaining_minor: clientClaimPortfolio.summary.forecastRemainingMinor,
       },
       recurring_summary: {
         projected_outflow_minor: recurringContributions.reduce(
