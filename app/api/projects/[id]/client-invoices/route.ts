@@ -15,6 +15,7 @@ import type {
   ClientInvoice,
   ClientInvoiceKind,
   ClientPaymentScheduleItem,
+  ClientSchedulePhase,
   ClientInvoiceStatus,
   ClientInvoicesListResponse,
   CreateClientInvoiceInput,
@@ -49,9 +50,10 @@ export async function GET(
 
   const [
     { data: invoices, error },
-    { data: billingProfile },
-    { data: paymentSchedule },
-    { data: variations },
+    { data: billingProfile, error: billingError },
+    { data: paymentSchedule, error: scheduleError },
+    { data: schedulePhases, error: phaseError },
+    { data: variations, error: variationError },
   ] = await Promise.all([
     supabase
       .from("client_invoices")
@@ -67,6 +69,12 @@ export async function GET(
       .is("deleted_at", null)
       .order("sort"),
     supabase
+      .from("schedule_phases")
+      .select("id,name,start_date,end_date,sort")
+      .eq("project_id", projectId)
+      .is("deleted_at", null)
+      .order("sort"),
+    supabase
       .from("variations")
       .select("id,var_number,description,cost_ex_gst,updated_at")
       .eq("project_id", projectId)
@@ -75,8 +83,9 @@ export async function GET(
       .order("var_number"),
   ]);
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  const readError = error ?? billingError ?? scheduleError ?? phaseError ?? variationError;
+  if (readError) {
+    return NextResponse.json({ error: readError.message }, { status: 500 });
   }
 
   const approvedVariations: ClientApprovedVariation[] = (variations ?? []).map((variation) => ({
@@ -91,6 +100,7 @@ export async function GET(
     invoices: (invoices ?? []) as ClientInvoice[],
     billing_profile: (billingProfile as ClientBillingProfile | null) ?? null,
     payment_schedule: (paymentSchedule ?? []) as ClientPaymentScheduleItem[],
+    schedule_phases: (schedulePhases ?? []) as ClientSchedulePhase[],
     approved_variations: approvedVariations,
   };
   return NextResponse.json(payload);
@@ -243,6 +253,18 @@ export async function POST(
   const address = typeof body.address === "string" && body.address.trim() ? body.address.trim() : null;
   const notes = typeof body.notes === "string" && body.notes.trim() ? body.notes.trim() : null;
   const source = body.source === "manual" ? "manual" : "reslu";
+  if (source === "reslu" && scheduleItem) {
+    const timingMissing =
+      (scheduleItem.trigger_type === "contract_signed" && !billingProfile?.contract_signed_at) ||
+      (scheduleItem.trigger_type === "schedule_phase" && !scheduleItem.schedule_phase_id) ||
+      (scheduleItem.trigger_type === "manual" && !scheduleItem.milestone_date);
+    if (timingMissing) {
+      return NextResponse.json(
+        { error: "Link this claim to its contract or construction-program event before creating it" },
+        { status: 409 }
+      );
+    }
+  }
   const manualInvoiceNumber =
     source === "manual" && typeof body.invoice_number === "string"
       ? body.invoice_number.trim().slice(0, 100)

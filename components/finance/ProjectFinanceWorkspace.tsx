@@ -265,6 +265,7 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
   const sectionTotals = useMemo(() => {
     const totals = new Map<string, { amount: number; count: number; unknown: number }>();
     for (const line of uniqueLines) {
+      if (line.direction !== "outflow") continue;
       const section = String(line.sourceTrace.section_name ?? line.sourceTrace.category ?? "Other");
       const current = totals.get(section) ?? { amount: 0, count: 0, unknown: 0 };
       current.amount += line.amountMinor;
@@ -277,7 +278,17 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
 
   const projection = shadow?.projection ?? null;
   const totalExposure = projection
-    ? projection.totalOutflowMinor + projection.unknownTimingMinor + projection.outsideHorizonMinor
+    ? projection.effectiveContributions
+        .filter((contribution) => contribution.direction === "outflow")
+        .reduce((sum, contribution) => sum + contribution.amountMinor, 0)
+    : 0;
+  const unknownOutflow = projection
+    ? projection.effectiveContributions
+        .filter(
+          (contribution) =>
+            contribution.direction === "outflow" && !contribution.effectiveDate
+        )
+        .reduce((sum, contribution) => sum + contribution.amountMinor, 0)
     : 0;
   const selectedPeriod = projection?.periods[selectedIndex] ?? null;
 
@@ -525,7 +536,14 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
               <div key={line.contributionKey} className="grid gap-4 p-4 md:grid-cols-[minmax(0,1fr)_150px_160px] md:items-center md:px-6">
                 <div><p className="text-body text-nearblack">{line.description}</p><p className="mt-1 text-caption text-charcoal/45">{String(line.sourceTrace.section_name ?? line.sourceTrace.category ?? "Other")} · {line.confidence} confidence</p></div>
                 <p className="text-subhead md:text-right">{formatMinorCurrency(line.amountMinor)}</p>
-                <label><span className="sr-only">Forecast date for {line.description}</span><input type="date" value={timingOverrides[line.contributionKey] ?? line.effectiveDate ?? ""} onChange={(event) => setTimingOverrides((current) => { const next = { ...current }; if (event.target.value) next[line.contributionKey] = event.target.value; else delete next[line.contributionKey]; return next; })} className="w-full border border-charcoal/20 bg-cream px-3 py-2 text-body" /></label>
+                {line.sourceTrace.source_type === "client_claim" ? (
+                  <div className="border border-charcoal/15 bg-cream px-3 py-2">
+                    <p className="text-body">{formatFinanceDate(line.effectiveDate)}</p>
+                    <p className="mt-0.5 text-caption text-charcoal/45">From contract + program</p>
+                  </div>
+                ) : (
+                  <label><span className="sr-only">Forecast date for {line.description}</span><input type="date" value={timingOverrides[line.contributionKey] ?? line.effectiveDate ?? ""} onChange={(event) => setTimingOverrides((current) => { const next = { ...current }; if (event.target.value) next[line.contributionKey] = event.target.value; else delete next[line.contributionKey]; return next; })} className="w-full border border-charcoal/20 bg-cream px-3 py-2 text-body" /></label>
+                )}
               </div>
             ))}
             {uniqueLines.length === 0 && <p className="p-8 text-center text-body text-charcoal/50">No estimate forecast lines are available.</p>}
@@ -535,9 +553,9 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
         <>
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {[
-              ["Cost exposure", formatMinorCurrency(totalExposure), `${uniqueLines.length} forecast lines`],
+              ["Cost exposure", formatMinorCurrency(totalExposure), `${formatMinorCurrency(unknownOutflow)} cost timing unknown`],
+              ["Client receipts", formatMinorCurrency(projection?.totalInflowMinor ?? 0), "From contract claims and payment terms"],
               ["13-week outflow", formatMinorCurrency(projection?.totalOutflowMinor ?? 0), `${formatMinorCurrency(projection?.outsideHorizonMinor ?? 0)} after horizon`],
-              ["Timing unknown", formatMinorCurrency(projection?.unknownTimingMinor ?? 0), projection?.unknownTimingMinor ? "Review required before relying on weekly cash" : "All effective amounts have timing"],
               ["13-week impact", formatMinorCurrency((projection?.periods.at(-1)?.closingCashMinor ?? 0) - (projection?.openingCashMinor ?? 0)), shadow?.committed_base_eligible ? "Included in company base" : "Candidate · excluded from company base"],
             ].map(([label, value, detail]) => (
               <div key={label} className="border border-charcoal/20 bg-offwhite p-5"><p className="label-caps">{label}</p><p className="mt-3 font-display text-[30px] leading-none text-nearblack">{value}</p><p className="mt-3 text-caption text-charcoal/50">{detail}</p></div>

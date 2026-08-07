@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getUserRole } from "@/lib/auth";
 import { buildEstimatePlanContributions } from "@/lib/finance/baseline";
+import { buildClientClaimContributions } from "@/lib/finance/client-claims";
 import {
   financeShadowProjectionEnabled,
 } from "@/lib/finance/feature-flags";
@@ -10,6 +11,12 @@ import { isIsoDate } from "@/lib/finance/readiness";
 import { createClient } from "@/lib/supabase/server";
 import type { FinanceShadowProjectionRequest, ProjectFinanceProfile } from "@/types/finance";
 import type { FinanceEstimateSnapshot } from "@/lib/finance/baseline";
+import type {
+  ClientBillingProfile,
+  ClientInvoice,
+  ClientPaymentScheduleItem,
+  ClientSchedulePhase,
+} from "@/types/client-invoices";
 
 export const runtime = "nodejs";
 
@@ -82,6 +89,10 @@ export async function POST(
     { data: project, error: projectError },
     { data: profile, error: profileError },
     { data: estimateRows, error: estimateError },
+    { data: billingProfile, error: billingError },
+    { data: paymentSchedule, error: scheduleError },
+    { data: schedulePhases, error: phaseError },
+    { data: clientInvoices, error: invoiceError },
   ] = await Promise.all([
     supabase.from("projects").select("id").eq("id", projectId).maybeSingle(),
     supabase
@@ -90,10 +101,33 @@ export async function POST(
       .eq("project_id", projectId)
       .maybeSingle(),
     estimateQuery,
+    supabase
+      .from("client_billing_profiles")
+      .select("*")
+      .eq("project_id", projectId)
+      .maybeSingle(),
+    supabase
+      .from("client_payment_schedule")
+      .select("*")
+      .eq("project_id", projectId)
+      .is("deleted_at", null)
+      .order("sort"),
+    supabase
+      .from("schedule_phases")
+      .select("id,name,start_date,end_date,sort")
+      .eq("project_id", projectId)
+      .is("deleted_at", null)
+      .order("sort"),
+    supabase
+      .from("client_invoices")
+      .select("*")
+      .eq("project_id", projectId)
+      .is("deleted_at", null)
+      .neq("status", "void"),
   ]);
 
   if (projectError || !project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
-  const readError = profileError ?? estimateError;
+  const readError = profileError ?? estimateError ?? billingError ?? scheduleError ?? phaseError ?? invoiceError;
   if (readError) return NextResponse.json({ error: readError.message }, { status: 500 });
   if (!profile) {
     return NextResponse.json(
@@ -110,12 +144,20 @@ export async function POST(
   }
 
   try {
-    const contributions = buildEstimatePlanContributions({
+    const estimateContributions = buildEstimatePlanContributions({
       projectId,
       estimateVersionId: estimate.id,
       snapshot: estimate.snapshot as FinanceEstimateSnapshot,
       timingOverrides,
     });
+    const clientClaimContributions = buildClientClaimContributions({
+      projectId,
+      profile: (billingProfile as ClientBillingProfile | null) ?? null,
+      schedule: (paymentSchedule ?? []) as ClientPaymentScheduleItem[],
+      phases: (schedulePhases ?? []) as ClientSchedulePhase[],
+      invoices: (clientInvoices ?? []) as ClientInvoice[],
+    });
+    const contributions = [...estimateContributions, ...clientClaimContributions];
     const projection = calculateShadowProjection({
       asOfDate: body.as_of_date,
       openingCashMinor,
@@ -131,6 +173,7 @@ export async function POST(
         estimate_version_id: estimate.id,
         estimate_label: estimate.label,
         timing_override_count: Object.keys(timingOverrides).length,
+        client_claim_count: clientClaimContributions.length,
         opening_cash_source:
           body.opening_cash_minor === undefined ? "not_configured" : "request_preview",
       },

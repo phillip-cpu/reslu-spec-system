@@ -6,6 +6,7 @@ import {
 } from "@/lib/finance/feature-flags";
 import { hasFinanceCapability } from "@/lib/finance/permissions";
 import { calculateShadowProjection } from "@/lib/finance/projection";
+import { buildClientClaimContributions } from "@/lib/finance/client-claims";
 import { generateRecurringContributions } from "@/lib/finance/recurrence";
 import { isIsoDate } from "@/lib/finance/readiness";
 import { createClient } from "@/lib/supabase/server";
@@ -16,6 +17,12 @@ import type {
   FinanceRecurringCommitment,
   ProjectFinanceState,
 } from "@/types/finance";
+import type {
+  ClientBillingProfile,
+  ClientInvoice,
+  ClientPaymentScheduleItem,
+  ClientSchedulePhase,
+} from "@/types/client-invoices";
 
 export const runtime = "nodejs";
 
@@ -177,6 +184,43 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: recurringError.message }, { status: 500 });
   }
 
+  const activeProjectIds = activeProfiles.map((profile) => profile.project_id);
+  let billingProfiles: ClientBillingProfile[] = [];
+  let paymentSchedule: ClientPaymentScheduleItem[] = [];
+  let schedulePhases: ClientSchedulePhase[] = [];
+  let clientInvoices: ClientInvoice[] = [];
+  if (activeProjectIds.length > 0) {
+    const [billingResult, scheduleResult, phaseResult, invoiceResult] = await Promise.all([
+      supabase.from("client_billing_profiles").select("*").in("project_id", activeProjectIds),
+      supabase
+        .from("client_payment_schedule")
+        .select("*")
+        .in("project_id", activeProjectIds)
+        .is("deleted_at", null)
+        .order("sort"),
+      supabase
+        .from("schedule_phases")
+        .select("id,project_id,name,start_date,end_date,sort")
+        .in("project_id", activeProjectIds)
+        .is("deleted_at", null)
+        .order("sort"),
+      supabase
+        .from("client_invoices")
+        .select("*")
+        .in("project_id", activeProjectIds)
+        .is("deleted_at", null)
+        .neq("status", "void"),
+    ]);
+    const claimReadError = billingResult.error ?? scheduleResult.error ?? phaseResult.error ?? invoiceResult.error;
+    if (claimReadError) {
+      return NextResponse.json({ error: claimReadError.message }, { status: 500 });
+    }
+    billingProfiles = (billingResult.data ?? []) as ClientBillingProfile[];
+    paymentSchedule = (scheduleResult.data ?? []) as ClientPaymentScheduleItem[];
+    schedulePhases = (phaseResult.data ?? []) as ClientSchedulePhase[];
+    clientInvoices = (invoiceResult.data ?? []) as ClientInvoice[];
+  }
+
   try {
     const projectNameById = new Map(
       profiles.map((profile) => [profile.project_id, profile.project?.name ?? "Project"])
@@ -191,7 +235,20 @@ export async function GET(request: NextRequest) {
       commitments: recurringCommitments,
       asOfDate,
     });
-    const contributions = [...projectContributions, ...recurringContributions];
+    const clientClaimContributions = activeProjectIds.flatMap((projectId) =>
+      buildClientClaimContributions({
+        projectId,
+        profile: billingProfiles.find((profile) => profile.project_id === projectId) ?? null,
+        schedule: paymentSchedule.filter((stage) => stage.project_id === projectId),
+        phases: schedulePhases.filter((phase) => phase.project_id === projectId),
+        invoices: clientInvoices.filter((invoice) => invoice.project_id === projectId),
+      })
+    );
+    const contributions = [
+      ...projectContributions,
+      ...clientClaimContributions,
+      ...recurringContributions,
+    ];
     const shadowEnabled = financeShadowProjectionEnabled();
     const projection = shadowEnabled
       ? calculateShadowProjection({
@@ -255,6 +312,7 @@ export async function GET(request: NextRequest) {
           (profile) => profile.finance_state === "design_only"
         ).length,
         active_recurring_commitments: recurringCommitments.length,
+        connected_client_claims: clientClaimContributions.length,
       },
       recurring_summary: {
         projected_outflow_minor: recurringContributions.reduce(

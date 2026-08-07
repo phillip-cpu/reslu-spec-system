@@ -297,6 +297,7 @@ export interface FinanceShadowProjectionResponse {
     estimate_version_id: string;
     estimate_label: string;
     timing_override_count: number;
+    client_claim_count: number;
     opening_cash_source: "not_configured" | "request_preview";
   };
   projection: FinanceShadowProjection;
@@ -330,6 +331,7 @@ export interface FinanceCockpitResponse {
     candidate_projects: number;
     design_only_projects: number;
     active_recurring_commitments: number;
+    connected_client_claims: number;
   };
   recurring_summary: {
     projected_outflow_minor: number;

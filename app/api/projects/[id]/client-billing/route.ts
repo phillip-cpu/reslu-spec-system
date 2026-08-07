@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
-import type { ClientContractType, SaveClientBillingInput } from "@/types/client-invoices";
+import type {
+  ClientContractType,
+  ClientPaymentTriggerType,
+  SaveClientBillingInput,
+} from "@/types/client-invoices";
 
 export const runtime = "nodejs";
 
 const CONTRACT_TYPES: ClientContractType[] = ["design", "construction", "other"];
+const TRIGGER_TYPES: ClientPaymentTriggerType[] = ["contract_signed", "schedule_phase", "manual"];
 
 export async function PUT(
   request: NextRequest,
@@ -48,6 +53,11 @@ export async function PUT(
         amount_inc_gst: Number(row.amount_inc_gst),
         milestone_date:
           typeof row.milestone_date === "string" && row.milestone_date ? row.milestone_date : null,
+        trigger_type: TRIGGER_TYPES.includes(row.trigger_type) ? row.trigger_type : "manual",
+        schedule_phase_id:
+          typeof row.schedule_phase_id === "string" && row.schedule_phase_id
+            ? row.schedule_phase_id
+            : null,
         sort: index,
       }))
     : [];
@@ -59,7 +69,8 @@ export async function PUT(
         !row.label ||
         !Number.isFinite(row.amount_inc_gst) ||
         row.amount_inc_gst < 0 ||
-        (row.percentage !== null && !Number.isFinite(row.percentage))
+        (row.percentage !== null && !Number.isFinite(row.percentage)) ||
+        (row.trigger_type === "schedule_phase" && !row.schedule_phase_id)
     )
   ) {
     return NextResponse.json(
@@ -74,6 +85,30 @@ export async function PUT(
       { error: "The payment schedule must equal the original contract amount" },
       { status: 400 }
     );
+  }
+
+  const selectedPhaseIds = [
+    ...new Set(
+      schedule
+        .filter((row) => row.trigger_type === "schedule_phase")
+        .map((row) => row.schedule_phase_id)
+        .filter((id): id is string => Boolean(id))
+    ),
+  ];
+  if (selectedPhaseIds.length > 0) {
+    const { data: phases, error: phaseError } = await supabase
+      .from("schedule_phases")
+      .select("id")
+      .eq("project_id", projectId)
+      .is("deleted_at", null)
+      .in("id", selectedPhaseIds);
+    if (phaseError) return NextResponse.json({ error: phaseError.message }, { status: 500 });
+    if ((phases ?? []).length !== selectedPhaseIds.length) {
+      return NextResponse.json(
+        { error: "Every linked construction stage must belong to this project" },
+        { status: 400 }
+      );
+    }
   }
 
   const { error: profileError } = await supabase.from("client_billing_profiles").upsert({
@@ -94,7 +129,10 @@ export async function PUT(
           label: row.label,
           percentage: row.percentage,
           amount_inc_gst: row.amount_inc_gst,
-          milestone_date: row.milestone_date,
+          milestone_date: row.trigger_type === "manual" ? row.milestone_date : null,
+          trigger_type: row.trigger_type,
+          schedule_phase_id:
+            row.trigger_type === "schedule_phase" ? row.schedule_phase_id : null,
           sort: row.sort,
         })
         .eq("id", row.id)
@@ -113,7 +151,10 @@ export async function PUT(
           label: row.label,
           percentage: row.percentage,
           amount_inc_gst: row.amount_inc_gst,
-          milestone_date: row.milestone_date,
+          milestone_date: row.trigger_type === "manual" ? row.milestone_date : null,
+          trigger_type: row.trigger_type,
+          schedule_phase_id:
+            row.trigger_type === "schedule_phase" ? row.schedule_phase_id : null,
           sort: row.sort,
         })
         .select("id")

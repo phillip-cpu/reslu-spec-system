@@ -2,6 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import clsx from "clsx";
+import {
+  addCalendarDays,
+  plannedClaimTimingState,
+  resolveClaimForecastDate,
+  suggestSchedulePhaseId,
+} from "@/lib/client-claim-schedule";
 import { FINANCIAL_SUMMARY_CHANGED_EVENT } from "@/lib/project-financial-position";
 import type {
   ClientApprovedVariation,
@@ -10,6 +16,8 @@ import type {
   ClientInvoice,
   ClientInvoiceStatus,
   ClientPaymentScheduleItem,
+  ClientPaymentTriggerType,
+  ClientSchedulePhase,
 } from "@/types/client-invoices";
 
 const STATUS_STYLES: Record<ClientInvoiceStatus, string> = {
@@ -26,6 +34,16 @@ function formatMoney(value: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+function formatDate(value: string | null): string {
+  if (!value) return "Not linked";
+  return new Intl.DateTimeFormat("en-AU", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(`${value}T00:00:00Z`));
 }
 
 interface Props {
@@ -67,7 +85,13 @@ export function ClientInvoiceQueue({
   const [invoices, setInvoices] = useState<ClientInvoice[]>([]);
   const [billingProfile, setBillingProfile] = useState<ClientBillingProfile | null>(null);
   const [paymentSchedule, setPaymentSchedule] = useState<ClientPaymentScheduleItem[]>([]);
+  const [schedulePhases, setSchedulePhases] = useState<ClientSchedulePhase[]>([]);
   const [approvedVariations, setApprovedVariations] = useState<ClientApprovedVariation[]>([]);
+  const [composerRequest, setComposerRequest] = useState<{
+    stageId: string;
+    mode: "reslu" | "manual";
+    nonce: number;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -82,6 +106,7 @@ export function ClientInvoiceQueue({
       setInvoices(body.invoices ?? []);
       setBillingProfile(body.billing_profile ?? null);
       setPaymentSchedule(body.payment_schedule ?? []);
+      setSchedulePhases(body.schedule_phases ?? []);
       setApprovedVariations(body.approved_variations ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load client invoices.");
@@ -124,22 +149,40 @@ export function ClientInvoiceQueue({
       )}
 
       <BillingSetup
-        key={`${billingProfile?.updated_at ?? "new"}-${paymentSchedule.map((stage) => stage.updated_at ?? stage.id).join("-")}`}
+        key={`${billingProfile?.updated_at ?? "new"}-${paymentSchedule.map((stage) => stage.updated_at ?? stage.id).join("-")}-${schedulePhases.map((phase) => `${phase.id}:${phase.end_date}`).join("-")}`}
         projectId={projectId}
         profile={billingProfile}
         schedule={paymentSchedule}
+        phases={schedulePhases}
         variations={approvedVariations}
         onSaved={refreshFinancialSummary}
         onError={setError}
       />
 
+      {billingProfile && paymentSchedule.length > 0 ? (
+        <ContractClaimsOverview
+          profile={billingProfile}
+          schedule={paymentSchedule}
+          phases={schedulePhases}
+          invoices={invoices}
+          onCreate={(stageId, mode) =>
+            setComposerRequest({ stageId, mode, nonce: Date.now() })
+          }
+        />
+      ) : null}
+
       <ComposerForm
+        key={composerRequest?.nonce ?? "closed-composer"}
         projectId={projectId}
         projectClientName={projectClientName}
         projectClientEmail={projectClientEmail}
         projectAddress={projectAddress}
         billingProfile={billingProfile}
         paymentSchedule={paymentSchedule}
+        initiallyOpen={Boolean(composerRequest)}
+        initialEntryMode={composerRequest?.mode ?? "reslu"}
+        initialScheduleItemId={composerRequest?.stageId ?? ""}
+        onClosed={() => setComposerRequest(null)}
         onCreated={refreshFinancialSummary}
         onError={setError}
       />
@@ -282,6 +325,8 @@ type EditableStage = {
   percentage: string;
   amount_inc_gst: string;
   milestone_date: string;
+  trigger_type: ClientPaymentTriggerType;
+  schedule_phase_id: string;
   linked: boolean;
 };
 
@@ -294,10 +339,10 @@ const DESIGN_STAGES = [
 ] as const;
 
 const CONSTRUCTION_STAGES = [
-  ["Deposit — due on execution of the Construction Contract", 30],
-  ["Demolition complete", 20],
-  ["First fix complete", 20],
-  ["Tiling complete", 20],
+  ["Deposit", 30],
+  ["Demo", 20],
+  ["First fix", 20],
+  ["Tiling", 20],
   ["Practical completion", 10],
 ] as const;
 
@@ -305,6 +350,7 @@ function BillingSetup({
   projectId,
   profile,
   schedule,
+  phases,
   variations,
   onSaved,
   onError,
@@ -312,6 +358,7 @@ function BillingSetup({
   projectId: string;
   profile: ClientBillingProfile | null;
   schedule: ClientPaymentScheduleItem[];
+  phases: ClientSchedulePhase[];
   variations: ClientApprovedVariation[];
   onSaved: () => void;
   onError: (message: string | null) => void;
@@ -328,6 +375,8 @@ function BillingSetup({
       percentage: stage.percentage === null ? "" : String(stage.percentage),
       amount_inc_gst: String(stage.amount_inc_gst),
       milestone_date: stage.milestone_date ?? "",
+      trigger_type: stage.trigger_type ?? "manual",
+      schedule_phase_id: stage.schedule_phase_id ?? "",
       linked: Boolean(stage.client_invoice_id),
     }))
   );
@@ -340,11 +389,14 @@ function BillingSetup({
     setContractLabel(type === "design" ? "Design package" : "Construction package");
     setDueDays(type === "design" ? "14" : "7");
     setStages(
-      preset.map(([label, percentage]) => ({
+      preset.map(([label, percentage], index) => ({
         label,
         percentage: String(percentage),
         amount_inc_gst: (Math.round(total * percentage) / 100).toFixed(2),
         milestone_date: "",
+        trigger_type: index === 0 ? "contract_signed" : "schedule_phase",
+        schedule_phase_id:
+          index === 0 ? "" : suggestSchedulePhaseId(label, phases) ?? "",
         linked: false,
       }))
     );
@@ -357,6 +409,9 @@ function BillingSetup({
   const scheduleTotal = stages.reduce((sum, stage) => sum + (Number(stage.amount_inc_gst) || 0), 0);
   const contractTotal = Number(contractAmount) || 0;
   const variationsTotal = variations.reduce((sum, variation) => sum + variation.amount_inc_gst, 0);
+  const missingProgramLinks = stages.filter(
+    (stage) => stage.trigger_type === "schedule_phase" && !stage.schedule_phase_id
+  ).length;
 
   async function save() {
     setSaving(true);
@@ -376,6 +431,8 @@ function BillingSetup({
             percentage: stage.percentage ? Number(stage.percentage) : null,
             amount_inc_gst: Number(stage.amount_inc_gst),
             milestone_date: stage.milestone_date || null,
+            trigger_type: stage.trigger_type,
+            schedule_phase_id: stage.schedule_phase_id || null,
             sort,
           })),
         }),
@@ -401,7 +458,7 @@ function BillingSetup({
               {profile.contract_label} · {formatMoney(profile.contract_amount_inc_gst)} inc GST
             </p>
             <p className="mt-1 text-caption text-charcoal/55">
-              {schedule.length} package claims · {profile.due_days}-day terms
+              {schedule.length} contract claims · {schedule.filter((stage) => stage.trigger_type !== "manual" || stage.milestone_date).length} timed · {profile.due_days}-day terms
               {variations.length
                 ? ` · ${formatMoney(variationsTotal)} approved variations shown separately`
                 : " · no approved variations"}
@@ -412,7 +469,7 @@ function BillingSetup({
             onClick={() => setOpen(true)}
             className="border border-[#c9c2b4] px-3 py-1.5 text-caption text-charcoal hover:border-nearblack"
           >
-            Edit schedule
+            Edit claims
           </button>
         </div>
       </div>
@@ -425,7 +482,7 @@ function BillingSetup({
         <div>
           <p className="label-caps">Contract & payment schedule</p>
           <p className="mt-1 text-caption text-charcoal/55">
-            Enter the signed package inclusive of GST. Invoices claim one milestone, never the individual products inside it.
+            The contract controls each amount. Link the claim to the project program so its forecast date moves with the work.
           </p>
         </div>
         {profile ? (
@@ -491,7 +548,15 @@ function BillingSetup({
           onClick={() =>
             setStages((current) => [
               ...current,
-              { label: "", percentage: "", amount_inc_gst: "", milestone_date: "", linked: false },
+              {
+                label: "",
+                percentage: "",
+                amount_inc_gst: "",
+                milestone_date: "",
+                trigger_type: "schedule_phase",
+                schedule_phase_id: "",
+                linked: false,
+              },
             ])
           }
           className="border border-[#c9c2b4] px-3 py-1.5 text-caption"
@@ -500,57 +565,120 @@ function BillingSetup({
         </button>
       </div>
 
-      <div className="space-y-2">
+      <div className="space-y-3">
         {stages.map((stage, index) => (
-          <div key={stage.id ?? index} className="grid grid-cols-12 gap-2 border-b border-[#e5e0d6] pb-2">
-            <input
-              disabled={stage.linked}
-              value={stage.label}
-              onChange={(event) => updateStage(index, { label: event.target.value })}
-              placeholder="Package milestone"
-              className="col-span-12 border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body disabled:opacity-55 md:col-span-5"
-            />
-            <input
-              disabled={stage.linked}
-              type="number"
-              step="0.01"
-              value={stage.percentage}
-              onChange={(event) => {
-                const percentage = event.target.value;
-                updateStage(index, {
-                  percentage,
-                  amount_inc_gst: percentage
-                    ? (Math.round(contractTotal * Number(percentage)) / 100).toFixed(2)
-                    : stage.amount_inc_gst,
-                });
-              }}
-              placeholder="%"
-              className="col-span-3 border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body disabled:opacity-55 md:col-span-1"
-            />
-            <input
-              disabled={stage.linked}
-              type="number"
-              step="0.01"
-              value={stage.amount_inc_gst}
-              onChange={(event) => updateStage(index, { amount_inc_gst: event.target.value })}
-              placeholder="Amount inc GST"
-              className="col-span-5 border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body disabled:opacity-55 md:col-span-3"
-            />
-            <input
-              disabled={stage.linked}
-              type="date"
-              value={stage.milestone_date}
-              onChange={(event) => updateStage(index, { milestone_date: event.target.value })}
-              className="col-span-4 border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body disabled:opacity-55 md:col-span-2"
-            />
-            <button
-              type="button"
-              disabled={stage.linked}
-              onClick={() => setStages((current) => current.filter((_, i) => i !== index))}
-              className="col-span-12 text-left text-caption text-red-700 disabled:text-charcoal/35 md:col-span-1"
-            >
-              {stage.linked ? "Invoiced" : "Remove"}
-            </button>
+          <div key={stage.id ?? index} className="border-b border-[#e5e0d6] pb-3">
+            <div className="grid grid-cols-12 gap-2">
+              <label className="col-span-12 md:col-span-5">
+                <span className="label-caps mb-1 block">Claim milestone</span>
+                <input
+                  disabled={stage.linked}
+                  value={stage.label}
+                  onChange={(event) => updateStage(index, { label: event.target.value })}
+                  placeholder="e.g. First fix"
+                  className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body disabled:opacity-55"
+                />
+              </label>
+              <label className="col-span-4 md:col-span-2">
+                <span className="label-caps mb-1 block">%</span>
+                <input
+                  disabled={stage.linked}
+                  type="number"
+                  step="0.01"
+                  value={stage.percentage}
+                  onChange={(event) => {
+                    const percentage = event.target.value;
+                    updateStage(index, {
+                      percentage,
+                      amount_inc_gst: percentage
+                        ? (Math.round(contractTotal * Number(percentage)) / 100).toFixed(2)
+                        : stage.amount_inc_gst,
+                    });
+                  }}
+                  placeholder="%"
+                  className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body disabled:opacity-55"
+                />
+              </label>
+              <label className="col-span-8 md:col-span-4">
+                <span className="label-caps mb-1 block">Claim amount inc GST</span>
+                <input
+                  disabled={stage.linked}
+                  type="number"
+                  step="0.01"
+                  value={stage.amount_inc_gst}
+                  onChange={(event) => updateStage(index, { amount_inc_gst: event.target.value })}
+                  placeholder="Amount inc GST"
+                  className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body disabled:opacity-55"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={stage.linked}
+                onClick={() => setStages((current) => current.filter((_, i) => i !== index))}
+                className="col-span-12 self-end py-2 text-left text-caption text-red-700 disabled:text-charcoal/35 md:col-span-1"
+              >
+                {stage.linked ? "Issued" : "Remove"}
+              </button>
+            </div>
+            <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-[220px_minmax(0,1fr)]">
+              <label>
+                <span className="label-caps mb-1 block">Claim timing</span>
+                <select
+                  disabled={stage.linked}
+                  value={stage.trigger_type}
+                  onChange={(event) =>
+                    updateStage(index, {
+                      trigger_type: event.target.value as ClientPaymentTriggerType,
+                      schedule_phase_id: "",
+                      milestone_date: "",
+                    })
+                  }
+                  className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body disabled:opacity-55"
+                >
+                  <option value="contract_signed">When contract is signed</option>
+                  <option value="schedule_phase">From construction schedule</option>
+                  <option value="manual">Fixed manual date</option>
+                </select>
+              </label>
+              {stage.trigger_type === "schedule_phase" ? (
+                <label>
+                  <span className="label-caps mb-1 block">Linked construction stage</span>
+                  <select
+                    disabled={stage.linked}
+                    value={stage.schedule_phase_id}
+                    onChange={(event) => updateStage(index, { schedule_phase_id: event.target.value })}
+                    className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body disabled:opacity-55"
+                  >
+                    <option value="">Choose a stage from this project…</option>
+                    {phases.map((phase) => (
+                      <option key={phase.id} value={phase.id}>
+                        {phase.name} — ends {formatDate(phase.end_date)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : stage.trigger_type === "manual" ? (
+                <label>
+                  <span className="label-caps mb-1 block">Forecast claim date</span>
+                  <input
+                    disabled={stage.linked}
+                    type="date"
+                    value={stage.milestone_date}
+                    onChange={(event) => updateStage(index, { milestone_date: event.target.value })}
+                    className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body disabled:opacity-55"
+                  />
+                </label>
+              ) : (
+                <div>
+                  <span className="label-caps mb-1 block">Forecast claim date</span>
+                  <p className="border border-[#dcd6cc] bg-cream px-2 py-1.5 text-body text-charcoal/65">
+                    {profile?.contract_signed_at
+                      ? formatDate(profile.contract_signed_at)
+                      : "Add the signed date in Finance → Project setup"}
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         ))}
       </div>
@@ -565,17 +693,162 @@ function BillingSetup({
               ? "Schedule balances to the signed contract."
               : "The schedule must equal the original contract amount."}
           </p>
+          {missingProgramLinks > 0 ? (
+            <p className="mt-1 text-caption text-red-700">
+              Link {missingProgramLinks} claim{missingProgramLinks === 1 ? "" : "s"} to the construction schedule before saving.
+            </p>
+          ) : null}
         </div>
         <button
           type="button"
-          disabled={saving || stages.length === 0 || Math.abs(scheduleTotal - contractTotal) > 0.01}
+          disabled={
+            saving ||
+            stages.length === 0 ||
+            Math.abs(scheduleTotal - contractTotal) > 0.01 ||
+            missingProgramLinks > 0
+          }
           onClick={save}
           className="bg-nearblack px-5 py-2 text-subhead text-white disabled:opacity-40"
         >
-          {saving ? "Saving…" : "Save contract schedule"}
+          {saving ? "Saving…" : "Save contract claims"}
         </button>
       </div>
     </div>
+  );
+}
+
+function ContractClaimsOverview({
+  profile,
+  schedule,
+  phases,
+  invoices,
+  onCreate,
+}: {
+  profile: ClientBillingProfile;
+  schedule: ClientPaymentScheduleItem[];
+  phases: ClientSchedulePhase[];
+  invoices: ClientInvoice[];
+  onCreate: (stageId: string, mode: "reslu" | "manual") => void;
+}) {
+  const today = adelaideToday();
+
+  return (
+    <section className="border border-[#dcd6cc] bg-offwhite">
+      <div className="border-b border-[#dcd6cc] p-4">
+        <p className="label-caps">Contract claims & payments</p>
+        <p className="mt-1 text-body text-charcoal/60">
+          Contract values are fixed here. Construction-program dates drive the forecast and move automatically when the program moves.
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[940px] border-collapse">
+          <thead>
+            <tr className="border-b border-[#dcd6cc] bg-cream text-left">
+              <th className="label-caps px-3 py-2">Contract milestone</th>
+              <th className="label-caps px-3 py-2 text-right">Amount</th>
+              <th className="label-caps px-3 py-2">Linked project event</th>
+              <th className="label-caps px-3 py-2">Forecast claim</th>
+              <th className="label-caps px-3 py-2">Expected receipt</th>
+              <th className="label-caps px-3 py-2">Status / next action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {schedule.map((stage) => {
+              const phase = phases.find((candidate) => candidate.id === stage.schedule_phase_id) ?? null;
+              const forecastDate = resolveClaimForecastDate({ stage, profile, phases });
+              const invoice = invoices.find((candidate) => candidate.id === stage.client_invoice_id) ?? null;
+              const issuedDate = invoice?.issued_at?.slice(0, 10) ?? null;
+              const expectedReceipt = invoice?.paid_at?.slice(0, 10) ??
+                addCalendarDays(issuedDate ?? forecastDate, invoice?.due_days ?? profile.due_days);
+              const timingState = plannedClaimTimingState(forecastDate, today);
+              const timingLabel =
+                stage.trigger_type === "contract_signed"
+                  ? "Contract signed"
+                  : stage.trigger_type === "schedule_phase"
+                    ? phase?.name ?? "Choose construction stage"
+                    : "Manual date";
+              const statusLabel = invoice
+                ? invoice.status === "paid"
+                  ? "Paid"
+                  : invoice.status === "sent"
+                    ? "Issued · awaiting payment"
+                    : invoice.status === "draft"
+                      ? "Draft claim"
+                      : "Voided"
+                : timingState === "review"
+                  ? "Review claim"
+                  : timingState === "planned"
+                    ? "Planned"
+                    : "Needs timing link";
+
+              return (
+                <tr key={stage.id} className="border-b border-[#e5e0d6] align-top last:border-b-0">
+                  <td className="px-3 py-3">
+                    <p className="text-body text-nearblack">{stage.label}</p>
+                    {stage.percentage !== null ? (
+                      <p className="mt-0.5 text-caption text-charcoal/45">{stage.percentage}% of original contract</p>
+                    ) : null}
+                  </td>
+                  <td className="px-3 py-3 text-right text-body text-nearblack">
+                    {formatMoney(stage.amount_inc_gst)}
+                  </td>
+                  <td className="px-3 py-3">
+                    <p className="text-body text-nearblack">{timingLabel}</p>
+                    {phase ? (
+                      <p className="mt-0.5 text-caption text-charcoal/45">
+                        Program {formatDate(phase.start_date)} → {formatDate(phase.end_date)}
+                      </p>
+                    ) : null}
+                  </td>
+                  <td className="px-3 py-3 text-body">
+                    {invoice?.issued_at ? formatDate(issuedDate) : formatDate(forecastDate)}
+                  </td>
+                  <td className="px-3 py-3 text-body">
+                    {invoice?.paid_at ? `Paid ${formatDate(invoice.paid_at.slice(0, 10))}` : formatDate(expectedReceipt)}
+                  </td>
+                  <td className="px-3 py-3">
+                    <span
+                      className={clsx(
+                        "label-caps inline-block border px-2 py-1",
+                        invoice?.status === "paid"
+                          ? "border-nearblack bg-nearblack text-white"
+                          : invoice?.status === "sent" || timingState === "review"
+                            ? "border-sand text-[#76570a]"
+                            : timingState === "needs_link"
+                              ? "border-red-700/35 text-red-700"
+                              : "border-[#c9c2b4] text-charcoal/60"
+                      )}
+                    >
+                      {statusLabel}
+                    </span>
+                    {!invoice ? (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={timingState === "needs_link"}
+                          onClick={() => onCreate(stage.id, "reslu")}
+                          title={timingState === "needs_link" ? "Link this claim to a project event first" : undefined}
+                          className="border border-nearblack px-2 py-1 text-caption text-nearblack hover:bg-nearblack hover:text-white disabled:cursor-not-allowed disabled:opacity-35"
+                        >
+                          Create claim
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onCreate(stage.id, "manual")}
+                          className="border border-[#c9c2b4] px-2 py-1 text-caption text-charcoal hover:border-nearblack"
+                        >
+                          Record existing
+                        </button>
+                      </div>
+                    ) : null}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
@@ -586,6 +859,10 @@ function ComposerForm({
   projectAddress,
   billingProfile,
   paymentSchedule,
+  initiallyOpen,
+  initialEntryMode,
+  initialScheduleItemId,
+  onClosed,
   onCreated,
   onError,
 }: {
@@ -595,11 +872,15 @@ function ComposerForm({
   projectAddress: string | null;
   billingProfile: ClientBillingProfile | null;
   paymentSchedule: ClientPaymentScheduleItem[];
+  initiallyOpen: boolean;
+  initialEntryMode: "reslu" | "manual";
+  initialScheduleItemId: string;
+  onClosed: () => void;
   onCreated: () => void;
   onError: (msg: string | null) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const [entryMode, setEntryMode] = useState<"reslu" | "manual">("reslu");
+  const [open, setOpen] = useState(initiallyOpen);
+  const entryMode = initialEntryMode;
   const [manualInvoiceNumber, setManualInvoiceNumber] = useState("");
   const [manualStatus, setManualStatus] = useState<"sent" | "paid">("sent");
   const [issuedDate, setIssuedDate] = useState(adelaideToday);
@@ -609,7 +890,7 @@ function ComposerForm({
   const [clientEmail, setClientEmail] = useState(projectClientEmail ?? "");
   const [address, setAddress] = useState(projectAddress ?? "");
   const [notes, setNotes] = useState("");
-  const [scheduleItemId, setScheduleItemId] = useState("");
+  const [scheduleItemId, setScheduleItemId] = useState(initialScheduleItemId);
   const [submitting, setSubmitting] = useState(false);
 
   const availableStages = paymentSchedule.filter((stage) => !stage.client_invoice_id);
@@ -685,6 +966,7 @@ function ComposerForm({
       setScheduleItemId("");
       setNotes("");
       setOpen(false);
+      onClosed();
       onCreated();
     } catch (err) {
       onError(err instanceof Error ? err.message : "Could not create invoice.");
@@ -694,33 +976,7 @@ function ComposerForm({
   }
 
   if (!open) {
-    return (
-      <div className="flex flex-wrap gap-3">
-        <button
-          type="button"
-          disabled={!billingProfile || availableStages.length === 0}
-          onClick={() => {
-            setEntryMode("reslu");
-            setOpen(true);
-          }}
-          title={!billingProfile ? "Set up the contract schedule first" : availableStages.length === 0 ? "All package stages have been invoiced" : undefined}
-          className="border border-nearblack px-5 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white disabled:opacity-40"
-        >
-          + Create RESLU invoice
-        </button>
-        <button
-          type="button"
-          disabled={!billingProfile || availableStages.length === 0}
-          onClick={() => {
-            setEntryMode("manual");
-            setOpen(true);
-          }}
-          className="border border-[#c9c2b4] px-5 py-2 text-subhead text-charcoal transition-colors hover:border-nearblack disabled:opacity-40"
-        >
-          + Record existing invoice
-        </button>
-      </div>
-    );
+    return null;
   }
 
   return (
@@ -738,7 +994,10 @@ function ComposerForm({
         </div>
         <button
           type="button"
-          onClick={() => setOpen(false)}
+          onClick={() => {
+            setOpen(false);
+            onClosed();
+          }}
           className="text-caption text-charcoal/50 hover:text-nearblack"
         >
           Cancel
