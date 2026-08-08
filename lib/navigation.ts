@@ -18,6 +18,7 @@ export const SIDEBAR_NAV_ITEMS: SidebarNavItem[] = [
   { id: "finance", label: "Finance", href: "/finance", adminOnly: true, feature: "finance" },
   { id: "office", label: "Office", href: "/office" },
   { id: "search", label: "Search", href: "/search" },
+  { id: "second-brain", label: "Second Brain", href: "/brain" },
   { id: "library", label: "Library", href: "/library" },
   { id: "cpd", label: "CPD", href: "/cpd" },
   { id: "contacts", label: "Address Book", href: "/contacts" },
