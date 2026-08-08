@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { triageEmails, NON_ACTIONABLE_LABELS, type TriageInput } from "@/lib/second-brain/triage";
+import { buildEmailReplyQueueItem } from "@/lib/second-brain/reply-routing";
 
 export const runtime = "nodejs";
 
@@ -37,7 +38,7 @@ export async function GET(request: NextRequest) {
 
   const { data: emails, error } = await supabase
     .from("emails")
-    .select("id,from_addr,subject,clean_text")
+    .select("id,from_addr,subject,clean_text,received_at")
     .eq("status", "new")
     // Outbound (Sent folder) mail is ingested for the historical
     // record only (migration 045) — it never enters triage/
@@ -86,6 +87,16 @@ export async function GET(request: NextRequest) {
       if (!result) {
         console.error("triage: no result returned for email", email.id);
         continue;
+      }
+      const replyQueueItem = buildEmailReplyQueueItem(email, result.reply_requested);
+      if (replyQueueItem) {
+        const { error: queueError } = await supabase
+          .from("aria_queue")
+          .upsert(replyQueueItem, { onConflict: "dedupe_key", ignoreDuplicates: true });
+        if (queueError) {
+          console.error("triage: reply queue failed for email", email.id, queueError.message);
+          continue;
+        }
       }
       const isNonActionable = NON_ACTIONABLE_LABELS.includes(result.label);
       const { error: updateError } = await supabase
