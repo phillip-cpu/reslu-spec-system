@@ -15,6 +15,7 @@ const LABELS: Record<string, string> = {
   approval_needed: "Approval needed",
   email_proposal: "Email proposal",
   draft_proposal: "Proposal draft",
+  email_reply_requested: "Email reply requested",
 };
 
 function payloadDetail(payload: Record<string, unknown>, error: string | null): string | null {
@@ -81,4 +82,3 @@ export async function loadAriaActivity(
     items,
   };
 }
-
