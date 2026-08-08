@@ -1,58 +1,37 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 /**
  * RESLU Second Brain, Step 13 (docs/RESLU-second-brain-build-brief.md).
  *
- * Ports docs/brain-visualizer-reference.html's canvas rendering
- * almost verbatim — rendering, palette, motion, typography and layout
- * are FROZEN per that file's own header comment. Engineering changes
- * made here, and ONLY here:
+ * Began as the Step 13 reference canvas. Phillip's 9 August 2026
+ * visual review approved moving beyond that decorative reference: the
+ * live view now exposes real record relationships on hover, makes every
+ * visible record inspectable, and uses a full-screen working canvas.
  *
- *   1. CL[]'s per-cluster `cnt` (count) and the individual-dot pool
- *      now come from real data (/api/second-brain/brain-data) instead
- *      of the reference's hardcoded numbers/names. Colour (`c`),
- *      sector angles (`a0`/`a1`), density feel, and blob position
- *      (`bx`/`by`) are copied verbatim from the reference file — this
- *      is the visual identity the brief says is frozen.
- *   2. The reference's dot-generation loop (a density-driven grid
- *      sweep, unrelated to any real record count) is replaced with
- *      one dot per REAL eligible record (flagged or touched in the
- *      last 90 days, server-side capped at 1,500 total across every
- *      cluster — see the API route) — this is the brief's own
- *      "aggregation rule (fixed, not a judgment call)", not a style
- *      change. Each dot still lands at a random (r, angle) within the
- *      exact same radius/angle range the reference used, preserving
- *      the look; only the COUNT and WHICH records get a dot changed.
- *   3. A click handler was added (the reference only had hover
- *      tooltips) — clicking a named dot with a recordUrl navigates
- *      there, per the brief's "clicking a flagged item opens its
- *      record".
- *   4. The flagged-record ring's stroke colour changed from the
- *      reference's white (`rgba(255,255,255,0.28)`) to amber
- *      (`rgba(201,128,58,0.65)`, matching this SAME file's own
- *      existing amber convention for the ARIA node/routine ring) —
- *      the brief's literal requirement is "Amber ring = record with
- *      an open change_proposals row", not a discretionary aesthetic
- *      choice, so this one colour value is the one deliberate
- *      departure from a verbatim port. Every other colour, position,
- *      and animation value below is copied unchanged.
- *   5. RT[] comes from the real vercel.json cron definitions (via the
- *      API route) instead of the reference's invented strings. APPS[]
- *      stays hardcoded verbatim, per the brief ("hex ring apps stay
- *      hardcoded").
+ * Live record counts, names and routine definitions replace the old
+ * hardcoded demonstration data. Individual nodes remain limited to
+ * flagged or recently touched records, capped at 1,500. Positions are
+ * deterministic so the map remains recognisable between visits.
+ *
+ * Real links come from project ownership, lead progression and email
+ * entity matching. Hovering a node reveals only those relationships;
+ * no random line is presented as business evidence. Amber rings still
+ * identify records with an open change proposal.
  */
 
 type BrainRecord = { id: string; name: string; flagged: boolean; recentAt: string; recordUrl: string | null };
 type BrainCluster = { entityType: string; label: string; totalCount: number; records: BrainRecord[] };
-type BrainData = { clusters: BrainCluster[]; routines: string[]; totalDots: number };
+type BrainLink = { source: string; target: string; relation: string };
+type BrainData = { clusters: BrainCluster[]; routines: string[]; totalDots: number; links: BrainLink[] };
 
-// Frozen visual identity per cluster — copied verbatim from
-// docs/brain-visualizer-reference.html's CL[] (colour, sector angles,
-// blob position). Keyed by entityType so real data can be merged in.
+// The original reference palette remains, with a dedicated memory
+// colour and sector added so durable learnings are no longer hidden.
 const CLUSTER_VISUALS: Record<string, { c: string; a0: number; a1: number; bx: number; by: number }> = {
-  email: { c: "#b9aee6", a0: -1.25, a1: 0.95, bx: 0.66, by: 0.32 },
+  email: { c: "#b9aee6", a0: -1.25, a1: 0.72, bx: 0.68, by: 0.3 },
+  memory: { c: "#e0a96d", a0: 0.82, a1: 1.72, bx: 0.72, by: 0.7 },
   item: { c: "#c47fd3", a0: 2.0, a1: 3.0, bx: 0.32, by: 0.7 },
   project: { c: "#8fd0c9", a0: 3.6, a1: 4.25, bx: 0.3, by: 0.26 },
   diary_sow: { c: "#d8c98a", a0: 4.45, a1: 5.0, bx: 0.52, by: 0.16 },
@@ -96,27 +75,49 @@ export function BrainVisualizer() {
   }, [data]);
 
   return (
-    <>
+    <main style={{ minHeight: "100vh", background: "#050507", padding: "clamp(8px, 1.4vw, 20px)" }}>
       <div
         id="stage"
         style={{
           position: "relative",
-          maxWidth: 960,
-          margin: "24px auto",
+          width: "100%",
+          height: "calc(100vh - clamp(16px, 2.8vw, 40px))",
+          minHeight: 680,
+          margin: "0 auto",
           background: "#08080c",
-          borderRadius: 14,
+          borderRadius: 2,
           overflow: "hidden",
           border: "1px solid rgba(255,255,255,0.06)",
         }}
       >
-        <canvas ref={canvasRef} id="rb2" style={{ width: "100%", height: 760, display: "block" }} />
+        <canvas ref={canvasRef} id="rb2" style={{ width: "100%", height: "100%", display: "block" }} />
+        <div style={{ position: "absolute", left: 22, top: 18, color: "rgba(255,255,255,0.74)", pointerEvents: "none" }}>
+          <p style={{ margin: 0, fontSize: 10, letterSpacing: 3.2 }}>RESLU / SECOND BRAIN</p>
+          <p style={{ margin: "7px 0 0", fontSize: 11, color: "rgba(255,255,255,0.34)" }}>
+            {data ? `${data.totalDots.toLocaleString()} active records · ${data.links.length.toLocaleString()} real connections` : "Reading the record…"}
+          </p>
+        </div>
+        <Link
+          href="/"
+          style={{
+            position: "absolute",
+            left: 22,
+            bottom: 18,
+            color: "rgba(255,255,255,0.42)",
+            fontSize: 10,
+            letterSpacing: 1.7,
+            textDecoration: "none",
+          }}
+        >
+          BACK TO SPEC
+        </Link>
         <div
           id="panel"
           style={{
             position: "absolute",
-            top: 16,
-            right: 16,
-            width: 172,
+            top: 18,
+            right: 18,
+            width: 196,
             background: "rgba(14,14,20,0.88)",
             border: "1px solid rgba(255,255,255,0.07)",
             borderRadius: 10,
@@ -141,13 +142,11 @@ export function BrainVisualizer() {
               outline: "none",
             }}
           />
-          <p style={{ margin: "12px 0 5px", letterSpacing: 2, fontSize: 10, color: "#66667a" }}>LAYOUT</p>
+          <p style={{ margin: "12px 0 5px", letterSpacing: 2, fontSize: 10, color: "#66667a" }}>VIEW</p>
           <div style={{ display: "flex", gap: 4 }}>
             {[
-              { label: "Force", m: "1" },
-              { label: "Circle", m: "0" },
-              { label: "Hex", m: "0" },
-              { label: "Rings", m: "0", on: true },
+              { label: "Network", m: "1" },
+              { label: "Orbit", m: "0", on: true },
             ].map((b) => (
               <button
                 key={b.label}
@@ -174,6 +173,9 @@ export function BrainVisualizer() {
             <input id="fn2" type="checkbox" style={{ width: 12, height: 12 }} />
             Record names
           </label>
+          <p style={{ margin: "12px 0 0", lineHeight: 1.45, color: "#66667a" }}>
+            Hover a record to reveal its live relationships. Click named records to open them.
+          </p>
         </div>
         <div
           ref={tipRef}
@@ -196,7 +198,7 @@ export function BrainVisualizer() {
       {error && (
         <p style={{ textAlign: "center", color: "#d8877d", fontFamily: "sans-serif", fontSize: 13 }}>Failed to load: {error}</p>
       )}
-    </>
+    </main>
   );
 }
 
@@ -207,7 +209,9 @@ type Dot = {
   s: number;
   i: number;
   al: number;
-  nm: string | null;
+  nm: string;
+  key: string;
+  showLabel: boolean;
   pr: boolean;
   cnt?: string;
   recordUrl: string | null;
@@ -288,21 +292,33 @@ function mountVisualizer(canvas: HTMLCanvasElement, tip: HTMLDivElement, data: B
     ];
   });
 
+  function stableUnit(seed: string): number {
+    let hash = 2166136261;
+    for (let i = 0; i < seed.length; i++) {
+      hash ^= seed.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0) / 4294967295;
+  }
+
   const dots: Dot[] = [];
   CL.forEach((cl) => {
     cl.records.forEach((rec, i) => {
-      const r = 104 + Math.random() * (212 - 104);
-      const a = cl.a0 + Math.random() * (cl.a1 - cl.a0);
+      const key = `${cl.entityType}:${rec.id}`;
+      const r = 104 + stableUnit(`${key}:radius`) * (212 - 104);
+      const a = cl.a0 + stableUnit(`${key}:angle`) * (cl.a1 - cl.a0);
       const isBig = i < 6;
-      const s = isBig ? 4.5 + Math.random() * 3 : 1.5 + Math.random() * 2.1;
+      const s = isBig ? 4.5 + stableUnit(`${key}:size`) * 3 : 1.5 + stableUnit(`${key}:size`) * 2.1;
       dots.push({
         cl,
         r,
         a,
         s,
         i,
-        al: 0.6 + Math.random() * 0.4,
-        nm: isBig ? rec.name : null,
+        al: 0.6 + stableUnit(`${key}:alpha`) * 0.4,
+        nm: rec.name,
+        key,
+        showLabel: isBig,
         pr: rec.flagged,
         recordUrl: rec.recordUrl,
       });
@@ -315,13 +331,17 @@ function mountVisualizer(canvas: HTMLCanvasElement, tip: HTMLDivElement, data: B
     }
   });
 
-  const webs: [Dot, Dot][] = [];
-  CL.forEach((cl) => {
-    const ds = dots.filter((d) => d.cl === cl);
-    for (let k = 0; k < Math.min(30, ds.length); k++) {
-      webs.push([ds[Math.floor(Math.random() * ds.length)], ds[Math.floor(Math.random() * ds.length)]]);
-    }
+  const dotByKey = new Map(dots.map((dot) => [dot.key, dot]));
+  const graphLinks = (data.links ?? []).flatMap((link) => {
+    const source = dotByKey.get(link.source);
+    const target = dotByKey.get(link.target);
+    return source && target ? [{ source, target, relation: link.relation }] : [];
   });
+  const relationCount = new Map<string, number>();
+  for (const link of graphLinks) {
+    relationCount.set(link.source.key, (relationCount.get(link.source.key) ?? 0) + 1);
+    relationCount.set(link.target.key, (relationCount.get(link.target.key) ?? 0) + 1);
+  }
 
   const HEXT = document.createElement("canvas");
   HEXT.width = 440;
@@ -359,7 +379,7 @@ function mountVisualizer(canvas: HTMLCanvasElement, tip: HTMLDivElement, data: B
     rot = 0,
     spd = 0.15,
     names = false,
-    hit: { x: number; y: number; r: number; t: string; url?: string | null }[] = [],
+    hit: { x: number; y: number; r: number; t: string; url?: string | null; key?: string }[] = [],
     mx = -99,
     my = -99,
     q = "";
@@ -445,13 +465,39 @@ function mountVisualizer(canvas: HTMLCanvasElement, tip: HTMLDivElement, data: B
       d.px = lp(cx + d.r * Math.cos(a), B[0]);
       d.py = lp(cy + d.r * Math.sin(a), B[1]);
     });
-    X.lineWidth = 0.5;
-    webs.forEach(([A, B]) => {
-      X.strokeStyle = rgba(A.cl.c, 0.045);
+
+    const hoveredDot = dots.find((dot) => {
+      const dx = dot.px! - mx;
+      const dy = dot.py! - my;
+      const radius = Math.max(dot.s + 4, 6);
+      return dx * dx + dy * dy < radius * radius;
+    });
+    const linkedKeys = new Set<string>();
+    if (hoveredDot) {
+      linkedKeys.add(hoveredDot.key);
+      for (const link of graphLinks) {
+        if (link.source.key === hoveredDot.key) linkedKeys.add(link.target.key);
+        if (link.target.key === hoveredDot.key) linkedKeys.add(link.source.key);
+      }
+    }
+
+    X.lineWidth = 0.6;
+    graphLinks.forEach((link) => {
+      const active = hoveredDot && (link.source.key === hoveredDot.key || link.target.key === hoveredDot.key);
+      X.strokeStyle = active ? "rgba(232,201,138,0.82)" : "rgba(184,191,215,0.075)";
+      X.lineWidth = active ? 1.25 : 0.55;
       X.beginPath();
-      X.moveTo(A.px!, A.py!);
-      X.lineTo(B.px!, B.py!);
+      X.moveTo(link.source.px!, link.source.py!);
+      X.lineTo(link.target.px!, link.target.py!);
       X.stroke();
+      if (active) {
+        const labelX = (link.source.px! + link.target.px!) / 2;
+        const labelY = (link.source.py! + link.target.py!) / 2;
+        X.fillStyle = "rgba(232,201,138,0.82)";
+        X.font = "500 9px sans-serif";
+        X.textAlign = "center";
+        X.fillText(link.relation.toUpperCase(), labelX, labelY - 5);
+      }
     });
     const sr: [number, number][] = [
       [44, 26],
@@ -473,9 +519,17 @@ function mountVisualizer(canvas: HTMLCanvasElement, tip: HTMLDivElement, data: B
     });
     hit = [];
     dots.forEach((d) => {
-      X.globalAlpha = match(d) ? d.al : 0.15;
+      const searchAlpha = match(d) ? d.al : 0.12;
+      X.globalAlpha = hoveredDot && !linkedKeys.has(d.key) ? Math.min(searchAlpha, 0.13) : searchAlpha;
       X.drawImage(spr(d.cl.c), d.px! - d.s * 2, d.py! - d.s * 2, d.s * 4, d.s * 4);
       X.globalAlpha = 1;
+      if (hoveredDot && linkedKeys.has(d.key)) {
+        X.strokeStyle = d.key === hoveredDot.key ? "rgba(255,255,255,0.92)" : "rgba(232,201,138,0.72)";
+        X.lineWidth = d.key === hoveredDot.key ? 1.2 : 0.8;
+        X.beginPath();
+        X.arc(d.px!, d.py!, Math.max(d.s + 5, 7), 0, 6.283);
+        X.stroke();
+      }
       if (d.pr && d.s > 3) {
         // Amber, not the reference's white — "Amber ring = record with
         // an open change_proposals row" per the brief. See this file's
@@ -493,14 +547,21 @@ function mountVisualizer(canvas: HTMLCanvasElement, tip: HTMLDivElement, data: B
         X.textAlign = "center";
         X.fillText(d.cnt, d.px!, d.py! + 3.5);
       }
-      if (d.nm) {
-        hit.push({ x: d.px!, y: d.py!, r: d.s + 3, t: d.nm + " · " + d.cl.n.toLowerCase(), url: d.recordUrl });
-        if (names) {
-          X.fillStyle = "rgba(255,255,255,0.42)";
-          X.font = "11px sans-serif";
-          X.textAlign = "center";
-          X.fillText(d.nm, d.px!, d.py! + d.s + 12);
-        }
+      const connections = relationCount.get(d.key) ?? 0;
+      hit.push({
+        x: d.px!,
+        y: d.py!,
+        r: Math.max(d.s + 4, 6),
+        t: `${d.nm} · ${d.cl.n.toLowerCase()} · ${connections} connection${connections === 1 ? "" : "s"}${d.recordUrl ? " · click to open" : ""}`,
+        url: d.recordUrl,
+        key: d.key,
+      });
+      if (names || d.showLabel || (hoveredDot && linkedKeys.has(d.key))) {
+        X.fillStyle = d.key === hoveredDot?.key ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.48)";
+        X.font = "11px sans-serif";
+        X.textAlign = "center";
+        const label = d.nm.length > 34 ? d.nm.slice(0, 32) + "…" : d.nm;
+        X.fillText(label, d.px!, d.py! + d.s + 12);
       }
     });
     CL.forEach((cl) => {
