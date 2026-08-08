@@ -8,6 +8,7 @@ test("sidebar order removes stale and duplicate ids while appending new items", 
   assert.equal(new Set(order).size, order.length);
   assert.equal(order.includes("retired"), false);
   assert.equal(order.includes("health"), false);
+  assert.equal(order.includes("second-brain"), true);
   assert.equal(order.includes("settings"), true);
 });
 
