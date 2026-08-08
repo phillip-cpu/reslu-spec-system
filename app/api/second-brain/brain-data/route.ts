@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import {
+  brainNodeKey,
+  buildVisibleBrainLinks,
+  type BrainLinkCandidate,
+} from "@/lib/second-brain/brain-graph";
 import vercelConfig from "../../../../vercel.json";
 
 export const runtime = "nodejs";
@@ -30,8 +35,8 @@ function describeCron(schedule: string): string {
  *
  * RESLU Second Brain, Step 13 (docs/RESLU-second-brain-build-brief.md).
  * Serves the /brain visualizer's live data — real per-entity-type
- * counts for the searchable CRM, email and durable-memory sources and
- * the real cron schedule
+ * counts for the searchable CRM, email and durable-memory sources,
+ * real cross-record relationships, and the real cron schedule
  * (imported from vercel.json, bundled at build time — reading it via
  * fs at request time isn't a reliable pattern on Vercel's serverless
  * runtime for an arbitrary repo file).
@@ -66,14 +71,28 @@ export async function GET() {
   const { data: openProposals } = await supabase.from("change_proposals").select("entity_id").eq("status", "pending");
   const flaggedItemIds = new Set((openProposals ?? []).map((p) => p.entity_id));
 
-  const [{ data: items }, { data: projects }, { data: leads }, { data: diary }, { data: sow }, { data: emails }, { data: memoryNotes }] = await Promise.all([
+  const [
+    { data: items },
+    { data: projects },
+    { data: leads },
+    { data: diary },
+    { data: sow },
+    { data: emails },
+    { data: memoryNotes },
+    { data: emailMatches },
+  ] = await Promise.all([
     supabase.from("items").select("id,name,project_id,updated_at").is("deleted_at", null),
-    supabase.from("projects").select("id,name,updated_at").is("deleted_at", null),
+    supabase.from("projects").select("id,name,lead_id,updated_at").is("deleted_at", null),
     supabase.from("leads").select("id,first_name,surname_project,updated_at").is("deleted_at", null),
     supabase.from("portal_updates").select("id,title,project_id,created_at").is("deleted_at", null),
     supabase.from("sow_documents").select("id,revision_label,project_id,created_at").is("deleted_at", null),
-    supabase.from("emails").select("id,subject,received_at,status").order("received_at", { ascending: false }).limit(500),
+    supabase.from("emails").select("id,subject,received_at,status,matched_project_id").order("received_at", { ascending: false }).limit(500),
     supabase.from("brain_notes").select("id,title,created_at").order("created_at", { ascending: false }).limit(500),
+    supabase
+      .from("email_entity_matches")
+      .select("email_id,entity_type,entity_id,status")
+      .in("status", ["matched", "review"])
+      .not("entity_id", "is", null),
   ]);
 
   const itemRecords: BrainRecord[] = (items ?? [])
@@ -86,9 +105,15 @@ export async function GET() {
       recordUrl: `/projects/${i.project_id}#focus-ordering_due-${i.id}`,
     }));
 
-  const projectRecords: BrainRecord[] = (projects ?? [])
-    .filter((p) => isRecent(p.updated_at))
-    .map((p) => ({ id: p.id, name: p.name, flagged: false, recentAt: p.updated_at, recordUrl: `/projects/${p.id}` }));
+  // Projects are relationship anchors and there are comparatively few of
+  // them, so retain every live project even when its own updated_at is old.
+  const projectRecords: BrainRecord[] = (projects ?? []).map((p) => ({
+    id: p.id,
+    name: p.name,
+    flagged: false,
+    recentAt: p.updated_at,
+    recordUrl: `/projects/${p.id}`,
+  }));
 
   const leadRecords: BrainRecord[] = (leads ?? [])
     .filter((l) => isRecent(l.updated_at))
@@ -150,10 +175,85 @@ export async function GET() {
     totalDots = rawClusters.reduce((sum, c) => sum + c.records.length, 0);
   }
 
+  const linkCandidates: BrainLinkCandidate[] = [];
+  for (const item of items ?? []) {
+    if (item.project_id) {
+      linkCandidates.push({
+        sourceType: "item",
+        sourceId: item.id,
+        targetType: "project",
+        targetId: item.project_id,
+        relation: "belongs to project",
+      });
+    }
+  }
+  for (const update of diary ?? []) {
+    if (update.project_id) {
+      linkCandidates.push({
+        sourceType: "diary_sow",
+        sourceId: update.id,
+        targetType: "project",
+        targetId: update.project_id,
+        relation: "project diary",
+      });
+    }
+  }
+  for (const document of sow ?? []) {
+    if (document.project_id) {
+      linkCandidates.push({
+        sourceType: "diary_sow",
+        sourceId: document.id,
+        targetType: "project",
+        targetId: document.project_id,
+        relation: "project scope",
+      });
+    }
+  }
+  for (const email of emails ?? []) {
+    if (email.matched_project_id) {
+      linkCandidates.push({
+        sourceType: "email",
+        sourceId: email.id,
+        targetType: "project",
+        targetId: email.matched_project_id,
+        relation: "matched project",
+      });
+    }
+  }
+  for (const match of emailMatches ?? []) {
+    if (match.entity_id && (match.entity_type === "project" || match.entity_type === "item")) {
+      linkCandidates.push({
+        sourceType: "email",
+        sourceId: match.email_id,
+        targetType: match.entity_type,
+        targetId: match.entity_id,
+        relation: match.entity_type === "project" ? "mentions project" : "mentions item",
+      });
+    }
+  }
+  for (const project of projects ?? []) {
+    if (project.lead_id) {
+      linkCandidates.push({
+        sourceType: "project",
+        sourceId: project.id,
+        targetType: "lead",
+        targetId: project.lead_id,
+        relation: "progressed from lead",
+      });
+    }
+  }
+
+  const visibleNodeKeys = new Set(
+    rawClusters.flatMap((cluster) =>
+      cluster.records.map((record) => brainNodeKey(cluster.entityType, record.id))
+    )
+  );
+  const links = buildVisibleBrainLinks(linkCandidates, visibleNodeKeys);
+
   const routines = (vercelConfig.crons ?? []).map((c: { path: string; schedule: string }) => {
     const name = c.path.split("/").filter(Boolean).pop() ?? c.path;
     return `${name} · ${describeCron(c.schedule)}`;
   });
 
-  return NextResponse.json({ clusters: rawClusters, routines, totalDots });
+  return NextResponse.json({ clusters: rawClusters, routines, totalDots, links });
 }
