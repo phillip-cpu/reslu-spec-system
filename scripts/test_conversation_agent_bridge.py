@@ -1,6 +1,8 @@
 import importlib.util
+import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("conversation_agent_bridge.py")
@@ -79,6 +81,31 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             conversation_agent_bridge.find_reply_text(payload, "prompt"),
             "A legacy reply.",
         )
+
+    def test_reslu_conversation_has_stable_openclaw_session_key(self):
+        self.assertEqual(
+            conversation_agent_bridge.openclaw_session_key(
+                "d5442b38-d5ee-4650-93be-9e5953dbf401"
+            ),
+            "reslu-conversation-d5442b38-d5ee-4650-93be-9e5953dbf401",
+        )
+
+    @mock.patch.object(conversation_agent_bridge.subprocess, "run")
+    def test_agent_invocation_uses_conversation_scoped_session(self, run):
+        run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='{"final":"Agent answer"}', stderr=""
+        )
+
+        reply = conversation_agent_bridge.invoke_agent(
+            {"slug": "aria", "display_name": "Aria", "role_label": "Studio assistant"},
+            "Phillip: Hello",
+            "conversation-123",
+        )
+
+        command = run.call_args.args[0]
+        self.assertEqual(reply, "Agent answer")
+        self.assertIn("--session-key", command)
+        self.assertEqual(command[command.index("--session-key") + 1], "reslu-conversation-conversation-123")
 
 
 if __name__ == "__main__":

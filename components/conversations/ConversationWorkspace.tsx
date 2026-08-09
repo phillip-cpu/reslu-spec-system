@@ -40,6 +40,34 @@ interface SpeechRecognitionLike {
 }
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 
+interface RealtimeEvent {
+  type: string;
+  response_id?: string;
+  call_id?: string;
+  name?: string;
+  arguments?: string;
+  delta?: string;
+  transcript?: string;
+  item_id?: string;
+  response?: {
+    id?: string;
+    status?: string;
+    output?: Array<{
+      type?: string;
+      name?: string;
+      call_id?: string;
+      arguments?: string;
+      content?: Array<{ transcript?: string }>;
+    }>;
+  };
+}
+
+interface ActiveRealtimeConsult {
+  toolCallId: string;
+  responseId: string | null;
+  abortController: AbortController;
+}
+
 function Avatar({ participant, large = false }: { participant: ConversationParticipant; large?: boolean }) {
   return (
     <div
@@ -164,6 +192,16 @@ export function ConversationWorkspace() {
   const callActiveRef = useRef(false);
   const mutedRef = useRef(false);
   const spokenIdsRef = useRef(new Set<string>());
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const dataChannelRef = useRef<RTCDataChannel | null>(null);
+  const microphoneStreamRef = useRef<MediaStream | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const realtimeActiveRef = useRef(false);
+  const activeResponseIdRef = useRef<string | null>(null);
+  const activeRealtimeConsultRef = useRef<ActiveRealtimeConsult | null>(null);
+  const cancelledResponseIdsRef = useRef(new Set<string>());
+  const cancelledToolCallIdsRef = useRef(new Set<string>());
+  const handledToolCallIdsRef = useRef(new Set<string>());
 
   const selectedConversation = useMemo(
     () => data.conversations.find((conversation) => conversation.id === selectedId) ?? null,
@@ -219,7 +257,7 @@ export function ConversationWorkspace() {
       const incoming = body.messages as ConversationMessage[];
       setMessages(incoming);
       setParticipants(body.participants);
-      if (callActiveRef.current) {
+      if (callActiveRef.current && !realtimeActiveRef.current) {
         const unsaid = incoming.filter((message) => message.author.type === "agent" && !spokenIdsRef.current.has(message.id));
         incoming.forEach((message) => spokenIdsRef.current.add(message.id));
         const newest = unsaid.at(-1);
@@ -294,8 +332,53 @@ export function ConversationWorkspace() {
     }
   }, [selectedId, loadMessages, loadConversations]);
 
+  const sendRealtimeEvent = useCallback((event: Record<string, unknown>) => {
+    const channel = dataChannelRef.current;
+    if (channel?.readyState === "open") channel.send(JSON.stringify(event));
+  }, []);
+
+  const cancelActiveRealtimeTurn = useCallback(() => {
+    const responseId = activeResponseIdRef.current;
+    if (responseId) cancelledResponseIdsRef.current.add(responseId);
+    activeResponseIdRef.current = null;
+    const consult = activeRealtimeConsultRef.current;
+    if (consult) {
+      cancelledToolCallIdsRef.current.add(consult.toolCallId);
+      consult.abortController.abort();
+      activeRealtimeConsultRef.current = null;
+      if (selectedId && callAgent?.agent_slug) {
+        void fetch(`/api/conversations/${selectedId}/realtime/consult`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tool_call_id: consult.toolCallId, agent_slug: callAgent.agent_slug }),
+        }).catch(() => null);
+      }
+    }
+    // VAD already cancels and truncates WebRTC output server-side. These
+    // explicit events make local barge-in immediate and harmlessly race it.
+    if (responseId) {
+      sendRealtimeEvent({ type: "response.cancel" });
+      sendRealtimeEvent({ type: "output_audio_buffer.clear" });
+    }
+    if (remoteAudioRef.current) remoteAudioRef.current.muted = true;
+    setCallState("interrupted");
+  }, [callAgent, selectedId, sendRealtimeEvent]);
+
   const endCall = useCallback(async () => {
     callActiveRef.current = false;
+    realtimeActiveRef.current = false;
+    cancelActiveRealtimeTurn();
+    dataChannelRef.current?.close();
+    dataChannelRef.current = null;
+    peerConnectionRef.current?.close();
+    peerConnectionRef.current = null;
+    microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
+    microphoneStreamRef.current = null;
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.pause();
+      remoteAudioRef.current.srcObject = null;
+      remoteAudioRef.current = null;
+    }
     recognitionPausedRef.current = false;
     recognitionRef.current?.abort();
     recognitionRef.current = null;
@@ -314,7 +397,12 @@ export function ConversationWorkspace() {
     setCallOpening(false);
     setCallError(null);
     setInterim("");
-  }, [selectedId, loadMessages]);
+    activeResponseIdRef.current = null;
+    activeRealtimeConsultRef.current = null;
+    cancelledResponseIdsRef.current.clear();
+    cancelledToolCallIdsRef.current.clear();
+    handledToolCallIdsRef.current.clear();
+  }, [cancelActiveRealtimeTurn, selectedId, loadMessages]);
 
   const handleVoiceText = useCallback((text: string) => {
     const command = text.trim().toLowerCase().replace(/[.!?]+$/, "");
@@ -329,11 +417,202 @@ export function ConversationWorkspace() {
     if (text.trim() && callAgent?.agent_slug) void sendMessage(text.trim(), "voice", callAgent.agent_slug);
   }, [callAgent, endCall, lastSpoken, sendMessage, speak]);
 
-  async function startCall() {
-    if (!selectedId || !callAgent) return;
-    setCallError(null);
-    setCallOpening(true);
-    setCallState("connecting");
+  const runRealtimeConsult = useCallback(async (toolCallId: string, responseId: string | null, argumentsJson: string) => {
+    if (!selectedId || !callAgent?.agent_slug || !callIdRef.current || handledToolCallIdsRef.current.has(toolCallId)) return;
+    handledToolCallIdsRef.current.add(toolCallId);
+    let query = "";
+    try {
+      const parsed = JSON.parse(argumentsJson) as { query?: unknown };
+      query = typeof parsed.query === "string" ? parsed.query.trim() : "";
+    } catch { /* handled below */ }
+    if (!query) {
+      setCallError("I couldn’t understand that turn. Please say it again.");
+      setCallState("listening");
+      return;
+    }
+
+    const abortController = new AbortController();
+    activeRealtimeConsultRef.current = { toolCallId, responseId, abortController };
+    setInterim(query);
+    setCallState("thinking");
+    try {
+      const start = await fetch(`/api/conversations/${selectedId}/realtime/consult`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: abortController.signal,
+        body: JSON.stringify({
+          query,
+          agent_slug: callAgent.agent_slug,
+          call_id: callIdRef.current,
+          tool_call_id: toolCallId,
+          response_id: responseId,
+        }),
+      });
+      const startBody = await start.json();
+      if (!start.ok) throw new Error(startBody.error ?? "Could not consult the RESLU agent");
+
+      while (!abortController.signal.aborted && callActiveRef.current) {
+        const statusResponse = await fetch(
+          `/api/conversations/${selectedId}/realtime/consult?tool_call_id=${encodeURIComponent(toolCallId)}&agent_slug=${callAgent.agent_slug}`,
+          { cache: "no-store", signal: abortController.signal }
+        );
+        const statusBody = await statusResponse.json();
+        if (!statusResponse.ok) throw new Error(statusBody.error ?? "Could not read the RESLU agent response");
+        if (statusBody.status === "done" && typeof statusBody.answer === "string") {
+          if (cancelledToolCallIdsRef.current.has(toolCallId) || abortController.signal.aborted) return;
+          activeRealtimeConsultRef.current = null;
+          setLastSpoken(statusBody.answer);
+          setInterim("");
+          await loadMessages(selectedId);
+          sendRealtimeEvent({
+            type: "conversation.item.create",
+            item: {
+              type: "function_call_output",
+              call_id: toolCallId,
+              output: JSON.stringify({
+                answer: statusBody.answer,
+                instruction: "Speak this existing RESLU agent answer faithfully. Add no new facts or actions.",
+              }),
+            },
+          });
+          sendRealtimeEvent({
+            type: "response.create",
+            response: {
+              output_modalities: ["audio"],
+              tool_choice: "none",
+              instructions: "Speak the consult_reslu_agent answer faithfully and naturally. Do not add, infer or perform anything.",
+            },
+          });
+          return;
+        }
+        if (statusBody.status === "cancelled") return;
+        if (statusBody.status === "failed") throw new Error(statusBody.error ?? "The RESLU agent could not answer");
+        await new Promise<void>((resolve, reject) => {
+          const timer = window.setTimeout(resolve, 650);
+          abortController.signal.addEventListener("abort", () => {
+            window.clearTimeout(timer);
+            reject(new DOMException("Aborted", "AbortError"));
+          }, { once: true });
+        });
+      }
+    } catch (reason) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      if (cancelledToolCallIdsRef.current.has(toolCallId)) return;
+      activeRealtimeConsultRef.current = null;
+      setCallError(reason instanceof Error ? reason.message : "The RESLU agent could not answer");
+      setCallState("listening");
+    }
+  }, [callAgent, loadMessages, selectedId, sendRealtimeEvent]);
+
+  const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
+    if (event.type === "input_audio_buffer.speech_started") {
+      cancelActiveRealtimeTurn();
+      setInterim("");
+      return;
+    }
+    if (event.type === "input_audio_buffer.speech_stopped") {
+      setCallState("thinking");
+      return;
+    }
+    if (event.type === "response.created" && event.response?.id) {
+      activeResponseIdRef.current = event.response.id;
+      if (!cancelledResponseIdsRef.current.has(event.response.id) && remoteAudioRef.current) {
+        remoteAudioRef.current.muted = false;
+      }
+      return;
+    }
+    if (event.type === "response.output_audio_transcript.delta" && event.delta) {
+      setCallState("speaking");
+      setInterim((current) => `${current}${event.delta}`);
+      return;
+    }
+    if (event.type === "response.output_audio_transcript.done" && event.transcript) {
+      setLastSpoken(event.transcript);
+      setInterim("");
+      return;
+    }
+    if (event.type === "response.function_call_arguments.done" && event.call_id && event.name === "consult_reslu_agent") {
+      void runRealtimeConsult(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}");
+      return;
+    }
+    if (event.type === "response.done" && event.response) {
+      const responseId = event.response.id ?? activeResponseIdRef.current;
+      if (responseId && cancelledResponseIdsRef.current.has(responseId)) return;
+      activeResponseIdRef.current = null;
+      for (const output of event.response.output ?? []) {
+        if (output.type === "function_call" && output.name === "consult_reslu_agent" && output.call_id) {
+          void runRealtimeConsult(output.call_id, responseId ?? null, output.arguments ?? "{}");
+        }
+      }
+      if (event.response.status === "completed" && !(event.response.output ?? []).some((item) => item.type === "function_call")) {
+        setCallState("listening");
+      }
+      return;
+    }
+    if (event.type === "error") {
+      setCallError("The realtime call hit an error. Please try again.");
+    }
+  }, [cancelActiveRealtimeTurn, runRealtimeConsult]);
+
+  const createCallRecord = useCallback(async () => {
+    if (!selectedId) throw new Error("No conversation selected");
+    const response = await fetch(`/api/conversations/${selectedId}/calls`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ presentation: window.innerWidth < 700 ? "driving" : "office" }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error ?? "Could not start call");
+    callIdRef.current = body.call.id;
+    setCallId(body.call.id);
+    return body.call.id as string;
+  }, [selectedId]);
+
+  const startRealtimeCall = useCallback(async (stream: MediaStream, activeCallId: string) => {
+    if (!selectedId || !callAgent?.agent_slug) throw new Error("No RESLU agent selected");
+    const peer = new RTCPeerConnection();
+    const audio = document.createElement("audio");
+    audio.autoplay = true;
+    audio.setAttribute("playsinline", "true");
+    peer.ontrack = (event) => { audio.srcObject = event.streams[0]; };
+    stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+    const channel = peer.createDataChannel("oai-events");
+    channel.onopen = () => {
+      setCallOpening(false);
+      setCallState("listening");
+    };
+    channel.onmessage = (message) => {
+      try { handleRealtimeEvent(JSON.parse(message.data) as RealtimeEvent); } catch { /* ignore malformed provider events */ }
+    };
+    channel.onclose = () => {
+      if (callActiveRef.current && realtimeActiveRef.current) setCallState("reconnecting");
+    };
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    const response = await fetch(`/api/conversations/${selectedId}/realtime/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/sdp", "X-RESLU-Agent": callAgent.agent_slug },
+      body: offer.sdp,
+    });
+    if (!response.ok) {
+      let body: { error?: string; code?: string } = {};
+      try { body = await response.json(); } catch { /* provider returned non-JSON */ }
+      const error = new Error(body.error ?? "Could not start realtime voice") as Error & { code?: string };
+      error.code = body.code;
+      peer.close();
+      throw error;
+    }
+    await peer.setRemoteDescription({ type: "answer", sdp: await response.text() });
+    peerConnectionRef.current = peer;
+    dataChannelRef.current = channel;
+    remoteAudioRef.current = audio;
+    microphoneStreamRef.current = stream;
+    realtimeActiveRef.current = true;
+    callActiveRef.current = true;
+    callIdRef.current = activeCallId;
+  }, [callAgent, handleRealtimeEvent, selectedId]);
+
+  const startLegacyCall = useCallback(async (existingCallId?: string) => {
     const SpeechRecognition = (window as Window & { SpeechRecognition?: SpeechRecognitionConstructor; webkitSpeechRecognition?: SpeechRecognitionConstructor }).SpeechRecognition
       ?? (window as Window & { webkitSpeechRecognition?: SpeechRecognitionConstructor }).webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -390,23 +669,17 @@ export function ConversationWorkspace() {
       recognition.start();
       setCallState("listening");
 
-      const response = await fetch(`/api/conversations/${selectedId}/calls`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ presentation: window.innerWidth < 700 ? "driving" : "office" }),
-      });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error ?? "Could not start call");
+      const activeCallId = existingCallId ?? await createCallRecord();
       if (!callActiveRef.current) {
         await fetch(`/api/conversations/${selectedId}/calls`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ call_id: body.call.id }),
+          body: JSON.stringify({ call_id: activeCallId }),
         }).catch(() => null);
         return;
       }
-      callIdRef.current = body.call.id;
-      setCallId(body.call.id);
+      callIdRef.current = activeCallId;
+      setCallId(activeCallId);
       setCallOpening(false);
     } catch (reason) {
       callActiveRef.current = false;
@@ -416,15 +689,58 @@ export function ConversationWorkspace() {
       const message = reason instanceof Error ? reason.message : "Could not start call";
       setCallError(reason instanceof DOMException ? speechRecognitionErrorMessage(reason.name) : message);
     }
+  }, [createCallRecord, handleVoiceText, messages, selectedId]);
+
+  async function startCall() {
+    if (!selectedId || !callAgent) return;
+    setCallError(null);
+    setCallOpening(true);
+    setCallState("connecting");
+    callActiveRef.current = true;
+    messages.forEach((message) => spokenIdsRef.current.add(message.id));
+
+    if (!("RTCPeerConnection" in window) || !navigator.mediaDevices?.getUserMedia) {
+      await startLegacyCall();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      microphoneStreamRef.current = stream;
+      const activeCallId = await createCallRecord();
+      await startRealtimeCall(stream, activeCallId);
+    } catch (reason) {
+      const error = reason as Error & { code?: string };
+      microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
+      microphoneStreamRef.current = null;
+      if (error.code === "realtime_disabled") {
+        await startLegacyCall(callIdRef.current ?? undefined);
+        return;
+      }
+      callActiveRef.current = false;
+      setCallOpening(false);
+      setCallError(error instanceof DOMException ? speechRecognitionErrorMessage(error.name) : error.message || "Could not start call");
+    }
   }
 
   function toggleMute() {
     setMuted((value) => {
       const next = !value;
-      if (next) recognitionRef.current?.stop();
+      if (realtimeActiveRef.current) {
+        microphoneStreamRef.current?.getAudioTracks().forEach((track) => { track.enabled = !next; });
+      } else if (next) recognitionRef.current?.stop();
       else if (callActiveRef.current) { try { recognitionRef.current?.start(); } catch { /* already active */ } }
       return next;
     });
+  }
+
+  function repeatLastReply() {
+    if (!lastSpoken) return;
+    if (realtimeActiveRef.current) {
+      sendRealtimeEvent({
+        type: "response.create",
+        response: { output_modalities: ["audio"], tool_choice: "none", instructions: "Repeat your immediately previous spoken answer exactly. Add nothing." },
+      });
+    } else speak(lastSpoken);
   }
 
   function submitDraft(event: FormEvent) {
@@ -545,7 +861,7 @@ export function ConversationWorkspace() {
           </div>
           <div className="grid shrink-0 grid-cols-3 border-t border-white/10 pb-[env(safe-area-inset-bottom)]">
             <button onClick={toggleMute} className="border-r border-white/10 px-3 py-4 text-subhead md:py-6"><span className="block text-xl">{muted ? "×" : "●"}</span><span className="mt-2 block text-caption text-white/55">{muted ? "Unmute" : "Mute"}</span></button>
-            <button onClick={() => lastSpoken && speak(lastSpoken)} disabled={!lastSpoken} className="border-r border-white/10 px-3 py-4 text-subhead disabled:opacity-30 md:py-6"><span className="block text-xl">↻</span><span className="mt-2 block text-caption text-white/55">Repeat</span></button>
+            <button onClick={repeatLastReply} disabled={!lastSpoken} className="border-r border-white/10 px-3 py-4 text-subhead disabled:opacity-30 md:py-6"><span className="block text-xl">↻</span><span className="mt-2 block text-caption text-white/55">Repeat</span></button>
             <button onClick={() => void endCall()} className="bg-[#8e2f2f] px-3 py-4 text-subhead md:py-6"><span className="block text-xl">■</span><span className="mt-2 block text-caption text-white/70">End call</span></button>
           </div>
         </div>

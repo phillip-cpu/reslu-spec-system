@@ -1,6 +1,6 @@
 # RESLU conversations deployment
 
-Migration `088_staff_conversations.sql` adds the canonical staff/agent conversation model. Apply it before deploying the app.
+Migration `088_staff_conversations.sql` adds the canonical staff/agent conversation model. Migration `091_realtime_voice_consults.sql` adds idempotent Realtime consult turns and precise barge-in cancellation. Apply both relevant migrations before deploying their app versions.
 
 The web app provides durable chat history, staff and agent group membership, voice transcripts, call records, and a browser audio-first call presentation. Human-to-human text works entirely through Supabase. Aria and Marco replies use their existing OpenClaw runtimes through the Mac mini bridge.
 
@@ -18,13 +18,13 @@ launchctl kickstart -k gui/$(id -u)/ai.reslu.conversation-bridge
 tail -f ~/.openclaw/workspace/vault/agent-openclaw/daily/conversation-bridge.log
 ```
 
-The bridge polls only the dedicated lightweight agent job table. It sends the existing runtime the recent canonical thread history, then stores the final response in that same thread. A newer spoken turn cancels publication of stale output. Cancellation never claims to reverse an external side effect that already completed.
+The bridge polls only the dedicated lightweight agent job table. It routes each RESLU conversation through a stable OpenClaw `--session-key`, sends the existing runtime the recent canonical thread history, then stores the final response in that same thread. A newer spoken turn cancels publication of stale output. Cancellation never claims to reverse an external side effect that already completed.
 
 ## Current release boundary
 
 - Durable one-to-one and mixed group text conversations.
 - Aria and Marco agent transport through existing runtimes.
-- Browser microphone transcription, speech output, interruption, mute, repeat, voice hang-up, and call records.
+- OpenAI Realtime WebRTC audio, semantic VAD, true barge-in, mute, repeat, voice hang-up, and call records when enabled; browser speech remains the disabled-feature fallback.
 - No WhatsApp dependency.
 
 Aria Meeting Mode’s staged minutes, destination confidence and explicit filing approval should be built next on `conversation_calls.presentation = 'meeting'`; do not publish minutes directly from raw capture.

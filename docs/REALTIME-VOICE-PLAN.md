@@ -13,7 +13,7 @@ The current browser speech call must remain a fallback, not the target architect
 
 This explains the stop-start experience. Endpoint tuning can remove hundreds of milliseconds, but it cannot remove the blocking agent boundary or provide genuine duplex audio.
 
-The recommended target is WebRTC to the OpenAI Realtime API, using `gpt-realtime` initially. Server VAD supplies speech start/stop events and interruption; an interrupted WebRTC response is cancelled and its unplayed audio is truncated. Standard API keys remain server-side.
+The implemented target is WebRTC to the OpenAI Realtime API, using configurable `gpt-realtime-2.1` by default. Semantic VAD supplies speech start/stop events and interruption; an interrupted WebRTC response is cancelled and its unplayed audio is truncated. Standard API keys remain server-side.
 
 ## Preserve Aria and Marco
 
@@ -22,7 +22,7 @@ The realtime model must not become a replacement Aria or Marco. It is the low-la
 - Give each realtime session a bounded identity capsule for the selected participant (`main` for Aria, `marco` for Marco), conversation title and recent canonical messages.
 - Let the realtime layer answer only lightweight conversational acknowledgements and clarify incomplete speech.
 - Expose one server-owned `consult_reslu_agent` function for substantive answers, memory, calendars, email, business data or any tool use.
-- Route that consult to the existing OpenClaw agent and a stable session key derived from the RESLU conversation ID. Existing OpenClaw memory, permissions, tools and business rules remain authoritative.
+- Route that consult to the existing OpenClaw agent and a stable `reslu-conversation-{conversation_id}` session key derived from the canonical RESLU conversation ID. Existing OpenClaw memory, permissions, tools and business rules remain authoritative.
 - Use a conservative consult policy: anything that could depend on current RESLU state or cause a side effect must consult. The realtime model must never independently perform a business action.
 
 This mirrors OpenClaw's own realtime Voice Call design, which exposes `openclaw_agent_consult`, supports bounded agent identity context and reuses the configured agent session.
@@ -68,8 +68,10 @@ Vercel server environment:
 
 - `OPENAI_API_KEY`: project API key with Realtime access and billing credits.
 - `RESLU_REALTIME_VOICE_ENABLED=true`: explicit rollout gate.
-- `RESLU_REALTIME_VOICE_MODEL=gpt-realtime`: configurable model, default only after evaluation.
-- `RESLU_REALTIME_VOICE_NAME`: selected approved voice after a product listen-test.
+- `RESLU_REALTIME_VOICE_MODEL=gpt-realtime-2.1`: configurable model.
+- `RESLU_REALTIME_ARIA_VOICE=marin`: configurable Aria default.
+- `RESLU_REALTIME_MARCO_VOICE=cedar`: configurable Marco default.
+- `RESLU_REALTIME_VOICE_NAME`: optional shared fallback when an agent-specific voice is not set.
 
 No standard API key is ever exposed to the client. If the ephemeral-token flow is chosen later, Vercel creates the short-lived client secret and returns only that secret.
 
@@ -79,11 +81,18 @@ Mac mini:
 - A new realtime-consult bridge worker or an extension of the conversation bridge.
 - No OpenAI credential is needed on the Mac mini when Vercel owns Realtime session creation.
 
-Product decisions still required:
+The approved policy is conservative: every completed user request is routed through `consult_reslu_agent`. Realtime may provide audio turn-taking and speak the existing agent's returned answer, but it has no duplicated RESLU tools or memory. Voices remain environment-configurable for later auditioning.
 
-- Approve OpenAI Platform spend and create the project API key; ChatGPT/Codex subscriptions do not fund API Realtime usage.
-- Choose/test the Aria and Marco voices.
-- Confirm whether lightweight social replies may be answered by the realtime layer without consulting OpenClaw. Recommended: yes for acknowledgements only; consult for all substantive RESLU answers.
+## Production activation
+
+1. Apply `091_realtime_voice_consults.sql` in Supabase before enabling the feature.
+2. In Vercel, open **reslu-spec-system → Settings → Environment Variables**.
+3. Add `OPENAI_API_KEY` as a server-only variable for Production. Do not use a `NEXT_PUBLIC_` name and do not paste the value into chat.
+4. Add `RESLU_REALTIME_VOICE_ENABLED=true`, `RESLU_REALTIME_VOICE_MODEL=gpt-realtime-2.1`, `RESLU_REALTIME_ARIA_VOICE=marin`, and `RESLU_REALTIME_MARCO_VOICE=cedar`.
+5. Redeploy Production so the new server environment reaches the running functions.
+6. Pull the release on the Mac mini and restart `ai.reslu.conversation-bridge` so stable per-conversation OpenClaw session routing is active.
+
+When the feature flag is absent or false, the current browser speech call remains the fallback. If the flag is true but `OPENAI_API_KEY` is missing, session creation fails closed with a configuration error; the standard key is never returned to the browser.
 
 ## Staged migration
 
