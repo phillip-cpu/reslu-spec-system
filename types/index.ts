@@ -463,6 +463,8 @@ export interface CostSection {
   project_id: string;
   name: string;
   sort: number;
+  /** Timeline phase whose end date drives this section's projected spend. */
+  forecast_phase_id: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -8,6 +8,7 @@ import {
 import { hasFinanceCapability } from "@/lib/finance/permissions";
 import { calculateShadowProjection } from "@/lib/finance/projection";
 import { isIsoDate } from "@/lib/finance/readiness";
+import { buildSectionForecastDates } from "@/lib/finance/schedule-cost-timing";
 import { createClient } from "@/lib/supabase/server";
 import type { FinanceShadowProjectionRequest, ProjectFinanceProfile } from "@/types/finance";
 import type { FinanceEstimateSnapshot } from "@/lib/finance/baseline";
@@ -92,6 +93,7 @@ export async function POST(
     { data: billingProfile, error: billingError },
     { data: paymentSchedule, error: scheduleError },
     { data: schedulePhases, error: phaseError },
+    { data: costSections, error: costSectionError },
     { data: clientInvoices, error: invoiceError },
   ] = await Promise.all([
     supabase.from("projects").select("id").eq("id", projectId).maybeSingle(),
@@ -119,6 +121,10 @@ export async function POST(
       .is("deleted_at", null)
       .order("sort"),
     supabase
+      .from("cost_sections")
+      .select("id,forecast_phase_id")
+      .eq("project_id", projectId),
+    supabase
       .from("client_invoices")
       .select("*")
       .eq("project_id", projectId)
@@ -127,7 +133,7 @@ export async function POST(
   ]);
 
   if (projectError || !project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
-  const readError = profileError ?? estimateError ?? billingError ?? scheduleError ?? phaseError ?? invoiceError;
+  const readError = profileError ?? estimateError ?? billingError ?? scheduleError ?? phaseError ?? costSectionError ?? invoiceError;
   if (readError) return NextResponse.json({ error: readError.message }, { status: 500 });
   if (!profile) {
     return NextResponse.json(
@@ -144,10 +150,15 @@ export async function POST(
   }
 
   try {
+    const sectionDates = buildSectionForecastDates({
+      sections: costSections ?? [],
+      phases: schedulePhases ?? [],
+    });
     const estimateContributions = buildEstimatePlanContributions({
       projectId,
       estimateVersionId: estimate.id,
       snapshot: estimate.snapshot as FinanceEstimateSnapshot,
+      sectionDates,
       timingOverrides,
     });
     const clientClaimContributions = buildClientClaimContributions({
@@ -173,6 +184,7 @@ export async function POST(
         estimate_version_id: estimate.id,
         estimate_label: estimate.label,
         timing_override_count: Object.keys(timingOverrides).length,
+        schedule_link_count: Object.keys(sectionDates).length,
         client_claim_count: clientClaimContributions.length,
         opening_cash_source:
           body.opening_cash_minor === undefined ? "not_configured" : "request_preview",

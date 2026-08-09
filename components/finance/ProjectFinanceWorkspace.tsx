@@ -5,7 +5,6 @@ import { FinanceCashCurve } from "./FinanceCashCurve";
 import {
   adelaideToday,
   dollarsInputToMinor,
-  formatFinanceDate,
   formatMinorCurrency,
 } from "@/lib/finance/presentation";
 import type {
@@ -15,7 +14,7 @@ import type {
   ProjectStage,
 } from "@/types/finance";
 
-type WorkspaceTab = "setup" | "position" | "timing";
+type WorkspaceTab = "position" | "setup";
 
 type ApiError = { error?: string };
 
@@ -166,11 +165,10 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
   const [shadow, setShadow] = useState<FinanceShadowProjectionResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>("setup");
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("position");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [asOfDate, setAsOfDate] = useState(adelaideToday);
   const [openingCash, setOpeningCash] = useState("");
-  const [timingOverrides, setTimingOverrides] = useState<Record<string, string>>({});
   const [previewing, setPreviewing] = useState(false);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -183,7 +181,7 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
   }, [projectId]);
 
   const calculatePreview = useCallback(
-    async (profile: ProjectFinanceResponse | null, overrides: Record<string, string>) => {
+    async (profile: ProjectFinanceResponse | null) => {
       const openingMinor = dollarsInputToMinor(openingCash);
       if (openingCash.trim() && openingMinor === null) {
         throw new Error("Opening cash must be a dollar amount with no more than two decimal places.");
@@ -197,7 +195,6 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
           ...(profile?.finance.active_baseline?.estimate_version_id
             ? { estimate_version_id: profile.finance.active_baseline.estimate_version_id }
             : {}),
-          timing_overrides: overrides,
         }),
       });
       const body = (await response.json()) as FinanceShadowProjectionResponse & ApiError;
@@ -215,19 +212,19 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
     setError(null);
     try {
       const profile = await loadFinance();
-      await calculatePreview(profile, timingOverrides);
+      await calculatePreview(profile);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Could not load project finance");
     } finally {
       setLoading(false);
     }
-  }, [calculatePreview, loadFinance, timingOverrides]);
+  }, [calculatePreview, loadFinance]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadWorkspace(), 0);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Initial snapshot only; draft timing changes require explicit recalculation.
+  }, []); // Initial snapshot; Timeline links and dates are read from the server.
 
   const uniqueLines = useMemo(() => {
     const byKey = new Map<string, FinanceShadowProjectionResponse["projection"]["effectiveContributions"][number]>();
@@ -284,7 +281,7 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
     setPreviewing(true);
     setError(null);
     try {
-      await calculatePreview(finance, timingOverrides);
+      await calculatePreview(finance);
     } catch (previewError) {
       setError(previewError instanceof Error ? previewError.message : "Could not calculate preview");
     } finally {
@@ -353,9 +350,8 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
           </div>
           <div className="flex overflow-x-auto px-4 md:px-7" role="tablist" aria-label="Project finance views">
             {[
-              ["setup", "Project setup"],
               ["position", "Position"],
-              ["timing", `Forecast timing${projection?.unknownTimingMinor ? " · needs review" : ""}`],
+              ["setup", "Project setup"],
             ].map(([key, label]) => (
               <button
                 key={key}
@@ -383,32 +379,19 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
           }}
           onError={setError}
         />
-      ) : activeTab === "timing" ? (
-        <section className="border border-charcoal/20 bg-offwhite" aria-labelledby="timing-heading">
-          <div className="flex flex-col gap-3 border-b border-charcoal/20 p-5 md:flex-row md:items-end md:justify-between md:p-7">
-            <div><p className="label-caps">Forecast timing</p><h2 id="timing-heading" className="mt-2 font-display text-section text-nearblack">Place costs and claims in time</h2><p className="mt-2 max-w-2xl text-body text-charcoal/55">Client claim dates come from the contract and construction program. Add dates to any remaining cost lines to complete the cash forecast.</p></div>
-            <button type="button" onClick={() => void recalculate()} disabled={previewing} className="bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal disabled:opacity-40">{previewing ? "Calculating…" : "Recalculate preview"}</button>
-          </div>
-          <div className="divide-y divide-charcoal/10">
-            {uniqueLines.map((line) => (
-              <div key={line.contributionKey} className="grid gap-4 p-4 md:grid-cols-[minmax(0,1fr)_150px_160px] md:items-center md:px-6">
-                <div><p className="text-body text-nearblack">{line.description}</p><p className="mt-1 text-caption text-charcoal/45">{String(line.sourceTrace.section_name ?? line.sourceTrace.category ?? "Other")} · {line.confidence} confidence</p></div>
-                <p className="text-subhead md:text-right">{formatMinorCurrency(line.amountMinor)}</p>
-                {line.sourceTrace.source_type === "client_claim" ? (
-                  <div className="border border-charcoal/15 bg-cream px-3 py-2">
-                    <p className="text-body">{formatFinanceDate(line.effectiveDate)}</p>
-                    <p className="mt-0.5 text-caption text-charcoal/45">From contract + program</p>
-                  </div>
-                ) : (
-                  <label><span className="sr-only">Forecast date for {line.description}</span><input type="date" value={timingOverrides[line.contributionKey] ?? line.effectiveDate ?? ""} onChange={(event) => setTimingOverrides((current) => { const next = { ...current }; if (event.target.value) next[line.contributionKey] = event.target.value; else delete next[line.contributionKey]; return next; })} className="w-full border border-charcoal/20 bg-cream px-3 py-2 text-body" /></label>
-                )}
-              </div>
-            ))}
-            {uniqueLines.length === 0 && <p className="p-8 text-center text-body text-charcoal/50">No estimate forecast lines are available.</p>}
-          </div>
-        </section>
       ) : (
         <>
+          <section className="flex flex-col gap-4 border border-sand/50 bg-sand/10 p-5 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="label-caps">Pulled from your existing project</p>
+              <p className="mt-2 text-body text-charcoal/65">
+                Amounts come from the saved estimate. Projected expense dates come from the linked Timeline phase and move automatically with the construction schedule.
+              </p>
+            </div>
+            <a href={`/projects/${projectId}/timeline`} className="shrink-0 border border-nearblack px-4 py-2 text-center text-subhead text-nearblack hover:bg-nearblack hover:text-white">
+              Open Timeline
+            </a>
+          </section>
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {[
               ["Cost exposure", formatMinorCurrency(totalExposure), `${formatMinorCurrency(unknownOutflow)} cost timing unknown`],

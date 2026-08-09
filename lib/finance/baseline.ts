@@ -51,10 +51,12 @@ export function buildEstimatePlanContributions(input: {
   projectId: string;
   estimateVersionId: string;
   snapshot: FinanceEstimateSnapshot;
+  sectionDates?: Record<string, string>;
   timingOverrides?: Record<string, string>;
 }): FinanceContributionInput[] {
   const contributions: FinanceContributionInput[] = [];
   const knownKeys = new Set<string>();
+  const sectionDates = input.sectionDates ?? {};
   const overrides = input.timingOverrides ?? {};
 
   function add(contribution: FinanceContributionInput): void {
@@ -71,21 +73,27 @@ export function buildEstimatePlanContributions(input: {
       if (plannedMinor <= 0) continue;
       const contributionKey = `project:${input.projectId}|cost_line:${line.id}|scope:base`;
       const override = overrides[contributionKey] ?? null;
+      const scheduleDate = sectionDates[section.id] ?? null;
+      const plannedDate = override ?? scheduleDate;
       add({
         contributionKey,
         direction: "outflow",
         description: line.description?.trim() || "Estimate cost line",
         plannedMinor,
-        plannedDate: override,
+        plannedDate,
         baseEligible: true,
-        confidence: override ? "medium" : "unknown",
+        confidence: plannedDate ? "medium" : "unknown",
         sourceTrace: {
           source_type: "estimate_cost_line",
           source_record_id: line.id,
           source_version_id: input.estimateVersionId,
           section_id: section.id,
           section_name: section.name,
-          timing_source: override ? "shadow_override" : "unmapped",
+          timing_source: override
+            ? "shadow_override"
+            : scheduleDate
+              ? "construction_schedule"
+              : "unmapped",
         },
       });
     }

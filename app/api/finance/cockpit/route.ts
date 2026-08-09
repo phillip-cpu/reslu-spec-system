@@ -6,9 +6,14 @@ import {
 } from "@/lib/finance/feature-flags";
 import { hasFinanceCapability } from "@/lib/finance/permissions";
 import { calculateShadowProjection } from "@/lib/finance/projection";
+import {
+  buildEstimatePlanContributions,
+  type FinanceEstimateSnapshot,
+} from "@/lib/finance/baseline";
 import { buildCompanyClientClaimPortfolio } from "@/lib/finance/company-client-claims";
 import { generateRecurringContributions } from "@/lib/finance/recurrence";
 import { isIsoDate } from "@/lib/finance/readiness";
+import { buildSectionForecastDates } from "@/lib/finance/schedule-cost-timing";
 import { createClient } from "@/lib/supabase/server";
 import type {
   FinanceCockpitProject,
@@ -67,6 +72,19 @@ type ClaimProjectRow = {
   job_number: string | null;
 };
 
+type EstimateVersionRow = {
+  id: string;
+  project_id: string;
+  snapshot: FinanceEstimateSnapshot;
+  created_at: string;
+};
+
+type CostSectionForecastRow = {
+  id: string;
+  project_id: string;
+  forecast_phase_id: string | null;
+};
+
 function safeMinor(value: number | string, label: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0) {
@@ -75,17 +93,16 @@ function safeMinor(value: number | string, label: string): number {
   return parsed;
 }
 
-function effectiveExposure(line: ForecastLineRow): number {
-  const planned = safeMinor(line.planned_net_minor, `${line.id}.planned`);
-  const committed = safeMinor(line.committed_net_minor, `${line.id}.committed`);
-  const accrued = safeMinor(line.actual_accrued_net_minor, `${line.id}.accrued`);
-  return committed > 0 ? Math.max(committed, accrued) : Math.max(planned, accrued);
-}
-
 function toContribution(
   line: ForecastLineRow,
-  projectName: string
+  projectName: string,
+  sectionDates: Record<string, string>
 ): FinanceContributionInput {
+  const sectionId =
+    typeof line.dimension?.section_id === "string"
+      ? line.dimension.section_id
+      : null;
+  const scheduleDate = sectionId ? sectionDates[sectionId] ?? null : null;
   return {
     contributionKey: line.contribution_key,
     direction: line.direction,
@@ -97,12 +114,12 @@ function toContribution(
       `${line.id}.actual_accrued`
     ),
     actualPaidMinor: safeMinor(line.actual_paid_net_minor, `${line.id}.actual_paid`),
-    plannedDate: line.planned_date,
+    plannedDate: scheduleDate ?? line.planned_date,
     committedDate: line.committed_date,
     actualDueDate: line.actual_due_date,
     actualPaidDate: line.actual_paid_date,
     baseEligible: true,
-    confidence: line.confidence,
+    confidence: scheduleDate ? "medium" : line.confidence,
     sourceTrace: {
       project_id: line.project_id,
       project_name: projectName,
@@ -111,8 +128,25 @@ function toContribution(
       source_record_id: line.source_record_id,
       source_version_id: line.source_version_id,
       dimension: line.dimension ?? {},
+      timing_source: scheduleDate ? "construction_schedule" : "baseline",
     },
   };
+}
+
+function effectiveContributionExposure(contribution: FinanceContributionInput): number {
+  const planned = contribution.plannedMinor;
+  const committed = contribution.committedMinor ?? 0;
+  const accrued = contribution.actualAccruedMinor ?? 0;
+  return committed > 0 ? Math.max(committed, accrued) : Math.max(planned, accrued);
+}
+
+function hasContributionDate(contribution: FinanceContributionInput): boolean {
+  return Boolean(
+    contribution.plannedDate ||
+      contribution.committedDate ||
+      contribution.actualDueDate ||
+      contribution.actualPaidDate
+  );
 }
 
 /**
@@ -201,43 +235,73 @@ export async function GET(request: NextRequest) {
 
   const billingProfiles = (rawBillingProfiles ?? []) as ClientBillingProfile[];
   const claimProjectIds = [...new Set(billingProfiles.map((profile) => profile.project_id))];
+  const companyProjectIds = [...new Set([
+    ...profiles.map((profile) => profile.project_id),
+    ...claimProjectIds,
+  ])];
   let paymentSchedule: ClientPaymentScheduleItem[] = [];
   let schedulePhases: ClientSchedulePhase[] = [];
   let clientInvoices: ClientInvoice[] = [];
-  let claimProjects: ClaimProjectRow[] = [];
-  if (claimProjectIds.length > 0) {
-    const [scheduleResult, phaseResult, invoiceResult, projectResult] = await Promise.all([
+  let companyProjects: ClaimProjectRow[] = [];
+  let estimateVersions: EstimateVersionRow[] = [];
+  let costSections: CostSectionForecastRow[] = [];
+  if (companyProjectIds.length > 0) {
+    const [
+      scheduleResult,
+      phaseResult,
+      invoiceResult,
+      projectResult,
+      estimateResult,
+      costSectionResult,
+    ] = await Promise.all([
       supabase
         .from("client_payment_schedule")
         .select("*")
-        .in("project_id", claimProjectIds)
+        .in("project_id", companyProjectIds)
         .is("deleted_at", null)
         .order("sort"),
       supabase
         .from("schedule_phases")
         .select("id,project_id,name,start_date,end_date,sort")
-        .in("project_id", claimProjectIds)
+        .in("project_id", companyProjectIds)
         .is("deleted_at", null)
         .order("sort"),
       supabase
         .from("client_invoices")
         .select("*")
-        .in("project_id", claimProjectIds)
+        .in("project_id", companyProjectIds)
         .is("deleted_at", null)
         .neq("status", "void"),
       supabase
         .from("projects")
         .select("id,name,job_number")
-        .in("id", claimProjectIds),
+        .in("id", companyProjectIds),
+      supabase
+        .from("estimate_versions")
+        .select("id,project_id,snapshot,created_at")
+        .in("project_id", companyProjectIds)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("cost_sections")
+        .select("id,project_id,forecast_phase_id")
+        .in("project_id", companyProjectIds),
     ]);
-    const claimReadError = scheduleResult.error ?? phaseResult.error ?? invoiceResult.error ?? projectResult.error;
-    if (claimReadError) {
-      return NextResponse.json({ error: claimReadError.message }, { status: 500 });
+    const companyReadError =
+      scheduleResult.error ??
+      phaseResult.error ??
+      invoiceResult.error ??
+      projectResult.error ??
+      estimateResult.error ??
+      costSectionResult.error;
+    if (companyReadError) {
+      return NextResponse.json({ error: companyReadError.message }, { status: 500 });
     }
     paymentSchedule = (scheduleResult.data ?? []) as ClientPaymentScheduleItem[];
     schedulePhases = (phaseResult.data ?? []) as ClientSchedulePhase[];
     clientInvoices = (invoiceResult.data ?? []) as ClientInvoice[];
-    claimProjects = (projectResult.data ?? []) as ClaimProjectRow[];
+    companyProjects = (projectResult.data ?? []) as ClaimProjectRow[];
+    estimateVersions = (estimateResult.data ?? []) as unknown as EstimateVersionRow[];
+    costSections = (costSectionResult.data ?? []) as CostSectionForecastRow[];
   }
 
   try {
@@ -245,10 +309,59 @@ export async function GET(request: NextRequest) {
     for (const profile of profiles) {
       projectNameById.set(profile.project_id, profile.project?.name ?? "Project");
     }
-    for (const project of claimProjects) projectNameById.set(project.id, project.name);
-    const projectContributions = lines.map((line) =>
-      toContribution(line, projectNameById.get(line.project_id) ?? "Project")
+    for (const project of companyProjects) projectNameById.set(project.id, project.name);
+
+    const sectionDatesByProjectId = new Map<string, Record<string, string>>();
+    for (const projectId of companyProjectIds) {
+      sectionDatesByProjectId.set(
+        projectId,
+        buildSectionForecastDates({
+          sections: costSections.filter((section) => section.project_id === projectId),
+          phases: schedulePhases.filter((phase) => phase.project_id === projectId),
+        })
+      );
+    }
+
+    const baselineProjectIds = new Set(activeProfiles.map((profile) => profile.project_id));
+    const baselineContributions = lines.map((line) =>
+      toContribution(
+        line,
+        projectNameById.get(line.project_id) ?? "Project",
+        sectionDatesByProjectId.get(line.project_id) ?? {}
+      )
     );
+    const latestEstimateByProjectId = new Map<string, EstimateVersionRow>();
+    for (const estimate of estimateVersions) {
+      if (!latestEstimateByProjectId.has(estimate.project_id)) {
+        latestEstimateByProjectId.set(estimate.project_id, estimate);
+      }
+    }
+    const connectedEstimateContributions: FinanceContributionInput[] = [];
+    for (const projectId of companyProjectIds) {
+      if (baselineProjectIds.has(projectId)) continue;
+      const estimate = latestEstimateByProjectId.get(projectId);
+      if (!estimate) continue;
+      const projectName = projectNameById.get(projectId) ?? "Project";
+      for (const contribution of buildEstimatePlanContributions({
+        projectId,
+        estimateVersionId: estimate.id,
+        snapshot: estimate.snapshot,
+        sectionDates: sectionDatesByProjectId.get(projectId) ?? {},
+      })) {
+        connectedEstimateContributions.push({
+          ...contribution,
+          sourceTrace: {
+            ...(contribution.sourceTrace ?? {}),
+            project_id: projectId,
+            project_name: projectName,
+          },
+        });
+      }
+    }
+    const projectContributions = [
+      ...baselineContributions,
+      ...connectedEstimateContributions,
+    ];
     const recurringCommitments = ((rawRecurring ?? []) as Record<string, unknown>[]).map(
       (row) => ({ ...row, amount_minor: safeMinor(row.amount_minor as number | string, `${String(row.id)}.amount`) }) as unknown as FinanceRecurringCommitment
     );
@@ -278,48 +391,46 @@ export async function GET(request: NextRequest) {
         })
       : null;
 
-    const linesByProject = new Map<string, ForecastLineRow[]>();
-    for (const line of lines) {
-      const existing = linesByProject.get(line.project_id) ?? [];
-      existing.push(line);
-      linesByProject.set(line.project_id, existing);
+    const costContributionsByProject = new Map<string, FinanceContributionInput[]>();
+    for (const contribution of projectContributions) {
+      const projectId =
+        typeof contribution.sourceTrace?.project_id === "string"
+          ? contribution.sourceTrace.project_id
+          : null;
+      if (!projectId || contribution.direction !== "outflow") continue;
+      const existing = costContributionsByProject.get(projectId) ?? [];
+      existing.push(contribution);
+      costContributionsByProject.set(projectId, existing);
     }
     const profileByProjectId = new Map(profiles.map((profile) => [profile.project_id, profile]));
-    const claimProjectById = new Map(claimProjects.map((project) => [project.id, project]));
+    const companyProjectById = new Map(companyProjects.map((project) => [project.id, project]));
     const claimSummaryByProjectId = new Map(
       clientClaimPortfolio.projects.map((project) => [project.projectId, project])
     );
-    const companyProjectIds = [...new Set([
-      ...profiles.map((profile) => profile.project_id),
-      ...claimProjectIds,
-    ])];
     const projects: FinanceCockpitProject[] = companyProjectIds.map((projectId) => {
       const profile = profileByProjectId.get(projectId);
-      const claimProject = claimProjectById.get(projectId);
+      const companyProject = companyProjectById.get(projectId);
       const claimSummary = claimSummaryByProjectId.get(projectId);
-      const projectLines = linesByProject.get(projectId) ?? [];
-      const exposureMinor = projectLines.reduce(
-        (total, line) => total + effectiveExposure(line),
+      const projectCosts = costContributionsByProject.get(projectId) ?? [];
+      const exposureMinor = projectCosts.reduce(
+        (total, contribution) => total + effectiveContributionExposure(contribution),
         0
       );
-      const unknownTimingMinor = projectLines
-        .filter(
-          (line) =>
-            !line.planned_date &&
-            !line.committed_date &&
-            !line.actual_due_date &&
-            !line.actual_paid_date
-        )
-        .reduce((total, line) => total + effectiveExposure(line), 0);
+      const unknownTimingMinor = projectCosts
+        .filter((contribution) => !hasContributionDate(contribution))
+        .reduce(
+          (total, contribution) => total + effectiveContributionExposure(contribution),
+          0
+        );
       return {
         project_id: projectId,
-        name: profile?.project?.name ?? claimProject?.name ?? "Unnamed project",
-        job_number: profile?.project?.job_number ?? claimProject?.job_number ?? null,
+        name: profile?.project?.name ?? companyProject?.name ?? "Unnamed project",
+        job_number: profile?.project?.job_number ?? companyProject?.job_number ?? null,
         finance_state: profile?.finance_state ?? "candidate",
         baseline_id: profile?.active_baseline_id ?? null,
         baseline_effective_date: profile?.active_baseline?.effective_date ?? null,
         exposure_minor: exposureMinor,
-        forecast_line_count: projectLines.length,
+        forecast_line_count: projectCosts.length,
         unknown_timing_minor: unknownTimingMinor,
         client_claim_count: claimSummary?.claimCount ?? 0,
         client_inflow_minor: claimSummary?.contractedMinor ?? 0,
