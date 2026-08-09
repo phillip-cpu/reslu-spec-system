@@ -1289,7 +1289,7 @@ const TOOLS = [
   {
     name: "add_brain_note",
     description:
-      "Store a durable, source-attributed business learning in Second Brain. Use this for reusable decisions, patterns, preferences or lessons—not transient reminders or unsupported guesses. Always include source/source_ref when available and an honest confidence score. The note becomes searchable after the next reindex (or call index_rebuild with entity_type='memory'). This is an internal knowledge write only; it never changes a client/project/financial record.",
+      "Store or refresh a durable, source-attributed business learning in Second Brain. Use this for reusable decisions, research, reports, patterns, preferences or lessons—not transient reminders or unsupported guesses. A repeated source + source_ref updates the existing publication instead of duplicating it. Agent-owned publications must use the agent id as source (for example source='marco') and a stable reference such as marco://workspace/memory/2026-08-09.md. Always include source/source_ref when available and an honest confidence score. The note becomes searchable after the next reindex (or call index_rebuild with entity_type='memory'). This is an internal knowledge write only; it never changes a client/project/financial record.",
     inputSchema: {
       type: "object",
       properties: {

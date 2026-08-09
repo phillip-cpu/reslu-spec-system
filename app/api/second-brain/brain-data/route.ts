@@ -5,6 +5,7 @@ import {
   buildVisibleBrainLinks,
   type BrainLinkCandidate,
 } from "@/lib/second-brain/brain-graph";
+import { isMarcoBrainNote } from "@/lib/second-brain/brain-notes";
 import vercelConfig from "../../../../vercel.json";
 
 export const runtime = "nodejs";
@@ -57,7 +58,7 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const [{ count: itemCount }, { count: projectCount }, { count: leadCount }, { count: diaryCount }, { count: sowCount }, { count: emailCount }, { count: memoryCount }] =
+  const [{ count: itemCount }, { count: projectCount }, { count: leadCount }, { count: diaryCount }, { count: sowCount }, { count: emailCount }, { count: memoryCount }, { count: marketingCount }] =
     await Promise.all([
       supabase.from("items").select("id", { count: "exact", head: true }).is("deleted_at", null),
       supabase.from("projects").select("id", { count: "exact", head: true }).is("deleted_at", null),
@@ -65,7 +66,8 @@ export async function GET() {
       supabase.from("portal_updates").select("id", { count: "exact", head: true }).is("deleted_at", null),
       supabase.from("sow_documents").select("id", { count: "exact", head: true }).is("deleted_at", null),
       supabase.from("emails").select("id", { count: "exact", head: true }),
-      supabase.from("brain_notes").select("id", { count: "exact", head: true }),
+      supabase.from("brain_notes").select("id", { count: "exact", head: true }).neq("source", "marco"),
+      supabase.from("brain_notes").select("id", { count: "exact", head: true }).eq("source", "marco"),
     ]);
 
   const { data: openProposals } = await supabase.from("change_proposals").select("entity_id").eq("status", "pending");
@@ -87,7 +89,7 @@ export async function GET() {
     supabase.from("portal_updates").select("id,title,project_id,created_at").is("deleted_at", null),
     supabase.from("sow_documents").select("id,revision_label,project_id,created_at").is("deleted_at", null),
     supabase.from("emails").select("id,subject,received_at,status,matched_project_id").order("received_at", { ascending: false }).limit(500),
-    supabase.from("brain_notes").select("id,title,created_at").order("created_at", { ascending: false }).limit(500),
+    supabase.from("brain_notes").select("id,title,source,created_at,updated_at").order("updated_at", { ascending: false }).limit(500),
     supabase
       .from("email_entity_matches")
       .select("email_id,entity_type,entity_id,status")
@@ -144,12 +146,20 @@ export async function GET() {
     .filter((e) => isRecent(e.received_at))
     .map((e) => ({ id: e.id, name: e.subject ?? "(no subject)", flagged: false, recentAt: e.received_at, recordUrl: null }));
 
-  const memoryRecords: BrainRecord[] = (memoryNotes ?? [])
-    .filter((note) => isRecent(note.created_at))
-    .map((note) => ({ id: note.id, name: note.title, flagged: false, recentAt: note.created_at, recordUrl: null }));
+  const noteRecord = (note: (typeof memoryNotes extends (infer T)[] | null ? T : never)): BrainRecord => ({
+    id: note.id,
+    name: note.title,
+    flagged: false,
+    recentAt: note.updated_at ?? note.created_at,
+    recordUrl: `/brain/notes/${note.id}`,
+  });
+  const recentNotes = (memoryNotes ?? []).filter((note) => isRecent(note.updated_at ?? note.created_at));
+  const marketingRecords: BrainRecord[] = recentNotes.filter(isMarcoBrainNote).map(noteRecord);
+  const memoryRecords: BrainRecord[] = recentNotes.filter((note) => !isMarcoBrainNote(note)).map(noteRecord);
 
   const rawClusters: BrainCluster[] = [
     { entityType: "email", label: "EMAILS", totalCount: emailCount ?? 0, records: emailRecords },
+    { entityType: "marketing", label: "MARKETING", totalCount: marketingCount ?? 0, records: marketingRecords },
     { entityType: "memory", label: "MEMORY", totalCount: memoryCount ?? 0, records: memoryRecords },
     { entityType: "item", label: "ITEMS", totalCount: itemCount ?? 0, records: itemRecords },
     { entityType: "project", label: "JOBS", totalCount: projectCount ?? 0, records: projectRecords },
