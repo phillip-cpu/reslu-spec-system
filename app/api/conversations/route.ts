@@ -50,13 +50,16 @@ export async function GET() {
   const [{ data: ownLinks, error: ownError }, { data: profiles }, { data: agents }] = await Promise.all([
     supabase.from("conversation_participants").select("conversation_id").eq("profile_id", user.id),
     supabase.from("profiles").select("id,full_name,avatar_url").order("full_name"),
-    supabase.from("conversation_agents").select("id,slug,display_name,role_label,avatar_url").eq("active", true).order("display_name"),
+    supabase.from("conversation_agents").select("id,slug,display_name,role_label,avatar_url,auth_profile_id").eq("active", true).order("display_name"),
   ]);
   if (ownError) return NextResponse.json({ error: ownError.message }, { status: 500 });
 
   const conversationIds = (ownLinks ?? []).map((link) => link.conversation_id);
+  const agentAuthProfileIds = new Set(
+    (agents ?? []).map((agent) => agent.auth_profile_id).filter((id): id is string => Boolean(id))
+  );
   const people: ConversationParticipant[] = [
-    ...(profiles ?? []).map((profile) => ({
+    ...(profiles ?? []).filter((profile) => !agentAuthProfileIds.has(profile.id)).map((profile) => ({
       id: profile.id,
       type: "human" as const,
       display_name: profile.full_name,
