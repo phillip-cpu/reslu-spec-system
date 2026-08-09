@@ -240,10 +240,14 @@ export function ConversationWorkspace() {
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not send message");
+      const queueWarning = result.queue_error
+        ? `Message saved, but ${targetAgent ? targetAgent[0].toUpperCase() + targetAgent.slice(1) : "the agent"} could not be notified. Please try again shortly.`
+        : null;
       setDraft("");
       setInterim("");
       await loadMessages(selectedId);
       await loadConversations();
+      if (queueWarning) setError(queueWarning);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not send message");
       if (source === "voice") setCallState("listening");
