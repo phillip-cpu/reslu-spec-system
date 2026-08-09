@@ -1,0 +1,30 @@
+# RESLU conversations deployment
+
+Migration `088_staff_conversations.sql` adds the canonical staff/agent conversation model. Apply it before deploying the app.
+
+The web app provides durable chat history, staff and agent group membership, voice transcripts, call records, and a browser audio-first call presentation. Human-to-human text works entirely through Supabase. Aria and Marco replies use their existing OpenClaw runtimes through the Mac mini bridge.
+
+## Mac mini bridge
+
+1. Pull the deployed app repository on the mini.
+2. Confirm `.env.local` contains `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
+3. Confirm `openclaw agent --agent main` reaches Aria and `openclaw agent --agent marco` reaches Marco. Override either mapping with `RESLU_ARIA_AGENT_ID` or `RESLU_MARCO_AGENT_ID`.
+4. Copy `scripts/ai.reslu.conversation-bridge.plist` to `~/Library/LaunchAgents/`, adjusting `/Users/vale/reslu-spec-system` if the checkout lives elsewhere.
+5. Bootstrap and inspect it:
+
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.reslu.conversation-bridge.plist
+launchctl kickstart -k gui/$(id -u)/ai.reslu.conversation-bridge
+tail -f ~/.openclaw/workspace/vault/agent-openclaw/daily/conversation-bridge.log
+```
+
+The bridge polls only the dedicated lightweight agent job table. It sends the existing runtime the recent canonical thread history, then stores the final response in that same thread. A newer spoken turn cancels publication of stale output. Cancellation never claims to reverse an external side effect that already completed.
+
+## Current release boundary
+
+- Durable one-to-one and mixed group text conversations.
+- Aria and Marco agent transport through existing runtimes.
+- Browser microphone transcription, speech output, interruption, mute, repeat, voice hang-up, and call records.
+- No WhatsApp dependency.
+
+Aria Meeting Mode’s staged minutes, destination confidence and explicit filing approval should be built next on `conversation_calls.presentation = 'meeting'`; do not publish minutes directly from raw capture.
