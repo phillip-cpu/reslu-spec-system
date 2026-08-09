@@ -211,7 +211,12 @@ def openclaw_agent_id(slug: str) -> str:
     return os.environ.get(f"RESLU_{slug.upper()}_AGENT_ID", "main" if slug == "aria" else slug)
 
 
-def invoke_agent(agent: dict, history: str) -> str:
+def openclaw_session_key(conversation_id: str) -> str:
+    """Keep every canonical RESLU thread in its own durable agent session."""
+    return f"reslu-conversation-{conversation_id}"
+
+
+def invoke_agent(agent: dict, history: str, conversation_id: str) -> str:
     prompt = (
         "[RESLU conversation]\n"
         f"You are {agent['display_name']}, {agent['role_label']}, replying inside the canonical RESLU staff chat. "
@@ -226,6 +231,7 @@ def invoke_agent(agent: dict, history: str) -> str:
     result = subprocess.run(
         [
             "openclaw", "agent", "--agent", openclaw_agent_id(agent["slug"]),
+            "--session-key", openclaw_session_key(conversation_id),
             "--message", prompt, "--timeout", "180", "--json",
         ],
         capture_output=True,
@@ -252,7 +258,7 @@ def job_is_processing(rest: SupabaseRest, job_id: str) -> bool:
 def process_job(rest: SupabaseRest, job: dict) -> None:
     agent = agent_identity(rest, job["agent_id"])
     history = conversation_history(rest, job["conversation_id"])
-    reply = invoke_agent(agent, history)
+    reply = invoke_agent(agent, history, job["conversation_id"])
     # A newer voice turn can cancel this job while the agent is running.
     # Discard late output; completed external side effects remain real.
     if not job_is_processing(rest, job["id"]):

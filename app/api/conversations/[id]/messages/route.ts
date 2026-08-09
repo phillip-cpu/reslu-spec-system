@@ -1,45 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { messageAuthor } from "@/lib/conversations";
-import type { AgentSlug, ConversationMessage, ConversationParticipant } from "@/types/conversations";
+import { conversationParticipants } from "@/lib/conversation-access";
+import type { AgentSlug, ConversationMessage } from "@/types/conversations";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type Context = { params: Promise<{ id: string }> };
-
-async function conversationParticipants(supabase: Awaited<ReturnType<typeof createClient>>, conversationId: string, userId: string) {
-  const { data, error } = await supabase
-    .from("conversation_participants")
-    .select("profile_id,agent_id,profile:profiles(id,full_name,avatar_url),agent:conversation_agents(id,slug,display_name,role_label,avatar_url)")
-    .eq("conversation_id", conversationId);
-  if (error) return { error, participants: [] as ConversationParticipant[] };
-  const participants: ConversationParticipant[] = [];
-  for (const raw of data ?? []) {
-    const row = raw as unknown as {
-      profile_id: string | null;
-      agent_id: string | null;
-      profile: { id: string; full_name: string; avatar_url: string | null } | null;
-      agent: { id: string; slug: AgentSlug; display_name: string; role_label: string; avatar_url: string | null } | null;
-    };
-    if (row.profile) participants.push({
-      id: row.profile.id,
-      type: "human",
-      display_name: row.profile.full_name,
-      avatar_url: row.profile.avatar_url,
-      is_self: row.profile.id === userId,
-    });
-    if (row.agent) participants.push({
-      id: row.agent.id,
-      type: "agent",
-      display_name: row.agent.display_name,
-      avatar_url: row.agent.avatar_url,
-      agent_slug: row.agent.slug,
-      role_label: row.agent.role_label,
-    });
-  }
-  return { error: null, participants };
-}
 
 export async function GET(request: NextRequest, context: Context) {
   const { id } = await context.params;
