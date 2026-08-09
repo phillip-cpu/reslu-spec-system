@@ -94,8 +94,8 @@ function NewConversation({ people, onCreated, onClose }: {
   }
 
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center bg-nearblack/60 p-4">
-      <form onSubmit={createConversation} className="w-full max-w-lg border border-[#d4cbbd] bg-[#f5f1e8] p-6 shadow-2xl">
+    <div className="absolute inset-0 z-20 flex items-center justify-center overflow-y-auto bg-nearblack/60 p-3 md:p-4">
+      <form onSubmit={createConversation} className="max-h-full w-full max-w-lg overflow-y-auto border border-[#d4cbbd] bg-[#f5f1e8] p-4 shadow-2xl md:p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="label-caps">New conversation</p>
@@ -157,6 +157,7 @@ export function ConversationWorkspace() {
   const [callError, setCallError] = useState<string | null>(null);
   const [lastSpoken, setLastSpoken] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const workspaceRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const recognitionPausedRef = useRef(false);
   const callIdRef = useRef<string | null>(null);
@@ -246,6 +247,24 @@ export function ConversationWorkspace() {
   }, [selectedId, loadMessages, callId]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
   useEffect(() => { mutedRef.current = muted; }, [muted]);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const updateViewport = () => {
+      const element = workspaceRef.current;
+      if (!element) return;
+      element.style.setProperty("--conversation-vh", `${viewport?.height ?? window.innerHeight}px`);
+      element.style.setProperty("--conversation-vtop", `${viewport?.offsetTop ?? 0}px`);
+    };
+    updateViewport();
+    viewport?.addEventListener("resize", updateViewport);
+    viewport?.addEventListener("scroll", updateViewport);
+    window.addEventListener("resize", updateViewport);
+    return () => {
+      viewport?.removeEventListener("resize", updateViewport);
+      viewport?.removeEventListener("scroll", updateViewport);
+      window.removeEventListener("resize", updateViewport);
+    };
+  }, []);
 
   const sendMessage = useCallback(async (body: string, source: "text" | "voice" = "text", targetAgent?: AgentSlug) => {
     if (!selectedId || !body.trim()) return;
@@ -416,9 +435,12 @@ export function ConversationWorkspace() {
   if (loading) return <div className="flex h-[70vh] items-center justify-center text-body text-charcoal/50">Loading conversations…</div>;
 
   return (
-    <div className="relative flex h-[calc(100vh-7.5rem)] min-h-[560px] overflow-hidden border border-[#d4cbbd] bg-[#f5f1e8]">
+    <div
+      ref={workspaceRef}
+      className="relative flex h-[calc(var(--conversation-vh,100dvh)-env(safe-area-inset-top)-env(safe-area-inset-bottom))] min-h-0 min-w-0 overflow-hidden border border-[#d4cbbd] bg-[#f5f1e8] md:h-[calc(100vh-7.5rem)] md:min-h-[560px]"
+    >
       <aside className={clsx("w-full shrink-0 border-r border-[#d4cbbd] bg-[#ede8de] md:w-80", selectedId && "hidden md:block")}>
-        <div className="flex items-center justify-between border-b border-[#d4cbbd] p-4">
+        <div className="flex items-center justify-between border-b border-[#d4cbbd] py-3 pl-20 pr-3 md:p-4">
           <p className="label-caps">Conversations</p>
           <button onClick={() => setNewOpen(true)} className="bg-nearblack px-3 py-2 text-caption text-white">New chat</button>
         </div>
@@ -445,15 +467,15 @@ export function ConversationWorkspace() {
       <section className={clsx("min-w-0 flex-1 flex-col", selectedId ? "flex" : "hidden md:flex")}>
         {selectedConversation ? (
           <>
-            <header className="flex min-h-20 items-center gap-3 border-b border-[#d4cbbd] bg-[#f5f1e8] px-4 py-3">
+            <header className="flex min-h-16 items-center gap-2 border-b border-[#d4cbbd] bg-[#f5f1e8] py-2 pl-20 pr-3 md:min-h-20 md:gap-3 md:px-4 md:py-3">
               <button onClick={() => setSelectedId(null)} className="mr-1 text-charcoal/60 md:hidden" aria-label="Back to conversations">←</button>
               <div className="min-w-0 flex-1">
                 <h2 className="truncate font-display text-subhead text-nearblack">{selectedConversation.display_title}</h2>
                 <p className="mt-1 truncate text-caption text-charcoal/50">{participants.map((participant) => participant.display_name).join(", ")}</p>
               </div>
               {callAgent && (
-                <button onClick={() => void startCall()} className="flex items-center gap-2 border border-nearblack px-4 py-2 text-subhead text-nearblack hover:bg-nearblack hover:text-white">
-                  <span aria-hidden>●</span> Call {callAgent.display_name}
+                <button onClick={() => void startCall()} aria-label={`Call ${callAgent.display_name}`} className="flex shrink-0 items-center gap-2 border border-nearblack px-3 py-2 text-subhead text-nearblack hover:bg-nearblack hover:text-white md:px-4">
+                  <span aria-hidden>●</span> <span className="hidden sm:inline">Call {callAgent.display_name}</span>
                 </button>
               )}
             </header>
@@ -473,7 +495,7 @@ export function ConversationWorkspace() {
                   return (
                     <div key={message.id} className={clsx("flex gap-3", own && "flex-row-reverse")}>
                       <Avatar participant={message.author} />
-                      <div className={clsx("max-w-[78%] border px-4 py-3", own ? "border-nearblack bg-nearblack text-white" : "border-[#d4cbbd] bg-[#f5f1e8] text-charcoal")}>
+                      <div className={clsx("min-w-0 max-w-[78%] border px-3 py-3 md:px-4", own ? "border-nearblack bg-nearblack text-white" : "border-[#d4cbbd] bg-[#f5f1e8] text-charcoal")}>
                         <div className="flex items-baseline gap-2">
                           <span className={clsx("text-caption font-semibold", own ? "text-white" : "text-nearblack")}>{message.author.display_name}</span>
                           <span className={clsx("text-[10px]", own ? "text-white/45" : "text-charcoal/40")}>{timeLabel(message.created_at)}</span>
@@ -488,10 +510,10 @@ export function ConversationWorkspace() {
               </div>
             </div>
 
-            <form onSubmit={submitDraft} className="border-t border-[#d4cbbd] bg-[#f5f1e8] p-4">
+            <form onSubmit={submitDraft} className="shrink-0 border-t border-[#d4cbbd] bg-[#f5f1e8] p-3 md:p-4">
               <div className="mx-auto flex max-w-3xl items-end gap-2">
-                <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (draft.trim()) void sendMessage(draft); } }} rows={1} placeholder={participants.some((p) => p.type === "agent") && participants.length > 2 ? "Message the group — use @Aria or @Marco to ask an agent" : "Write a message…"} className="max-h-36 min-h-12 flex-1 resize-none border border-[#cfc6b8] bg-white px-4 py-3 text-body outline-none focus:border-nearblack" />
-                <button disabled={sending || !draft.trim()} className="h-12 bg-nearblack px-5 text-subhead text-white disabled:opacity-30">Send</button>
+                <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (draft.trim()) void sendMessage(draft); } }} rows={1} placeholder={participants.some((p) => p.type === "agent") && participants.length > 2 ? "Message the group — use @Aria or @Marco to ask an agent" : "Write a message…"} className="max-h-36 min-h-12 min-w-0 flex-1 resize-none border border-[#cfc6b8] bg-white px-3 py-3 text-body outline-none focus:border-nearblack md:px-4" />
+                <button disabled={sending || !draft.trim()} className="h-12 shrink-0 bg-nearblack px-4 text-subhead text-white disabled:opacity-30 md:px-5">Send</button>
               </div>
               {error && <p className="mx-auto mt-2 max-w-3xl text-caption text-red-700">{error}</p>}
             </form>
@@ -504,27 +526,27 @@ export function ConversationWorkspace() {
       {newOpen && <NewConversation people={data.people} onClose={() => setNewOpen(false)} onCreated={(id) => { setNewOpen(false); setSelectedId(id); void loadConversations(); }} />}
 
       {(callOpening || callId || callError) && callAgent && (
-        <div className="fixed inset-0 z-[70] flex flex-col bg-nearblack text-white">
-          <div className="flex items-center justify-between border-b border-white/10 px-6 py-5">
+        <div className="fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[70] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col overflow-hidden bg-nearblack text-white">
+          <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 pb-4 pt-[calc(env(safe-area-inset-top)+1rem)] md:px-6 md:py-5">
             <div>
               <p className="label-caps text-sand">RESLU call</p>
               <p className="mt-1 text-caption text-white/45">{selectedConversation?.display_title}</p>
             </div>
             <button onClick={() => void endCall()} className="border border-white/30 px-4 py-2 text-caption">Close</button>
           </div>
-          <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-4 py-4 text-center md:px-6">
             <div className={clsx("relative", callState === "speaking" && "animate-pulse")}>
               <Avatar participant={callAgent} large />
               <span className={clsx("absolute -bottom-2 -right-2 h-5 w-5 border-4 border-nearblack", callState === "reconnecting" ? "bg-[#C9971E]" : "bg-[#5f895f]")} />
             </div>
-            <h2 className="mt-8 font-display text-[42px] leading-none">{callAgent.display_name}</h2>
+            <h2 className="mt-5 font-display text-[36px] leading-none md:mt-8 md:text-[42px]">{callAgent.display_name}</h2>
             <p className="mt-3 text-subhead uppercase tracking-[0.24em] text-sand">{callError ?? callState}</p>
-            <p className="mt-8 min-h-16 max-w-xl text-body text-white/60">{interim ? `“${interim}”` : callState === "listening" ? "I’m listening." : callState === "thinking" ? `${callAgent.display_name} is checking that…` : ""}</p>
+            <p className="mt-5 min-h-12 max-w-xl text-body text-white/60 md:mt-8 md:min-h-16">{interim ? `“${interim}”` : callState === "listening" ? "I’m listening." : callState === "thinking" ? `${callAgent.display_name} is checking that…` : ""}</p>
           </div>
-          <div className="grid grid-cols-3 border-t border-white/10">
-            <button onClick={toggleMute} className="border-r border-white/10 px-3 py-6 text-subhead"><span className="block text-xl">{muted ? "×" : "●"}</span><span className="mt-2 block text-caption text-white/55">{muted ? "Unmute" : "Mute"}</span></button>
-            <button onClick={() => lastSpoken && speak(lastSpoken)} disabled={!lastSpoken} className="border-r border-white/10 px-3 py-6 text-subhead disabled:opacity-30"><span className="block text-xl">↻</span><span className="mt-2 block text-caption text-white/55">Repeat</span></button>
-            <button onClick={() => void endCall()} className="bg-[#8e2f2f] px-3 py-6 text-subhead"><span className="block text-xl">■</span><span className="mt-2 block text-caption text-white/70">End call</span></button>
+          <div className="grid shrink-0 grid-cols-3 border-t border-white/10 pb-[env(safe-area-inset-bottom)]">
+            <button onClick={toggleMute} className="border-r border-white/10 px-3 py-4 text-subhead md:py-6"><span className="block text-xl">{muted ? "×" : "●"}</span><span className="mt-2 block text-caption text-white/55">{muted ? "Unmute" : "Mute"}</span></button>
+            <button onClick={() => lastSpoken && speak(lastSpoken)} disabled={!lastSpoken} className="border-r border-white/10 px-3 py-4 text-subhead disabled:opacity-30 md:py-6"><span className="block text-xl">↻</span><span className="mt-2 block text-caption text-white/55">Repeat</span></button>
+            <button onClick={() => void endCall()} className="bg-[#8e2f2f] px-3 py-4 text-subhead md:py-6"><span className="block text-xl">■</span><span className="mt-2 block text-caption text-white/70">End call</span></button>
           </div>
         </div>
       )}

@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   isFatalSpeechRecognitionError,
   speechRecognitionErrorMessage,
-} from "./conversation-voice";
+} from "./conversation-voice.ts";
 
 test("permission and unavailable-service errors stop the reconnect loop", () => {
   assert.equal(isFatalSpeechRecognitionError("not-allowed"), true);
