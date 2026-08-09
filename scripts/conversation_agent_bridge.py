@@ -22,6 +22,16 @@ import urllib.request
 POLL_SECONDS = 1.0
 HISTORY_LIMIT = 80
 AGENT_SLUGS = ("aria", "marco")
+OPENCLAW_CONTROL_VALUES = {
+    "completed",
+    "end_turn",
+    "error",
+    "ok",
+    "stop",
+    "success",
+    "timeout",
+    "tool_use",
+}
 
 
 def load_env_file(path: Path) -> None:
@@ -77,29 +87,84 @@ class SupabaseRest:
         return result[0]
 
 
-def find_reply_text(value: object, prompt: str) -> str | None:
-    """Extract OpenClaw's final text across known --json output shapes."""
-    if isinstance(value, str):
-        candidate = value.strip()
-        return candidate if candidate and candidate != prompt and len(candidate) < 20000 else None
-    if isinstance(value, list):
-        for item in reversed(value):
-            found = find_reply_text(item, prompt)
-            if found:
-                return found
+def reply_candidate(value: object, prompt: str) -> str | None:
+    """Validate text from a field that OpenClaw documents as response content."""
+    if not isinstance(value, str):
         return None
+    candidate = value.strip()
+    if (
+        not candidate
+        or candidate == prompt
+        or len(candidate) >= 20000
+        or candidate.casefold() in OPENCLAW_CONTROL_VALUES
+    ):
+        return None
+    return candidate
+
+
+def payload_reply(payloads: object, prompt: str) -> str | None:
+    """Combine user-visible text payloads without inspecting metadata values."""
+    if not isinstance(payloads, list):
+        return None
+    replies = []
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        reply = reply_candidate(payload.get("text"), prompt)
+        if reply:
+            replies.append(reply)
+    return "\n\n".join(replies) or None
+
+
+def message_reply(message: object, prompt: str) -> str | None:
+    """Extract text from the legacy structured message shape."""
+    reply = reply_candidate(message, prompt)
+    if reply:
+        return reply
+    if not isinstance(message, dict):
+        return None
+    reply = reply_candidate(message.get("text"), prompt)
+    if reply:
+        return reply
+    content = message.get("content")
+    if isinstance(content, str):
+        return reply_candidate(content, prompt)
+    if not isinstance(content, list):
+        return None
+    replies = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") in (None, "text", "output_text"):
+            reply = reply_candidate(block.get("text"), prompt)
+            if reply:
+                replies.append(reply)
+    return "\n\n".join(replies) or None
+
+
+def envelope_reply(envelope: object, prompt: str) -> str | None:
+    """Read only known reply fields from one OpenClaw JSON envelope."""
+    if not isinstance(envelope, dict):
+        return None
+    reply = reply_candidate(envelope.get("final"), prompt)
+    if reply:
+        return reply
+    reply = payload_reply(envelope.get("payloads"), prompt)
+    if reply:
+        return reply
+    for key in ("response", "reply", "output"):
+        reply = reply_candidate(envelope.get(key), prompt)
+        if reply:
+            return reply
+    return message_reply(envelope.get("message"), prompt)
+
+
+def find_reply_text(value: object, prompt: str) -> str | None:
+    """Extract reply text without mistaking stop reasons or other metadata for it."""
     if not isinstance(value, dict):
         return None
-    priority = ("final", "response", "reply", "text", "content", "message", "output")
-    for key in priority:
-        if key in value:
-            found = find_reply_text(value[key], prompt)
-            if found:
-                return found
-    for nested in reversed(list(value.values())):
-        found = find_reply_text(nested, prompt)
-        if found:
-            return found
+    for envelope in (value, value.get("result"), value.get("data")):
+        reply = envelope_reply(envelope, prompt)
+        if reply:
+            return reply
     return None
 
 
