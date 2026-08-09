@@ -49,7 +49,7 @@
       "schedule": "12-59/15 * * * *"
     },
     {
-      "path": "/api/brief/generate?send=1",
+      "path": "/api/brief/generate",
       "schedule": "30 21 * * *"
     },
     {
