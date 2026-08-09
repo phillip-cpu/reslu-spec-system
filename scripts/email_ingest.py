@@ -71,6 +71,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -98,11 +99,14 @@ ASSET_BUCKET = "assets"  # mirrors lib/storage.ts
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
 DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token"
 HTTP_TIMEOUT = 30
+MAX_BODY_SOURCE_CHARS = 500_000
+BODY_PROCESS_TIMEOUT_SECONDS = 5
 
 EXPECTED_MAILBOXES = (
     ("aria@reslu.com.au", "aria-gmail/token.json", "ARIA_GMAIL_TOKEN_FILE"),
     ("phillip@reslu.com.au", "phillip-gmail/token.json", "PHILLIP_GMAIL_TOKEN_FILE"),
     ("tenille@reslu.com.au", "tenille-gmail/token.json", "TENILLE_GMAIL_TOKEN_FILE"),
+    ("marco@reslu.com.au", "marco-gmail/token.json", "MARCO_GMAIL_TOKEN_FILE"),
 )
 
 
@@ -197,14 +201,51 @@ def _decode(part: Message) -> str:
         return payload.decode("utf-8", errors="replace")
 
 
+class BodyProcessingTimeout(RuntimeError):
+    """Raised when a third-party body parser exceeds its per-email budget."""
+
+
+def _run_with_body_timeout(operation):
+    """Run one CPU-bound body operation with a macOS-safe wall-clock bound."""
+    if not hasattr(signal, "SIGALRM") or not hasattr(signal, "setitimer"):
+        return operation()
+
+    def timeout_handler(_signum, _frame):
+        raise BodyProcessingTimeout(
+            f"email body processing exceeded {BODY_PROCESS_TIMEOUT_SECONDS}s"
+        )
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.setitimer(signal.ITIMER_REAL, BODY_PROCESS_TIMEOUT_SECONDS)
+    try:
+        return operation()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer != (0.0, 0.0):
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+
+
+def _plain_html_fallback(value: str) -> str:
+    """Cheap bounded fallback when html2text encounters pathological markup."""
+    without_tags = re.sub(r"<[^>]*>", " ", value)
+    return re.sub(r"[ \t]+", " ", without_tags)
+
+
 def _html_to_markdown(html: str) -> str:
     import html2text
+    bounded = html[:MAX_BODY_SOURCE_CHARS]
     h = html2text.HTML2Text()
     h.body_width = 0          # don't hard-wrap — keeps prices/urls intact
     h.ignore_images = True
     h.ignore_emphasis = False
     h.protect_links = True
-    return h.handle(html)
+    try:
+        return _run_with_body_timeout(lambda: h.handle(bounded))
+    except BodyProcessingTimeout:
+        return _plain_html_fallback(bounded)
 
 
 def best_body_markdown(msg: Message) -> str:
@@ -256,16 +297,27 @@ def _strip_signature_heuristic(text: str) -> str:
     return "\n".join(lines[:cut]).rstrip()
 
 
-def clean_body(markdown_text: str) -> str:
+def clean_body(markdown_text: str, reply_parser=None) -> str:
     """Strip quoted replies + signatures. talon when available (best),
-    else email_reply_parser + heuristic scrubber."""
-    text = markdown_text.replace("\r\n", "\n").replace("\r", "\n")
+    else email_reply_parser + heuristic scrubber. Third-party parsers are
+    bounded so one pathological message cannot pin the scheduled worker."""
+    text = markdown_text[:MAX_BODY_SOURCE_CHARS].replace("\r\n", "\n").replace("\r", "\n")
     if _HAS_TALON:
-        reply = quotations.extract_from(text, "text/plain")
-        reply, _sig = talon_signature.extract(reply, sender="")
-        cleaned = reply
+        try:
+            def parse_with_talon():
+                reply = quotations.extract_from(text, "text/plain")
+                reply, _sig = talon_signature.extract(reply, sender="")
+                return reply
+
+            cleaned = _run_with_body_timeout(parse_with_talon)
+        except BodyProcessingTimeout:
+            cleaned = _strip_signature_heuristic(text)
     else:
-        cleaned = EmailReplyParser.parse_reply(text)
+        parser = reply_parser or EmailReplyParser.parse_reply
+        try:
+            cleaned = _run_with_body_timeout(lambda: parser(text))
+        except BodyProcessingTimeout:
+            cleaned = text
         cleaned = _strip_signature_heuristic(cleaned)
     # collapse 3+ blank lines the parsers can leave behind
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
@@ -589,6 +641,29 @@ def gmail_fetch_raw(token: str, gmail_id: str) -> tuple[bytes, set[str]]:
         base64.urlsafe_b64decode(payload["raw"]),
         {str(label).upper() for label in payload.get("labelIds", [])},
     )
+
+
+def gmail_fetch_raw_with_refresh(
+    token: str,
+    gmail_id: str,
+    mailbox: MailboxConfig,
+    credentials_file: Path,
+    fetch_fn=None,
+    refresh_fn=None,
+) -> tuple[bytes, set[str], str, bool]:
+    """Fetch one message, refreshing the mailbox token once after a 401."""
+    fetch = fetch_fn or gmail_fetch_raw
+    refresh = refresh_fn or gmail_access_token
+    try:
+        raw, labels = fetch(token, gmail_id)
+        return raw, labels, token, False
+    except requests.HTTPError as exc:
+        if exc.response is None or exc.response.status_code != 401:
+            raise
+
+    refreshed_token = refresh(mailbox, credentials_file)
+    raw, labels = fetch(refreshed_token, gmail_id)
+    return raw, labels, refreshed_token, True
 
 
 def gmail_direction(labels: set[str]) -> str:
@@ -930,6 +1005,30 @@ def run_selftest() -> int:
         "inbound-1",
         "inbound",
     )
+    fallback_clean = clean_body(
+        "Keep this price $136\n\nCheers,\nSlow parser",
+        reply_parser=lambda _text: (_ for _ in ()).throw(BodyProcessingTimeout()),
+    )
+    fetch_calls = []
+
+    def fake_fetch(token, _gmail_id):
+        fetch_calls.append(token)
+        if token == "expired-token":
+            response = requests.Response()
+            response.status_code = 401
+            raise requests.HTTPError("expired", response=response)
+        return b"raw-message", {"INBOX"}
+
+    refreshed_raw, refreshed_labels, refreshed_token, did_refresh = (
+        gmail_fetch_raw_with_refresh(
+            "expired-token",
+            "message-1",
+            MailboxConfig("aria@reslu.com.au", Path("unused-token.json")),
+            Path("unused-credentials.json"),
+            fetch_fn=fake_fetch,
+            refresh_fn=lambda _mailbox, _credentials: "fresh-token",
+        )
+    )
     checks = {
         "no quoted history (no '>' line, no 'On ... wrote:')":
             (">" not in clean) and ("wrote:" not in clean),
@@ -958,6 +1057,14 @@ def run_selftest() -> int:
             == ["aria@reslu.com.au", "phillip@reslu.com.au"],
         "an inbound copy upgrades a sent-only canonical row":
             merged_source["direction"] == "inbound",
+        "body parser timeout falls back without losing current content":
+            fallback_clean == "Keep this price $136",
+        "Gmail 401 refreshes once and retries the same message":
+            did_refresh
+            and refreshed_raw == b"raw-message"
+            and refreshed_labels == {"INBOX"}
+            and refreshed_token == "fresh-token"
+            and fetch_calls == ["expired-token", "fresh-token"],
     }
     print("\n--- checks ---")
     ok = True
@@ -1143,7 +1250,14 @@ def main() -> int:
             fetched: list[GmailMessage] = []
             for gid in gmail_ids[offset:offset + fetch_chunk_size]:
                 try:
-                    raw, labels = gmail_fetch_raw(token, gid)
+                    raw, labels, token, refreshed = gmail_fetch_raw_with_refresh(
+                        token,
+                        gid,
+                        mailbox,
+                        credentials_file,
+                    )
+                    if refreshed and args.verbose:
+                        print(f"  refreshed Gmail access token for {mailbox.address}")
                 except Exception as exc:
                     stats["error"] += 1
                     print(f"  ! {mailbox.address} fetch {gid} failed: {exc}")
