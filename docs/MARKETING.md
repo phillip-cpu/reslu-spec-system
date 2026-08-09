@@ -92,3 +92,14 @@ Adding or changing a Vercel environment variable requires a new deployment.
 - CSV export.
 - A separate campaigns/events/relationships workspace for AGSA donor activity,
   high-net-worth relationship strategy and other non-ad marketing initiatives.
+
+## Marco publications in Second Brain
+
+Marco keeps full working files on the Mac mini, but durable outputs must also be
+published through `add_brain_note` so the hosted Spec app can index and display
+them. Marco publications use `source="marco"`, include the `marketing` tag, and
+use a stable `marco://workspace/...` source reference. Republishing the same
+source reference updates its existing node. The visual graph presents these
+notes in the dedicated **Marketing** cluster; clicking a node opens the stored,
+source-attributed content. Credentials, raw access tokens, client PII and
+unsupported conclusions must never be published.
