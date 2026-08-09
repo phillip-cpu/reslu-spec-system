@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { initials } from "@/lib/conversations";
+import { isFatalSpeechRecognitionError, speechRecognitionErrorMessage } from "@/lib/conversation-voice";
 import type {
   AgentSlug,
   ConversationMessage,
@@ -21,6 +22,10 @@ interface SpeechEventLike extends Event {
   resultIndex: number;
   results: ArrayLike<SpeechResultLike>;
 }
+interface SpeechErrorEventLike extends Event {
+  error: string;
+  message?: string;
+}
 interface SpeechRecognitionLike {
   continuous: boolean;
   interimResults: boolean;
@@ -29,7 +34,7 @@ interface SpeechRecognitionLike {
   stop(): void;
   abort(): void;
   onresult: ((event: SpeechEventLike) => void) | null;
-  onerror: (() => void) | null;
+  onerror: ((event: SpeechErrorEventLike) => void) | null;
   onend: (() => void) | null;
   onspeechstart: (() => void) | null;
 }
@@ -145,6 +150,7 @@ export function ConversationWorkspace() {
   const [newOpen, setNewOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [callId, setCallId] = useState<string | null>(null);
+  const [callOpening, setCallOpening] = useState(false);
   const [callState, setCallState] = useState<CallState>("connecting");
   const [muted, setMuted] = useState(false);
   const [interim, setInterim] = useState("");
@@ -152,6 +158,8 @@ export function ConversationWorkspace() {
   const [lastSpoken, setLastSpoken] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const recognitionPausedRef = useRef(false);
+  const callIdRef = useRef<string | null>(null);
   const callActiveRef = useRef(false);
   const mutedRef = useRef(false);
   const spokenIdsRef = useRef(new Set<string>());
@@ -180,14 +188,25 @@ export function ConversationWorkspace() {
   const speak = useCallback((body: string) => {
     if (!("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
+    // iOS cannot reliably play speech while its recognition audio session is
+    // still recording. Pause recognition for the reply, then resume the call.
+    recognitionPausedRef.current = true;
+    recognitionRef.current?.abort();
     const utterance = new SpeechSynthesisUtterance(body);
     const preferred = callAgent?.agent_slug === "marco" ? /daniel|male|australia/i : /samantha|female|australia/i;
     utterance.voice = window.speechSynthesis.getVoices().find((voice) => preferred.test(`${voice.name} ${voice.lang}`)) ?? null;
     utterance.rate = 1;
     utterance.onstart = () => setCallState("speaking");
-    utterance.onend = () => { if (callActiveRef.current) setCallState("listening"); };
-    utterance.onerror = () => { if (callActiveRef.current) setCallState("listening"); };
+    const resumeListening = () => {
+      recognitionPausedRef.current = false;
+      if (!callActiveRef.current || mutedRef.current) return;
+      try { recognitionRef.current?.start(); } catch { /* already restarting */ }
+      setCallState("listening");
+    };
+    utterance.onend = resumeListening;
+    utterance.onerror = resumeListening;
     setLastSpoken(body);
+    window.speechSynthesis.resume();
     window.speechSynthesis.speak(utterance);
   }, [callAgent?.agent_slug]);
 
@@ -258,19 +277,25 @@ export function ConversationWorkspace() {
 
   const endCall = useCallback(async () => {
     callActiveRef.current = false;
+    recognitionPausedRef.current = false;
     recognitionRef.current?.abort();
+    recognitionRef.current = null;
     window.speechSynthesis?.cancel();
-    if (selectedId && callId) {
+    const activeCallId = callIdRef.current;
+    callIdRef.current = null;
+    if (selectedId && activeCallId) {
       await fetch(`/api/conversations/${selectedId}/calls`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ call_id: callId }),
+        body: JSON.stringify({ call_id: activeCallId }),
       }).catch(() => null);
       await loadMessages(selectedId);
     }
     setCallId(null);
+    setCallOpening(false);
+    setCallError(null);
     setInterim("");
-  }, [callId, selectedId, loadMessages]);
+  }, [selectedId, loadMessages]);
 
   const handleVoiceText = useCallback((text: string) => {
     const command = text.trim().toLowerCase().replace(/[.!?]+$/, "");
@@ -288,22 +313,24 @@ export function ConversationWorkspace() {
   async function startCall() {
     if (!selectedId || !callAgent) return;
     setCallError(null);
+    setCallOpening(true);
     setCallState("connecting");
     const SpeechRecognition = (window as Window & { SpeechRecognition?: SpeechRecognitionConstructor; webkitSpeechRecognition?: SpeechRecognitionConstructor }).SpeechRecognition
       ?? (window as Window & { webkitSpeechRecognition?: SpeechRecognitionConstructor }).webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      setCallError("Live speech recognition is not available in this browser. Try Safari on iPhone or Chrome.");
+      setCallOpening(false);
+      setCallError("Live speech recognition is unavailable here. Open RESLU directly in Safari, not from a Home Screen icon or another app.");
       return;
     }
     try {
-      const response = await fetch(`/api/conversations/${selectedId}/calls`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ presentation: window.innerWidth < 700 ? "driving" : "office" }),
-      });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error ?? "Could not start call");
-      setCallId(body.call.id);
+      // iOS Safari requires speech and audio to be activated by the original
+      // tap. Start recognition before the first await, otherwise the network
+      // request below can consume Safari's transient user activation.
+      if ("speechSynthesis" in window) {
+        const unlockAudio = new SpeechSynthesisUtterance(" ");
+        unlockAudio.volume = 0;
+        window.speechSynthesis.speak(unlockAudio);
+      }
       callActiveRef.current = true;
       messages.forEach((message) => spokenIdsRef.current.add(message.id));
       const recognition = new SpeechRecognition();
@@ -325,17 +352,50 @@ export function ConversationWorkspace() {
         }
         setInterim(live);
       };
-      recognition.onerror = () => { if (callActiveRef.current) setCallState("reconnecting"); };
+      recognition.onerror = (event) => {
+        if (!callActiveRef.current || event.error === "aborted") return;
+        if (isFatalSpeechRecognitionError(event.error)) {
+          callActiveRef.current = false;
+          setCallOpening(false);
+          setCallError(speechRecognitionErrorMessage(event.error));
+          recognition.abort();
+          return;
+        }
+        setCallState("reconnecting");
+      };
       recognition.onend = () => {
-        if (!callActiveRef.current || mutedRef.current) return;
+        if (!callActiveRef.current || mutedRef.current || recognitionPausedRef.current) return;
         try { recognition.start(); } catch { /* already restarting */ }
       };
       recognitionRef.current = recognition;
       recognition.start();
       setCallState("listening");
+
+      const response = await fetch(`/api/conversations/${selectedId}/calls`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ presentation: window.innerWidth < 700 ? "driving" : "office" }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Could not start call");
+      if (!callActiveRef.current) {
+        await fetch(`/api/conversations/${selectedId}/calls`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ call_id: body.call.id }),
+        }).catch(() => null);
+        return;
+      }
+      callIdRef.current = body.call.id;
+      setCallId(body.call.id);
+      setCallOpening(false);
     } catch (reason) {
-      setCallError(reason instanceof Error ? reason.message : "Could not start call");
       callActiveRef.current = false;
+      recognitionRef.current?.abort();
+      recognitionRef.current = null;
+      setCallOpening(false);
+      const message = reason instanceof Error ? reason.message : "Could not start call";
+      setCallError(reason instanceof DOMException ? speechRecognitionErrorMessage(reason.name) : message);
     }
   }
 
@@ -443,7 +503,7 @@ export function ConversationWorkspace() {
 
       {newOpen && <NewConversation people={data.people} onClose={() => setNewOpen(false)} onCreated={(id) => { setNewOpen(false); setSelectedId(id); void loadConversations(); }} />}
 
-      {(callId || callError) && callAgent && (
+      {(callOpening || callId || callError) && callAgent && (
         <div className="fixed inset-0 z-[70] flex flex-col bg-nearblack text-white">
           <div className="flex items-center justify-between border-b border-white/10 px-6 py-5">
             <div>
