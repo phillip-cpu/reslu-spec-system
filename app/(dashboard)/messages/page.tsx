@@ -4,8 +4,10 @@ import { ConversationWorkspace } from "@/components/conversations/ConversationWo
 export default function MessagesPage() {
   return (
     <>
-      <Header title="Messages" subtitle="RESLU staff and agents, in one place." />
-      <main className="min-h-0 flex-1 md:p-6">
+      <div className="hidden md:block">
+        <Header title="Messages" subtitle="RESLU staff and agents, in one place." />
+      </div>
+      <main className="min-h-0 min-w-0 flex-1 overflow-hidden md:p-6">
         <ConversationWorkspace />
       </main>
     </>
