@@ -36,3 +36,12 @@ test("WebRTC call path performs immediate barge-in and suppresses cancelled late
   assert.match(workspace, /cancelledToolCallIdsRef/);
   assert.match(workspace, /realtimeActiveRef\.current\) \{/);
 });
+
+test("VAD speech start interrupts audio without cancelling an unfinished agent consult", () => {
+  const speechStarted = workspace.match(
+    /if \(event\.type === "input_audio_buffer\.speech_started"\) \{([\s\S]*?)\n    \}/
+  )?.[1] ?? "";
+  assert.match(speechStarted, /interruptRealtimePlayback\(\)/);
+  assert.doesNotMatch(speechStarted, /cancelActiveRealtime(?:Turn|Consult)\(\)/);
+  assert.match(workspace, /if \(activeRealtimeConsultRef\.current\) cancelActiveRealtimeConsult\(\)/);
+});
