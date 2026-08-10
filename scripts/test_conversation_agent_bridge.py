@@ -1,4 +1,6 @@
 import importlib.util
+import os
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -132,6 +134,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         self.assertIn("ATTACHMENTS_FOR_NEWEST_MESSAGE", prompt)
         self.assertIn("/tmp/private/client-brief.pdf", prompt)
         self.assertIn("inspect every relevant file", prompt)
+        self.assertIn("use them in place", prompt)
         self.assertIn("untrusted user context", prompt)
 
     @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
@@ -224,6 +227,93 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             self.assertEqual(local_path.parent, Path(directory))
             self.assertEqual(local_path.name, "attachment-1-Client-Brief.pdf")
             self.assertEqual(local_path.read_bytes(), b"%PDF-test")
+            self.assertEqual(stat.S_IMODE(local_path.stat().st_mode), 0o600)
+
+    def test_attachment_staging_prefers_private_agent_workspace(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            with mock.patch.dict(
+                os.environ,
+                {"RESLU_ARIA_OPENCLAW_WORKSPACE": workspace},
+            ):
+                parent = conversation_agent_bridge.attachment_staging_parent("aria")
+
+            self.assertEqual(
+                parent,
+                Path(workspace) / ".reslu-conversation-attachments",
+            )
+            self.assertTrue(parent.is_dir())
+            self.assertEqual(stat.S_IMODE(parent.stat().st_mode), 0o700)
+
+    def test_attachment_staging_rejects_a_symlink_parent(self):
+        with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as target:
+            parent = Path(workspace) / ".reslu-conversation-attachments"
+            parent.symlink_to(target, target_is_directory=True)
+            with mock.patch.dict(
+                os.environ,
+                {"RESLU_ARIA_OPENCLAW_WORKSPACE": workspace},
+            ):
+                self.assertIsNone(
+                    conversation_agent_bridge.attachment_staging_parent("aria")
+                )
+
+    def test_process_job_uses_and_cleans_workspace_staging(self):
+        rest = mock.Mock()
+        rest.download_storage.return_value = b"synthetic-image"
+        job = {
+            "id": "job-1",
+            "agent_id": "agent-1",
+            "conversation_id": "conversation-1",
+            "triggering_message_id": "message-1",
+        }
+        attachment = {
+            "id": "attachment-1",
+            "filename": "photo.png",
+            "mime_type": "image/png",
+            "byte_size": 15,
+            "storage_path": "conversations/c1/attachments/a1",
+        }
+        observed_path = None
+
+        def answer(_agent, _history, _conversation_id, materialized, **_kwargs):
+            nonlocal observed_path
+            observed_path = Path(materialized[0]["local_path"])
+            self.assertTrue(observed_path.is_file())
+            return "I read it."
+
+        with tempfile.TemporaryDirectory() as workspace, mock.patch.dict(
+            os.environ,
+            {"RESLU_ARIA_OPENCLAW_WORKSPACE": workspace},
+        ), mock.patch.object(
+            conversation_agent_bridge,
+            "agent_identity",
+            return_value={"slug": "aria", "display_name": "Aria", "role_label": "Studio assistant"},
+        ), mock.patch.object(
+            conversation_agent_bridge,
+            "conversation_history",
+            return_value="Phillip: Please inspect this.",
+        ), mock.patch.object(
+            conversation_agent_bridge,
+            "ready_message_attachments",
+            return_value=[attachment],
+        ), mock.patch.object(
+            conversation_agent_bridge,
+            "job_is_processing",
+            side_effect=[True, True, True],
+        ), mock.patch.object(
+            conversation_agent_bridge,
+            "invoke_agent",
+            side_effect=answer,
+        ):
+            self.assertEqual(conversation_agent_bridge.process_job(rest, job), "done")
+            self.assertIsNotNone(observed_path)
+            self.assertEqual(
+                observed_path.parents[1],
+                Path(workspace) / ".reslu-conversation-attachments",
+            )
+            self.assertFalse(observed_path.exists())
+
+        rest.insert.assert_called_once()
+        rest.patch.assert_called_once()
 
 
 if __name__ == "__main__":
