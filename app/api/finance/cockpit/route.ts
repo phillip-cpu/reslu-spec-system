@@ -14,6 +14,7 @@ import { buildCompanyClientClaimPortfolio } from "@/lib/finance/company-client-c
 import { generateRecurringContributions } from "@/lib/finance/recurrence";
 import { isIsoDate } from "@/lib/finance/readiness";
 import { buildSectionForecastDates } from "@/lib/finance/schedule-cost-timing";
+import { includesConstructionCosts } from "@/lib/finance/construction-cost-eligibility";
 import { createClient } from "@/lib/supabase/server";
 import type {
   FinanceCockpitProject,
@@ -70,6 +71,7 @@ type ClaimProjectRow = {
   id: string;
   name: string;
   job_number: string | null;
+  project_stage: import("@/types/finance").ProjectStage;
 };
 
 type EstimateVersionRow = {
@@ -274,7 +276,7 @@ export async function GET(request: NextRequest) {
         .neq("status", "void"),
       supabase
         .from("projects")
-        .select("id,name,job_number")
+        .select("id,name,job_number,project_stage")
         .in("id", companyProjectIds),
       supabase
         .from("estimate_versions")
@@ -336,8 +338,27 @@ export async function GET(request: NextRequest) {
         latestEstimateByProjectId.set(estimate.project_id, estimate);
       }
     }
+    const billingProfileByProjectId = new Map(
+      billingProfiles.map((profile) => [profile.project_id, profile])
+    );
+    const companyProjectById = new Map(companyProjects.map((project) => [project.id, project]));
+    const constructionCostProjectIds = new Set(
+      companyProjects
+        .filter((project) =>
+          includesConstructionCosts(
+            project.project_stage,
+            billingProfileByProjectId.get(project.id)?.contract_type
+          )
+        )
+        .map((project) => project.id)
+    );
+    const eligibleBaselineContributions = baselineContributions.filter((contribution) => {
+      const projectId = contribution.sourceTrace?.project_id;
+      return typeof projectId === "string" && constructionCostProjectIds.has(projectId);
+    });
     const connectedEstimateContributions: FinanceContributionInput[] = [];
     for (const projectId of companyProjectIds) {
+      if (!constructionCostProjectIds.has(projectId)) continue;
       if (baselineProjectIds.has(projectId)) continue;
       // Design-only projects contribute to client claims but not to cost outflows
       const projectFinanceState = profiles.find((p) => p.project_id === projectId)?.finance_state;
@@ -362,7 +383,7 @@ export async function GET(request: NextRequest) {
       }
     }
     const projectContributions = [
-      ...baselineContributions,
+      ...eligibleBaselineContributions,
       ...connectedEstimateContributions,
     ];
     const recurringCommitments = ((rawRecurring ?? []) as Record<string, unknown>[]).map(
@@ -406,7 +427,6 @@ export async function GET(request: NextRequest) {
       costContributionsByProject.set(projectId, existing);
     }
     const profileByProjectId = new Map(profiles.map((profile) => [profile.project_id, profile]));
-    const companyProjectById = new Map(companyProjects.map((project) => [project.id, project]));
     const claimSummaryByProjectId = new Map(
       clientClaimPortfolio.projects.map((project) => [project.projectId, project])
     );

@@ -9,6 +9,7 @@ import { hasFinanceCapability } from "@/lib/finance/permissions";
 import { calculateShadowProjection } from "@/lib/finance/projection";
 import { isIsoDate } from "@/lib/finance/readiness";
 import { buildSectionForecastDates } from "@/lib/finance/schedule-cost-timing";
+import { includesConstructionCosts } from "@/lib/finance/construction-cost-eligibility";
 import { createClient } from "@/lib/supabase/server";
 import type { FinanceShadowProjectionRequest, ProjectFinanceProfile } from "@/types/finance";
 import type { FinanceEstimateSnapshot } from "@/lib/finance/baseline";
@@ -96,7 +97,7 @@ export async function POST(
     { data: costSections, error: costSectionError },
     { data: clientInvoices, error: invoiceError },
   ] = await Promise.all([
-    supabase.from("projects").select("id").eq("id", projectId).maybeSingle(),
+    supabase.from("projects").select("id,project_stage").eq("id", projectId).maybeSingle(),
     supabase
       .from("project_finance_profiles")
       .select("*")
@@ -141,8 +142,12 @@ export async function POST(
       { status: 503 }
     );
   }
+  const constructionCostsIncluded = includesConstructionCosts(
+    project.project_stage as import("@/types/finance").ProjectStage,
+    (billingProfile as ClientBillingProfile | null)?.contract_type
+  );
   const estimate = estimateRows?.[0];
-  if (!estimate) {
+  if (constructionCostsIncluded && !estimate) {
     return NextResponse.json(
       { error: "Save an estimate version before running a shadow projection" },
       { status: 409 }
@@ -154,13 +159,15 @@ export async function POST(
       sections: costSections ?? [],
       phases: schedulePhases ?? [],
     });
-    const estimateContributions = buildEstimatePlanContributions({
-      projectId,
-      estimateVersionId: estimate.id,
-      snapshot: estimate.snapshot as FinanceEstimateSnapshot,
-      sectionDates,
-      timingOverrides,
-    });
+    const estimateContributions = constructionCostsIncluded && estimate
+      ? buildEstimatePlanContributions({
+          projectId,
+          estimateVersionId: estimate.id,
+          snapshot: estimate.snapshot as FinanceEstimateSnapshot,
+          sectionDates,
+          timingOverrides,
+        })
+      : [];
     const clientClaimContributions = buildClientClaimContributions({
       projectId,
       profile: (billingProfile as ClientBillingProfile | null) ?? null,
@@ -181,11 +188,12 @@ export async function POST(
       committed_base_eligible: typedProfile.finance_state === "active",
       finance_state: typedProfile.finance_state,
       source: {
-        estimate_version_id: estimate.id,
-        estimate_label: estimate.label,
+        estimate_version_id: estimate?.id ?? null,
+        estimate_label: estimate?.label ?? null,
         timing_override_count: Object.keys(timingOverrides).length,
         schedule_link_count: Object.keys(sectionDates).length,
         client_claim_count: clientClaimContributions.length,
+        construction_costs_included: constructionCostsIncluded,
         opening_cash_source:
           body.opening_cash_minor === undefined ? "not_configured" : "request_preview",
       },
