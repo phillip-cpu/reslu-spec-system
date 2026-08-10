@@ -337,10 +337,23 @@ export function ConversationWorkspace() {
     if (channel?.readyState === "open") channel.send(JSON.stringify(event));
   }, []);
 
-  const cancelActiveRealtimeTurn = useCallback(() => {
+  const interruptRealtimePlayback = useCallback(() => {
     const responseId = activeResponseIdRef.current;
     if (responseId) cancelledResponseIdsRef.current.add(responseId);
     activeResponseIdRef.current = null;
+    // A VAD speech-start is only evidence that playback should stop. It is
+    // not yet a completed replacement request: road noise, echo and a throat
+    // clear can all produce this event. Keep the authoritative OpenClaw
+    // consult alive until a newer completed tool call supersedes it.
+    if (responseId) {
+      sendRealtimeEvent({ type: "response.cancel" });
+      sendRealtimeEvent({ type: "output_audio_buffer.clear" });
+    }
+    if (remoteAudioRef.current) remoteAudioRef.current.muted = true;
+    setCallState("interrupted");
+  }, [sendRealtimeEvent]);
+
+  const cancelActiveRealtimeConsult = useCallback(() => {
     const consult = activeRealtimeConsultRef.current;
     if (consult) {
       cancelledToolCallIdsRef.current.add(consult.toolCallId);
@@ -354,15 +367,12 @@ export function ConversationWorkspace() {
         }).catch(() => null);
       }
     }
-    // VAD already cancels and truncates WebRTC output server-side. These
-    // explicit events make local barge-in immediate and harmlessly race it.
-    if (responseId) {
-      sendRealtimeEvent({ type: "response.cancel" });
-      sendRealtimeEvent({ type: "output_audio_buffer.clear" });
-    }
-    if (remoteAudioRef.current) remoteAudioRef.current.muted = true;
-    setCallState("interrupted");
-  }, [callAgent, selectedId, sendRealtimeEvent]);
+  }, [callAgent, selectedId]);
+
+  const cancelActiveRealtimeTurn = useCallback(() => {
+    interruptRealtimePlayback();
+    cancelActiveRealtimeConsult();
+  }, [cancelActiveRealtimeConsult, interruptRealtimePlayback]);
 
   const endCall = useCallback(async () => {
     callActiveRef.current = false;
@@ -431,6 +441,10 @@ export function ConversationWorkspace() {
       return;
     }
 
+    // A completed newer utterance is the point at which the prior consult is
+    // genuinely superseded. Abort its local poll and cancel that exact job;
+    // the POST below also atomically supersedes any unfinished agent work.
+    if (activeRealtimeConsultRef.current) cancelActiveRealtimeConsult();
     const abortController = new AbortController();
     activeRealtimeConsultRef.current = { toolCallId, responseId, abortController };
     setInterim(query);
@@ -502,11 +516,11 @@ export function ConversationWorkspace() {
       setCallError(reason instanceof Error ? reason.message : "The RESLU agent could not answer");
       setCallState("listening");
     }
-  }, [callAgent, loadMessages, selectedId, sendRealtimeEvent]);
+  }, [callAgent, cancelActiveRealtimeConsult, loadMessages, selectedId, sendRealtimeEvent]);
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.type === "input_audio_buffer.speech_started") {
-      cancelActiveRealtimeTurn();
+      interruptRealtimePlayback();
       setInterim("");
       return;
     }
@@ -552,7 +566,7 @@ export function ConversationWorkspace() {
     if (event.type === "error") {
       setCallError("The realtime call hit an error. Please try again.");
     }
-  }, [cancelActiveRealtimeTurn, runRealtimeConsult]);
+  }, [interruptRealtimePlayback, runRealtimeConsult]);
 
   const createCallRecord = useCallback(async () => {
     if (!selectedId) throw new Error("No conversation selected");
