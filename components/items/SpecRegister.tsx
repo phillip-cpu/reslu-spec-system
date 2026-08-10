@@ -20,6 +20,7 @@ import { RoomAssignBar } from "./RoomAssignBar";
 import { ItemRoomsEditor } from "./ItemRoomsEditor";
 import { RoomBuilder } from "./RoomBuilder";
 import { isSupportedBrowserImportUrl } from "@/lib/browser-product-import";
+import { ITEM_CODE_PATTERN } from "@/types/phase-small-round";
 
 interface Props {
   projectId: string;
@@ -78,6 +79,14 @@ function dimensionWarning(item: Item): string | null {
 
 function num(v: number | null): string {
   return v === null || v === undefined ? "" : String(v);
+}
+
+/** Sort the numeric part as a number, so TW-2 appears before TW-10. */
+function compareItemCodes(a: string, b: string): number {
+  return (
+    a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }) ||
+    a.localeCompare(b)
+  );
 }
 
 // ── inline editable text cell ───────────────────────────────
@@ -274,7 +283,7 @@ export function SpecRegister({
       });
     }
     for (const [, list] of entries) {
-      list.sort((a, b) => a.item.item_code.localeCompare(b.item.item_code));
+      list.sort((a, b) => compareItemCodes(a.item.item_code, b.item.item_code));
     }
     return entries.map(([key, list]) => ({
       key,
@@ -591,8 +600,19 @@ function ItemRow({
             )}
           </button>
         </td>
-        <td className="whitespace-nowrap px-2 py-1.5 text-body font-normal text-nearblack">
-          {item.item_code}
+        <td className="whitespace-nowrap px-2 py-1.5">
+          <EditableCell
+            value={item.item_code}
+            onCommit={(value) => {
+              const normalized = value.trim().toUpperCase();
+              if (!ITEM_CODE_PATTERN.test(normalized)) {
+                onError("Item code must look like TW-01 (2-3 letters, hyphen, 1-3 digits).");
+                return;
+              }
+              onPatch({ item_code: value });
+            }}
+            className="font-normal text-nearblack"
+          />
         </td>
         <td className="px-1 py-1">
           <select
