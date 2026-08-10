@@ -11,6 +11,7 @@ export type ConversationAttachmentMime = typeof CONVERSATION_ATTACHMENT_MIME_TYP
 
 export const MAX_CONVERSATION_ATTACHMENTS = 6;
 export const MAX_CONVERSATION_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+export const STAGED_CONVERSATION_ATTACHMENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export function isConversationAttachmentMime(value: unknown): value is ConversationAttachmentMime {
   return typeof value === "string"
@@ -31,6 +32,10 @@ export function conversationAttachmentStoragePath(options: {
 }): string {
   const safeName = slugFilename(options.filename) || "attachment";
   return `conversations/${options.conversationId}/attachments/${options.userId}/${options.attachmentId}-${safeName}`;
+}
+
+export function conversationAttachmentAccessUrl(conversationId: string, attachmentId: string): string {
+  return `/api/conversations/${encodeURIComponent(conversationId)}/attachments?attachment_id=${encodeURIComponent(attachmentId)}`;
 }
 
 export function isConversationAttachmentSize(value: unknown): value is number {

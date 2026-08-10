@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { conversationParticipants } from "@/lib/conversation-access";
+import { conversationAttachmentAccessUrl } from "@/lib/conversation-attachments";
 import { sniffFileKind } from "@/lib/file-sniff";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
 import { sniffStorageObjectHead } from "@/lib/file-sniff";
@@ -33,6 +34,50 @@ async function stagedAttachment(
     .is("message_id", null)
     .maybeSingle();
   return data as ConversationAttachment | null;
+}
+
+async function readyMessageAttachment(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  conversationId: string,
+  attachmentId: unknown
+) {
+  if (typeof attachmentId !== "string" || !attachmentId) return null;
+  const { data } = await supabase
+    .from("conversation_attachments")
+    .select("*")
+    .eq("id", attachmentId)
+    .eq("conversation_id", conversationId)
+    .eq("status", "ready")
+    .not("message_id", "is", null)
+    .maybeSingle();
+  return data as ConversationAttachment | null;
+}
+
+export async function GET(request: NextRequest, context: Context) {
+  const { id: conversationId } = await context.params;
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const membership = await conversationParticipants(supabase, conversationId, user.id);
+  if (membership.error) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
+
+  const attachment = await readyMessageAttachment(
+    supabase,
+    conversationId,
+    request.nextUrl.searchParams.get("attachment_id")
+  );
+  if (!attachment) return NextResponse.json({ error: "Attachment not found" }, { status: 404 });
+
+  const { data: signed, error } = await supabase.storage
+    .from(ASSET_BUCKET)
+    .createSignedUrl(attachment.storage_path, SIGNED_URL_TTL_SECONDS);
+  if (error || !signed?.signedUrl) {
+    return NextResponse.json({ error: "Could not open attachment" }, { status: 503 });
+  }
+  const response = NextResponse.redirect(signed.signedUrl, 307);
+  response.headers.set("Cache-Control", "private, no-store");
+  return response;
 }
 
 export async function POST(request: NextRequest, context: Context) {
@@ -70,14 +115,11 @@ export async function POST(request: NextRequest, context: Context) {
     return NextResponse.json({ error: updateError?.message ?? "Could not finish upload" }, { status: 500 });
   }
 
-  const { data: signed, error: signedError } = await supabase.storage
-    .from(ASSET_BUCKET)
-    .createSignedUrl(attachment.storage_path, SIGNED_URL_TTL_SECONDS);
   return NextResponse.json({
     attachment: {
       ...ready,
       metadata: ready.metadata ?? {},
-      url: signedError ? null : signed?.signedUrl ?? null,
+      url: conversationAttachmentAccessUrl(conversationId, ready.id),
     },
   });
 }

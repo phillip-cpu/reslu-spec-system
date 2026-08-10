@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   cleanConversationAttachmentFilename,
+  conversationAttachmentAccessUrl,
   conversationAttachmentKind,
   conversationAttachmentStoragePath,
   isConversationAttachmentMime,
@@ -39,4 +40,11 @@ test("conversation attachment size and kind stay bounded", () => {
   assert.equal(isConversationAttachmentSize(0), false);
   assert.equal(conversationAttachmentKind("image/jpeg"), "image");
   assert.equal(conversationAttachmentKind("application/pdf"), "document");
+});
+
+test("conversation attachment access uses a stable authenticated application URL", () => {
+  assert.equal(
+    conversationAttachmentAccessUrl("conversation/1", "attachment?1"),
+    "/api/conversations/conversation%2F1/attachments?attachment_id=attachment%3F1"
+  );
 });

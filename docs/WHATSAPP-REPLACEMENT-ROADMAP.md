@@ -36,8 +36,9 @@ Current implementation: PR #22 and migration 092 are live, and the updated Mac
 bridge is running. The first production iPhone photo reached Aria and was read
 accurately. That trace took about 74 seconds: 2 seconds to upload, 38 seconds
 waiting behind a cancelled voice consult, and 36 seconds in the agent runtime.
-The bridge cancellation repair is in progress before the remaining Stage 1
-acceptance cases.
+The bridge cancellation repair is now live. Attachment recovery hardening adds
+explicit retry, all-or-nothing draft sending, safe mid-upload cancellation,
+eventual abandoned-object cleanup and stable authenticated attachment links.
 
 Work:
 
@@ -221,7 +222,7 @@ Final product gate:
 
 ## Current next action
 
-Deploy the bridge cancellation repair so a cancelled voice consult releases
-Aria's worker promptly. Then rerun the iPhone photo test without preceding
-queue contention, complete the PDF and desktop cases, and exercise failure,
-retry, chat-switching and expired-URL recovery before closing Stage 1.
+Rerun the iPhone attachment test after cancelling a live voice consult, then
+complete the PDF and desktop cases. Deploy and exercise explicit failure/retry,
+mid-upload chat switching and authenticated link refresh before closing Stage
+1.
