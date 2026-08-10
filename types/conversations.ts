@@ -2,6 +2,22 @@ export type ConversationKind = "direct" | "group";
 export type ConversationMessageKind = "text" | "call_record" | "meeting_record" | "system";
 export type AgentSlug = "aria" | "marco";
 
+export interface ConversationAttachment {
+  id: string;
+  conversation_id: string;
+  message_id: string | null;
+  uploaded_by: string;
+  storage_path: string;
+  filename: string;
+  mime_type: "image/jpeg" | "image/png" | "image/webp" | "application/pdf";
+  byte_size: number;
+  status: "uploading" | "ready" | "failed";
+  metadata: Record<string, unknown>;
+  created_at: string;
+  ready_at: string | null;
+  url: string | null;
+}
+
 export interface ConversationAgent {
   id: string;
   slug: AgentSlug;
@@ -32,6 +48,7 @@ export interface ConversationMessage {
   reply_to_id: string | null;
   created_at: string;
   edited_at: string | null;
+  attachments: ConversationAttachment[];
   author: ConversationParticipant;
 }
 

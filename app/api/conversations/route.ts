@@ -110,6 +110,7 @@ export async function GET() {
     lastMessageByConversation.set(row.conversation_id, {
       ...row,
       metadata: row.metadata ?? {},
+      attachments: [],
       author: messageAuthor(row, participants),
     } as ConversationMessage);
   }

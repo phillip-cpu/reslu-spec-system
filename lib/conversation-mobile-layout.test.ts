@@ -28,8 +28,9 @@ test("call controls account for notches, browser chrome and the home indicator",
 
 test("mobile composer and dialogs are allowed to shrink and scroll", () => {
   assert.match(workspace, /max-h-full w-full max-w-lg overflow-y-auto/);
-  assert.match(workspace, /min-h-12 min-w-0 flex-1 resize-none/);
-  assert.match(workspace, /shrink-0 bg-nearblack/);
+  assert.match(workspace, /max-h-36 min-h-12 w-full resize-none/);
+  assert.match(workspace, /min-w-10 shrink-0/);
+  assert.match(workspace, /rounded-full bg-nearblack/);
 });
 
 test("mobile chat keeps its native-style header and call action visible", () => {

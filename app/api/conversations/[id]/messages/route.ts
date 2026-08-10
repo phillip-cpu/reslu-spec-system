@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { messageAuthor } from "@/lib/conversations";
 import { conversationParticipants } from "@/lib/conversation-access";
-import type { AgentSlug, ConversationMessage } from "@/types/conversations";
+import { MAX_CONVERSATION_ATTACHMENTS } from "@/lib/conversation-attachments";
+import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
+import type { AgentSlug, ConversationAttachment, ConversationMessage } from "@/types/conversations";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,7 +23,7 @@ export async function GET(request: NextRequest, context: Context) {
   const before = request.nextUrl.searchParams.get("before");
   let query = supabase
     .from("conversation_messages")
-    .select("*")
+    .select("*, conversation_attachments(*)")
     .eq("conversation_id", id)
     .is("deleted_at", null)
     .order("created_at", { ascending: false })
@@ -30,11 +32,32 @@ export async function GET(request: NextRequest, context: Context) {
   const { data, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const messages = (data ?? []).reverse().map((row) => ({
-    ...row,
-    metadata: row.metadata ?? {},
-    author: messageAuthor(row, participantResult.participants),
-  })) as ConversationMessage[];
+  const rows = (data ?? []).reverse();
+  const paths = rows.flatMap((row) =>
+    ((row.conversation_attachments ?? []) as ConversationAttachment[]).map((attachment) => attachment.storage_path)
+  );
+  const { data: signedRows } = paths.length > 0
+    ? await supabase.storage.from(ASSET_BUCKET).createSignedUrls(paths, SIGNED_URL_TTL_SECONDS)
+    : { data: [] };
+  const signedUrlByPath = new Map(
+    (signedRows ?? []).map((item) => [item.path, item.error ? null : item.signedUrl ?? null])
+  );
+  const messages = rows.map((row) => {
+    const attachments = ((row.conversation_attachments ?? []) as ConversationAttachment[])
+      .filter((attachment) => attachment.status === "ready")
+      .map((attachment) => ({
+        ...attachment,
+        metadata: attachment.metadata ?? {},
+        url: signedUrlByPath.get(attachment.storage_path) ?? null,
+      }));
+    const { conversation_attachments: _joinedAttachments, ...messageRow } = row;
+    return {
+      ...messageRow,
+      metadata: row.metadata ?? {},
+      attachments,
+      author: messageAuthor(row, participantResult.participants),
+    };
+  }) as ConversationMessage[];
   return NextResponse.json({ messages, participants: participantResult.participants });
 }
 
@@ -44,14 +67,28 @@ export async function POST(request: NextRequest, context: Context) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: { body?: string; source?: "text" | "voice"; target_agent_slugs?: AgentSlug[] };
+  let body: {
+    body?: string;
+    source?: "text" | "voice";
+    target_agent_slugs?: AgentSlug[];
+    attachment_ids?: string[];
+  };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  const messageBody = body.body?.trim();
-  if (!messageBody) return NextResponse.json({ error: "Message cannot be empty" }, { status: 400 });
+  const attachmentIds = Array.isArray(body.attachment_ids)
+    ? body.attachment_ids.filter((value): value is string => typeof value === "string" && value.length > 0)
+    : [];
+  if (attachmentIds.length !== new Set(attachmentIds).size || attachmentIds.length > MAX_CONVERSATION_ATTACHMENTS) {
+    return NextResponse.json({ error: `Attach no more than ${MAX_CONVERSATION_ATTACHMENTS} unique files` }, { status: 400 });
+  }
+  const typedBody = body.body?.trim() ?? "";
+  if (!typedBody && attachmentIds.length === 0) {
+    return NextResponse.json({ error: "Message cannot be empty" }, { status: 400 });
+  }
+  const messageBody = typedBody || `Shared ${attachmentIds.length} attachment${attachmentIds.length === 1 ? "" : "s"}`;
   if (messageBody.length > 20000) return NextResponse.json({ error: "Message is too long" }, { status: 400 });
 
   const participantResult = await conversationParticipants(supabase, id, user.id);
@@ -78,19 +115,29 @@ export async function POST(request: NextRequest, context: Context) {
     });
   }
 
-  const { data: message, error } = await supabase
-    .from("conversation_messages")
-    .insert({
-      conversation_id: id,
-      author_profile_id: user.id,
-      body: messageBody,
-      metadata: {
-        source: body.source === "voice" ? "voice" : "text",
-        target_agent_slugs: targetAgents.map((agent) => agent.agent_slug),
-      },
-    })
-    .select("*")
-    .single();
+  const metadata = {
+    source: body.source === "voice" ? "voice" : "text",
+    target_agent_slugs: targetAgents.map((agent) => agent.agent_slug),
+    ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
+  };
+  const messageResult = attachmentIds.length > 0
+    ? await supabase.rpc("create_conversation_message_with_attachments", {
+        p_conversation_id: id,
+        p_body: messageBody,
+        p_metadata: metadata,
+        p_attachment_ids: attachmentIds,
+      }).single()
+    : await supabase
+        .from("conversation_messages")
+        .insert({
+          conversation_id: id,
+          author_profile_id: user.id,
+          body: messageBody,
+          metadata,
+        })
+        .select("*")
+        .single();
+  const { data: message, error } = messageResult;
   if (error || !message) return NextResponse.json({ error: error?.message ?? "Could not send message" }, { status: 500 });
 
   let queueError: string | null = null;
@@ -118,7 +165,7 @@ export async function POST(request: NextRequest, context: Context) {
   }
 
   return NextResponse.json({
-    message: { ...message, metadata: message.metadata ?? {}, author: self },
+    message: { ...message, metadata: message.metadata ?? {}, attachments: [], author: self },
     queued_agents: targetAgents.map((agent) => agent.agent_slug),
     queue_error: queueError,
   }, { status: 201 });
