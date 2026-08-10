@@ -207,6 +207,7 @@ export function ConversationWorkspace() {
   const [newOpen, setNewOpen] = useState(false);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [draftAttachments, setDraftAttachments] = useState<DraftAttachment[]>([]);
+  const [attachmentDropActive, setAttachmentDropActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [callId, setCallId] = useState<string | null>(null);
   const [callOpening, setCallOpening] = useState(false);
@@ -220,6 +221,7 @@ export function ConversationWorkspace() {
   const workspaceRef = useRef<HTMLDivElement>(null);
   const draftAttachmentsRef = useRef<DraftAttachment[]>([]);
   const cancelledDraftIdsRef = useRef(new Set<string>());
+  const attachmentDragDepthRef = useRef(0);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
@@ -1085,7 +1087,41 @@ export function ConversationWorkspace() {
         )}
       </aside>
 
-      <section className={clsx("min-w-0 flex-1 flex-col", selectedId ? "flex" : "hidden md:flex")}>
+      <section
+        className={clsx("relative min-w-0 flex-1 flex-col", selectedId ? "flex" : "hidden md:flex")}
+        onDragEnter={(event) => {
+          if (!selectedId || !event.dataTransfer.types.includes("Files")) return;
+          event.preventDefault();
+          attachmentDragDepthRef.current += 1;
+          setAttachmentDropActive(true);
+        }}
+        onDragOver={(event) => {
+          if (!selectedId || !event.dataTransfer.types.includes("Files")) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }}
+        onDragLeave={(event) => {
+          event.preventDefault();
+          attachmentDragDepthRef.current = Math.max(0, attachmentDragDepthRef.current - 1);
+          if (attachmentDragDepthRef.current === 0) setAttachmentDropActive(false);
+        }}
+        onDrop={(event) => {
+          if (!event.dataTransfer.types.includes("Files")) return;
+          event.preventDefault();
+          attachmentDragDepthRef.current = 0;
+          setAttachmentDropActive(false);
+          if (!selectedId || !event.dataTransfer.files.length) return;
+          void uploadSelectedFiles(event.dataTransfer.files);
+        }}
+      >
+        {attachmentDropActive && selectedConversation && (
+          <div className="pointer-events-none absolute inset-3 z-50 flex items-center justify-center rounded-2xl border-2 border-dashed border-nearblack bg-[#f5f1e8]/95 p-6 text-center shadow-2xl" role="status" aria-live="polite">
+            <div>
+              <p className="font-display text-section text-nearblack">Drop photos or PDFs here</p>
+              <p className="mt-2 text-caption text-charcoal/60">Up to 6 files · 25 MB each</p>
+            </div>
+          </div>
+        )}
         {selectedConversation ? (
           <>
             <header className="sticky top-0 z-10 flex min-h-16 shrink-0 items-center gap-2 border-b border-[#d4cbbd] bg-[#f5f1e8]/95 py-2 pl-16 pr-2 backdrop-blur md:min-h-20 md:gap-3 md:px-4 md:py-3">
@@ -1238,6 +1274,11 @@ export function ConversationWorkspace() {
                 <textarea
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
+                  onPaste={(event) => {
+                    if (!event.clipboardData.files.length) return;
+                    event.preventDefault();
+                    void uploadSelectedFiles(event.clipboardData.files);
+                  }}
                   onFocus={() => setAttachmentMenuOpen(false)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey) {
