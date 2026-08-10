@@ -19,6 +19,45 @@ SPEC.loader.exec_module(conversation_agent_bridge)
 
 
 class ConversationAgentBridgeTests(unittest.TestCase):
+    def test_agent_claim_has_a_short_network_timeout(self):
+        rest = conversation_agent_bridge.SupabaseRest(
+            "https://example.supabase.co",
+            "secret",
+        )
+        with mock.patch.object(rest, "request", return_value=[]) as request:
+            self.assertIsNone(rest.claim("aria"))
+
+        self.assertEqual(
+            request.call_args.kwargs["timeout_seconds"],
+            conversation_agent_bridge.CLAIM_REQUEST_TIMEOUT_SECONDS,
+        )
+
+    def test_aria_and_marco_use_independent_serial_workers(self):
+        with mock.patch.object(conversation_agent_bridge.threading, "Thread") as thread:
+            workers = conversation_agent_bridge.build_agent_workers(
+                "https://example.supabase.co",
+                "secret",
+            )
+
+        self.assertEqual(len(workers), 2)
+        self.assertEqual(thread.call_count, 2)
+        calls_by_name = {call.kwargs["name"]: call for call in thread.call_args_list}
+        self.assertEqual(set(calls_by_name), {
+            "reslu-conversation-aria",
+            "reslu-conversation-marco",
+        })
+        for slug in conversation_agent_bridge.AGENT_SLUGS:
+            call = calls_by_name[f"reslu-conversation-{slug}"]
+            self.assertIs(
+                call.kwargs["target"],
+                conversation_agent_bridge.agent_worker_loop,
+            )
+            self.assertEqual(
+                call.kwargs["args"],
+                ("https://example.supabase.co", "secret", slug),
+            )
+            self.assertFalse(call.kwargs["daemon"])
+
     def test_history_resolves_quoted_reply_target_outside_recent_window(self):
         class FakeRest:
             @staticmethod
@@ -234,13 +273,35 @@ class ConversationAgentBridgeTests(unittest.TestCase):
     def test_transient_status_read_does_not_cancel_running_agent(self):
         class UnavailableRest:
             @staticmethod
-            def rows(_table, _params):
+            def rows(_table, _params, **_kwargs):
                 raise urllib.error.URLError("temporary network failure")
 
         with mock.patch.object(conversation_agent_bridge.sys, "stderr"):
             self.assertTrue(
                 conversation_agent_bridge.job_should_continue(UnavailableRest(), "job-123")
             )
+
+    def test_status_timeout_does_not_cancel_running_agent(self):
+        class SlowRest:
+            @staticmethod
+            def rows(_table, _params, **_kwargs):
+                raise TimeoutError("temporary timeout")
+
+        with mock.patch.object(conversation_agent_bridge.sys, "stderr"):
+            self.assertTrue(
+                conversation_agent_bridge.job_should_continue(SlowRest(), "job-123")
+            )
+
+    def test_cancellation_status_check_has_a_short_network_timeout(self):
+        rest = mock.Mock()
+        rest.rows.return_value = [{"status": "processing"}]
+
+        self.assertTrue(conversation_agent_bridge.job_is_processing(rest, "job-123"))
+
+        self.assertEqual(
+            rest.rows.call_args.kwargs["timeout_seconds"],
+            conversation_agent_bridge.JOB_STATUS_REQUEST_TIMEOUT_SECONDS,
+        )
 
     def test_materializes_private_attachment_with_a_safe_ephemeral_filename(self):
         class FakeRest:

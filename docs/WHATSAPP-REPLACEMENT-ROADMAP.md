@@ -188,6 +188,17 @@ schemas. The first safe reduction removes the unnecessary failed image/copy
 iteration. Any broader tool-catalog or thinking-level change must be benchmarked
 for latency and task correctness before altering Aria's production capability.
 
+Local bridge-latency hardening now gives Aria and Marco independent serial
+workers, so a slow run or claim request for one cannot hold up the other.
+Queue claims time out after five seconds instead of inheriting the general
+30-second REST timeout, while cancellation/status checks use a three-second
+bound. Each agent still processes one ordered queue and retains its existing
+OpenClaw identity, stable RESLU conversation session, tools, memory and
+permissions. This contains transport stalls without introducing parallel turns
+against the same canonical agent session. It requires a fresh post-deployment
+photo, PDF and voice timing run; the 74-second pre-repair trace does not prove
+the new queue-release time.
+
 Work:
 
 - Publish and validate the end-to-end timing candidate on an iPhone call.

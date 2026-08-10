@@ -25,6 +25,9 @@ import urllib.parse
 import urllib.request
 
 POLL_SECONDS = 1.0
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
+CLAIM_REQUEST_TIMEOUT_SECONDS = 5.0
+JOB_STATUS_REQUEST_TIMEOUT_SECONDS = 3.0
 PUSH_POLL_SECONDS = 1.0
 PUSH_REQUEST_TIMEOUT_SECONDS = 15.0
 AGENT_STATUS_CHECK_SECONDS = 0.5
@@ -64,7 +67,14 @@ class SupabaseRest:
             "Content-Type": "application/json",
         }
 
-    def request(self, method: str, path: str, body: object | None = None, prefer: str | None = None) -> object:
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: object | None = None,
+        prefer: str | None = None,
+        timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    ) -> object:
         headers = dict(self.headers)
         if prefer:
             headers["Prefer"] = prefer
@@ -74,21 +84,31 @@ class SupabaseRest:
             method=method,
             headers=headers,
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             raw = response.read().decode("utf-8")
         return json.loads(raw) if raw else None
 
     def claim(self, slug: str) -> dict | None:
-        result = self.request("POST", "rpc/claim_agent_conversation_job", {"p_agent_slug": slug})
+        result = self.request(
+            "POST",
+            "rpc/claim_agent_conversation_job",
+            {"p_agent_slug": slug},
+            timeout_seconds=CLAIM_REQUEST_TIMEOUT_SECONDS,
+        )
         return result[0] if isinstance(result, list) and result else None
 
     def claim_push_jobs(self, limit: int = 10) -> list[dict]:
         result = self.request("POST", "rpc/claim_conversation_push_jobs", {"p_limit": limit})
         return result if isinstance(result, list) else []
 
-    def rows(self, table: str, params: dict[str, str]) -> list[dict]:
+    def rows(
+        self,
+        table: str,
+        params: dict[str, str],
+        timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    ) -> list[dict]:
         query = urllib.parse.urlencode(params, safe="(),.*:")
-        result = self.request("GET", f"{table}?{query}")
+        result = self.request("GET", f"{table}?{query}", timeout_seconds=timeout_seconds)
         return result if isinstance(result, list) else []
 
     def patch(self, table: str, row_id: str, values: dict) -> None:
@@ -427,7 +447,11 @@ def invoke_agent(
 
 
 def job_is_processing(rest: SupabaseRest, job_id: str) -> bool:
-    rows = rest.rows("agent_conversation_jobs", {"select": "status", "id": f"eq.{job_id}", "limit": "1"})
+    rows = rest.rows(
+        "agent_conversation_jobs",
+        {"select": "status", "id": f"eq.{job_id}", "limit": "1"},
+        timeout_seconds=JOB_STATUS_REQUEST_TIMEOUT_SECONDS,
+    )
     return bool(rows and rows[0].get("status") == "processing")
 
 
@@ -435,7 +459,7 @@ def job_should_continue(rest: SupabaseRest, job_id: str) -> bool:
     """Treat a transient status-read failure as unknown, not as cancellation."""
     try:
         return job_is_processing(rest, job_id)
-    except urllib.error.URLError as exc:
+    except (urllib.error.URLError, TimeoutError) as exc:
         print(
             f"[conversation-bridge] could not check job {job_id} cancellation yet: {exc}",
             file=sys.stderr,
@@ -503,6 +527,63 @@ def push_delivery_loop(base_url: str, service_key: str, app_url: str) -> None:
                     print(f"[conversation-push] could not schedule retry: {patch_error}", file=sys.stderr, flush=True)
 
 
+def agent_worker_loop(base_url: str, service_key: str, slug: str) -> None:
+    """Drain one agent queue without letting another agent or poll hold it up."""
+    rest = SupabaseRest(base_url, service_key)
+    while True:
+        job = None
+        try:
+            job = rest.claim(slug)
+            if not job:
+                time.sleep(POLL_SECONDS)
+                continue
+            started_at = time.monotonic()
+            print(f"[conversation-bridge] {slug}: claimed job {job['id']}", flush=True)
+            outcome = process_job(rest, job)
+            elapsed = time.monotonic() - started_at
+            print(
+                f"[conversation-bridge] {slug}: {outcome} job {job['id']} in {elapsed:.1f}s",
+                flush=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - one bad turn must not kill this agent worker
+            print(f"[conversation-bridge] {slug}: {exc}", file=sys.stderr, flush=True)
+            if job:
+                try:
+                    if job_is_processing(rest, job["id"]):
+                        rest.patch(
+                            "agent_conversation_jobs",
+                            job["id"],
+                            {
+                                "status": "failed",
+                                "completed_at": time.strftime(
+                                    "%Y-%m-%dT%H:%M:%SZ",
+                                    time.gmtime(),
+                                ),
+                                "error": str(exc)[:2000],
+                            },
+                        )
+                except Exception as patch_error:  # noqa: BLE001
+                    print(
+                        f"[conversation-bridge] could not mark failed: {patch_error}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+            time.sleep(POLL_SECONDS)
+
+
+def build_agent_workers(base_url: str, service_key: str) -> list[threading.Thread]:
+    """Create one serial worker per canonical agent; sessions stay authoritative."""
+    return [
+        threading.Thread(
+            target=agent_worker_loop,
+            args=(base_url, service_key, slug),
+            name=f"reslu-conversation-{slug}",
+            daemon=False,
+        )
+        for slug in AGENT_SLUGS
+    ]
+
+
 def process_job(rest: SupabaseRest, job: dict) -> str:
     agent = agent_identity(rest, job["agent_id"])
     history = conversation_history(rest, job["conversation_id"])
@@ -554,7 +635,6 @@ def main() -> int:
     if not base_url or not service_key:
         print("Missing SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY", file=sys.stderr)
         return 2
-    rest = SupabaseRest(base_url, service_key)
     app_url = os.environ.get("SPEC_APP_URL") or os.environ.get("NEXT_PUBLIC_APP_URL")
     if app_url:
         threading.Thread(
@@ -566,38 +646,12 @@ def main() -> int:
     else:
         print("[conversation-push] SPEC_APP_URL/NEXT_PUBLIC_APP_URL missing; delivery worker disabled", file=sys.stderr, flush=True)
     print("[conversation-bridge] listening for Aria and Marco conversation turns", flush=True)
-    while True:
-        did_work = False
-        for slug in AGENT_SLUGS:
-            job = None
-            try:
-                job = rest.claim(slug)
-                if not job:
-                    continue
-                did_work = True
-                started_at = time.monotonic()
-                print(f"[conversation-bridge] {slug}: claimed job {job['id']}", flush=True)
-                outcome = process_job(rest, job)
-                elapsed = time.monotonic() - started_at
-                print(
-                    f"[conversation-bridge] {slug}: {outcome} job {job['id']} in {elapsed:.1f}s",
-                    flush=True,
-                )
-            except (urllib.error.URLError, subprocess.SubprocessError, RuntimeError, KeyError) as exc:
-                print(f"[conversation-bridge] {slug}: {exc}", file=sys.stderr, flush=True)
-                if job:
-                    try:
-                        if job_is_processing(rest, job["id"]):
-                            rest.patch(
-                                "agent_conversation_jobs",
-                                job["id"],
-                                {"status": "failed", "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "error": str(exc)[:2000]},
-                            )
-                    except Exception as patch_error:  # noqa: BLE001
-                        print(f"[conversation-bridge] could not mark failed: {patch_error}", file=sys.stderr)
-                job = None
-        if not did_work:
-            time.sleep(POLL_SECONDS)
+    workers = build_agent_workers(base_url, service_key)
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    return 0
 
 
 if __name__ == "__main__":

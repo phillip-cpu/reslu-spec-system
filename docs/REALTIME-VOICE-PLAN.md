@@ -48,6 +48,9 @@ This mirrors OpenClaw's own realtime Voice Call design, which exposes `openclaw_
 ### Mac mini
 
 - Claim realtime consult jobs and invoke the existing selected OpenClaw agent.
+- Run independent serial workers for Aria and Marco, with bounded claim and
+  cancellation-status request timeouts; never let one agent's network stall
+  block the other agent's queue.
 - Keep the stable RESLU conversation-to-OpenClaw session mapping.
 - Return tool output and auditable action results. Cancellation may stop waiting or suppress late speech, but it must not claim that an email, approval, calendar change or other completed side effect was undone.
 
@@ -62,6 +65,13 @@ termination signal to the accepted Gateway run as `chat.abort`; the direct
 client removes the opaque, whole-response boundary rather than inventing a new
 cancellation guarantee. Keep Gateway credentials on the Mac and continue to
 publish only bounded status/result data through Supabase.
+
+The immediate bridge hardening keeps one ordered worker per canonical agent,
+but isolates Aria from Marco and caps queue claims at five seconds and
+cancellation/status reads at three seconds. This is transport containment, not
+a substitute for the Gateway event migration: same-agent turns remain serial
+and the final substantive answer still waits for the authoritative OpenClaw
+run.
 
 Attachment timing has one additional avoidable boundary: files staged in the
 system temporary directory can sit outside the OpenClaw agent's readable
