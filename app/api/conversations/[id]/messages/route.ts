@@ -3,12 +3,101 @@ import { createClient } from "@/lib/supabase/server";
 import { messageAuthor } from "@/lib/conversations";
 import { conversationParticipants } from "@/lib/conversation-access";
 import { conversationAttachmentAccessUrl, MAX_CONVERSATION_ATTACHMENTS } from "@/lib/conversation-attachments";
-import type { AgentSlug, ConversationAttachment, ConversationMessage } from "@/types/conversations";
+import type {
+  AgentSlug,
+  ConversationAgentActivity,
+  ConversationAttachment,
+  ConversationMessage,
+  ConversationParticipant,
+} from "@/types/conversations";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type Context = { params: Promise<{ id: string }> };
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const AGENT_SLUGS = new Set<AgentSlug>(["aria", "marco"]);
+type MessageInput = {
+  body?: unknown;
+  source?: unknown;
+  target_agent_slugs?: unknown;
+  attachment_ids?: unknown;
+  client_message_id?: unknown;
+  reply_to_id?: unknown;
+};
+type MessageRow = Omit<ConversationMessage, "attachments" | "author"> & {
+  conversation_attachments?: ConversationAttachment[];
+};
+type ActiveAgentJobRow = {
+  agent_id: string;
+  status: "pending" | "processing";
+  created_at: string;
+  claimed_at: string | null;
+};
+
+function hydrateMessages(
+  rows: MessageRow[],
+  participants: ConversationParticipant[],
+  conversationId: string
+): ConversationMessage[] {
+  return rows.map((row) => {
+    const attachments = (row.conversation_attachments ?? [])
+      .filter((attachment) => attachment.status === "ready")
+      .map((attachment) => ({
+        ...attachment,
+        metadata: attachment.metadata ?? {},
+        url: conversationAttachmentAccessUrl(conversationId, attachment.id),
+      }));
+    const { conversation_attachments: _joinedAttachments, ...messageRow } = row;
+    return {
+      ...messageRow,
+      metadata: row.metadata ?? {},
+      attachments,
+      author: messageAuthor(row, participants),
+    };
+  });
+}
+
+async function activeAgentActivity(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  conversationId: string,
+  participants: ConversationParticipant[]
+): Promise<ConversationAgentActivity[]> {
+  const agentIds = new Set(participants.filter((participant) => participant.type === "agent").map((participant) => participant.id));
+  if (agentIds.size === 0) return [];
+  const { data, error } = await supabase
+    .from("agent_conversation_jobs")
+    .select("agent_id,status,created_at,claimed_at")
+    .eq("conversation_id", conversationId)
+    .in("status", ["pending", "processing"])
+    .order("created_at", { ascending: true })
+    .limit(100);
+  if (error) {
+    console.error("Could not load active conversation agent work", { conversationId, error: error.message });
+    return [];
+  }
+  const activity = new Map<string, ConversationAgentActivity>();
+  for (const job of (data ?? []) as ActiveAgentJobRow[]) {
+    if (!agentIds.has(job.agent_id)) continue;
+    const current = activity.get(job.agent_id);
+    if (!current) {
+      activity.set(job.agent_id, {
+        agent_id: job.agent_id,
+        status: job.status,
+        pending_turns: 1,
+        queued_at: job.created_at,
+        claimed_at: job.claimed_at,
+      });
+      continue;
+    }
+    current.pending_turns += 1;
+    if (job.status === "processing") {
+      current.status = "processing";
+      current.claimed_at = job.claimed_at;
+    }
+  }
+  return [...activity.values()];
+}
 
 export async function GET(request: NextRequest, context: Context) {
   const { id } = await context.params;
@@ -18,37 +107,93 @@ export async function GET(request: NextRequest, context: Context) {
 
   const participantResult = await conversationParticipants(supabase, id, user.id);
   if (participantResult.error) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
+  const agentActivity = await activeAgentActivity(supabase, id, participantResult.participants);
+
+  const around = request.nextUrl.searchParams.get("around");
+  if (around && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(around)) {
+    return NextResponse.json({ error: "Invalid message anchor" }, { status: 400 });
+  }
+  if (around) {
+    const { data: targetData, error: targetError } = await supabase
+      .from("conversation_messages")
+      .select("*, conversation_attachments(*)")
+      .eq("conversation_id", id)
+      .eq("id", around)
+      .is("deleted_at", null)
+      .maybeSingle();
+    if (targetError) return NextResponse.json({ error: targetError.message }, { status: 500 });
+    if (!targetData) return NextResponse.json({ error: "Message not found" }, { status: 404 });
+
+    const [olderResult, newerResult] = await Promise.all([
+      supabase
+        .from("conversation_messages")
+        .select("*, conversation_attachments(*)")
+        .eq("conversation_id", id)
+        .is("deleted_at", null)
+        .or(`created_at.lt.${targetData.created_at},and(created_at.eq.${targetData.created_at},id.lt.${around})`)
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(50),
+      supabase
+        .from("conversation_messages")
+        .select("*, conversation_attachments(*)")
+        .eq("conversation_id", id)
+        .is("deleted_at", null)
+        .or(`created_at.gt.${targetData.created_at},and(created_at.eq.${targetData.created_at},id.gt.${around})`)
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .limit(50),
+    ]);
+    const contextError = olderResult.error ?? newerResult.error;
+    if (contextError) return NextResponse.json({ error: contextError.message }, { status: 500 });
+    const rows = [
+      ...((olderResult.data ?? []) as unknown as MessageRow[]).reverse(),
+      targetData as unknown as MessageRow,
+      ...((newerResult.data ?? []) as unknown as MessageRow[]),
+    ];
+    return NextResponse.json({
+      messages: hydrateMessages(rows, participantResult.participants, id),
+      participants: participantResult.participants,
+      agent_activity: agentActivity,
+      context: { anchor_message_id: around, has_older: (olderResult.data?.length ?? 0) === 50, has_newer: (newerResult.data?.length ?? 0) === 50 },
+    });
+  }
 
   const before = request.nextUrl.searchParams.get("before");
+  const beforeId = request.nextUrl.searchParams.get("before_id");
+  if (before && Number.isNaN(Date.parse(before))) {
+    return NextResponse.json({ error: "Invalid message cursor" }, { status: 400 });
+  }
+  if (beforeId && !UUID_PATTERN.test(beforeId)) {
+    return NextResponse.json({ error: "Invalid message cursor" }, { status: 400 });
+  }
+  if (beforeId && !before) {
+    return NextResponse.json({ error: "Incomplete message cursor" }, { status: 400 });
+  }
   let query = supabase
     .from("conversation_messages")
     .select("*, conversation_attachments(*)")
     .eq("conversation_id", id)
     .is("deleted_at", null)
     .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
     .limit(100);
-  if (before) query = query.lt("created_at", before);
+  if (before && beforeId) {
+    query = query.or(`created_at.lt.${before},and(created_at.eq.${before},id.lt.${beforeId})`);
+  } else if (before) {
+    // Compatibility for clients deployed before the composite cursor.
+    query = query.lt("created_at", before);
+  }
   const { data, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const rows = (data ?? []).reverse();
-  const messages = rows.map((row) => {
-    const attachments = ((row.conversation_attachments ?? []) as ConversationAttachment[])
-      .filter((attachment) => attachment.status === "ready")
-      .map((attachment) => ({
-        ...attachment,
-        metadata: attachment.metadata ?? {},
-        url: conversationAttachmentAccessUrl(id, attachment.id),
-      }));
-    const { conversation_attachments: _joinedAttachments, ...messageRow } = row;
-    return {
-      ...messageRow,
-      metadata: row.metadata ?? {},
-      attachments,
-      author: messageAuthor(row, participantResult.participants),
-    };
-  }) as ConversationMessage[];
-  return NextResponse.json({ messages, participants: participantResult.participants });
+  const rows = ((data ?? []) as unknown as MessageRow[]).reverse();
+  return NextResponse.json({
+    messages: hydrateMessages(rows, participantResult.participants, id),
+    participants: participantResult.participants,
+    agent_activity: agentActivity,
+    context: { anchor_message_id: null, has_older: (data?.length ?? 0) === 100, has_newer: false },
+  });
 }
 
 export async function POST(request: NextRequest, context: Context) {
@@ -57,39 +202,90 @@ export async function POST(request: NextRequest, context: Context) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: {
-    body?: string;
-    source?: "text" | "voice";
-    target_agent_slugs?: AgentSlug[];
-    attachment_ids?: string[];
-  };
+  let rawBody: unknown;
   try {
-    body = await request.json();
+    rawBody = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  const attachmentIds = Array.isArray(body.attachment_ids)
-    ? body.attachment_ids.filter((value): value is string => typeof value === "string" && value.length > 0)
-    : [];
+  if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  const body = rawBody as MessageInput;
+  if (body.body != null && typeof body.body !== "string") {
+    return NextResponse.json({ error: "Invalid message body" }, { status: 400 });
+  }
+  if (body.source != null && body.source !== "text" && body.source !== "voice") {
+    return NextResponse.json({ error: "Invalid message source" }, { status: 400 });
+  }
+  if (body.target_agent_slugs != null && !Array.isArray(body.target_agent_slugs)) {
+    return NextResponse.json({ error: "Invalid agent targets" }, { status: 400 });
+  }
+  const rawTargetAgentSlugs = (body.target_agent_slugs ?? []) as unknown[];
+  if (
+    rawTargetAgentSlugs.length > AGENT_SLUGS.size
+    || rawTargetAgentSlugs.some((value) => typeof value !== "string" || !AGENT_SLUGS.has(value as AgentSlug))
+    || rawTargetAgentSlugs.length !== new Set(rawTargetAgentSlugs).size
+  ) {
+    return NextResponse.json({ error: "Agent targets must be unique Aria or Marco values" }, { status: 400 });
+  }
+  const targetAgentSlugs = rawTargetAgentSlugs as AgentSlug[];
+  if (body.attachment_ids != null && !Array.isArray(body.attachment_ids)) {
+    return NextResponse.json({ error: "Invalid attachment ids" }, { status: 400 });
+  }
+  const rawAttachmentIds = (body.attachment_ids ?? []) as unknown[];
+  if (rawAttachmentIds.some((value) => typeof value !== "string" || !UUID_PATTERN.test(value))) {
+    return NextResponse.json({ error: "Invalid attachment ids" }, { status: 400 });
+  }
+  const attachmentIds = rawAttachmentIds as string[];
   if (attachmentIds.length !== new Set(attachmentIds).size || attachmentIds.length > MAX_CONVERSATION_ATTACHMENTS) {
     return NextResponse.json({ error: `Attach no more than ${MAX_CONVERSATION_ATTACHMENTS} unique files` }, { status: 400 });
   }
-  const typedBody = body.body?.trim() ?? "";
+  const typedBody = typeof body.body === "string" ? body.body.trim() : "";
   if (!typedBody && attachmentIds.length === 0) {
     return NextResponse.json({ error: "Message cannot be empty" }, { status: 400 });
   }
   const messageBody = typedBody || `Shared ${attachmentIds.length} attachment${attachmentIds.length === 1 ? "" : "s"}`;
   if (messageBody.length > 20000) return NextResponse.json({ error: "Message is too long" }, { status: 400 });
+  if (body.client_message_id != null && typeof body.client_message_id !== "string") {
+    return NextResponse.json({ error: "Invalid client message id" }, { status: 400 });
+  }
+  const suppliedClientMessageId = typeof body.client_message_id === "string" ? body.client_message_id.trim() : "";
+  if (suppliedClientMessageId && !UUID_PATTERN.test(suppliedClientMessageId)) {
+    return NextResponse.json({ error: "Invalid client message id" }, { status: 400 });
+  }
+  const clientMessageId = suppliedClientMessageId || crypto.randomUUID();
+  if (body.reply_to_id != null && typeof body.reply_to_id !== "string") {
+    return NextResponse.json({ error: "Invalid reply target" }, { status: 400 });
+  }
+  const replyToId = body.reply_to_id == null ? null : body.reply_to_id.trim();
+  if (replyToId && !UUID_PATTERN.test(replyToId)) {
+    return NextResponse.json({ error: "Invalid reply target" }, { status: 400 });
+  }
 
   const participantResult = await conversationParticipants(supabase, id, user.id);
   const self = participantResult.participants.find((participant) => participant.type === "human" && participant.id === user.id);
   if (!self) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
 
   const agents = participantResult.participants.filter((participant) => participant.type === "agent");
-  const explicitTargets = new Set(body.target_agent_slugs ?? []);
+  let replyTargetAgentId: string | null = null;
+  if (replyToId) {
+    const { data: replyTarget, error: replyTargetError } = await supabase
+      .from("conversation_messages")
+      .select("author_agent_id")
+      .eq("id", replyToId)
+      .eq("conversation_id", id)
+      .is("deleted_at", null)
+      .maybeSingle();
+    if (replyTargetError) return NextResponse.json({ error: replyTargetError.message }, { status: 500 });
+    replyTargetAgentId = replyTarget?.author_agent_id ?? null;
+  }
+  const explicitTargets = new Set(targetAgentSlugs);
   const mentionedTargets = agents.filter((agent) => {
     const slug = agent.agent_slug!;
-    return explicitTargets.has(slug) || new RegExp(`(?:^|\\s)@?${agent.display_name}(?:\\s|[,.!?]|$)`, "i").test(messageBody);
+    return agent.id === replyTargetAgentId
+      || explicitTargets.has(slug)
+      || new RegExp(`(?:^|\\s)@?${agent.display_name}(?:\\s|[,.!?]|$)`, "i").test(messageBody);
   });
   const targetAgents = agents.length === 1 && participantResult.participants.length === 2 && explicitTargets.size === 0
     ? agents
@@ -99,10 +295,20 @@ export async function POST(request: NextRequest, context: Context) {
     // checks this state before publishing output, so a late reply cannot
     // appear after the interruption. Any business side effect already
     // completed by the agent remains real and auditable.
-    await supabase.rpc("cancel_agent_conversation_jobs", {
+    const { error: cancellationError } = await supabase.rpc("cancel_agent_conversation_jobs", {
       p_conversation_id: id,
       p_agent_ids: targetAgents.map((agent) => agent.id),
     });
+    if (cancellationError) {
+      console.error("could not establish voice-turn cancellation boundary", {
+        conversationId: id,
+        agentSlugs: targetAgents.map((agent) => agent.agent_slug),
+        error: cancellationError.message,
+      });
+      return NextResponse.json({
+        error: "The previous voice turn could not be interrupted safely. Please try again.",
+      }, { status: 503 });
+    }
   }
 
   const metadata = {
@@ -110,25 +316,21 @@ export async function POST(request: NextRequest, context: Context) {
     target_agent_slugs: targetAgents.map((agent) => agent.agent_slug),
     ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
   };
-  const messageResult = attachmentIds.length > 0
-    ? await supabase.rpc("create_conversation_message_with_attachments", {
-        p_conversation_id: id,
-        p_body: messageBody,
-        p_metadata: metadata,
-        p_attachment_ids: attachmentIds,
-      }).single()
-    : await supabase
-        .from("conversation_messages")
-        .insert({
-          conversation_id: id,
-          author_profile_id: user.id,
-          body: messageBody,
-          metadata,
-        })
-        .select("*")
-        .single();
-  const { data: message, error } = messageResult;
-  if (error || !message) return NextResponse.json({ error: error?.message ?? "Could not send message" }, { status: 500 });
+  const messageResult = await supabase.rpc("create_conversation_message_idempotent", {
+    p_conversation_id: id,
+    p_body: messageBody,
+    p_metadata: metadata,
+    p_client_message_id: clientMessageId,
+    p_attachment_ids: attachmentIds,
+    p_reply_to_id: replyToId,
+  }).single();
+  const { data: rawMessage, error } = messageResult;
+  const message = rawMessage as unknown as ConversationMessage | null;
+  if (error || !message) {
+    const errorMessage = error?.message ?? "Could not send message";
+    const conflict = /client message id|reply target|attachments? (?:changed|set does not match|are unavailable)/i.test(errorMessage);
+    return NextResponse.json({ error: errorMessage }, { status: conflict ? 409 : 500 });
+  }
 
   let queueError: string | null = null;
   if (targetAgents.length > 0) {

@@ -1,10 +1,12 @@
 import importlib.util
+from datetime import datetime, timezone
 import os
 import stat
 import subprocess
 import tempfile
 import unittest
 import urllib.error
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -17,6 +19,44 @@ SPEC.loader.exec_module(conversation_agent_bridge)
 
 
 class ConversationAgentBridgeTests(unittest.TestCase):
+    def test_history_resolves_quoted_reply_target_outside_recent_window(self):
+        class FakeRest:
+            @staticmethod
+            def rows(table, params):
+                if table == "conversation_messages" and "id" not in params:
+                    return [{
+                        "id": "reply-1",
+                        "author_profile_id": "profile-phillip",
+                        "author_agent_id": None,
+                        "body": "Yes, use that option.",
+                        "kind": "text",
+                        "reply_to_id": "target-older",
+                        "created_at": "2026-08-10T11:00:00Z",
+                    }]
+                if table == "conversation_messages":
+                    return [{
+                        "id": "target-older",
+                        "author_profile_id": "profile-jane",
+                        "author_agent_id": None,
+                        "body": "Should we specify the limestone finish?",
+                        "kind": "text",
+                        "reply_to_id": None,
+                        "created_at": "2026-08-09T09:00:00Z",
+                    }]
+                if table == "profiles":
+                    return [
+                        {"id": "profile-phillip", "full_name": "Phillip"},
+                        {"id": "profile-jane", "full_name": "Jane"},
+                    ]
+                if table in ("conversation_agents", "conversation_attachments"):
+                    return []
+                raise AssertionError((table, params))
+
+        history = conversation_agent_bridge.conversation_history(FakeRest(), "conversation-1")
+
+        self.assertIn("[Replying to Jane: Should we specify the limestone finish?]", history)
+        self.assertIn("Phillip: Yes, use that option.", history)
+
     def test_reads_documented_final_reply(self):
         payload = {
             "ok": True,
@@ -314,6 +354,43 @@ class ConversationAgentBridgeTests(unittest.TestCase):
 
         rest.insert.assert_called_once()
         rest.patch.assert_called_once()
+
+    @mock.patch.object(conversation_agent_bridge.urllib.request, "urlopen")
+    def test_push_delivery_uses_one_job_token_and_exact_job_id(self, urlopen):
+        response = urlopen.return_value.__enter__.return_value
+        response.read.return_value = b'{"ok":true}'
+        job = {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "delivery_token": "22222222-2222-4222-8222-222222222222",
+        }
+
+        conversation_agent_bridge.deliver_push_job("https://spec.reslu.com.au/", job)
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://spec.reslu.com.au/api/conversations/push/deliver")
+        self.assertEqual(request.headers["Authorization"], f"Bearer {job['delivery_token']}")
+        self.assertEqual(json.loads(request.data), {"job_id": job["id"]})
+
+    @mock.patch.object(conversation_agent_bridge, "datetime")
+    def test_failed_push_is_returned_to_durable_queue_with_backoff(self, mocked_datetime):
+        mocked_datetime.now.return_value = datetime(2026, 8, 10, tzinfo=timezone.utc)
+        rest = mock.Mock()
+        job = {"id": "push-job", "attempts": 3, "delivery_token": "claim-token"}
+
+        conversation_agent_bridge.mark_push_delivery_failed(rest, job, RuntimeError("temporary"))
+
+        values = rest.patch_where.call_args.args[2]
+        self.assertEqual(rest.patch_where.call_args.args[:2], (
+            "conversation_push_jobs",
+            {
+                "id": "eq.push-job",
+                "delivery_token": "eq.claim-token",
+                "status": "eq.processing",
+            },
+        ))
+        self.assertEqual(values["status"], "failed")
+        self.assertEqual(values["next_attempt_at"], "2026-08-10T00:00:08+00:00")
+        self.assertEqual(values["last_error"], "temporary")
 
 
 if __name__ == "__main__":

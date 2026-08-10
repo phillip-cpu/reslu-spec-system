@@ -25,8 +25,9 @@ export async function POST(request: NextRequest, context: Context) {
   if (membership.error) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
 
   // A browser can disappear halfway through a signed upload. Clear this
-  // user's old, unbound objects on their next upload so interrupted attempts
-  // cannot accumulate private storage or canonical staging rows forever.
+  // user's old, incomplete objects on their next upload so interrupted
+  // attempts cannot accumulate forever. Verified ready drafts are retained
+  // until the user sends or explicitly removes them.
   const staleBefore = new Date(Date.now() - STAGED_CONVERSATION_ATTACHMENT_MAX_AGE_MS).toISOString();
   const { data: staleRows } = await supabase
     .from("conversation_attachments")
@@ -34,6 +35,7 @@ export async function POST(request: NextRequest, context: Context) {
     .eq("conversation_id", conversationId)
     .eq("uploaded_by", user.id)
     .is("message_id", null)
+    .eq("status", "uploading")
     .lt("created_at", staleBefore);
   if (staleRows?.length) {
     const stalePaths = staleRows.map((row) => row.storage_path);

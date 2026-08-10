@@ -48,5 +48,7 @@ test("failed calls offer mobile recovery instead of disabled repeat controls", (
   assert.match(workspace, /Call interrupted/);
   assert.match(workspace, /Back to chat/);
   assert.match(workspace, /Try again/);
-  assert.match(workspace, /await endCall\(\);\s+await startCall\(\);/);
+  assert.match(workspace, /const preserveStartIntent = !callIdRef\.current/);
+  assert.match(workspace, /const endedCleanly = await endCall/);
+  assert.match(workspace, /if \(!endedCleanly\) return;\s+await startCall\(\);/);
 });

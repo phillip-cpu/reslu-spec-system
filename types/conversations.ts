@@ -39,6 +39,7 @@ export interface ConversationParticipant {
 
 export interface ConversationMessage {
   id: string;
+  client_message_id: string | null;
   conversation_id: string;
   author_profile_id: string | null;
   author_agent_id: string | null;
@@ -52,6 +53,14 @@ export interface ConversationMessage {
   author: ConversationParticipant;
 }
 
+export interface ConversationAgentActivity {
+  agent_id: string;
+  status: "pending" | "processing";
+  pending_turns: number;
+  queued_at: string;
+  claimed_at: string | null;
+}
+
 export interface ConversationSummary {
   id: string;
   kind: ConversationKind;
@@ -60,6 +69,10 @@ export interface ConversationSummary {
   created_by: string;
   created_at: string;
   updated_at: string;
+  unread_count: number;
+  notifications_muted: boolean;
+  archived_at: string | null;
+  pinned_at: string | null;
   participants: ConversationParticipant[];
   last_message: ConversationMessage | null;
 }

@@ -16,13 +16,17 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 import urllib.error
 import urllib.parse
 import urllib.request
 
 POLL_SECONDS = 1.0
+PUSH_POLL_SECONDS = 1.0
+PUSH_REQUEST_TIMEOUT_SECONDS = 15.0
 AGENT_STATUS_CHECK_SECONDS = 0.5
 AGENT_TERMINATE_GRACE_SECONDS = 2.0
 AGENT_PROCESS_TIMEOUT_SECONDS = 210.0
@@ -78,6 +82,10 @@ class SupabaseRest:
         result = self.request("POST", "rpc/claim_agent_conversation_job", {"p_agent_slug": slug})
         return result[0] if isinstance(result, list) and result else None
 
+    def claim_push_jobs(self, limit: int = 10) -> list[dict]:
+        result = self.request("POST", "rpc/claim_conversation_push_jobs", {"p_limit": limit})
+        return result if isinstance(result, list) else []
+
     def rows(self, table: str, params: dict[str, str]) -> list[dict]:
         query = urllib.parse.urlencode(params, safe="(),.*:")
         result = self.request("GET", f"{table}?{query}")
@@ -85,6 +93,10 @@ class SupabaseRest:
 
     def patch(self, table: str, row_id: str, values: dict) -> None:
         self.request("PATCH", f"{table}?id=eq.{row_id}", values, "return=minimal")
+
+    def patch_where(self, table: str, filters: dict[str, str], values: dict) -> None:
+        query = urllib.parse.urlencode(filters, safe="(),.*:")
+        self.request("PATCH", f"{table}?{query}", values, "return=minimal")
 
     def insert(self, table: str, values: dict) -> dict:
         result = self.request("POST", table, values, "return=representation")
@@ -201,7 +213,7 @@ def conversation_history(rest: SupabaseRest, conversation_id: str) -> str:
     messages = rest.rows(
         "conversation_messages",
         {
-            "select": "id,author_profile_id,author_agent_id,body,kind,created_at",
+            "select": "id,author_profile_id,author_agent_id,body,kind,reply_to_id,created_at",
             "conversation_id": f"eq.{conversation_id}",
             "deleted_at": "is.null",
             "order": "created_at.desc",
@@ -209,8 +221,27 @@ def conversation_history(rest: SupabaseRest, conversation_id: str) -> str:
         },
     )
     messages.reverse()
-    profile_ids = sorted({row["author_profile_id"] for row in messages if row.get("author_profile_id")})
-    agent_ids = sorted({row["author_agent_id"] for row in messages if row.get("author_agent_id")})
+    messages_by_id = {row["id"]: row for row in messages}
+    missing_reply_ids = sorted({
+        row["reply_to_id"]
+        for row in messages
+        if row.get("reply_to_id") and row["reply_to_id"] not in messages_by_id
+    })
+    reply_targets = []
+    if missing_reply_ids:
+        reply_targets = rest.rows(
+            "conversation_messages",
+            {
+                "select": "id,author_profile_id,author_agent_id,body,kind,reply_to_id,created_at",
+                "id": f"in.({','.join(missing_reply_ids)})",
+                "conversation_id": f"eq.{conversation_id}",
+                "deleted_at": "is.null",
+            },
+        )
+        messages_by_id.update({row["id"]: row for row in reply_targets})
+    context_rows = [*messages, *reply_targets]
+    profile_ids = sorted({row["author_profile_id"] for row in context_rows if row.get("author_profile_id")})
+    agent_ids = sorted({row["author_agent_id"] for row in context_rows if row.get("author_agent_id")})
     names: dict[str, str] = {}
     if profile_ids:
         for row in rest.rows("profiles", {"select": "id,full_name", "id": f"in.({','.join(profile_ids)})"}):
@@ -236,6 +267,12 @@ def conversation_history(rest: SupabaseRest, conversation_id: str) -> str:
     for row in messages:
         author_id = row.get("author_profile_id") or row.get("author_agent_id")
         author = names.get(author_id, "Participant")
+        reply_target = messages_by_id.get(row.get("reply_to_id"))
+        if reply_target:
+            target_author_id = reply_target.get("author_profile_id") or reply_target.get("author_agent_id")
+            target_author = names.get(target_author_id, "Participant")
+            target_body = re.sub(r"\s+", " ", str(reply_target.get("body") or "")).strip()[:500]
+            lines.append(f"  [Replying to {target_author}: {target_body}]")
         lines.append(f"[{row['created_at']}] {author}: {row['body']}")
         for attachment in attachments_by_message.get(row["id"], []):
             lines.append(
@@ -407,6 +444,65 @@ def job_should_continue(rest: SupabaseRest, job_id: str) -> bool:
         return True
 
 
+def deliver_push_job(app_url: str, job: dict) -> None:
+    request = urllib.request.Request(
+        f"{app_url.rstrip('/')}/api/conversations/push/deliver",
+        data=json.dumps({"job_id": job["id"]}).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {job['delivery_token']}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=PUSH_REQUEST_TIMEOUT_SECONDS) as response:
+        response.read()
+
+
+def mark_push_delivery_failed(rest: SupabaseRest, job: dict, error: BaseException) -> None:
+    attempts = int(job.get("attempts") or 1)
+    delay_seconds = min(300, 2 ** min(attempts, 8))
+    retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+    rest.patch_where(
+        "conversation_push_jobs",
+        {
+            "id": f"eq.{job['id']}",
+            "delivery_token": f"eq.{job['delivery_token']}",
+            "status": "eq.processing",
+        },
+        {
+            "status": "failed",
+            "next_attempt_at": retry_at.isoformat(),
+            "last_error": str(error)[:2000],
+        },
+    )
+
+
+def push_delivery_loop(base_url: str, service_key: str, app_url: str) -> None:
+    """Drain durable notification jobs without blocking Aria/Marco turns."""
+    rest = SupabaseRest(base_url, service_key)
+    print("[conversation-push] listening for message notifications", flush=True)
+    while True:
+        try:
+            jobs = rest.claim_push_jobs()
+        except Exception as exc:  # noqa: BLE001 - keep the independent worker alive
+            print(f"[conversation-push] could not claim jobs: {exc}", file=sys.stderr, flush=True)
+            time.sleep(PUSH_POLL_SECONDS)
+            continue
+        if not jobs:
+            time.sleep(PUSH_POLL_SECONDS)
+            continue
+        for job in jobs:
+            try:
+                deliver_push_job(app_url, job)
+                print(f"[conversation-push] delivered job {job['id']}", flush=True)
+            except Exception as exc:  # noqa: BLE001 - one malformed job must not stop later delivery
+                print(f"[conversation-push] job {job.get('id', 'unknown')}: {exc}", file=sys.stderr, flush=True)
+                try:
+                    mark_push_delivery_failed(rest, job, exc)
+                except Exception as patch_error:  # noqa: BLE001
+                    print(f"[conversation-push] could not schedule retry: {patch_error}", file=sys.stderr, flush=True)
+
+
 def process_job(rest: SupabaseRest, job: dict) -> str:
     agent = agent_identity(rest, job["agent_id"])
     history = conversation_history(rest, job["conversation_id"])
@@ -459,6 +555,16 @@ def main() -> int:
         print("Missing SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY", file=sys.stderr)
         return 2
     rest = SupabaseRest(base_url, service_key)
+    app_url = os.environ.get("SPEC_APP_URL") or os.environ.get("NEXT_PUBLIC_APP_URL")
+    if app_url:
+        threading.Thread(
+            target=push_delivery_loop,
+            args=(base_url, service_key, app_url),
+            name="reslu-conversation-push",
+            daemon=True,
+        ).start()
+    else:
+        print("[conversation-push] SPEC_APP_URL/NEXT_PUBLIC_APP_URL missing; delivery worker disabled", file=sys.stderr, flush=True)
     print("[conversation-bridge] listening for Aria and Marco conversation turns", flush=True)
     while True:
         did_work = False

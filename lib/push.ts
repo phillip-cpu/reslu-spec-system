@@ -1,30 +1,12 @@
 import { createPrivateKey, sign } from "node:crypto";
+import webPush from "web-push";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { reportError } from "@/lib/report-error";
 
-// ============================================================
-// RESLU Spec System — Health + web push (r26)
-// BUILD-SPEC.md item 2: "Web push WITHOUT new npm deps: check
-// package.json first — if web-push present use it; otherwise
-// payload-less push (VAPID ES256 JWT via node crypto; empty POST to
-// endpoint wakes the service worker, which fetches
-// /api/notifications/latest-unread and shows it)."
-//
-// FINDING (this round's own study, see final report): package.json has
-// NO web-push dependency (grepped — not in dependencies or
-// devDependencies), so this file implements the payload-less path,
-// entirely on node:crypto (a Node builtin, not a new dependency).
-//
-// VAPID (RFC 8292) needs an ES256-signed JWT whose `aud` is the push
-// endpoint's origin, `exp` <=24h out, `sub` a contact mailto:. The
-// Authorization header on the push POST is
-// `vapid t=<jwt>, k=<raw-uncompressed-public-key-base64url>` — no
-// Crypto-Key header, no body, no payload encryption, because this is a
-// payload-less "wake up and go fetch the real content" push, never an
-// encrypted-payload one (that would need aes128gcm/ece encryption,
-// real work web-push exists specifically to do — deliberately not
-// needed here per the spec's own steer).
-// ============================================================
+// Conversation pushes carry only an encrypted opaque notification UUID.
+// Private title/body/link content stays in RESLU and is fetched by the
+// authenticated service worker on each device. Older admin/health callers
+// retain their payload-less wake-up path for backwards compatibility.
 
 const VAPID_SUBJECT = "mailto:phillip@reslu.com.au";
 // RFC 8292 caps exp at 24h out from signing; 12h leaves comfortable
@@ -95,6 +77,18 @@ function buildVapidJwt(privateKeyB64Url: string, publicKeyB64Url: string, audien
 interface PushSubscriptionLike {
   id: string;
   endpoint: string;
+  p256dh: string;
+  auth: string;
+}
+
+type PushDeliveryResult = "delivered" | "stale" | "failed";
+
+export interface PushFanoutResult {
+  configured: boolean;
+  attempted: number;
+  delivered: number;
+  stale: number;
+  failed: number;
 }
 
 /**
@@ -111,9 +105,20 @@ async function sendToOneSubscription(
   supabase: ReturnType<typeof createServiceRoleClient>,
   sub: PushSubscriptionLike,
   privateKey: string,
-  publicKey: string
-): Promise<void> {
+  publicKey: string,
+  notificationId?: string
+): Promise<PushDeliveryResult> {
   try {
+    if (notificationId) {
+      // Only an opaque UUID crosses the push provider. The authenticated
+      // service worker fetches the private title/body/link from RESLU.
+      await webPush.sendNotification(
+        { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+        JSON.stringify({ notification_id: notificationId }),
+        { TTL: 60, urgency: "high" }
+      );
+      return "delivered";
+    }
     const origin = new URL(sub.endpoint).origin;
     const jwt = buildVapidJwt(privateKey, publicKey, origin);
 
@@ -129,13 +134,116 @@ async function sendToOneSubscription(
 
     if (res.status === 404 || res.status === 410) {
       await supabase.from("push_subscriptions").delete().eq("id", sub.id);
-      return;
+      return "stale";
     }
     if (!res.ok) {
       await reportError("push-send-non-2xx", new Error(`Push endpoint responded ${res.status} for subscription ${sub.id}`));
+      return "failed";
     }
+    return "delivered";
   } catch (err) {
+    const statusCode = typeof err === "object" && err && "statusCode" in err
+      ? Number(err.statusCode)
+      : null;
+    if (statusCode === 404 || statusCode === 410) {
+      await supabase.from("push_subscriptions").delete().eq("id", sub.id);
+      return "stale";
+    }
     await reportError("push-send-exception", err);
+    return "failed";
+  }
+}
+
+async function sendPushToProfileIds(userIds: string[], notificationId?: string): Promise<PushFanoutResult> {
+  const result: PushFanoutResult = { configured: false, attempted: 0, delivered: 0, stale: 0, failed: 0 };
+  const privateKey = process.env.VAPID_PRIVATE_KEY;
+  const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+  const uniqueUserIds = [...new Set(userIds.filter(Boolean))];
+  if (!privateKey || !publicKey) return result;
+  result.configured = true;
+  if (uniqueUserIds.length === 0) return result;
+  if (notificationId) webPush.setVapidDetails(VAPID_SUBJECT, publicKey, privateKey);
+
+  const supabase = createServiceRoleClient();
+  const { data: subscriptions, error } = await supabase
+    .from("push_subscriptions")
+    .select("id,endpoint,p256dh,auth")
+    .in("user_id", uniqueUserIds);
+  if (error) throw error;
+  result.attempted = subscriptions?.length ?? 0;
+
+  for (const subscription of subscriptions ?? []) {
+    const delivery = await sendToOneSubscription(
+      supabase,
+      subscription as PushSubscriptionLike,
+      privateKey,
+      publicKey,
+      notificationId
+    );
+    result[delivery] += 1;
+  }
+  return result;
+}
+
+/**
+ * Sends an encrypted opaque notification id to specific RESLU profiles. The
+ * private title, body and link stay in Postgres and are fetched by each
+ * authenticated device, so multi-device delivery cannot consume a shared row.
+ */
+export async function sendPushToUsers(userIds: string[], notificationId: string): Promise<PushFanoutResult> {
+  try {
+    return await sendPushToProfileIds(userIds, notificationId);
+  } catch (err) {
+    await reportError("push-send-to-users", err);
+    return { configured: true, attempted: 0, delivered: 0, stale: 0, failed: 1 };
+  }
+}
+
+/**
+ * Sends one conversation wake-up to one exact browser subscription. Durable
+ * conversation jobs are device-scoped so retrying one failed device cannot
+ * buzz another device that already received the same canonical message.
+ */
+export async function sendPushToSubscription(
+  userId: string,
+  subscriptionId: string,
+  notificationId: string
+): Promise<PushFanoutResult> {
+  const result: PushFanoutResult = { configured: false, attempted: 0, delivered: 0, stale: 0, failed: 0 };
+  const privateKey = process.env.VAPID_PRIVATE_KEY;
+  const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+  if (!privateKey || !publicKey) return result;
+  result.configured = true;
+
+  try {
+    const supabase = createServiceRoleClient();
+    const { data, error } = await supabase
+      .from("push_subscriptions")
+      .select("id,endpoint,p256dh,auth")
+      .eq("id", subscriptionId)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) {
+      result.stale = 1;
+      return result;
+    }
+
+    webPush.setVapidDetails(VAPID_SUBJECT, publicKey, privateKey);
+    result.attempted = 1;
+    const delivery = await sendToOneSubscription(
+      supabase,
+      data as PushSubscriptionLike,
+      privateKey,
+      publicKey,
+      notificationId
+    );
+    result[delivery] = 1;
+    return result;
+  } catch (err) {
+    await reportError("push-send-to-subscription", err);
+    result.failed = 1;
+    return result;
   }
 }
 
@@ -184,15 +292,7 @@ export async function sendPushToAdmins(
     const adminIds = (admins ?? []).map((a) => a.id as string);
     if (adminIds.length === 0) return;
 
-    const { data: subs } = await supabase
-      .from("push_subscriptions")
-      .select("id,endpoint")
-      .in("user_id", adminIds);
-    if (!subs || subs.length === 0) return;
-
-    for (const sub of subs) {
-      await sendToOneSubscription(supabase, sub as PushSubscriptionLike, privateKey, publicKey);
-    }
+    await sendPushToProfileIds(adminIds);
   } catch (err) {
     await reportError(`push-send-to-admins:${kind}`, err);
   }

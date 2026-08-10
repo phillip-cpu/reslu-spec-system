@@ -8,6 +8,29 @@ export interface RealtimeConsultRequest {
   responseId: string | null;
 }
 
+export interface RealtimeConsultMessageIdentity {
+  body: string;
+  metadata: unknown;
+}
+
+export function consultMessageMatchesIntent(
+  message: RealtimeConsultMessageIdentity,
+  intent: RealtimeConsultRequest
+) {
+  if (!message.metadata || typeof message.metadata !== "object" || Array.isArray(message.metadata)) return false;
+  const metadata = message.metadata as Record<string, unknown>;
+  const targets = metadata.target_agent_slugs;
+  return message.body === intent.query
+    && metadata.source === "voice"
+    && metadata.transport === "openai_realtime_webrtc"
+    && metadata.realtime_call_id === intent.callId
+    && metadata.realtime_tool_call_id === intent.toolCallId
+    && (metadata.realtime_response_id ?? null) === intent.responseId
+    && Array.isArray(targets)
+    && targets.length === 1
+    && targets[0] === intent.agentSlug;
+}
+
 function safeProviderId(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();

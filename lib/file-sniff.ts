@@ -163,33 +163,74 @@ export function validateUploadBytes(
  * validateUploadBytes() on a Buffer they already have in memory the
  * way every other upload route here does — this helper mints a short
  * signed URL for the just-uploaded object and issues a single
- * `Range: bytes=0-15` request, which Supabase Storage's object
- * endpoint honours, so the check costs 16 bytes of transfer rather
- * than downloading the whole (possibly large architectural-plan-sized)
- * file just to sniff it.
+ * `Range: bytes=0-15` request. The reader is cancelled after 16 bytes even if
+ * an intermediary ignores Range and returns 200, so a mislabeled oversized
+ * object cannot be buffered into the Vercel process. The response headers also
+ * expose the real object size to callers that must verify a client-declared
+ * byte count.
  *
- * Returns null on any failure (network error, non-206/200 response,
- * range not supported for some reason) — callers should treat null as
- * "couldn't verify" and fail open with a warning-level skip rather than
- * blocking the upload outright, since this is a defence-in-depth check
- * layered on top of the ownership/path-prefix validation those routes
- * already do, not the sole guard.
+ * Returns null on any failure. Legacy project-file callers may treat that as a
+ * defence-in-depth skip; the conversation attachment flow fails closed but
+ * retains the staged draft so a transient read-back failure can be retried.
  */
-export async function sniffStorageObjectHead(
+export interface StorageObjectHeadInspection {
+  bytes: Buffer;
+  byteSize: number | null;
+}
+
+async function responsePrefix(response: Response, maximumBytes: number): Promise<Buffer | null> {
+  if (!response.body) return null;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  try {
+    while (received < maximumBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.byteLength) continue;
+      const remaining = maximumBytes - received;
+      const prefix = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+      chunks.push(prefix);
+      received += prefix.byteLength;
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return received > 0 ? Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), received) : null;
+}
+
+function storageResponseByteSize(response: Response): number | null {
+  const contentRange = response.headers.get("content-range");
+  const rangeMatch = contentRange?.match(/\/(\d+)$/);
+  const raw = rangeMatch?.[1] ?? (response.status === 200 ? response.headers.get("content-length") : null);
+  if (!raw) return null;
+  const size = Number(raw);
+  return Number.isSafeInteger(size) && size > 0 ? size : null;
+}
+
+export async function inspectStorageObjectHead(
   supabase: SupabaseClient,
   bucket: string,
   path: string
-): Promise<Buffer | null> {
+): Promise<StorageObjectHeadInspection | null> {
   try {
     const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 60);
     if (error || !data?.signedUrl) return null;
 
     const res = await fetch(data.signedUrl, { headers: { Range: "bytes=0-15" } });
-    if (!res.ok && res.status !== 206) return null;
+    if (res.status !== 200 && res.status !== 206) return null;
 
-    const arrayBuffer = await res.arrayBuffer();
-    return Buffer.from(arrayBuffer);
+    const bytes = await responsePrefix(res, 16);
+    return bytes ? { bytes, byteSize: storageResponseByteSize(res) } : null;
   } catch {
     return null;
   }
+}
+
+export async function sniffStorageObjectHead(
+  supabase: SupabaseClient,
+  bucket: string,
+  path: string
+): Promise<Buffer | null> {
+  return (await inspectStorageObjectHead(supabase, bucket, path))?.bytes ?? null;
 }

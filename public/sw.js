@@ -13,22 +13,29 @@
 // service worker, which is a separate, much larger feature this round
 // never asked for.
 //
-// Payload-less push (BUILD-SPEC.md item 2): the push event itself
-// carries no data (see lib/push.ts's own header comment for why) — on
-// 'push', this fetches the one row that push woke it up to go get,
-// GET /api/notifications/latest-unread, and shows THAT as the browser
-// notification. `credentials: 'same-origin'` is set explicitly (it is
-// also fetch's own default for a same-origin request, but a push
-// event's fetch runs with no "current page" for context, so this is
-// spelled out rather than relied on implicitly) — the route reads the
-// caller's Supabase session cookie the exact same way every other
-// authenticated route in this app does (lib/supabase/server.ts's
-// createClient()), nothing push-specific on the auth side at all.
+// Conversation pushes carry an encrypted opaque notification id and fetch
+// that exact private row from RESLU. Legacy payload-less admin/health pushes
+// still fetch the latest unread row. In both cases the service worker sends
+// the signed-in browser's same-origin session cookie; private message content
+// is never placed in the provider payload.
 // ============================================================
 
 self.addEventListener("push", (event) => {
+  let notificationRequest = fetch("/api/notifications/latest-unread", { credentials: "same-origin" });
+  if (event.data) {
+    try {
+      const payload = event.data.json();
+      if (payload && typeof payload.notification_id === "string") {
+        notificationRequest = fetch(`/api/notifications/${encodeURIComponent(payload.notification_id)}`, {
+          credentials: "same-origin",
+        });
+      }
+    } catch {
+      // Invalid provider data is treated like a legacy payload-less wake-up.
+    }
+  }
   event.waitUntil(
-    fetch("/api/notifications/latest-unread", { credentials: "same-origin" })
+    notificationRequest
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         const notification = data && data.notification;
@@ -36,7 +43,7 @@ self.addEventListener("push", (event) => {
         return self.registration.showNotification(notification.title || "RESLU", {
           body: notification.body || "",
           data: { link: notification.link_href || "/" },
-          tag: notification.id,
+          tag: notification.tag || notification.id,
         });
       })
       .catch(() => {
@@ -54,12 +61,16 @@ self.addEventListener("notificationclick", (event) => {
 
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windowClients) => {
+      const destination = new URL(link, self.location.origin);
       for (const client of windowClients) {
-        // Focus an already-open tab on the same link rather than
-        // opening a duplicate one.
-        if (client.url.endsWith(link) && "focus" in client) {
-          return client.focus();
+        const current = new URL(client.url);
+        if (current.origin !== destination.origin || current.pathname !== destination.pathname) continue;
+        // Reuse the existing RESLU window, but navigate it to the exact
+        // conversation/message carried by the notification first.
+        if ("navigate" in client) {
+          return client.navigate(destination.href).then((navigated) => navigated && navigated.focus());
         }
+        if ("focus" in client) return client.focus();
       }
       if (self.clients.openWindow) {
         return self.clients.openWindow(link);

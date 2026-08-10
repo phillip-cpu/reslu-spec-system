@@ -34,6 +34,10 @@ export function messageAuthor(
 
 export function sortConversations(conversations: ConversationSummary[]): ConversationSummary[] {
   return [...conversations].sort((left, right) => {
+    if (Boolean(left.pinned_at) !== Boolean(right.pinned_at)) return left.pinned_at ? -1 : 1;
+    if (left.pinned_at && right.pinned_at && left.pinned_at !== right.pinned_at) {
+      return right.pinned_at.localeCompare(left.pinned_at);
+    }
     const leftDate = left.last_message?.created_at ?? left.updated_at;
     const rightDate = right.last_message?.created_at ?? right.updated_at;
     return rightDate.localeCompare(leftDate);

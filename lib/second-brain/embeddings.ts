@@ -20,9 +20,13 @@
  * -> a vulnerable `protobufjs` (arbitrary code execution,
  * GHSA-xq3m-2v4x-88gg and others). `@huggingface/transformers` uses
  * `onnxruntime-node` instead (the native Node binding, also more
- * appropriate for a server environment than a WASM build) and
- * introduces zero new vulnerabilities — confirmed via `npm audit`
- * before this file was written.
+ * appropriate for a server environment than a WASM build). As of the
+ * 2026-08-10 audit, its current upstream release still inherits advisories
+ * through sharp/libvips and adm-zip, with no vendor fix available. This
+ * wrapper passes text only to a fixed feature-extraction model; it never sends
+ * user images, archives or file bytes through those optional code paths. Keep
+ * that containment and upgrade when upstream ships fixed dependencies rather
+ * than forcing untested package overrides.
  *
  * The model is loaded once and cached at module scope (`pipelinePromise`)
  * so a warm serverless instance reuses it across invocations instead of

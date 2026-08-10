@@ -42,7 +42,7 @@ export async function GET() {
 
   let query = supabase
     .from("notifications")
-    .select("id,title,body,link_href,kind")
+    .select("id,user_id,title,body,link_href,kind")
     .is("read_at", null)
     .order("created_at", { ascending: false })
     .limit(1);
@@ -52,11 +52,28 @@ export async function GET() {
   const { data: row } = await query.maybeSingle();
 
   if (row) {
-    await supabase.from("notifications").update({ read_at: new Date().toISOString() }).eq("id", row.id).is("read_at", null);
+    const readAt = new Date().toISOString();
+    if (row.kind.startsWith("conversation_message:") && row.user_id === info.userId) {
+      // Empty web pushes may be coalesced by the provider. Showing the newest
+      // preview and resolving its older siblings prevents a later unrelated
+      // push from resurfacing a stale message from this same conversation.
+      await supabase.from("notifications").update({ read_at: readAt })
+        .eq("user_id", info.userId)
+        .eq("kind", row.kind)
+        .is("read_at", null);
+    } else {
+      await supabase.from("notifications").update({ read_at: readAt }).eq("id", row.id).is("read_at", null);
+    }
   }
 
   const response: LatestUnreadNotificationResponse = {
-    notification: row ? { id: row.id, title: row.title, body: row.body, link_href: row.link_href } : null,
+    notification: row ? {
+      id: row.id,
+      tag: row.kind.startsWith("conversation_message:") ? row.kind : row.id,
+      title: row.title,
+      body: row.body,
+      link_href: row.link_href,
+    } : null,
   };
   return NextResponse.json(response);
 }
