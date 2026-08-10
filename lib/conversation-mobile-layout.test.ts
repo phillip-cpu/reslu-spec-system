@@ -31,3 +31,21 @@ test("mobile composer and dialogs are allowed to shrink and scroll", () => {
   assert.match(workspace, /min-h-12 min-w-0 flex-1 resize-none/);
   assert.match(workspace, /shrink-0 bg-nearblack/);
 });
+
+test("mobile chat keeps its native-style header and call action visible", () => {
+  assert.match(workspace, /messagesScrollerRef/);
+  assert.match(workspace, /scroller\.scrollTo/);
+  assert.doesNotMatch(workspace, /messagesEndRef\.current\?\.scrollIntoView/);
+  assert.match(workspace, /shouldStickToBottomRef/);
+  assert.match(workspace, /pane\.scrollHeight - pane\.scrollTop - pane\.clientHeight < 96/);
+  assert.match(workspace, /sticky top-0 z-10/);
+  assert.match(workspace, /aria-label=\{`Call \$\{callAgent\.display_name\}`\}/);
+  assert.match(workspace, /overscroll-contain overflow-y-auto/);
+});
+
+test("failed calls offer mobile recovery instead of disabled repeat controls", () => {
+  assert.match(workspace, /Call interrupted/);
+  assert.match(workspace, /Back to chat/);
+  assert.match(workspace, /Try again/);
+  assert.match(workspace, /await endCall\(\);\s+await startCall\(\);/);
+});
