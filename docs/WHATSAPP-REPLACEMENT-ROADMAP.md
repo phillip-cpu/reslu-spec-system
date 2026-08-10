@@ -32,7 +32,12 @@ invitation, notification, access-control and offboarding design.
 
 Status: in progress.
 
-Current implementation: draft PR #22, migration 092 and the updated Mac bridge.
+Current implementation: PR #22 and migration 092 are live, and the updated Mac
+bridge is running. The first production iPhone photo reached Aria and was read
+accurately. That trace took about 74 seconds: 2 seconds to upload, 38 seconds
+waiting behind a cancelled voice consult, and 36 seconds in the agent runtime.
+The bridge cancellation repair is in progress before the remaining Stage 1
+acceptance cases.
 
 Work:
 
@@ -216,6 +221,7 @@ Final product gate:
 
 ## Current next action
 
-Complete Stage 1 in this order: apply migration 092, merge/deploy PR #22,
-restart the Mac bridge, then run the live iPhone photo/PDF-to-Aria acceptance
-test.
+Deploy the bridge cancellation repair so a cancelled voice consult releases
+Aria's worker promptly. Then rerun the iPhone photo test without preceding
+queue contention, complete the PDF and desktop cases, and exercise failure,
+retry, chat-switching and expired-URL recovery before closing Stage 1.

@@ -17,11 +17,15 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 import urllib.error
 import urllib.parse
 import urllib.request
 
 POLL_SECONDS = 1.0
+AGENT_STATUS_CHECK_SECONDS = 0.5
+AGENT_TERMINATE_GRACE_SECONDS = 2.0
+AGENT_PROCESS_TIMEOUT_SECONDS = 210.0
 HISTORY_LIMIT = 80
 AGENT_SLUGS = ("aria", "marco")
 OPENCLAW_CONTROL_VALUES = {
@@ -278,7 +282,25 @@ def openclaw_session_key(conversation_id: str) -> str:
     return f"reslu-conversation-{conversation_id}"
 
 
-def invoke_agent(agent: dict, history: str, conversation_id: str, attachments: list[dict] | None = None) -> str:
+def stop_agent_process(process: subprocess.Popen[str]) -> None:
+    """Stop a cancelled CLI invocation without leaving a worker slot occupied."""
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=AGENT_TERMINATE_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=AGENT_TERMINATE_GRACE_SECONDS)
+
+
+def invoke_agent(
+    agent: dict,
+    history: str,
+    conversation_id: str,
+    attachments: list[dict] | None = None,
+    should_continue: Callable[[], bool] | None = None,
+) -> str | None:
     attachment_lines = []
     for attachment in attachments or []:
         attachment_lines.append(
@@ -302,20 +324,36 @@ def invoke_agent(agent: dict, history: str, conversation_id: str, attachments: l
         f"{history}\n"
         "END_UNTRUSTED_CONVERSATION_HISTORY"
     )
-    result = subprocess.run(
-        [
-            "openclaw", "agent", "--agent", openclaw_agent_id(agent["slug"]),
-            "--session-key", openclaw_session_key(conversation_id),
-            "--message", prompt, "--timeout", "180", "--json",
-        ],
-        capture_output=True,
+    command = [
+        "openclaw", "agent", "--agent", openclaw_agent_id(agent["slug"]),
+        "--session-key", openclaw_session_key(conversation_id),
+        "--message", prompt, "--timeout", "180", "--json",
+    ]
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=210,
     )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"OpenClaw exited {result.returncode}")
+    started_at = time.monotonic()
     try:
-        payload = json.loads(result.stdout)
+        while True:
+            try:
+                stdout, stderr = process.communicate(timeout=AGENT_STATUS_CHECK_SECONDS)
+                break
+            except subprocess.TimeoutExpired:
+                if should_continue is not None and not should_continue():
+                    stop_agent_process(process)
+                    return None
+                if time.monotonic() - started_at >= AGENT_PROCESS_TIMEOUT_SECONDS:
+                    raise subprocess.TimeoutExpired(command, AGENT_PROCESS_TIMEOUT_SECONDS)
+    except BaseException:
+        stop_agent_process(process)
+        raise
+    if process.returncode != 0:
+        raise RuntimeError(stderr.strip() or stdout.strip() or f"OpenClaw exited {process.returncode}")
+    try:
+        payload = json.loads(stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError("OpenClaw returned invalid JSON") from exc
     reply = find_reply_text(payload, prompt)
@@ -329,17 +367,42 @@ def job_is_processing(rest: SupabaseRest, job_id: str) -> bool:
     return bool(rows and rows[0].get("status") == "processing")
 
 
-def process_job(rest: SupabaseRest, job: dict) -> None:
+def job_should_continue(rest: SupabaseRest, job_id: str) -> bool:
+    """Treat a transient status-read failure as unknown, not as cancellation."""
+    try:
+        return job_is_processing(rest, job_id)
+    except urllib.error.URLError as exc:
+        print(
+            f"[conversation-bridge] could not check job {job_id} cancellation yet: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return True
+
+
+def process_job(rest: SupabaseRest, job: dict) -> str:
     agent = agent_identity(rest, job["agent_id"])
     history = conversation_history(rest, job["conversation_id"])
     attachments = ready_message_attachments(rest, job["conversation_id"], job["triggering_message_id"])
+    if not job_is_processing(rest, job["id"]):
+        return "cancelled"
     with tempfile.TemporaryDirectory(prefix="reslu-conversation-attachments-") as temporary_directory:
         materialized = materialize_attachments(rest, attachments, Path(temporary_directory))
-        reply = invoke_agent(agent, history, job["conversation_id"], materialized)
+        if not job_is_processing(rest, job["id"]):
+            return "cancelled"
+        reply = invoke_agent(
+            agent,
+            history,
+            job["conversation_id"],
+            materialized,
+            should_continue=lambda: job_should_continue(rest, job["id"]),
+        )
+    if reply is None:
+        return "cancelled"
     # A newer voice turn can cancel this job while the agent is running.
     # Discard late output; completed external side effects remain real.
     if not job_is_processing(rest, job["id"]):
-        return
+        return "cancelled"
     rest.insert(
         "conversation_messages",
         {
@@ -354,6 +417,7 @@ def process_job(rest: SupabaseRest, job: dict) -> None:
         job["id"],
         {"status": "done", "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "error": None},
     )
+    return "done"
 
 
 def main() -> int:
@@ -368,21 +432,30 @@ def main() -> int:
     while True:
         did_work = False
         for slug in AGENT_SLUGS:
+            job = None
             try:
                 job = rest.claim(slug)
                 if not job:
                     continue
                 did_work = True
-                process_job(rest, job)
+                started_at = time.monotonic()
+                print(f"[conversation-bridge] {slug}: claimed job {job['id']}", flush=True)
+                outcome = process_job(rest, job)
+                elapsed = time.monotonic() - started_at
+                print(
+                    f"[conversation-bridge] {slug}: {outcome} job {job['id']} in {elapsed:.1f}s",
+                    flush=True,
+                )
             except (urllib.error.URLError, subprocess.SubprocessError, RuntimeError, KeyError) as exc:
                 print(f"[conversation-bridge] {slug}: {exc}", file=sys.stderr, flush=True)
-                if 'job' in locals() and job:
+                if job:
                     try:
-                        rest.patch(
-                            "agent_conversation_jobs",
-                            job["id"],
-                            {"status": "failed", "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "error": str(exc)[:2000]},
-                        )
+                        if job_is_processing(rest, job["id"]):
+                            rest.patch(
+                                "agent_conversation_jobs",
+                                job["id"],
+                                {"status": "failed", "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "error": str(exc)[:2000]},
+                            )
                     except Exception as patch_error:  # noqa: BLE001
                         print(f"[conversation-bridge] could not mark failed: {patch_error}", file=sys.stderr)
                 job = None
