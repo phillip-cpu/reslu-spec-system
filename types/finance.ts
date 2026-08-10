@@ -294,10 +294,11 @@ export interface FinanceShadowProjectionResponse {
   committed_base_eligible: boolean;
   finance_state: ProjectFinanceState;
   source: {
-    estimate_version_id: string;
-    estimate_label: string;
+    estimate_version_id: string | null;
+    estimate_label: string | null;
     timing_override_count: number;
     client_claim_count: number;
+    construction_costs_included?: boolean;
     opening_cash_source: "not_configured" | "request_preview";
   };
   projection: FinanceShadowProjection;

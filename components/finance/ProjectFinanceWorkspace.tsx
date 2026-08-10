@@ -276,6 +276,7 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
   const clientRemaining = clientClaimContributions
     .filter((contribution) => contribution.state !== "actual_paid")
     .reduce((sum, contribution) => sum + contribution.amountMinor, 0);
+  const constructionCostsIncluded = shadow?.source.construction_costs_included !== false;
 
   async function recalculate() {
     setPreviewing(true);
@@ -383,18 +384,22 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
         <>
           <section className="flex flex-col gap-4 border border-sand/50 bg-sand/10 p-5 md:flex-row md:items-center md:justify-between">
             <div>
-              <p className="label-caps">Pulled from your existing project</p>
+              <p className="label-caps">{constructionCostsIncluded ? "Pulled from your existing project" : "Design-stage finance"}</p>
               <p className="mt-2 text-body text-charcoal/65">
-                Amounts come from the saved estimate. Projected expense dates come from the linked Timeline phase and move automatically with the construction schedule.
+                {constructionCostsIncluded
+                  ? "Amounts come from the saved estimate. Projected expense dates come from the linked Timeline phase and move automatically with the construction schedule."
+                  : "This position shows the design fee and its client payments only. The prospective build estimate is excluded until the project moves beyond Design/Quote with a construction contract."}
               </p>
             </div>
-            <a href={`/projects/${projectId}/timeline`} className="shrink-0 border border-nearblack px-4 py-2 text-center text-subhead text-nearblack hover:bg-nearblack hover:text-white">
-              Open Timeline
-            </a>
+            {constructionCostsIncluded && (
+              <a href={`/projects/${projectId}/timeline`} className="shrink-0 border border-nearblack px-4 py-2 text-center text-subhead text-nearblack hover:bg-nearblack hover:text-white">
+                Open Timeline
+              </a>
+            )}
           </section>
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {[
-              ["Cost exposure", formatMinorCurrency(totalExposure), `${formatMinorCurrency(unknownOutflow)} cost timing unknown`],
+              [constructionCostsIncluded ? "Cost exposure" : "Build costs", constructionCostsIncluded ? formatMinorCurrency(totalExposure) : "Excluded", constructionCostsIncluded ? `${formatMinorCurrency(unknownOutflow)} cost timing unknown` : "Not charged against the design fee"],
               ["Client paid", formatMinorCurrency(clientPaid), "Confirmed client receipts"],
               ["Still to receive", formatMinorCurrency(clientRemaining), "Issued and future contract claims"],
               ["13-week impact", formatMinorCurrency((projection?.periods.at(-1)?.closingCashMinor ?? 0) - (projection?.openingCashMinor ?? 0)), "Flows automatically into company cashflow"],
@@ -403,7 +408,7 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
             ))}
           </div>
           {projection && <section className="border border-charcoal/20 bg-offwhite"><div className="border-b border-charcoal/20 p-5 md:p-7"><p className="label-caps">Project cash impact</p><h2 className="mt-2 font-display text-section text-nearblack">13-week movement</h2></div><div className="p-4 md:p-7"><FinanceCashCurve periods={projection.periods} selectedIndex={selectedIndex} onSelect={setSelectedIndex} /></div>{selectedPeriod && <div className="grid grid-cols-2 border-t border-charcoal/20 md:grid-cols-4">{[["Opening",selectedPeriod.openingCashMinor],["Inflows",selectedPeriod.inflowMinor],["Outflows",-selectedPeriod.outflowMinor],["Closing",selectedPeriod.closingCashMinor]].map(([label,value])=><div key={String(label)} className="border-r border-charcoal/15 p-4 last:border-r-0"><p className="label-caps">{String(label)}</p><p className="mt-2 text-subhead">{formatMinorCurrency(Number(value))}</p></div>)}</div>}</section>}
-          <section className="border border-charcoal/20 bg-offwhite"><div className="border-b border-charcoal/20 p-5 md:p-7"><p className="label-caps">Cost position</p><h2 className="mt-2 font-display text-section text-nearblack">By estimate section</h2></div><div className="overflow-x-auto"><table className="w-full min-w-[620px] text-left"><thead className="bg-nearblack text-[7px] uppercase tracking-[0.14em] text-white"><tr><th className="px-5 py-3">Section</th><th className="px-5 py-3 text-right">Exposure</th><th className="px-5 py-3 text-right">Unknown</th><th className="px-5 py-3 text-right">Lines</th></tr></thead><tbody className="divide-y divide-charcoal/10">{sectionTotals.map(([section,total])=><tr key={section} className="text-body"><td className="px-5 py-4">{section}</td><td className="px-5 py-4 text-right">{formatMinorCurrency(total.amount)}</td><td className="px-5 py-4 text-right text-[#76570a]">{formatMinorCurrency(total.unknown)}</td><td className="px-5 py-4 text-right">{total.count}</td></tr>)}</tbody></table></div></section>
+          {constructionCostsIncluded && <section className="border border-charcoal/20 bg-offwhite"><div className="border-b border-charcoal/20 p-5 md:p-7"><p className="label-caps">Cost position</p><h2 className="mt-2 font-display text-section text-nearblack">By estimate section</h2></div><div className="overflow-x-auto"><table className="w-full min-w-[620px] text-left"><thead className="bg-nearblack text-[7px] uppercase tracking-[0.14em] text-white"><tr><th className="px-5 py-3">Section</th><th className="px-5 py-3 text-right">Exposure</th><th className="px-5 py-3 text-right">Unknown</th><th className="px-5 py-3 text-right">Lines</th></tr></thead><tbody className="divide-y divide-charcoal/10">{sectionTotals.map(([section,total])=><tr key={section} className="text-body"><td className="px-5 py-4">{section}</td><td className="px-5 py-4 text-right">{formatMinorCurrency(total.amount)}</td><td className="px-5 py-4 text-right text-[#76570a]">{formatMinorCurrency(total.unknown)}</td><td className="px-5 py-4 text-right">{total.count}</td></tr>)}</tbody></table></div></section>}
         </>
       )}
     </div>
