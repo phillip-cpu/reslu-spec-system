@@ -80,11 +80,14 @@ interface ActiveRealtimeConsult {
 
 interface DraftAttachment {
   localId: string;
+  conversationId: string;
+  file: File;
   filename: string;
   mimeType: string;
   byteSize: number;
   previewUrl: string | null;
   status: "uploading" | "ready" | "error";
+  stagedAttachmentId: string | null;
   attachment: ConversationAttachment | null;
   error: string | null;
 }
@@ -216,6 +219,7 @@ export function ConversationWorkspace() {
   const shouldStickToBottomRef = useRef(true);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const draftAttachmentsRef = useRef<DraftAttachment[]>([]);
+  const cancelledDraftIdsRef = useRef(new Set<string>());
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
@@ -240,6 +244,7 @@ export function ConversationWorkspace() {
     [data.conversations, selectedId]
   );
   const attachmentUploadInProgress = draftAttachments.some((item) => item.status === "uploading");
+  const attachmentUploadFailed = draftAttachments.some((item) => item.status === "error");
   const composerBusy = sending || attachmentUploadInProgress;
   const callAgent = participants.find((participant) => participant.type === "agent") ?? null;
   const headerParticipant = callAgent
@@ -322,6 +327,20 @@ export function ConversationWorkspace() {
     };
   }, [selectedId, loadMessages, callId]);
   useEffect(() => {
+    if (!selectedId) return;
+    const refreshVisibleConversation = () => {
+      if (document.visibilityState === "visible") void loadMessages(selectedId);
+    };
+    window.addEventListener("focus", refreshVisibleConversation);
+    window.addEventListener("online", refreshVisibleConversation);
+    document.addEventListener("visibilitychange", refreshVisibleConversation);
+    return () => {
+      window.removeEventListener("focus", refreshVisibleConversation);
+      window.removeEventListener("online", refreshVisibleConversation);
+      document.removeEventListener("visibilitychange", refreshVisibleConversation);
+    };
+  }, [selectedId, loadMessages]);
+  useEffect(() => {
     // scrollIntoView() may move the page itself on iOS, taking the chat header
     // and call action off-screen. Scroll only the message pane so the mobile
     // conversation chrome stays pinned like a native messenger.
@@ -335,7 +354,15 @@ export function ConversationWorkspace() {
   useEffect(() => { draftAttachmentsRef.current = draftAttachments; }, [draftAttachments]);
   useEffect(() => () => {
     draftAttachmentsRef.current.forEach((item) => {
+      if (item.status === "uploading") cancelledDraftIdsRef.current.add(item.localId);
       if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+      const attachmentId = item.attachment?.id ?? item.stagedAttachmentId;
+      if (attachmentId) {
+        void fetch(
+          `/api/conversations/${item.conversationId}/attachments?attachment_id=${encodeURIComponent(attachmentId)}`,
+          { method: "DELETE", keepalive: true }
+        ).catch(() => null);
+      }
     });
   }, []);
   useEffect(() => {
@@ -359,47 +386,148 @@ export function ConversationWorkspace() {
 
   const removeDraftAttachment = useCallback((localId: string) => {
     const draft = draftAttachments.find((item) => item.localId === localId);
-    if (!draft || draft.status === "uploading") return;
+    if (!draft) return;
+    if (draft.status === "uploading") cancelledDraftIdsRef.current.add(localId);
     if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
     setDraftAttachments((current) => current.filter((item) => item.localId !== localId));
-    if (selectedId && draft.attachment?.id) {
+    const attachmentId = draft.attachment?.id ?? draft.stagedAttachmentId;
+    if (attachmentId) {
       void fetch(
-        `/api/conversations/${selectedId}/attachments?attachment_id=${encodeURIComponent(draft.attachment.id)}`,
+        `/api/conversations/${draft.conversationId}/attachments?attachment_id=${encodeURIComponent(attachmentId)}`,
         { method: "DELETE" }
       ).catch(() => null);
     }
-  }, [draftAttachments, selectedId]);
+  }, [draftAttachments]);
 
   const discardDraftAttachments = useCallback(() => {
     for (const draft of draftAttachments) {
+      if (draft.status === "uploading") cancelledDraftIdsRef.current.add(draft.localId);
       if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
-      if (selectedId && draft.attachment?.id) {
+      const attachmentId = draft.attachment?.id ?? draft.stagedAttachmentId;
+      if (attachmentId) {
         void fetch(
-          `/api/conversations/${selectedId}/attachments?attachment_id=${encodeURIComponent(draft.attachment.id)}`,
+          `/api/conversations/${draft.conversationId}/attachments?attachment_id=${encodeURIComponent(attachmentId)}`,
           { method: "DELETE" }
         ).catch(() => null);
       }
     }
     setDraftAttachments([]);
     setAttachmentMenuOpen(false);
-  }, [draftAttachments, selectedId]);
+  }, [draftAttachments]);
 
   const selectConversation = useCallback((conversationId: string | null) => {
     if (conversationId === selectedId) return;
-    if (composerBusy) {
-      setError(attachmentUploadInProgress
-        ? "Wait for the attachments to finish uploading before changing chats."
-        : "Wait for the message to finish sending before changing chats.");
+    if (sending) {
+      setError("Wait for the message to finish sending before changing chats.");
       return;
     }
     discardDraftAttachments();
     setDraft("");
     setError(null);
     setSelectedId(conversationId);
-  }, [attachmentUploadInProgress, composerBusy, discardDraftAttachments, selectedId]);
+  }, [discardDraftAttachments, selectedId, sending]);
+
+  const uploadDraftAttachment = useCallback(async (draft: DraftAttachment) => {
+    const { file, conversationId } = draft;
+    let stagedAttachmentId: string | null = null;
+    const discardIfCancelled = async () => {
+      if (!cancelledDraftIdsRef.current.has(draft.localId)) return false;
+      if (stagedAttachmentId) {
+        await fetch(
+          `/api/conversations/${conversationId}/attachments?attachment_id=${encodeURIComponent(stagedAttachmentId)}`,
+          { method: "DELETE", keepalive: true }
+        ).catch(() => null);
+      }
+      cancelledDraftIdsRef.current.delete(draft.localId);
+      return true;
+    };
+    try {
+      if (await discardIfCancelled()) return;
+      if (!isConversationAttachmentMime(draft.mimeType)) {
+        throw new Error("Choose a JPEG, PNG, WebP or PDF file.");
+      }
+      if (file.size <= 0 || file.size > MAX_CONVERSATION_ATTACHMENT_BYTES) {
+        throw new Error("Attachments must be no larger than 25 MB.");
+      }
+      const urlResponse = await fetch(`/api/conversations/${conversationId}/attachments/upload-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: file.name,
+          mime_type: draft.mimeType,
+          byte_size: file.size,
+        }),
+      });
+      const urlBody = await urlResponse.json();
+      if (!urlResponse.ok) throw new Error(urlBody.error ?? "Could not start upload");
+      stagedAttachmentId = urlBody.attachment_id;
+      setDraftAttachments((current) => current.map((item) => item.localId === draft.localId
+        ? { ...item, stagedAttachmentId }
+        : item));
+      if (await discardIfCancelled()) return;
+
+      const supabase = createBrowserClient();
+      const { error: uploadError } = await supabase.storage
+        .from(ASSET_BUCKET)
+        .uploadToSignedUrl(urlBody.path, urlBody.token, file, { contentType: draft.mimeType });
+      if (uploadError) throw new Error(uploadError.message);
+      if (await discardIfCancelled()) return;
+
+      const finalResponse = await fetch(`/api/conversations/${conversationId}/attachments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attachment_id: stagedAttachmentId }),
+      });
+      const finalBody = await finalResponse.json();
+      if (!finalResponse.ok) throw new Error(finalBody.error ?? "Could not finish upload");
+      if (await discardIfCancelled()) return;
+      setDraftAttachments((current) => current.map((item) => item.localId === draft.localId
+        ? {
+            ...item,
+            status: "ready",
+            stagedAttachmentId: null,
+            attachment: finalBody.attachment,
+            error: null,
+          }
+        : item));
+    } catch (reason) {
+      if (await discardIfCancelled()) return;
+      if (stagedAttachmentId) {
+        await fetch(
+          `/api/conversations/${conversationId}/attachments?attachment_id=${encodeURIComponent(stagedAttachmentId)}`,
+          { method: "DELETE" }
+        ).catch(() => null);
+      }
+      setDraftAttachments((current) => current.map((item) => item.localId === draft.localId
+        ? {
+            ...item,
+            status: "error",
+            stagedAttachmentId: null,
+            attachment: null,
+            error: reason instanceof Error ? reason.message : "Upload failed",
+          }
+        : item));
+    }
+  }, []);
+
+  const retryDraftAttachment = useCallback((localId: string) => {
+    const failed = draftAttachments.find((item) => item.localId === localId && item.status === "error");
+    if (!failed) return;
+    const retrying: DraftAttachment = {
+      ...failed,
+      status: "uploading",
+      stagedAttachmentId: null,
+      attachment: null,
+      error: null,
+    };
+    setError(null);
+    setDraftAttachments((current) => current.map((item) => item.localId === localId ? retrying : item));
+    void uploadDraftAttachment(retrying);
+  }, [draftAttachments, uploadDraftAttachment]);
 
   const uploadSelectedFiles = useCallback(async (selectedFiles: FileList | null) => {
     if (!selectedId || !selectedFiles?.length) return;
+    const conversationId = selectedId;
     const availableSlots = MAX_CONVERSATION_ATTACHMENTS - draftAttachments.length;
     if (availableSlots <= 0) {
       setError(`Attach no more than ${MAX_CONVERSATION_ATTACHMENTS} files to one message.`);
@@ -412,76 +540,26 @@ export function ConversationWorkspace() {
       setError(null);
     }
 
-    const drafts = files.map((file, index): { file: File; draft: DraftAttachment } => {
+    const drafts = files.map((file, index): DraftAttachment => {
       const mimeType = file.type || (/\.pdf$/i.test(file.name) ? "application/pdf" : "");
       return {
+        localId: `${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
+        conversationId,
         file,
-        draft: {
-          localId: `${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
-          filename: file.name,
-          mimeType,
-          byteSize: file.size,
-          previewUrl: mimeType.startsWith("image/") ? URL.createObjectURL(file) : null,
-          status: "uploading",
-          attachment: null,
-          error: null,
-        },
+        filename: file.name,
+        mimeType,
+        byteSize: file.size,
+        previewUrl: mimeType.startsWith("image/") ? URL.createObjectURL(file) : null,
+        status: "uploading",
+        stagedAttachmentId: null,
+        attachment: null,
+        error: null,
       };
     });
-    setDraftAttachments((current) => [...current, ...drafts.map((item) => item.draft)]);
+    setDraftAttachments((current) => [...current, ...drafts]);
     setAttachmentMenuOpen(false);
-
-    await Promise.all(drafts.map(async ({ file, draft }) => {
-      let stagedAttachmentId: string | null = null;
-      try {
-        if (!isConversationAttachmentMime(draft.mimeType)) {
-          throw new Error("Choose a JPEG, PNG, WebP or PDF file.");
-        }
-        if (file.size <= 0 || file.size > MAX_CONVERSATION_ATTACHMENT_BYTES) {
-          throw new Error("Attachments must be smaller than 25 MB.");
-        }
-        const urlResponse = await fetch(`/api/conversations/${selectedId}/attachments/upload-url`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            filename: file.name,
-            mime_type: draft.mimeType,
-            byte_size: file.size,
-          }),
-        });
-        const urlBody = await urlResponse.json();
-        if (!urlResponse.ok) throw new Error(urlBody.error ?? "Could not start upload");
-        stagedAttachmentId = urlBody.attachment_id;
-
-        const supabase = createBrowserClient();
-        const { error: uploadError } = await supabase.storage
-          .from(ASSET_BUCKET)
-          .uploadToSignedUrl(urlBody.path, urlBody.token, file, { contentType: draft.mimeType });
-        if (uploadError) throw new Error(uploadError.message);
-
-        const finalResponse = await fetch(`/api/conversations/${selectedId}/attachments`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ attachment_id: stagedAttachmentId }),
-        });
-        const finalBody = await finalResponse.json();
-        if (!finalResponse.ok) throw new Error(finalBody.error ?? "Could not finish upload");
-        setDraftAttachments((current) => current.map((item) => item.localId === draft.localId
-          ? { ...item, status: "ready", attachment: finalBody.attachment, error: null }
-          : item));
-      } catch (reason) {
-        if (stagedAttachmentId) {
-          void fetch(
-            `/api/conversations/${selectedId}/attachments?attachment_id=${encodeURIComponent(stagedAttachmentId)}`,
-            { method: "DELETE" }
-          ).catch(() => null);
-        }
-        setDraftAttachments((current) => current.map((item) => item.localId === draft.localId
-          ? { ...item, status: "error", error: reason instanceof Error ? reason.message : "Upload failed" }
-          : item));
-      }
-    }));
-  }, [draftAttachments.length, selectedId]);
+    await Promise.all(drafts.map(uploadDraftAttachment));
+  }, [draftAttachments.length, selectedId, uploadDraftAttachment]);
 
   const sendMessage = useCallback(async (
     body: string,
@@ -511,6 +589,7 @@ export function ConversationWorkspace() {
       setDraft("");
       setInterim("");
       if (attachmentIds.length > 0) {
+        draftAttachmentsRef.current = [];
         setDraftAttachments((current) => {
           current.forEach((item) => item.previewUrl && URL.revokeObjectURL(item.previewUrl));
           return [];
@@ -964,6 +1043,10 @@ export function ConversationWorkspace() {
       setError("Wait for the attachments to finish uploading.");
       return;
     }
+    if (attachmentUploadFailed) {
+      setError("Retry or remove every failed attachment before sending.");
+      return;
+    }
     const attachmentIds = draftAttachments.flatMap((item) =>
       item.status === "ready" && item.attachment ? [item.attachment.id] : []
     );
@@ -980,7 +1063,7 @@ export function ConversationWorkspace() {
       <aside className={clsx("w-full shrink-0 border-r border-[#d4cbbd] bg-[#ede8de] md:w-80", selectedId && "hidden md:block")}>
         <div className="flex items-center justify-between border-b border-[#d4cbbd] py-3 pl-20 pr-3 md:p-4">
           <p className="label-caps">Conversations</p>
-          <button onClick={() => setNewOpen(true)} disabled={composerBusy} className="bg-nearblack px-3 py-2 text-caption text-white disabled:opacity-30">New chat</button>
+          <button onClick={() => setNewOpen(true)} disabled={sending} className="bg-nearblack px-3 py-2 text-caption text-white disabled:opacity-30">New chat</button>
         </div>
         {data.conversations.length === 0 ? (
           <div className="p-6 text-body text-charcoal/60">
@@ -990,7 +1073,7 @@ export function ConversationWorkspace() {
         ) : (
           <div className="overflow-y-auto">
             {data.conversations.map((conversation) => (
-              <button key={conversation.id} onClick={() => selectConversation(conversation.id)} disabled={composerBusy && selectedId !== conversation.id} className={clsx("flex w-full gap-3 border-b border-[#dcd6cc] p-4 text-left disabled:opacity-40", selectedId === conversation.id ? "bg-[#f5f1e8]" : "hover:bg-white/30")}>
+              <button key={conversation.id} onClick={() => selectConversation(conversation.id)} disabled={sending && selectedId !== conversation.id} className={clsx("flex w-full gap-3 border-b border-[#dcd6cc] p-4 text-left disabled:opacity-40", selectedId === conversation.id ? "bg-[#f5f1e8]" : "hover:bg-white/30")}>
                 <Avatar participant={conversation.participants.find((p) => !p.is_self) ?? conversation.participants[0]} />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-body font-medium text-nearblack">{conversation.display_title}</span>
@@ -1006,7 +1089,7 @@ export function ConversationWorkspace() {
         {selectedConversation ? (
           <>
             <header className="sticky top-0 z-10 flex min-h-16 shrink-0 items-center gap-2 border-b border-[#d4cbbd] bg-[#f5f1e8]/95 py-2 pl-16 pr-2 backdrop-blur md:min-h-20 md:gap-3 md:px-4 md:py-3">
-              <button onClick={() => selectConversation(null)} disabled={composerBusy} className="flex h-11 w-8 shrink-0 items-center justify-center text-xl text-charcoal/70 disabled:opacity-30 md:hidden" aria-label="Back to conversations">‹</button>
+              <button onClick={() => selectConversation(null)} disabled={sending} className="flex h-11 w-8 shrink-0 items-center justify-center text-xl text-charcoal/70 disabled:opacity-30 md:hidden" aria-label="Back to conversations">‹</button>
               {headerParticipant && <Avatar participant={headerParticipant} />}
               <div className="min-w-0 flex-1">
                 <h2 className="truncate font-display text-subhead text-nearblack">{selectedConversation.display_title}</h2>
@@ -1120,24 +1203,37 @@ export function ConversationWorkspace() {
                         ) : (
                           <span aria-hidden className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-[#e9e2d6] text-[10px] font-semibold text-charcoal">PDF</span>
                         )}
-                        <span className="min-w-0 flex-1">
+                        <div className="min-w-0 flex-1 pr-4">
                           <span className="block truncate text-caption font-semibold text-nearblack">{item.filename}</span>
                           <span className={clsx("mt-1 block truncate text-[10px]", item.status === "error" ? "text-red-700" : "text-charcoal/50")}>
                             {item.status === "uploading" ? "Uploading…" : item.status === "error" ? item.error : fileSizeLabel(item.byteSize)}
                           </span>
-                        </span>
+                          {item.status === "error" && (
+                            <button
+                              type="button"
+                              onClick={() => retryDraftAttachment(item.localId)}
+                              className="mt-1 text-[10px] font-semibold text-red-800 underline underline-offset-2"
+                            >
+                              Retry upload
+                            </button>
+                          )}
+                        </div>
                         <button
                           type="button"
                           onClick={() => removeDraftAttachment(item.localId)}
-                          disabled={item.status === "uploading"}
-                          aria-label={`Remove ${item.filename}`}
-                          className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-nearblack text-[11px] text-white disabled:opacity-30"
+                          aria-label={item.status === "uploading" ? `Cancel upload of ${item.filename}` : `Remove ${item.filename}`}
+                          className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-nearblack text-[11px] text-white"
                         >
                           ×
                         </button>
                       </div>
                     ))}
                   </div>
+                )}
+                {attachmentUploadFailed && (
+                  <p className="border-b border-[#e3ddd2] px-3 py-2 text-[10px] text-red-700">
+                    Retry or remove failed files before sending, so nothing is silently left behind.
+                  </p>
                 )}
                 <textarea
                   value={draft}
@@ -1177,7 +1273,7 @@ export function ConversationWorkspace() {
                   </div>
                   <span className="hidden text-[10px] text-charcoal/40 sm:block">Up to 6 files · 25 MB each</span>
                   <button
-                    disabled={composerBusy || (!draft.trim() && !draftAttachments.some((item) => item.status === "ready"))}
+                    disabled={composerBusy || attachmentUploadFailed || (!draft.trim() && !draftAttachments.some((item) => item.status === "ready"))}
                     aria-label="Send message"
                     className="flex h-10 min-w-10 shrink-0 items-center justify-center rounded-full bg-nearblack px-3 text-subhead text-white disabled:opacity-30"
                   >

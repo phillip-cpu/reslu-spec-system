@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { messageAuthor } from "@/lib/conversations";
 import { conversationParticipants } from "@/lib/conversation-access";
-import { MAX_CONVERSATION_ATTACHMENTS } from "@/lib/conversation-attachments";
-import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
+import { conversationAttachmentAccessUrl, MAX_CONVERSATION_ATTACHMENTS } from "@/lib/conversation-attachments";
 import type { AgentSlug, ConversationAttachment, ConversationMessage } from "@/types/conversations";
 
 export const runtime = "nodejs";
@@ -33,22 +32,13 @@ export async function GET(request: NextRequest, context: Context) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   const rows = (data ?? []).reverse();
-  const paths = rows.flatMap((row) =>
-    ((row.conversation_attachments ?? []) as ConversationAttachment[]).map((attachment) => attachment.storage_path)
-  );
-  const { data: signedRows } = paths.length > 0
-    ? await supabase.storage.from(ASSET_BUCKET).createSignedUrls(paths, SIGNED_URL_TTL_SECONDS)
-    : { data: [] };
-  const signedUrlByPath = new Map(
-    (signedRows ?? []).map((item) => [item.path, item.error ? null : item.signedUrl ?? null])
-  );
   const messages = rows.map((row) => {
     const attachments = ((row.conversation_attachments ?? []) as ConversationAttachment[])
       .filter((attachment) => attachment.status === "ready")
       .map((attachment) => ({
         ...attachment,
         metadata: attachment.metadata ?? {},
-        url: signedUrlByPath.get(attachment.storage_path) ?? null,
+        url: conversationAttachmentAccessUrl(id, attachment.id),
       }));
     const { conversation_attachments: _joinedAttachments, ...messageRow } = row;
     return {

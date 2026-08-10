@@ -36,6 +36,13 @@ test("browser uploads directly to private storage and server verifies real bytes
   assert.match(attachmentRoute, /createSignedUrl/);
 });
 
+test("message attachment links refresh privately instead of expiring in the thread", () => {
+  assert.match(attachmentRoute, /export async function GET/);
+  assert.match(attachmentRoute, /Cache-Control", "private, no-store/);
+  assert.match(messageRoute, /conversationAttachmentAccessUrl/);
+  assert.doesNotMatch(messageRoute, /createSignedUrls/);
+});
+
 test("modern composer exposes working camera and file entry points", () => {
   assert.match(workspace, /capture="environment"/);
   assert.match(workspace, /Photos or PDF/);
@@ -46,7 +53,24 @@ test("modern composer exposes working camera and file entry points", () => {
 
 test("attachment drafts cannot leak into another conversation mid-upload", () => {
   assert.match(workspace, /attachmentUploadInProgress/);
-  assert.match(workspace, /Wait for the attachments to finish uploading before changing chats/);
+  assert.match(workspace, /cancelledDraftIdsRef/);
+  assert.match(workspace, /Cancel upload of/);
   assert.match(workspace, /selectConversation\(conversation\.id\)/);
   assert.match(workspace, /selectConversation\(null\)/);
+  assert.match(workspace, /const conversationId = selectedId/);
+  assert.match(workspace, /item\.conversationId/);
+  assert.match(workspace, /keepalive: true/);
+});
+
+test("failed uploads are explicit, retryable and cannot be silently omitted", () => {
+  assert.match(workspace, /retryDraftAttachment/);
+  assert.match(workspace, /Retry upload/);
+  assert.match(workspace, /attachmentUploadFailed/);
+  assert.match(workspace, /Retry or remove every failed attachment before sending/);
+});
+
+test("a later upload removes abandoned staged rows and private objects", () => {
+  assert.match(uploadUrlRoute, /STAGED_CONVERSATION_ATTACHMENT_MAX_AGE_MS/);
+  assert.match(uploadUrlRoute, /\.is\("message_id", null\)/);
+  assert.match(uploadUrlRoute, /remove\(stalePaths\)/);
 });

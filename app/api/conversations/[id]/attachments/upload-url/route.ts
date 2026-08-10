@@ -6,6 +6,7 @@ import {
   conversationAttachmentStoragePath,
   isConversationAttachmentMime,
   isConversationAttachmentSize,
+  STAGED_CONVERSATION_ATTACHMENT_MAX_AGE_MS,
 } from "@/lib/conversation-attachments";
 import { ASSET_BUCKET } from "@/lib/storage";
 import { createClient } from "@/lib/supabase/server";
@@ -22,6 +23,25 @@ export async function POST(request: NextRequest, context: Context) {
 
   const membership = await conversationParticipants(supabase, conversationId, user.id);
   if (membership.error) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
+
+  // A browser can disappear halfway through a signed upload. Clear this
+  // user's old, unbound objects on their next upload so interrupted attempts
+  // cannot accumulate private storage or canonical staging rows forever.
+  const staleBefore = new Date(Date.now() - STAGED_CONVERSATION_ATTACHMENT_MAX_AGE_MS).toISOString();
+  const { data: staleRows } = await supabase
+    .from("conversation_attachments")
+    .select("id,storage_path")
+    .eq("conversation_id", conversationId)
+    .eq("uploaded_by", user.id)
+    .is("message_id", null)
+    .lt("created_at", staleBefore);
+  if (staleRows?.length) {
+    const stalePaths = staleRows.map((row) => row.storage_path);
+    const { error: staleStorageError } = await supabase.storage.from(ASSET_BUCKET).remove(stalePaths);
+    if (!staleStorageError) {
+      await supabase.from("conversation_attachments").delete().in("id", staleRows.map((row) => row.id));
+    }
+  }
 
   const body = await request.json().catch(() => null);
   const filename = cleanConversationAttachmentFilename(body?.filename);
