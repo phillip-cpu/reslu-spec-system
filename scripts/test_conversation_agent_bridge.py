@@ -1,5 +1,6 @@
 import importlib.util
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -106,6 +107,57 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         self.assertEqual(reply, "Agent answer")
         self.assertIn("--session-key", command)
         self.assertEqual(command[command.index("--session-key") + 1], "reslu-conversation-conversation-123")
+
+    @mock.patch.object(conversation_agent_bridge.subprocess, "run")
+    def test_agent_invocation_requires_inspection_of_private_attachments(self, run):
+        run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='{"final":"I read the brief."}', stderr=""
+        )
+
+        reply = conversation_agent_bridge.invoke_agent(
+            {"slug": "aria", "display_name": "Aria", "role_label": "Studio assistant"},
+            "Phillip: Please review this",
+            "conversation-123",
+            [{
+                "filename": "Client Brief.pdf",
+                "mime_type": "application/pdf",
+                "byte_size": 1234,
+                "local_path": "/tmp/private/client-brief.pdf",
+            }],
+        )
+
+        prompt = run.call_args.args[0][run.call_args.args[0].index("--message") + 1]
+        self.assertEqual(reply, "I read the brief.")
+        self.assertIn("ATTACHMENTS_FOR_NEWEST_MESSAGE", prompt)
+        self.assertIn("/tmp/private/client-brief.pdf", prompt)
+        self.assertIn("inspect every relevant file", prompt)
+        self.assertIn("untrusted user context", prompt)
+
+    def test_materializes_private_attachment_with_a_safe_ephemeral_filename(self):
+        class FakeRest:
+            @staticmethod
+            def download_storage(bucket, path):
+                self.assertEqual(bucket, "assets")
+                self.assertEqual(path, "conversations/c1/attachments/a1")
+                return b"%PDF-test"
+
+        with tempfile.TemporaryDirectory() as directory:
+            materialized = conversation_agent_bridge.materialize_attachments(
+                FakeRest(),
+                [{
+                    "id": "attachment-1",
+                    "filename": "../../Client Brief.pdf",
+                    "mime_type": "application/pdf",
+                    "byte_size": 9,
+                    "storage_path": "conversations/c1/attachments/a1",
+                }],
+                Path(directory),
+            )
+
+            local_path = Path(materialized[0]["local_path"])
+            self.assertEqual(local_path.parent, Path(directory))
+            self.assertEqual(local_path.name, "attachment-1-Client-Brief.pdf")
+            self.assertEqual(local_path.read_bytes(), b"%PDF-test")
 
 
 if __name__ == "__main__":

@@ -2,10 +2,20 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
+import Image from "next/image";
 import { initials } from "@/lib/conversations";
+import {
+  conversationAttachmentKind,
+  isConversationAttachmentMime,
+  MAX_CONVERSATION_ATTACHMENTS,
+  MAX_CONVERSATION_ATTACHMENT_BYTES,
+} from "@/lib/conversation-attachments";
 import { isFatalSpeechRecognitionError, speechRecognitionErrorMessage } from "@/lib/conversation-voice";
+import { ASSET_BUCKET } from "@/lib/storage";
+import { createClient as createBrowserClient } from "@/lib/supabase/client";
 import type {
   AgentSlug,
+  ConversationAttachment,
   ConversationMessage,
   ConversationParticipant,
   ConversationSummary,
@@ -68,6 +78,17 @@ interface ActiveRealtimeConsult {
   abortController: AbortController;
 }
 
+interface DraftAttachment {
+  localId: string;
+  filename: string;
+  mimeType: string;
+  byteSize: number;
+  previewUrl: string | null;
+  status: "uploading" | "ready" | "error";
+  attachment: ConversationAttachment | null;
+  error: string | null;
+}
+
 function Avatar({ participant, large = false }: { participant: ConversationParticipant; large?: boolean }) {
   return (
     <div
@@ -85,6 +106,11 @@ function Avatar({ participant, large = false }: { participant: ConversationParti
 
 function timeLabel(value: string) {
   return new Intl.DateTimeFormat("en-AU", { hour: "numeric", minute: "2-digit" }).format(new Date(value));
+}
+
+function fileSizeLabel(bytes: number) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function NewConversation({ people, onCreated, onClose }: {
@@ -176,6 +202,8 @@ export function ConversationWorkspace() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [draftAttachments, setDraftAttachments] = useState<DraftAttachment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [callId, setCallId] = useState<string | null>(null);
   const [callOpening, setCallOpening] = useState(false);
@@ -187,6 +215,9 @@ export function ConversationWorkspace() {
   const messagesScrollerRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
   const workspaceRef = useRef<HTMLDivElement>(null);
+  const draftAttachmentsRef = useRef<DraftAttachment[]>([]);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const recognitionPausedRef = useRef(false);
   const callIdRef = useRef<string | null>(null);
@@ -208,6 +239,8 @@ export function ConversationWorkspace() {
     () => data.conversations.find((conversation) => conversation.id === selectedId) ?? null,
     [data.conversations, selectedId]
   );
+  const attachmentUploadInProgress = draftAttachments.some((item) => item.status === "uploading");
+  const composerBusy = sending || attachmentUploadInProgress;
   const callAgent = participants.find((participant) => participant.type === "agent") ?? null;
   const headerParticipant = callAgent
     ?? selectedConversation?.participants.find((participant) => !participant.is_self)
@@ -299,6 +332,12 @@ export function ConversationWorkspace() {
   }, [messages]);
   useEffect(() => { shouldStickToBottomRef.current = true; }, [selectedId]);
   useEffect(() => { mutedRef.current = muted; }, [muted]);
+  useEffect(() => { draftAttachmentsRef.current = draftAttachments; }, [draftAttachments]);
+  useEffect(() => () => {
+    draftAttachmentsRef.current.forEach((item) => {
+      if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    });
+  }, []);
   useEffect(() => {
     const viewport = window.visualViewport;
     const updateViewport = () => {
@@ -318,15 +357,151 @@ export function ConversationWorkspace() {
     };
   }, []);
 
-  const sendMessage = useCallback(async (body: string, source: "text" | "voice" = "text", targetAgent?: AgentSlug) => {
-    if (!selectedId || !body.trim()) return;
+  const removeDraftAttachment = useCallback((localId: string) => {
+    const draft = draftAttachments.find((item) => item.localId === localId);
+    if (!draft || draft.status === "uploading") return;
+    if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
+    setDraftAttachments((current) => current.filter((item) => item.localId !== localId));
+    if (selectedId && draft.attachment?.id) {
+      void fetch(
+        `/api/conversations/${selectedId}/attachments?attachment_id=${encodeURIComponent(draft.attachment.id)}`,
+        { method: "DELETE" }
+      ).catch(() => null);
+    }
+  }, [draftAttachments, selectedId]);
+
+  const discardDraftAttachments = useCallback(() => {
+    for (const draft of draftAttachments) {
+      if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
+      if (selectedId && draft.attachment?.id) {
+        void fetch(
+          `/api/conversations/${selectedId}/attachments?attachment_id=${encodeURIComponent(draft.attachment.id)}`,
+          { method: "DELETE" }
+        ).catch(() => null);
+      }
+    }
+    setDraftAttachments([]);
+    setAttachmentMenuOpen(false);
+  }, [draftAttachments, selectedId]);
+
+  const selectConversation = useCallback((conversationId: string | null) => {
+    if (conversationId === selectedId) return;
+    if (composerBusy) {
+      setError(attachmentUploadInProgress
+        ? "Wait for the attachments to finish uploading before changing chats."
+        : "Wait for the message to finish sending before changing chats.");
+      return;
+    }
+    discardDraftAttachments();
+    setDraft("");
+    setError(null);
+    setSelectedId(conversationId);
+  }, [attachmentUploadInProgress, composerBusy, discardDraftAttachments, selectedId]);
+
+  const uploadSelectedFiles = useCallback(async (selectedFiles: FileList | null) => {
+    if (!selectedId || !selectedFiles?.length) return;
+    const availableSlots = MAX_CONVERSATION_ATTACHMENTS - draftAttachments.length;
+    if (availableSlots <= 0) {
+      setError(`Attach no more than ${MAX_CONVERSATION_ATTACHMENTS} files to one message.`);
+      return;
+    }
+    const files = Array.from(selectedFiles).slice(0, availableSlots);
+    if (selectedFiles.length > availableSlots) {
+      setError(`Only the first ${availableSlots} file${availableSlots === 1 ? "" : "s"} were added.`);
+    } else {
+      setError(null);
+    }
+
+    const drafts = files.map((file, index): { file: File; draft: DraftAttachment } => {
+      const mimeType = file.type || (/\.pdf$/i.test(file.name) ? "application/pdf" : "");
+      return {
+        file,
+        draft: {
+          localId: `${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
+          filename: file.name,
+          mimeType,
+          byteSize: file.size,
+          previewUrl: mimeType.startsWith("image/") ? URL.createObjectURL(file) : null,
+          status: "uploading",
+          attachment: null,
+          error: null,
+        },
+      };
+    });
+    setDraftAttachments((current) => [...current, ...drafts.map((item) => item.draft)]);
+    setAttachmentMenuOpen(false);
+
+    await Promise.all(drafts.map(async ({ file, draft }) => {
+      let stagedAttachmentId: string | null = null;
+      try {
+        if (!isConversationAttachmentMime(draft.mimeType)) {
+          throw new Error("Choose a JPEG, PNG, WebP or PDF file.");
+        }
+        if (file.size <= 0 || file.size > MAX_CONVERSATION_ATTACHMENT_BYTES) {
+          throw new Error("Attachments must be smaller than 25 MB.");
+        }
+        const urlResponse = await fetch(`/api/conversations/${selectedId}/attachments/upload-url`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: file.name,
+            mime_type: draft.mimeType,
+            byte_size: file.size,
+          }),
+        });
+        const urlBody = await urlResponse.json();
+        if (!urlResponse.ok) throw new Error(urlBody.error ?? "Could not start upload");
+        stagedAttachmentId = urlBody.attachment_id;
+
+        const supabase = createBrowserClient();
+        const { error: uploadError } = await supabase.storage
+          .from(ASSET_BUCKET)
+          .uploadToSignedUrl(urlBody.path, urlBody.token, file, { contentType: draft.mimeType });
+        if (uploadError) throw new Error(uploadError.message);
+
+        const finalResponse = await fetch(`/api/conversations/${selectedId}/attachments`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ attachment_id: stagedAttachmentId }),
+        });
+        const finalBody = await finalResponse.json();
+        if (!finalResponse.ok) throw new Error(finalBody.error ?? "Could not finish upload");
+        setDraftAttachments((current) => current.map((item) => item.localId === draft.localId
+          ? { ...item, status: "ready", attachment: finalBody.attachment, error: null }
+          : item));
+      } catch (reason) {
+        if (stagedAttachmentId) {
+          void fetch(
+            `/api/conversations/${selectedId}/attachments?attachment_id=${encodeURIComponent(stagedAttachmentId)}`,
+            { method: "DELETE" }
+          ).catch(() => null);
+        }
+        setDraftAttachments((current) => current.map((item) => item.localId === draft.localId
+          ? { ...item, status: "error", error: reason instanceof Error ? reason.message : "Upload failed" }
+          : item));
+      }
+    }));
+  }, [draftAttachments.length, selectedId]);
+
+  const sendMessage = useCallback(async (
+    body: string,
+    source: "text" | "voice" = "text",
+    targetAgent?: AgentSlug,
+    attachmentIds: string[] = []
+  ) => {
+    if (!selectedId || (!body.trim() && attachmentIds.length === 0)) return;
     setSending(true);
     if (source === "voice") setCallState("thinking");
     try {
       const response = await fetch(`/api/conversations/${selectedId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body, source, target_agent_slugs: targetAgent ? [targetAgent] : undefined }),
+        body: JSON.stringify({
+          body,
+          source,
+          target_agent_slugs: targetAgent ? [targetAgent] : undefined,
+          attachment_ids: attachmentIds,
+        }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not send message");
@@ -335,6 +510,12 @@ export function ConversationWorkspace() {
         : null;
       setDraft("");
       setInterim("");
+      if (attachmentIds.length > 0) {
+        setDraftAttachments((current) => {
+          current.forEach((item) => item.previewUrl && URL.revokeObjectURL(item.previewUrl));
+          return [];
+        });
+      }
       shouldStickToBottomRef.current = true;
       await loadMessages(selectedId);
       await loadConversations();
@@ -779,7 +960,14 @@ export function ConversationWorkspace() {
 
   function submitDraft(event: FormEvent) {
     event.preventDefault();
-    void sendMessage(draft);
+    if (attachmentUploadInProgress) {
+      setError("Wait for the attachments to finish uploading.");
+      return;
+    }
+    const attachmentIds = draftAttachments.flatMap((item) =>
+      item.status === "ready" && item.attachment ? [item.attachment.id] : []
+    );
+    void sendMessage(draft, "text", undefined, attachmentIds);
   }
 
   if (loading) return <div className="flex h-[70vh] items-center justify-center text-body text-charcoal/50">Loading conversations…</div>;
@@ -792,7 +980,7 @@ export function ConversationWorkspace() {
       <aside className={clsx("w-full shrink-0 border-r border-[#d4cbbd] bg-[#ede8de] md:w-80", selectedId && "hidden md:block")}>
         <div className="flex items-center justify-between border-b border-[#d4cbbd] py-3 pl-20 pr-3 md:p-4">
           <p className="label-caps">Conversations</p>
-          <button onClick={() => setNewOpen(true)} className="bg-nearblack px-3 py-2 text-caption text-white">New chat</button>
+          <button onClick={() => setNewOpen(true)} disabled={composerBusy} className="bg-nearblack px-3 py-2 text-caption text-white disabled:opacity-30">New chat</button>
         </div>
         {data.conversations.length === 0 ? (
           <div className="p-6 text-body text-charcoal/60">
@@ -802,7 +990,7 @@ export function ConversationWorkspace() {
         ) : (
           <div className="overflow-y-auto">
             {data.conversations.map((conversation) => (
-              <button key={conversation.id} onClick={() => setSelectedId(conversation.id)} className={clsx("flex w-full gap-3 border-b border-[#dcd6cc] p-4 text-left", selectedId === conversation.id ? "bg-[#f5f1e8]" : "hover:bg-white/30")}>
+              <button key={conversation.id} onClick={() => selectConversation(conversation.id)} disabled={composerBusy && selectedId !== conversation.id} className={clsx("flex w-full gap-3 border-b border-[#dcd6cc] p-4 text-left disabled:opacity-40", selectedId === conversation.id ? "bg-[#f5f1e8]" : "hover:bg-white/30")}>
                 <Avatar participant={conversation.participants.find((p) => !p.is_self) ?? conversation.participants[0]} />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-body font-medium text-nearblack">{conversation.display_title}</span>
@@ -818,7 +1006,7 @@ export function ConversationWorkspace() {
         {selectedConversation ? (
           <>
             <header className="sticky top-0 z-10 flex min-h-16 shrink-0 items-center gap-2 border-b border-[#d4cbbd] bg-[#f5f1e8]/95 py-2 pl-16 pr-2 backdrop-blur md:min-h-20 md:gap-3 md:px-4 md:py-3">
-              <button onClick={() => setSelectedId(null)} className="flex h-11 w-8 shrink-0 items-center justify-center text-xl text-charcoal/70 md:hidden" aria-label="Back to conversations">‹</button>
+              <button onClick={() => selectConversation(null)} disabled={composerBusy} className="flex h-11 w-8 shrink-0 items-center justify-center text-xl text-charcoal/70 disabled:opacity-30 md:hidden" aria-label="Back to conversations">‹</button>
               {headerParticipant && <Avatar participant={headerParticipant} />}
               <div className="min-w-0 flex-1">
                 <h2 className="truncate font-display text-subhead text-nearblack">{selectedConversation.display_title}</h2>
@@ -862,6 +1050,35 @@ export function ConversationWorkspace() {
                           <span className={clsx("text-[10px]", own ? "text-white/45" : "text-charcoal/40")}>{timeLabel(message.created_at)}</span>
                         </div>
                         <p className="mt-2 whitespace-pre-wrap text-body leading-relaxed">{message.body}</p>
+                        {(message.attachments ?? []).length > 0 && (
+                          <div className={clsx("mt-3 grid gap-2", message.attachments.length > 1 && "grid-cols-2")}>
+                            {message.attachments.map((attachment) => {
+                              const imageAttachment = conversationAttachmentKind(attachment.mime_type) === "image";
+                              if (imageAttachment && attachment.url) return (
+                                <a key={attachment.id} href={attachment.url} target="_blank" rel="noreferrer" className={clsx("block overflow-hidden border", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/50")}>
+                                  <Image
+                                    src={attachment.url}
+                                    alt={attachment.filename}
+                                    width={480}
+                                    height={320}
+                                    unoptimized
+                                    className="h-36 w-full object-cover md:h-48"
+                                  />
+                                  <span className="block truncate px-2 py-2 text-[10px] opacity-65">{attachment.filename}</span>
+                                </a>
+                              );
+                              return (
+                                <a key={attachment.id} href={attachment.url ?? undefined} target="_blank" rel="noreferrer" className={clsx("flex min-w-0 items-center gap-3 border px-3 py-3", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/50", !attachment.url && "pointer-events-none opacity-50")}>
+                                  <span aria-hidden className="flex h-10 w-10 shrink-0 items-center justify-center border border-current text-[10px] font-semibold">{imageAttachment ? "IMG" : "PDF"}</span>
+                                  <span className="min-w-0">
+                                    <span className="block truncate text-caption font-semibold">{attachment.filename}</span>
+                                    <span className="mt-1 block text-[10px] opacity-55">{fileSizeLabel(attachment.byte_size)}</span>
+                                  </span>
+                                </a>
+                              );
+                            })}
+                          </div>
+                        )}
                         {message.metadata.source === "voice" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Voice transcript</p>}
                       </div>
                     </div>
@@ -870,10 +1087,103 @@ export function ConversationWorkspace() {
               </div>
             </div>
 
-            <form onSubmit={submitDraft} className="shrink-0 border-t border-[#d4cbbd] bg-[#f5f1e8] p-3 md:p-4">
-              <div className="mx-auto flex max-w-3xl items-end gap-2">
-                <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (draft.trim()) void sendMessage(draft); } }} rows={1} placeholder={participants.some((p) => p.type === "agent") && participants.length > 2 ? "Message the group — use @Aria or @Marco to ask an agent" : "Write a message…"} className="max-h-36 min-h-12 min-w-0 flex-1 resize-none border border-[#cfc6b8] bg-white px-3 py-3 text-body outline-none focus:border-nearblack md:px-4" />
-                <button disabled={sending || !draft.trim()} className="h-12 shrink-0 bg-nearblack px-4 text-subhead text-white disabled:opacity-30 md:px-5">Send</button>
+            <form onSubmit={submitDraft} className="shrink-0 border-t border-[#d4cbbd] bg-[#f5f1e8] px-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 md:p-4">
+              <input
+                ref={cameraInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                capture="environment"
+                className="hidden"
+                onChange={(event) => {
+                  void uploadSelectedFiles(event.currentTarget.files);
+                  event.currentTarget.value = "";
+                }}
+              />
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,application/pdf,.pdf"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  void uploadSelectedFiles(event.currentTarget.files);
+                  event.currentTarget.value = "";
+                }}
+              />
+              <div className="mx-auto max-w-3xl rounded-2xl border border-[#cfc6b8] bg-white shadow-[0_8px_30px_rgba(35,31,25,0.08)] focus-within:border-nearblack">
+                {draftAttachments.length > 0 && (
+                  <div className="flex gap-2 overflow-x-auto border-b border-[#e3ddd2] p-2.5">
+                    {draftAttachments.map((item) => (
+                      <div key={item.localId} className="relative flex w-44 shrink-0 items-center gap-2 rounded-xl border border-[#ded7cc] bg-[#faf7f0] p-2">
+                        {item.previewUrl ? (
+                          <Image src={item.previewUrl} alt="" width={48} height={48} unoptimized className="h-12 w-12 shrink-0 rounded-lg object-cover" />
+                        ) : (
+                          <span aria-hidden className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-[#e9e2d6] text-[10px] font-semibold text-charcoal">PDF</span>
+                        )}
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-caption font-semibold text-nearblack">{item.filename}</span>
+                          <span className={clsx("mt-1 block truncate text-[10px]", item.status === "error" ? "text-red-700" : "text-charcoal/50")}>
+                            {item.status === "uploading" ? "Uploading…" : item.status === "error" ? item.error : fileSizeLabel(item.byteSize)}
+                          </span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeDraftAttachment(item.localId)}
+                          disabled={item.status === "uploading"}
+                          aria-label={`Remove ${item.filename}`}
+                          className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-nearblack text-[11px] text-white disabled:opacity-30"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <textarea
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onFocus={() => setAttachmentMenuOpen(false)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      event.currentTarget.form?.requestSubmit();
+                    }
+                  }}
+                  rows={1}
+                  placeholder={participants.some((p) => p.type === "agent") && participants.length > 2 ? "Message the group — use @Aria or @Marco" : `Message ${callAgent?.display_name ?? "the conversation"}`}
+                  className="max-h-36 min-h-12 w-full resize-none rounded-t-2xl bg-transparent px-4 pb-2 pt-3 text-body outline-none"
+                />
+                <div className="flex items-center justify-between gap-3 px-2.5 pb-2.5">
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setAttachmentMenuOpen((open) => !open)}
+                      aria-label="Add photos or files"
+                      aria-expanded={attachmentMenuOpen}
+                      className="flex h-10 w-10 items-center justify-center rounded-full border border-[#d7d0c5] text-xl text-nearblack hover:bg-[#f1ece3]"
+                    >
+                      +
+                    </button>
+                    {attachmentMenuOpen && (
+                      <div className="absolute bottom-12 left-0 z-20 w-52 overflow-hidden rounded-xl border border-[#d4cbbd] bg-white py-1 shadow-2xl">
+                        <button type="button" onClick={() => cameraInputRef.current?.click()} className="flex w-full items-center gap-3 px-4 py-3 text-left text-body text-nearblack hover:bg-[#f5f1e8]">
+                          <span aria-hidden>◉</span> Take a photo
+                        </button>
+                        <button type="button" onClick={() => fileInputRef.current?.click()} className="flex w-full items-center gap-3 px-4 py-3 text-left text-body text-nearblack hover:bg-[#f5f1e8]">
+                          <span aria-hidden>＋</span> Photos or PDF
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <span className="hidden text-[10px] text-charcoal/40 sm:block">Up to 6 files · 25 MB each</span>
+                  <button
+                    disabled={composerBusy || (!draft.trim() && !draftAttachments.some((item) => item.status === "ready"))}
+                    aria-label="Send message"
+                    className="flex h-10 min-w-10 shrink-0 items-center justify-center rounded-full bg-nearblack px-3 text-subhead text-white disabled:opacity-30"
+                  >
+                    <span aria-hidden>↑</span><span className="sr-only">Send</span>
+                  </button>
+                </div>
               </div>
               {error && <p className="mx-auto mt-2 max-w-3xl text-caption text-red-700">{error}</p>}
             </form>
@@ -883,7 +1193,7 @@ export function ConversationWorkspace() {
         )}
       </section>
 
-      {newOpen && <NewConversation people={data.people} onClose={() => setNewOpen(false)} onCreated={(id) => { setNewOpen(false); setSelectedId(id); void loadConversations(); }} />}
+      {newOpen && <NewConversation people={data.people} onClose={() => setNewOpen(false)} onCreated={(id) => { discardDraftAttachments(); setDraft(""); setNewOpen(false); setSelectedId(id); void loadConversations(); }} />}
 
       {(callOpening || callId || callError) && callAgent && (
         <div className="fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[70] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col overflow-hidden bg-nearblack text-white">
