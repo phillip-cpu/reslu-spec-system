@@ -339,6 +339,9 @@ export async function GET(request: NextRequest) {
     const connectedEstimateContributions: FinanceContributionInput[] = [];
     for (const projectId of companyProjectIds) {
       if (baselineProjectIds.has(projectId)) continue;
+      // Design-only projects contribute to client claims but not to cost outflows
+      const projectFinanceState = profiles.find((p) => p.project_id === projectId)?.finance_state;
+      if (projectFinanceState === "design_only") continue;
       const estimate = latestEstimateByProjectId.get(projectId);
       if (!estimate) continue;
       const projectName = projectNameById.get(projectId) ?? "Project";
