@@ -184,7 +184,8 @@ export function ConversationWorkspace() {
   const [interim, setInterim] = useState("");
   const [callError, setCallError] = useState<string | null>(null);
   const [lastSpoken, setLastSpoken] = useState("");
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesScrollerRef = useRef<HTMLDivElement>(null);
+  const shouldStickToBottomRef = useRef(true);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const recognitionPausedRef = useRef(false);
@@ -208,6 +209,10 @@ export function ConversationWorkspace() {
     [data.conversations, selectedId]
   );
   const callAgent = participants.find((participant) => participant.type === "agent") ?? null;
+  const headerParticipant = callAgent
+    ?? selectedConversation?.participants.find((participant) => !participant.is_self)
+    ?? selectedConversation?.participants[0]
+    ?? null;
 
   const loadConversations = useCallback(async () => {
     try {
@@ -283,7 +288,16 @@ export function ConversationWorkspace() {
       window.clearInterval(timer);
     };
   }, [selectedId, loadMessages, callId]);
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  useEffect(() => {
+    // scrollIntoView() may move the page itself on iOS, taking the chat header
+    // and call action off-screen. Scroll only the message pane so the mobile
+    // conversation chrome stays pinned like a native messenger.
+    const scroller = messagesScrollerRef.current;
+    if (scroller && shouldStickToBottomRef.current) {
+      scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+    }
+  }, [messages]);
+  useEffect(() => { shouldStickToBottomRef.current = true; }, [selectedId]);
   useEffect(() => { mutedRef.current = muted; }, [muted]);
   useEffect(() => {
     const viewport = window.visualViewport;
@@ -321,6 +335,7 @@ export function ConversationWorkspace() {
         : null;
       setDraft("");
       setInterim("");
+      shouldStickToBottomRef.current = true;
       await loadMessages(selectedId);
       await loadConversations();
       if (queueWarning) setError(queueWarning);
@@ -736,6 +751,11 @@ export function ConversationWorkspace() {
     }
   }
 
+  async function retryCall() {
+    await endCall();
+    await startCall();
+  }
+
   function toggleMute() {
     setMuted((value) => {
       const next = !value;
@@ -767,7 +787,7 @@ export function ConversationWorkspace() {
   return (
     <div
       ref={workspaceRef}
-      className="relative flex h-[calc(var(--conversation-vh,100dvh)-env(safe-area-inset-top)-env(safe-area-inset-bottom))] min-h-0 min-w-0 overflow-hidden border border-[#d4cbbd] bg-[#f5f1e8] md:h-[calc(100vh-7.5rem)] md:min-h-[560px]"
+      className="fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-20 flex h-[var(--conversation-vh,100dvh)] min-h-0 min-w-0 overflow-hidden border border-[#d4cbbd] bg-[#f5f1e8] md:relative md:inset-auto md:z-auto md:h-[calc(100vh-7.5rem)] md:min-h-[560px]"
     >
       <aside className={clsx("w-full shrink-0 border-r border-[#d4cbbd] bg-[#ede8de] md:w-80", selectedId && "hidden md:block")}>
         <div className="flex items-center justify-between border-b border-[#d4cbbd] py-3 pl-20 pr-3 md:p-4">
@@ -797,20 +817,31 @@ export function ConversationWorkspace() {
       <section className={clsx("min-w-0 flex-1 flex-col", selectedId ? "flex" : "hidden md:flex")}>
         {selectedConversation ? (
           <>
-            <header className="flex min-h-16 items-center gap-2 border-b border-[#d4cbbd] bg-[#f5f1e8] py-2 pl-20 pr-3 md:min-h-20 md:gap-3 md:px-4 md:py-3">
-              <button onClick={() => setSelectedId(null)} className="mr-1 text-charcoal/60 md:hidden" aria-label="Back to conversations">←</button>
+            <header className="sticky top-0 z-10 flex min-h-16 shrink-0 items-center gap-2 border-b border-[#d4cbbd] bg-[#f5f1e8]/95 py-2 pl-16 pr-2 backdrop-blur md:min-h-20 md:gap-3 md:px-4 md:py-3">
+              <button onClick={() => setSelectedId(null)} className="flex h-11 w-8 shrink-0 items-center justify-center text-xl text-charcoal/70 md:hidden" aria-label="Back to conversations">‹</button>
+              {headerParticipant && <Avatar participant={headerParticipant} />}
               <div className="min-w-0 flex-1">
                 <h2 className="truncate font-display text-subhead text-nearblack">{selectedConversation.display_title}</h2>
                 <p className="mt-1 truncate text-caption text-charcoal/50">{participants.map((participant) => participant.display_name).join(", ")}</p>
               </div>
               {callAgent && (
-                <button onClick={() => void startCall()} aria-label={`Call ${callAgent.display_name}`} className="flex shrink-0 items-center gap-2 border border-nearblack px-3 py-2 text-subhead text-nearblack hover:bg-nearblack hover:text-white md:px-4">
-                  <span aria-hidden>●</span> <span className="hidden sm:inline">Call {callAgent.display_name}</span>
+                <button onClick={() => void startCall()} aria-label={`Call ${callAgent.display_name}`} className="flex h-11 shrink-0 items-center justify-center gap-2 border border-nearblack px-3 text-nearblack hover:bg-nearblack hover:text-white md:px-4">
+                  <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M7.2 3.5 9.5 8l-2.2 1.7a15.4 15.4 0 0 0 7 7l1.7-2.2 4.5 2.3-.7 3.2c-.2.8-.9 1.4-1.8 1.4A15.5 15.5 0 0 1 2.6 6c0-.9.6-1.6 1.4-1.8l3.2-.7Z" />
+                  </svg>
+                  <span className="hidden text-subhead sm:inline">Call {callAgent.display_name}</span>
                 </button>
               )}
             </header>
 
-            <div className="flex-1 overflow-y-auto bg-[#faf7f0] px-4 py-6 md:px-8">
+            <div
+              ref={messagesScrollerRef}
+              onScroll={(event) => {
+                const pane = event.currentTarget;
+                shouldStickToBottomRef.current = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 96;
+              }}
+              className="min-h-0 flex-1 overscroll-contain overflow-y-auto bg-[#faf7f0] px-3 py-4 md:px-8 md:py-6"
+            >
               {messages.length === 0 && <p className="mx-auto mt-20 max-w-sm text-center text-body text-charcoal/50">This is the beginning of the conversation. Its history will stay here for everyone in the chat.</p>}
               <div className="mx-auto max-w-3xl space-y-4">
                 {messages.map((message) => {
@@ -836,7 +867,6 @@ export function ConversationWorkspace() {
                     </div>
                   );
                 })}
-                <div ref={messagesEndRef} />
               </div>
             </div>
 
@@ -870,14 +900,21 @@ export function ConversationWorkspace() {
               <span className={clsx("absolute -bottom-2 -right-2 h-5 w-5 border-4 border-nearblack", callState === "reconnecting" ? "bg-[#C9971E]" : "bg-[#5f895f]")} />
             </div>
             <h2 className="mt-5 font-display text-[36px] leading-none md:mt-8 md:text-[42px]">{callAgent.display_name}</h2>
-            <p className="mt-3 text-subhead uppercase tracking-[0.24em] text-sand">{callError ?? callState}</p>
-            <p className="mt-5 min-h-12 max-w-xl text-body text-white/60 md:mt-8 md:min-h-16">{interim ? `“${interim}”` : callState === "listening" ? "I’m listening." : callState === "thinking" ? `${callAgent.display_name} is checking that…` : ""}</p>
+            <p className={clsx("mt-3 text-subhead uppercase tracking-[0.24em]", callError ? "text-[#e28b8b]" : "text-sand")}>{callError ? "Call interrupted" : callState}</p>
+            <p className="mt-5 min-h-12 max-w-xl text-body text-white/60 md:mt-8 md:min-h-16">{callError ?? (interim ? `“${interim}”` : callState === "listening" ? "I’m listening." : callState === "thinking" ? `${callAgent.display_name} is checking that…` : "")}</p>
           </div>
-          <div className="grid shrink-0 grid-cols-3 border-t border-white/10 pb-[env(safe-area-inset-bottom)]">
-            <button onClick={toggleMute} className="border-r border-white/10 px-3 py-4 text-subhead md:py-6"><span className="block text-xl">{muted ? "×" : "●"}</span><span className="mt-2 block text-caption text-white/55">{muted ? "Unmute" : "Mute"}</span></button>
-            <button onClick={repeatLastReply} disabled={!lastSpoken} className="border-r border-white/10 px-3 py-4 text-subhead disabled:opacity-30 md:py-6"><span className="block text-xl">↻</span><span className="mt-2 block text-caption text-white/55">Repeat</span></button>
-            <button onClick={() => void endCall()} className="bg-[#8e2f2f] px-3 py-4 text-subhead md:py-6"><span className="block text-xl">■</span><span className="mt-2 block text-caption text-white/70">End call</span></button>
-          </div>
+          {callError ? (
+            <div className="grid shrink-0 grid-cols-2 border-t border-white/10 pb-[env(safe-area-inset-bottom)]">
+              <button onClick={() => void endCall()} className="border-r border-white/10 px-3 py-5 text-subhead text-white/75">Back to chat</button>
+              <button onClick={() => void retryCall()} className="bg-sand px-3 py-5 text-subhead text-nearblack">Try again</button>
+            </div>
+          ) : (
+            <div className="grid shrink-0 grid-cols-3 border-t border-white/10 pb-[env(safe-area-inset-bottom)]">
+              <button onClick={toggleMute} className="border-r border-white/10 px-3 py-4 text-subhead md:py-6"><span className="block text-xl">{muted ? "×" : "●"}</span><span className="mt-2 block text-caption text-white/55">{muted ? "Unmute" : "Mute"}</span></button>
+              <button onClick={repeatLastReply} disabled={!lastSpoken} className="border-r border-white/10 px-3 py-4 text-subhead disabled:opacity-30 md:py-6"><span className="block text-xl">↻</span><span className="mt-2 block text-caption text-white/55">Repeat</span></button>
+              <button onClick={() => void endCall()} className="bg-[#8e2f2f] px-3 py-4 text-subhead md:py-6"><span className="block text-xl">■</span><span className="mt-2 block text-caption text-white/70">End call</span></button>
+            </div>
+          )}
         </div>
       )}
     </div>
