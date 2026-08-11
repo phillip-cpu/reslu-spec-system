@@ -231,11 +231,36 @@ function taskStatusLabel(task: AgentTask) {
   }[task.status];
 }
 
+function artifactContent(content: Record<string, unknown>, depth = 0): Record<string, unknown> {
+  if (depth > 3) return content;
+  const embedded = typeof content.text === "string" ? content.text.trim() : null;
+  if (embedded?.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(embedded) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return artifactContent(parsed as Record<string, unknown>, depth + 1);
+      }
+    } catch {
+      // A normal text artifact may start with a brace; show it unchanged.
+    }
+  }
+  const artifact = content.artifact;
+  if (artifact && typeof artifact === "object" && !Array.isArray(artifact)) {
+    const nested = (artifact as Record<string, unknown>).content;
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      return artifactContent(nested as Record<string, unknown>, depth + 1);
+    }
+  }
+  return content;
+}
+
 function artifactText(content: Record<string, unknown>) {
-  const body = typeof content.body === "string" ? content.body : null;
-  const text = typeof content.text === "string" ? content.text : null;
-  const summary = typeof content.summary === "string" ? content.summary : null;
-  return body ?? text ?? summary ?? JSON.stringify(content, null, 2);
+  const normalized = artifactContent(content);
+  const body = typeof normalized.body === "string" ? normalized.body : null;
+  const text = typeof normalized.text === "string" ? normalized.text : null;
+  const message = typeof normalized.message === "string" ? normalized.message : null;
+  const summary = typeof normalized.summary === "string" ? normalized.summary : null;
+  return body ?? text ?? message ?? summary ?? "Draft details are not available yet.";
 }
 
 function AgentTaskCard({
@@ -253,7 +278,7 @@ function AgentTaskCard({
   const active = task.status === "queued" || task.status === "running";
   return (
     <article className={clsx(
-      "rounded-2xl border p-3",
+      "min-w-0 max-w-full overflow-hidden rounded-2xl border p-3",
       dark ? "border-white/15 bg-white/[0.06] text-white" : "border-[#d4cbbd] bg-white/65 text-nearblack",
     )}>
       <div className="flex items-start justify-between gap-3">
@@ -261,7 +286,7 @@ function AgentTaskCard({
           <p className={clsx("text-[11px] font-semibold uppercase tracking-[0.13em]", dark ? "text-sand" : "text-charcoal/50") }>
             {taskStatusLabel(task)} · {task.model_tier} model
           </p>
-          <h3 className="mt-1 truncate text-[17px] font-semibold leading-snug md:text-[18px]">{task.title}</h3>
+          <h3 className="mt-1 break-words text-[17px] font-semibold leading-snug md:text-[18px]">{task.title}</h3>
         </div>
         {active && (
           <button
@@ -287,8 +312,9 @@ function AgentTaskCard({
         </div>
       )}
       {task.artifacts.map((artifact) => {
-        const recipient = typeof artifact.content.to === "string" ? artifact.content.to : null;
-        const subject = typeof artifact.content.subject === "string" ? artifact.content.subject : null;
+        const content = artifactContent(artifact.content);
+        const recipient = typeof content.to === "string" ? content.to : null;
+        const subject = typeof content.subject === "string" ? content.subject : null;
         return (
           <div key={artifact.id} className={clsx("mt-4 rounded-xl border p-4", dark ? "border-white/10 bg-black/20" : "border-[#ded7cd] bg-[#f8f5ef]") }>
             <p className="text-[17px] font-semibold leading-snug">{artifact.title}</p>
@@ -297,7 +323,7 @@ function AgentTaskCard({
                 {[recipient && `To: ${recipient}`, subject && `Subject: ${subject}`].filter(Boolean).join(" · ")}
               </p>
             )}
-            <pre className={clsx("mt-3 max-h-80 overflow-auto whitespace-pre-wrap font-sans text-[15px] leading-relaxed md:text-[16px]", dark ? "text-white/80" : "text-charcoal/80") }>{artifactText(artifact.content)}</pre>
+            <div className={clsx("mt-3 max-h-80 max-w-full overflow-y-auto whitespace-pre-wrap break-words font-sans text-[15px] leading-relaxed md:text-[16px]", dark ? "text-white/80" : "text-charcoal/80") }>{artifactText(content)}</div>
             {task.status === "awaiting_approval" && artifact.status === "draft" && (
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button type="button" onClick={() => onAction(task.id, "reject", artifact.id)} className={clsx("min-h-11 rounded-lg border px-3 py-2 text-body", dark ? "border-white/20" : "border-[#cfc6b8]")}>Reject</button>
@@ -479,6 +505,7 @@ export function ConversationWorkspace() {
   const [callTranscript, setCallTranscript] = useState<CallTranscriptEntry[]>([]);
   const [callTranscriptExpanded, setCallTranscriptExpanded] = useState(false);
   const [agentTasks, setAgentTasks] = useState<AgentTask[]>([]);
+  const [agentWorkExpanded, setAgentWorkExpanded] = useState(false);
   const callTranscriptScrollerRef = useRef<HTMLDivElement>(null);
   const callTranscriptStickRef = useRef(true);
   const messagesScrollerRef = useRef<HTMLDivElement>(null);
@@ -1260,6 +1287,7 @@ export function ConversationWorkspace() {
     setMessageSearchOpen(false);
     setReplyingTo(null);
     setMessageMenuId(null);
+    setAgentWorkExpanded(false);
     messageSearchRequestRef.current += 1;
     if (selectedId) activeMessageRequestRef.current.delete(selectedId);
     if (conversationId) activeMessageRequestRef.current.delete(conversationId);
@@ -2703,7 +2731,7 @@ export function ConversationWorkspace() {
       </aside>
 
       <section
-        className={clsx("relative min-w-0 flex-1 flex-col", selectedId ? "flex" : "hidden md:flex")}
+        className={clsx("relative min-w-0 max-w-full flex-1 flex-col overflow-x-hidden", selectedId ? "flex" : "hidden md:flex")}
         onDragEnter={(event) => {
           if (!selectedId || !event.dataTransfer.types.includes("Files")) return;
           event.preventDefault();
@@ -2813,14 +2841,22 @@ export function ConversationWorkspace() {
             </header>
 
             {visibleAgentTasks.length > 0 && (
-              <section className="shrink-0 border-b border-[#d4cbbd] bg-[#eee9df] px-3 py-2.5 md:px-4" aria-label="Agent work">
+              <section className="w-full min-w-0 max-w-full shrink-0 overflow-hidden border-b border-[#d4cbbd] bg-[#eee9df] px-3 py-2.5 md:px-4" aria-label="Agent work">
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <p className="label-caps">Agent work</p>
-                  <p className="text-[10px] text-charcoal/45">Continues after you leave this chat</p>
+                  {visibleAgentTasks.length > 1 ? (
+                    <button
+                      type="button"
+                      onClick={() => setAgentWorkExpanded((expanded) => !expanded)}
+                      className="text-caption font-medium text-charcoal/60 md:hidden"
+                    >
+                      {agentWorkExpanded ? "Show latest only" : `Show ${visibleAgentTasks.length - 1} more`}
+                    </button>
+                  ) : <p className="text-[10px] text-charcoal/45">Continues after you leave this chat</p>}
                 </div>
-                <div className="flex max-h-52 snap-x gap-3 overflow-x-auto pb-1">
-                  {visibleAgentTasks.map((task) => (
-                    <div key={task.id} className="w-[min(82vw,22rem)] shrink-0 snap-start md:w-80">
+                <div className="grid max-h-[46vh] min-w-0 max-w-full grid-cols-1 gap-3 overflow-y-auto pb-1 md:flex md:max-h-52 md:snap-x md:overflow-x-auto md:overflow-y-hidden">
+                  {visibleAgentTasks.map((task, index) => (
+                    <div key={task.id} className={clsx("min-w-0 max-w-full", index > 0 && !agentWorkExpanded && "hidden md:block", "md:w-80 md:shrink-0 md:snap-start") }>
                       <AgentTaskCard task={task} compact onAction={handleTaskAction} />
                     </div>
                   ))}
@@ -3194,7 +3230,7 @@ export function ConversationWorkspace() {
                   }}
                   rows={1}
                   placeholder={participants.some((p) => p.type === "agent") && participants.length > 2 ? "Message the group — use @Aria or @Marco" : `Message ${callAgent?.display_name ?? "the conversation"}`}
-                  className="max-h-36 min-h-12 w-full resize-none rounded-t-2xl bg-transparent px-4 pb-2 pt-3 text-body outline-none disabled:opacity-60"
+                  className="max-h-36 min-h-12 w-full resize-none rounded-t-2xl bg-transparent px-4 pb-2 pt-3 text-[16px] outline-none disabled:opacity-60 md:text-body"
                 />
                 <div className="flex items-center justify-between gap-3 px-2.5 pb-2.5">
                   <div className="relative">
