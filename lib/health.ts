@@ -1,5 +1,10 @@
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { cronHealthLevel } from "@/lib/health-status";
+import {
+  conversationTransportHasIncident,
+  conversationTransportLevel,
+  summarizeConversationVoiceHealth,
+} from "@/lib/conversation-health";
 import type { SpecHealthSummary } from "@/types/health-push";
 
 // ============================================================
@@ -20,6 +25,11 @@ type ServiceClient = ReturnType<typeof createServiceRoleClient>;
 
 const STUCK_ARIA_QUEUE_HOURS = 24;
 const FAILED_SENDS_WINDOW_DAYS = 7;
+const CONVERSATION_FAILURE_WINDOW_HOURS = 24;
+const STUCK_CONVERSATION_JOB_MINUTES = 15;
+const STUCK_AGENT_TASK_MINUTES = 30;
+const STALE_ACTIVE_CALL_HOURS = 4;
+const VOICE_HEALTH_WINDOW_DAYS = 7;
 
 interface CronDef {
   key: string;
@@ -169,8 +179,50 @@ async function needsAriaBacklogCount(supabase: ServiceClient): Promise<number> {
   return count ?? 0;
 }
 
+async function conversationTransportHealth(supabase: ServiceClient) {
+  const now = Date.now();
+  const failureCutoff = new Date(now - CONVERSATION_FAILURE_WINDOW_HOURS * 60 * 60 * 1000).toISOString();
+  const stuckJobCutoff = new Date(now - STUCK_CONVERSATION_JOB_MINUTES * 60 * 1000).toISOString();
+  const stuckTaskCutoff = new Date(now - STUCK_AGENT_TASK_MINUTES * 60 * 1000).toISOString();
+  const staleCallCutoff = new Date(now - STALE_ACTIVE_CALL_HOURS * 60 * 60 * 1000).toISOString();
+  const voiceCutoff = new Date(now - VOICE_HEALTH_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const results = await Promise.all([
+    supabase.from("agent_conversation_jobs").select("id", { count: "exact", head: true }).eq("status", "pending"),
+    supabase.from("agent_conversation_jobs").select("created_at").eq("status", "pending").order("created_at", { ascending: true }).limit(1).maybeSingle(),
+    supabase.from("agent_conversation_jobs").select("id", { count: "exact", head: true }).eq("status", "processing").lt("claimed_at", stuckJobCutoff),
+    supabase.from("agent_conversation_jobs").select("id", { count: "exact", head: true }).eq("status", "failed").gte("completed_at", failureCutoff),
+    supabase.from("agent_tasks").select("id", { count: "exact", head: true }).eq("status", "queued"),
+    supabase.from("agent_tasks").select("id", { count: "exact", head: true }).eq("status", "running").lt("claimed_at", stuckTaskCutoff),
+    supabase.from("agent_tasks").select("id", { count: "exact", head: true }).eq("status", "failed").gte("completed_at", failureCutoff),
+    supabase.from("conversation_calls").select("id", { count: "exact", head: true }).eq("status", "active").lt("started_at", staleCallCutoff),
+    supabase.from("conversation_calls").select("realtime_voice_latency:metadata->realtime_voice_latency").gte("started_at", voiceCutoff).order("started_at", { ascending: false }).limit(50),
+  ]);
+  const [pending, oldestPending, stuckJobs, failedJobs, queuedTasks, stuckTasks, failedTasks, staleCalls, voiceCalls] = results;
+  const oldestCreatedAt = oldestPending.data && typeof oldestPending.data.created_at === "string"
+    ? Date.parse(oldestPending.data.created_at)
+    : Number.NaN;
+  const voice = summarizeConversationVoiceHealth(voiceCalls.data ?? []);
+  const core = {
+    query_errors: results.filter((result) => result.error).length,
+    pending_jobs: pending.count ?? 0,
+    oldest_pending_job_ms: Number.isFinite(oldestCreatedAt) ? Math.max(0, now - oldestCreatedAt) : null,
+    processing_jobs_stuck: stuckJobs.count ?? 0,
+    failed_jobs_24h: failedJobs.count ?? 0,
+    queued_tasks: queuedTasks.count ?? 0,
+    running_tasks_stuck: stuckTasks.count ?? 0,
+    failed_tasks_24h: failedTasks.count ?? 0,
+    active_calls_stale: staleCalls.count ?? 0,
+    ...voice,
+  };
+  return {
+    ...core,
+    operational_incident: conversationTransportHasIncident(core),
+    level: conversationTransportLevel(core),
+  };
+}
+
 export async function computeSpecHealth(supabase: ServiceClient): Promise<SpecHealthSummary> {
-  const [crons, failedEmailSends7d, stuckAriaQueue, needsAriaBacklog] = await Promise.all([
+  const [crons, failedEmailSends7d, stuckAriaQueue, needsAriaBacklog, conversationTransport] = await Promise.all([
     Promise.all(
       MONITORED_CRONS.map(async (def) => {
         const execution = await cronExecution(supabase, def.key);
@@ -188,6 +240,7 @@ export async function computeSpecHealth(supabase: ServiceClient): Promise<SpecHe
     failedEmailSendsCount(supabase),
     ariaQueueStuckCount(supabase),
     needsAriaBacklogCount(supabase),
+    conversationTransportHealth(supabase),
   ]);
 
   return {
@@ -195,6 +248,7 @@ export async function computeSpecHealth(supabase: ServiceClient): Promise<SpecHe
     failed_email_sends_7d: failedEmailSends7d,
     aria_queue_stuck: stuckAriaQueue,
     needs_aria_backlog: needsAriaBacklog,
+    conversation_transport: conversationTransport,
   };
 }
 

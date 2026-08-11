@@ -177,6 +177,7 @@ export async function GET() {
           channelPillLevel(channel.status, channel.session_valid)
         ),
         ...specHealth.crons.map((cron) => cron.level),
+        specHealth.conversation_transport.level,
       ];
       healthLevel = overallHealthLevel(levels, {
         openclawUp: latestHeartbeat?.openclaw_up,
