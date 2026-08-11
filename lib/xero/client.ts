@@ -79,12 +79,23 @@ async function refreshAccessToken(connection: StoredXeroConnection): Promise<str
   const existing = refreshInFlight.get(connection.id);
   if (existing) return existing;
   const refresh = (async () => {
+    // Xero rotates refresh tokens. A previous concurrent request may already
+    // have stored a newer token, so always reload the current ciphertext
+    // before exchanging it rather than trusting the caller's stale snapshot.
+    const service = createServiceRoleClient();
+    const { data: latest, error: latestError } = await service
+      .from("xero_connections")
+      .select("refresh_token_encrypted")
+      .eq("id", connection.id)
+      .single();
+    if (latestError || !latest) {
+      throw new Error(latestError?.message ?? "Could not load Xero refresh token");
+    }
     const tokens = await requestTokens({
       grant_type: "refresh_token",
-      refresh_token: decryptXeroSecret(connection.refresh_token_encrypted),
+      refresh_token: decryptXeroSecret(latest.refresh_token_encrypted),
     });
     const expires = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
-    const service = createServiceRoleClient();
     const { error } = await service
       .from("xero_connections")
       .update({
@@ -120,8 +131,7 @@ export async function xeroGet<T>(
 ): Promise<T> {
   const url = new URL(path, "https://api.xero.com/");
   for (const [key, value] of Object.entries(query ?? {})) url.searchParams.set(key, value);
-  const token = await validAccessToken(connection);
-  const response = await fetch(url, {
+  const request = (token: string) => fetch(url, {
     headers: {
       Authorization: `Bearer ${token}`,
       "xero-tenant-id": connection.tenant_id,
@@ -129,6 +139,14 @@ export async function xeroGet<T>(
     },
     cache: "no-store",
   });
+  let token = await validAccessToken(connection);
+  let response = await request(token);
+  // Access tokens can be revoked before their nominal expiry. Refresh and
+  // retry once; never loop and never expose Xero's response body.
+  if (response.status === 401) {
+    token = await refreshAccessToken(connection);
+    response = await request(token);
+  }
   if (!response.ok) {
     // Do not copy Xero response bodies into browser errors, sync audit rows,
     // or server logs: they can contain accounting/contact data.
