@@ -36,6 +36,7 @@ AGENT_PROCESS_TIMEOUT_SECONDS = 210.0
 HISTORY_LIMIT = 80
 REALTIME_VOICE_HISTORY_LIMIT = 16
 REALTIME_VOICE_THINKING_DEFAULT = "minimal"
+OPENCLAW_SESSION_VERSION_DEFAULT = "v2"
 OPENCLAW_THINKING_LEVELS = {
     "off",
     "minimal",
@@ -406,8 +407,13 @@ def openclaw_agent_id(slug: str) -> str:
 
 
 def openclaw_session_key(conversation_id: str) -> str:
-    """Keep every canonical RESLU thread in its own durable agent session."""
-    return f"reslu-conversation-{conversation_id}"
+    """Keep every canonical thread durable while allowing safe session rollover."""
+    configured = os.environ.get(
+        "RESLU_OPENCLAW_SESSION_VERSION",
+        OPENCLAW_SESSION_VERSION_DEFAULT,
+    ).strip()
+    version = configured if re.fullmatch(r"[A-Za-z0-9_-]{1,20}", configured) else OPENCLAW_SESSION_VERSION_DEFAULT
+    return f"reslu-conversation-{version}-{conversation_id}"
 
 
 def stop_agent_process(process: subprocess.Popen[str]) -> None:

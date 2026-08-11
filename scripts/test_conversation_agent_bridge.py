@@ -201,7 +201,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             conversation_agent_bridge.openclaw_session_key(
                 "d5442b38-d5ee-4650-93be-9e5953dbf401"
             ),
-            "reslu-conversation-d5442b38-d5ee-4650-93be-9e5953dbf401",
+            "reslu-conversation-v2-d5442b38-d5ee-4650-93be-9e5953dbf401",
         )
 
     @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
@@ -219,7 +219,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         command = popen.call_args.args[0]
         self.assertEqual(reply, "Agent answer")
         self.assertIn("--session-key", command)
-        self.assertEqual(command[command.index("--session-key") + 1], "reslu-conversation-conversation-123")
+        self.assertEqual(command[command.index("--session-key") + 1], "reslu-conversation-v2-conversation-123")
         self.assertNotIn("--thinking", command)
 
     @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
