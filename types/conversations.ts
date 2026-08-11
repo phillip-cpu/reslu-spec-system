@@ -121,6 +121,7 @@ export interface AgentTask {
   approval_note: string | null;
   result_summary: string | null;
   error: string | null;
+  retry_count: number;
   gateway_run_id: string | null;
   progress_label: string | null;
   progress_updated_at: string | null;

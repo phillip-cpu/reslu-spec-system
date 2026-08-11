@@ -475,16 +475,20 @@ function AgentTaskCard({
   task,
   compact = false,
   dark = false,
+  canRetry = false,
   onAction,
 }: {
   task: AgentTask;
   compact?: boolean;
   dark?: boolean;
-  onAction: (taskId: string, action: "cancel" | "approve" | "reject", artifactId?: string) => void;
+  canRetry?: boolean;
+  onAction: (taskId: string, action: "cancel" | "approve" | "reject" | "retry", artifactId?: string) => void;
 }) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [confirmingRetry, setConfirmingRetry] = useState(false);
   const latestEvent = task.events.at(-1);
   const active = task.status === "queued" || task.status === "running";
+  const retryable = task.status === "failed" && task.approval_state !== "approved" && canRetry;
   return (
     <article className={clsx(
       "min-w-0 max-w-full overflow-hidden rounded-2xl border p-3",
@@ -536,6 +540,46 @@ function AgentTaskCard({
       {(latestEvent || task.result_summary || task.error) && (
         <p className={clsx("mt-2 text-[14px] leading-relaxed", task.error ? "text-red-600" : dark ? "text-white/55" : "text-charcoal/55") }>
           {task.error ?? latestEvent?.label ?? task.result_summary}
+        </p>
+      )}
+      {retryable && !confirmingRetry && (
+        <button
+          type="button"
+          onClick={() => setConfirmingRetry(true)}
+          className={clsx("mt-3 min-h-11 rounded-lg px-4 py-2 text-body font-semibold", dark ? "bg-white/10 text-white" : "bg-[#eee8de] text-nearblack")}
+        >
+          Try task again
+        </button>
+      )}
+      {retryable && confirmingRetry && (
+        <div className={clsx("mt-3 rounded-xl border p-3", dark ? "border-white/15 bg-black/20" : "border-[#d8d0c4] bg-[#f8f5ef]")} role="group" aria-label={`Confirm retrying ${task.title}`}>
+          <p className="text-[15px] font-semibold">Retry this task?</p>
+          <p className={clsx("mt-1 text-caption leading-relaxed", dark ? "text-white/60" : "text-charcoal/60")}>
+            RESLU will reuse the same task and drafts. No approved external action will be replayed.
+          </p>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button type="button" onClick={() => setConfirmingRetry(false)} className={clsx("min-h-11 rounded-lg border px-3 py-2 text-body", dark ? "border-white/20" : "border-[#cfc6b8]")}>Not now</button>
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmingRetry(false);
+                onAction(task.id, "retry");
+              }}
+              className={clsx("min-h-11 rounded-lg px-3 py-2 text-body font-semibold", dark ? "bg-sand text-nearblack" : "bg-nearblack text-white")}
+            >
+              Retry task
+            </button>
+          </div>
+        </div>
+      )}
+      {task.status === "failed" && task.approval_state === "approved" && (
+        <p className={clsx("mt-3 rounded-xl border p-3 text-caption leading-relaxed", dark ? "border-amber-300/25 bg-amber-300/10 text-amber-100" : "border-amber-300 bg-amber-50 text-amber-950")}>
+          This task had approval to act. Check the relevant email, booking or record before starting new work; RESLU will not replay it automatically.
+        </p>
+      )}
+      {task.status === "failed" && task.approval_state !== "approved" && !canRetry && (
+        <p className={clsx("mt-3 text-caption", dark ? "text-white/50" : "text-charcoal/55")}>
+          {task.retry_count >= 3 ? "This task reached its safe retry limit. Start a new task after checking the prior attempts." : "Only the person who started this task can retry it."}
         </p>
       )}
       {active && task.artifacts.length === 0 && !compact && (
@@ -1297,7 +1341,7 @@ export function ConversationWorkspace({
 
   const updateAgentTask = useCallback(async (
     taskId: string,
-    action: "cancel" | "approve" | "reject",
+    action: "cancel" | "approve" | "reject" | "retry",
     artifactId?: string
   ) => {
     const conversationId = selectedIdRef.current;
@@ -1348,7 +1392,7 @@ export function ConversationWorkspace({
     return [...active, ...recent].slice(0, 6);
   }, [agentTasks]);
   const latestCallTranscript = callTranscript.at(-1);
-  const handleTaskAction = useCallback((taskId: string, action: "cancel" | "approve" | "reject", artifactId?: string) => {
+  const handleTaskAction = useCallback((taskId: string, action: "cancel" | "approve" | "reject" | "retry", artifactId?: string) => {
     void updateAgentTask(taskId, action, artifactId).catch((reason) => {
       setError(reason instanceof Error ? reason.message : "Could not update background task");
     });
@@ -4200,7 +4244,7 @@ export function ConversationWorkspace({
                 <div className="grid max-h-[46vh] min-w-0 max-w-full grid-cols-1 gap-3 overflow-y-auto pb-1 md:flex md:max-h-52 md:snap-x md:overflow-x-auto md:overflow-y-hidden">
                   {visibleAgentTasks.map((task, index) => (
                     <div key={task.id} className={clsx("min-w-0 max-w-full", index > 0 && !agentWorkExpanded && "hidden md:block", "md:w-80 md:shrink-0 md:snap-start") }>
-                      <AgentTaskCard task={task} compact onAction={handleTaskAction} />
+                      <AgentTaskCard task={task} compact canRetry={task.requested_by === selfParticipant?.id && task.retry_count < 3} onAction={handleTaskAction} />
                     </div>
                   ))}
                 </div>
@@ -4968,7 +5012,7 @@ export function ConversationWorkspace({
                     </div>
                   </div>
                 ) : visibleAgentTasks.map((task) => (
-                  <AgentTaskCard key={task.id} task={task} dark onAction={handleTaskAction} />
+                  <AgentTaskCard key={task.id} task={task} dark canRetry={task.requested_by === selfParticipant?.id && task.retry_count < 3} onAction={handleTaskAction} />
                 ))}
               </div>
             </section>

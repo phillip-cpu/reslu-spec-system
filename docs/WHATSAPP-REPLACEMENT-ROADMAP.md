@@ -521,6 +521,17 @@ Work:
 - Performance budgets, thumbnail/lazy loading and cached recent conversations.
 - VoiceOver, large text, contrast, captions and reduced-motion support.
 - A real iPhone/car/desktop test matrix under poor networks and long histories.
+
+The bridge process already uses launchd `RunAtLoad`, `KeepAlive` and a bounded
+restart throttle. Push delivery has a six-attempt exponential retry budget.
+Durable Aria/Marco work deliberately enters `failed` instead of blindly
+replaying an uncertain run. Migration 111 adds a requester-only recovery action
+for failed work that had no approved external side effect: it reuses the exact
+task and agent session, assigns a distinct bounded attempt idempotency key, and
+records a recovery event. Approved failed
+work remains a visible dead letter until the relevant email, booking or record
+is inspected; RESLU never claims an uncertain external action was undone and
+never retries it automatically.
 - Keep Next.js on a currently patched stable release. The Stage 2 dependency
   audit moved the app from vulnerable 16.0.10 to stable 16.3.0 and cleared the
   framework/proxy advisories. Track the remaining no-fix advisories inherited
