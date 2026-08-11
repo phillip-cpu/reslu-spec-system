@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { messageAuthor } from "@/lib/conversations";
 import { conversationParticipants } from "@/lib/conversation-access";
-import { conversationAttachmentAccessUrl, MAX_CONVERSATION_ATTACHMENTS } from "@/lib/conversation-attachments";
+import {
+  conversationAttachmentAccessUrl,
+  conversationForwardedAttachmentAccessUrl,
+  MAX_CONVERSATION_ATTACHMENTS,
+} from "@/lib/conversation-attachments";
 import {
   summarizeConversationMessageReactions,
   type ConversationMessageReactionRow,
@@ -31,9 +35,21 @@ type MessageInput = {
 };
 type MessageRow = Omit<ConversationMessage, "attachments" | "author" | "reactions" | "pinned_at" | "pinned_by"> & {
   conversation_attachments?: ConversationAttachment[];
+  forwarded_attachments?: Array<{
+    id: string;
+    conversation_id: string;
+    message_id: string;
+    forwarded_by: string;
+    filename: string;
+    mime_type: ConversationAttachment["mime_type"];
+    byte_size: number;
+    metadata: Record<string, unknown> | null;
+    created_at: string;
+  }>;
   conversation_message_reactions?: ConversationMessageReactionRow[];
   conversation_message_pins?: Array<{ pinned_at: string; pinned_by: string }>;
 };
+const MESSAGE_SELECT = "*, conversation_attachments(*), forwarded_attachments:conversation_forwarded_attachments(id,conversation_id,message_id,forwarded_by,filename,mime_type,byte_size,metadata,created_at), conversation_message_reactions(reaction,profile_id), conversation_message_pins(pinned_at,pinned_by)";
 type ActiveAgentJobRow = {
   agent_id: string;
   status: "pending" | "processing";
@@ -50,19 +66,39 @@ function hydrateMessages(
 ): ConversationMessage[] {
   const selfProfileId = participants.find((participant) => participant.is_self)?.id ?? null;
   return rows.map((row) => {
-    const attachments = (row.deleted_at ? [] : row.conversation_attachments ?? [])
+    const uploadedAttachments = (row.deleted_at ? [] : row.conversation_attachments ?? [])
       .filter((attachment) => attachment.status === "ready")
       .map((attachment) => ({
         ...attachment,
         metadata: attachment.metadata ?? {},
         url: conversationAttachmentAccessUrl(conversationId, attachment.id),
       }));
+    const forwardedAttachments: ConversationAttachment[] = (row.deleted_at ? [] : row.forwarded_attachments ?? [])
+      .map((attachment) => ({
+        id: attachment.id,
+        conversation_id: attachment.conversation_id,
+        message_id: attachment.message_id,
+        uploaded_by: attachment.forwarded_by,
+        storage_path: "",
+        filename: attachment.filename,
+        mime_type: attachment.mime_type,
+        byte_size: attachment.byte_size,
+        status: "ready",
+        metadata: attachment.metadata ?? {},
+        created_at: attachment.created_at,
+        ready_at: attachment.created_at,
+        url: conversationForwardedAttachmentAccessUrl(conversationId, attachment.id),
+        forwarded: true,
+      }));
+    const attachments = [...uploadedAttachments, ...forwardedAttachments]
+      .sort((left, right) => left.created_at.localeCompare(right.created_at));
     const pin = row.deleted_at ? null : row.conversation_message_pins?.[0] ?? null;
     const reactions = row.deleted_at
       ? []
       : summarizeConversationMessageReactions(row.conversation_message_reactions ?? [], selfProfileId);
     const {
       conversation_attachments: _joinedAttachments,
+      forwarded_attachments: _joinedForwardedAttachments,
       conversation_message_reactions: _joinedReactions,
       conversation_message_pins: _joinedPins,
       ...messageRow
@@ -141,7 +177,7 @@ async function pinnedConversationMessages(
   }
   const { data: rows, error } = await supabase
     .from("conversation_messages")
-    .select("*, conversation_attachments(*), conversation_message_reactions(reaction,profile_id), conversation_message_pins(pinned_at,pinned_by)")
+    .select(MESSAGE_SELECT)
     .eq("conversation_id", conversationId)
     .in("id", pins.map((pin) => pin.message_id))
     .is("deleted_at", null);
@@ -176,7 +212,7 @@ export async function GET(request: NextRequest, context: Context) {
   if (around) {
     const { data: targetData, error: targetError } = await supabase
       .from("conversation_messages")
-      .select("*, conversation_attachments(*), conversation_message_reactions(reaction,profile_id), conversation_message_pins(pinned_at,pinned_by)")
+      .select(MESSAGE_SELECT)
       .eq("conversation_id", id)
       .eq("id", around)
       .maybeSingle();
@@ -186,7 +222,7 @@ export async function GET(request: NextRequest, context: Context) {
     const [olderResult, newerResult] = await Promise.all([
       supabase
         .from("conversation_messages")
-        .select("*, conversation_attachments(*), conversation_message_reactions(reaction,profile_id), conversation_message_pins(pinned_at,pinned_by)")
+        .select(MESSAGE_SELECT)
         .eq("conversation_id", id)
         .or(`created_at.lt.${targetData.created_at},and(created_at.eq.${targetData.created_at},id.lt.${around})`)
         .order("created_at", { ascending: false })
@@ -194,7 +230,7 @@ export async function GET(request: NextRequest, context: Context) {
         .limit(50),
       supabase
         .from("conversation_messages")
-        .select("*, conversation_attachments(*), conversation_message_reactions(reaction,profile_id), conversation_message_pins(pinned_at,pinned_by)")
+        .select(MESSAGE_SELECT)
         .eq("conversation_id", id)
         .or(`created_at.gt.${targetData.created_at},and(created_at.eq.${targetData.created_at},id.gt.${around})`)
         .order("created_at", { ascending: true })
@@ -230,7 +266,7 @@ export async function GET(request: NextRequest, context: Context) {
   }
   let query = supabase
     .from("conversation_messages")
-    .select("*, conversation_attachments(*), conversation_message_reactions(reaction,profile_id), conversation_message_pins(pinned_at,pinned_by)")
+    .select(MESSAGE_SELECT)
     .eq("conversation_id", id)
     .order("created_at", { ascending: false })
     .order("id", { ascending: false })

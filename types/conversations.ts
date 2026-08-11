@@ -18,6 +18,7 @@ export interface ConversationAttachment {
   created_at: string;
   ready_at: string | null;
   url: string | null;
+  forwarded?: boolean;
 }
 
 export interface ConversationAgent {

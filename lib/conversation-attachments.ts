@@ -41,6 +41,10 @@ export function conversationAttachmentAccessUrl(conversationId: string, attachme
   return `/api/conversations/${encodeURIComponent(conversationId)}/attachments?attachment_id=${encodeURIComponent(attachmentId)}`;
 }
 
+export function conversationForwardedAttachmentAccessUrl(conversationId: string, attachmentId: string): string {
+  return `/api/conversations/${encodeURIComponent(conversationId)}/attachments?forwarded_attachment_id=${encodeURIComponent(attachmentId)}`;
+}
+
 export function isConversationAttachmentSize(value: unknown): value is number {
   return typeof value === "number"
     && Number.isSafeInteger(value)

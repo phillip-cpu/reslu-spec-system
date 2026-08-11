@@ -10,7 +10,7 @@ import {
 } from "@/lib/conversation-attachments";
 import { inspectStorageObjectHead, sniffFileKind } from "@/lib/file-sniff";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import type { ConversationAttachment } from "@/types/conversations";
 
 export const runtime = "nodejs";
@@ -24,6 +24,18 @@ const EXPECTED_KIND: Record<ConversationAttachment["mime_type"], string> = {
   "application/pdf": "pdf",
 };
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+type ForwardedAttachmentRow = {
+  id: string;
+  conversation_id: string;
+  message_id: string;
+  forwarded_by: string;
+  storage_path: string;
+  filename: string;
+  mime_type: ConversationAttachment["mime_type"];
+  byte_size: number;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+};
 
 async function stagedAttachment(
   supabase: Awaited<ReturnType<typeof createClient>>,
@@ -69,6 +81,38 @@ async function accessibleReadyAttachment(
   return message && !message.deleted_at ? attachment : null;
 }
 
+async function accessibleForwardedAttachment(
+  memberSupabase: Awaited<ReturnType<typeof createClient>>,
+  serviceSupabase: ReturnType<typeof createServiceRoleClient>,
+  conversationId: string,
+  userId: string,
+  attachmentId: unknown
+) {
+  if (typeof attachmentId !== "string" || !UUID_PATTERN.test(attachmentId)) return null;
+  const membership = await conversationParticipants(memberSupabase, conversationId, userId);
+  const verifiedSelf = membership.participants.some((participant) => (
+    participant.type === "human"
+    && participant.id === userId
+    && participant.is_self === true
+  ));
+  if (membership.error || !verifiedSelf) return null;
+  const { data } = await serviceSupabase
+    .from("conversation_forwarded_attachments")
+    .select("*")
+    .eq("id", attachmentId)
+    .eq("conversation_id", conversationId)
+    .maybeSingle();
+  const attachment = data as ForwardedAttachmentRow | null;
+  if (!attachment) return null;
+  const { data: message } = await serviceSupabase
+    .from("conversation_messages")
+    .select("deleted_at")
+    .eq("id", attachment.message_id)
+    .eq("conversation_id", conversationId)
+    .maybeSingle();
+  return message && !message.deleted_at ? attachment : null;
+}
+
 function attachmentResponse(conversationId: string, attachment: ConversationAttachment) {
   return {
     ...attachment,
@@ -103,6 +147,40 @@ export async function GET(request: NextRequest, context: Context) {
         attachmentResponse(conversationId, attachment)
       )),
     });
+  }
+
+  const forwardedAttachmentId = request.nextUrl.searchParams.get("forwarded_attachment_id");
+  if (forwardedAttachmentId) {
+    const service = createServiceRoleClient();
+    const forwarded = await accessibleForwardedAttachment(
+      supabase,
+      service,
+      conversationId,
+      user.id,
+      forwardedAttachmentId
+    );
+    if (!forwarded) return NextResponse.json({ error: "Attachment not found" }, { status: 404 });
+    const { data: signed, error } = await service.storage
+      .from(ASSET_BUCKET)
+      .createSignedUrl(forwarded.storage_path, SIGNED_URL_TTL_SECONDS);
+    if (error || !signed?.signedUrl) {
+      return NextResponse.json({ error: "Could not open attachment" }, { status: 503 });
+    }
+    const storedObject = await fetch(signed.signedUrl, { cache: "no-store" }).catch(() => null);
+    if (!storedObject?.ok || !storedObject.body) {
+      return NextResponse.json({ error: "Could not open attachment" }, { status: 503 });
+    }
+    const response = new NextResponse(storedObject.body, {
+      status: 200,
+      headers: {
+        "Content-Type": forwarded.mime_type,
+        "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(forwarded.filename)}`,
+      },
+    });
+    const contentLength = storedObject.headers.get("content-length");
+    if (contentLength) response.headers.set("Content-Length", contentLength);
+    response.headers.set("Cache-Control", "private, no-store");
+    return response;
   }
 
   const attachment = await accessibleReadyAttachment(

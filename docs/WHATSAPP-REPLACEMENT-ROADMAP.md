@@ -126,6 +126,12 @@ replies part of the exactly-once send contract; reply selection survives the
 offline outbox, replying to Aria or Marco in a group routes back to that existing
 agent, and the bridge gives the agent the referenced message rather than losing
 the quote relationship. Message menus expose Reply and Copy on mobile/desktop.
+Migration 107 adds member-scoped forwarding to up to ten chats with one stable
+client intent id. A retry returns the same target messages and agent jobs. Ready
+private attachments are shared through target-scoped snapshot rows instead of
+duplicating their unique storage record, and forwarding an already-forwarded
+message keeps the file available without exposing its original chat. The Mac
+bridge receives forwarded files through the same private materialisation path.
 The same exact-once boundary now covers conversation creation, call start and
 call end: device intent ids recover a lost start response, and an ended call is
 retained locally until the single canonical same-thread call record is
@@ -152,10 +158,13 @@ Rollout order for this slice:
    `096_conversation_preferences.sql`, then
    `097_conversation_message_search.sql`, then
    `098_conversation_quoted_replies.sql`, then
-   `104_single_active_conversation_call.sql`, to Supabase.
+   `104_single_active_conversation_call.sql`, then
+   `105_conversation_message_edit_delete.sql`, then
+   `106_conversation_message_reactions_pins.sql`, then
+   `107_conversation_message_forwarding.sql`, to Supabase.
 2. Run the matching rollback-only fixtures for migrations 093 through 098 and
-   migration 104 in the SQL Editor. Every fixture must report PASS and leave no
-   test data.
+   migrations 104 through 107 in the SQL Editor. Every fixture must report PASS
+   and leave no test data.
 3. Deploy the matching application release, pull it on the Mac and restart the
    conversation bridge so its independent push worker is active.
 4. Refresh every already-open RESLU client so it sends a stable client id.
@@ -177,7 +186,7 @@ Work:
 - Notification tap opens the exact conversation.
 - Pin, archive, mute, search and conversation notification preferences.
 - Reply/quote, copy, edit markers and recoverable delete.
-- Forward messages.
+- Forward text and private attachments exactly once to up to ten chats.
 - Group naming, participant management and reliable mentions.
 - Voice notes and expanded safe file types after the photo/PDF slice is proven.
 - Pagination, virtualised long history and message/file search.
