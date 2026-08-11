@@ -1,6 +1,8 @@
 # RESLU conversations deployment
 
-Migration `088_staff_conversations.sql` adds the canonical staff/agent conversation model. Migration `091_realtime_voice_consults.sql` adds idempotent Realtime consult turns and precise barge-in cancellation. Migration `092_conversation_attachments.sql` adds private staged photo/PDF records and the atomic message-binding function. Apply every relevant migration before deploying its app version.
+Migration `088_staff_conversations.sql` adds the canonical staff/agent conversation model. Migration `091_realtime_voice_consults.sql` adds idempotent Realtime consult turns and precise barge-in cancellation. Migration `092_conversation_attachments.sql` adds private staged photo/PDF records and the atomic message-binding function. Migration `099_persistent_agent_tasks.sql` adds durable background tasks, observable events, reviewable artifacts and explicit approval. Apply every relevant migration before deploying its app version.
+
+For migration 099, run `supabase/fixtures/099_persistent_agent_tasks_verify.sql` after the migration. It must report PASS and rolls its test task, event and artifact back. After deployment, pull the same commit on the Mac host and restart the conversation bridge; the task workers live in that bridge and are independent from live call and chat turns. Optional Mac overrides are `RESLU_TASK_FAST_MODEL`, `RESLU_TASK_STANDARD_MODEL` and `RESLU_TASK_STRONG_MODEL`; the strong tier defaults to `openai/gpt-5.6-sol`.
 
 The web app provides durable chat history, staff and agent group membership, voice transcripts, call records, and a browser audio-first call presentation. Human-to-human text works entirely through Supabase. Aria and Marco replies use their existing OpenClaw runtimes through the Mac mini bridge.
 

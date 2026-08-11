@@ -11,6 +11,7 @@ export interface RealtimeConfig {
   enabled: boolean;
   model: string;
   voice: RealtimeVoice;
+  transcriptionModel: string;
   apiKey: string | null;
 }
 
@@ -34,6 +35,7 @@ export function realtimeConfig(environment: Environment, agentSlug: AgentSlug): 
     enabled: environment.RESLU_REALTIME_VOICE_ENABLED === "true",
     model: environment.RESLU_REALTIME_VOICE_MODEL?.trim() || "gpt-realtime-2.1",
     voice,
+    transcriptionModel: environment.RESLU_REALTIME_TRANSCRIPTION_MODEL?.trim() || "gpt-live-transcribe",
     apiKey: environment.OPENAI_API_KEY?.trim() || null,
   };
 }
@@ -50,13 +52,21 @@ export function buildRealtimeSession(agent: { slug: AgentSlug; display_name: str
     instructions: [
       `You are the realtime voice transport for ${agent.display_name} inside RESLU staff chat.`,
       "You handle audio turn-taking only. You do not possess RESLU memory, calendar, project, finance, email or business tools.",
-      "For every completed user request or question, call consult_reslu_agent with a faithful concise transcript of what the user asked.",
+      "For every completed user turn, choose exactly one tool and include a faithful concise transcript of what the user asked.",
+      "When the user asks you to create, prepare, research, review, compose, organize, update, or otherwise complete work that can continue independently, call start_reslu_task instead of consult_reslu_agent.",
+      "Use model_tier strong only for genuinely complex, high-value or multi-step work; use standard for normal tasks and fast for simple mechanical work.",
       "Never answer a substantive question yourself and never claim a business action happened unless the tool output says so.",
       "After tool output arrives, speak its answer faithfully and naturally. Do not add facts, actions or recommendations.",
       "If interrupted, stop immediately. An interruption does not undo a tool or business side effect that may already have completed.",
     ].join(" "),
     audio: {
       input: {
+        transcription: {
+          model: config.transcriptionModel,
+          delay: "low",
+          languages: ["en"],
+          prompt: "RESLU residential design and construction call. Common names include Aria, Marco, Phillip and Tennille.",
+        },
         turn_detection: {
           type: "semantic_vad",
           create_response: true,
@@ -65,22 +75,49 @@ export function buildRealtimeSession(agent: { slug: AgentSlug; display_name: str
       },
       output: { voice: config.voice },
     },
-    tools: [{
-      type: "function",
-      name: "consult_reslu_agent",
-      description: `Send the user's substantive turn to the existing ${agent.display_name} OpenClaw session, which owns all RESLU memory, tools and business actions.`,
-      parameters: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          query: {
-            type: "string",
-            description: "A faithful transcript of the user's current request, including names, dates and constraints they stated.",
+    tools: [
+      {
+        type: "function",
+        name: "consult_reslu_agent",
+        description: `Get a conversational answer from the existing ${agent.display_name} OpenClaw session. Use for questions, status checks, quick lookups and discussion that should return during this call.`,
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            query: {
+              type: "string",
+              description: "A faithful transcript of the user's current question, including names, dates and constraints they stated.",
+            },
           },
+          required: ["query"],
         },
-        required: ["query"],
       },
-    }],
+      {
+        type: "function",
+        name: "start_reslu_task",
+        description: `Start durable work owned by ${agent.display_name}. The work continues if speech is interrupted, the call ends, or the device locks. Use for creating, preparing, composing, researching, reviewing, organizing or completing a deliverable.`,
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            title: {
+              type: "string",
+              description: "A short human-readable task title, no more than about eight words.",
+            },
+            objective: {
+              type: "string",
+              description: "A faithful standalone task objective including every relevant name, date, constraint and requested deliverable.",
+            },
+            model_tier: {
+              type: "string",
+              enum: ["fast", "standard", "strong"],
+              description: "fast for simple mechanical work, standard for normal work, strong for difficult multi-step or high-value work.",
+            },
+          },
+          required: ["title", "objective", "model_tier"],
+        },
+      },
+    ],
     tool_choice: "required",
   };
 }

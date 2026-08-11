@@ -111,6 +111,7 @@ Vercel server environment:
 - `RESLU_REALTIME_VOICE_MODEL=gpt-realtime-2.1`: configurable model.
 - `RESLU_REALTIME_ARIA_VOICE=marin`: configurable Aria default.
 - `RESLU_REALTIME_MARCO_VOICE=cedar`: configurable Marco default.
+- `RESLU_REALTIME_TRANSCRIPTION_MODEL=gpt-live-transcribe`: optional live-caption model override.
 - `RESLU_REALTIME_VOICE_NAME`: optional shared fallback when an agent-specific voice is not set.
 
 No standard API key is ever exposed to the client. If the ephemeral-token flow is chosen later, Vercel creates the short-lived client secret and returns only that secret.
@@ -121,7 +122,7 @@ Mac mini:
 - A new realtime-consult bridge worker or an extension of the conversation bridge.
 - No OpenAI credential is needed on the Mac mini when Vercel owns Realtime session creation.
 
-The approved policy is conservative: every completed user request is routed through `consult_reslu_agent`. Realtime may provide audio turn-taking and speak the existing agent's returned answer, but it has no duplicated RESLU tools or memory. Voices remain environment-configurable for later auditioning.
+The approved policy is conservative: Realtime remains a modality router with no duplicated RESLU tools or memory. Quick questions route through `consult_reslu_agent`; work requests route through `start_reslu_task`, which creates a durable task owned by the existing Aria or Marco runtime. Realtime may acknowledge the task start, but the canonical worker, task events, artifacts and approval state are authoritative. Voices and transcription remain environment-configurable for later auditioning.
 
 ## Production activation
 

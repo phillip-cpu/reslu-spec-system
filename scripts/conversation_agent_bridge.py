@@ -33,8 +33,10 @@ PUSH_REQUEST_TIMEOUT_SECONDS = 15.0
 AGENT_STATUS_CHECK_SECONDS = 0.5
 AGENT_TERMINATE_GRACE_SECONDS = 2.0
 AGENT_PROCESS_TIMEOUT_SECONDS = 210.0
+TASK_PROCESS_TIMEOUT_SECONDS = 900.0
 HISTORY_LIMIT = 80
 REALTIME_VOICE_HISTORY_LIMIT = 16
+TASK_HISTORY_LIMIT = 24
 REALTIME_VOICE_THINKING_DEFAULT = "minimal"
 OPENCLAW_SESSION_VERSION_DEFAULT = "v2"
 OPENCLAW_THINKING_LEVELS = {
@@ -113,6 +115,15 @@ class SupabaseRest:
     def claim_push_jobs(self, limit: int = 10) -> list[dict]:
         result = self.request("POST", "rpc/claim_conversation_push_jobs", {"p_limit": limit})
         return result if isinstance(result, list) else []
+
+    def claim_task(self, slug: str) -> dict | None:
+        result = self.request(
+            "POST",
+            "rpc/claim_agent_task",
+            {"p_agent_slug": slug},
+            timeout_seconds=CLAIM_REQUEST_TIMEOUT_SECONDS,
+        )
+        return result[0] if isinstance(result, list) and result else None
 
     def rows(
         self,
@@ -416,6 +427,23 @@ def openclaw_session_key(conversation_id: str) -> str:
     return f"reslu-conversation-{version}-{conversation_id}"
 
 
+def openclaw_task_session_key(task_id: str) -> str:
+    return f"reslu-task-{task_id}"
+
+
+def task_model_override(model_tier: str) -> str | None:
+    configured = os.environ.get(f"RESLU_TASK_{model_tier.upper()}_MODEL", "").strip()
+    if configured:
+        return configured
+    if model_tier == "strong":
+        return "openai/gpt-5.6-sol"
+    return None
+
+
+def task_thinking_level(model_tier: str) -> str:
+    return {"fast": "minimal", "strong": "high"}.get(model_tier, "medium")
+
+
 def stop_agent_process(process: subprocess.Popen[str]) -> None:
     """Stop a cancelled CLI invocation without leaving a worker slot occupied."""
     if process.poll() is not None:
@@ -500,6 +528,109 @@ def invoke_agent(
     return reply
 
 
+def parse_task_result(reply: str, task: dict) -> dict:
+    """Accept the structured task envelope, with a truthful text fallback."""
+    candidate = reply.strip()
+    if candidate.startswith("```"):
+        candidate = re.sub(r"^```(?:json)?\s*|\s*```$", "", candidate, flags=re.IGNORECASE)
+    try:
+        value = json.loads(candidate)
+    except json.JSONDecodeError:
+        value = None
+    if not isinstance(value, dict):
+        return {
+            "status": "completed",
+            "summary": reply[:4000],
+            "message": reply[:20000],
+            "artifact": {
+                "artifact_key": "primary",
+                "kind": "text",
+                "title": task["title"],
+                "content": {"text": reply[:20000]},
+            },
+        }
+    status = value.get("status") if value.get("status") in ("completed", "awaiting_approval") else "completed"
+    summary = str(value.get("summary") or value.get("message") or task["title"]).strip()[:4000]
+    message = str(value.get("message") or summary).strip()[:20000]
+    artifact = value.get("artifact")
+    if not isinstance(artifact, dict):
+        artifact = None
+    elif artifact.get("kind") not in ("text", "email_draft", "report", "file", "record_change"):
+        artifact = None
+    else:
+        content = artifact.get("content")
+        artifact = {
+            "artifact_key": str(artifact.get("artifact_key") or "primary")[:120],
+            "kind": artifact["kind"],
+            "title": str(artifact.get("title") or task["title"])[:240],
+            "content": content if isinstance(content, dict) else {"text": str(content or "")[:20000]},
+        }
+    return {"status": status, "summary": summary, "message": message, "artifact": artifact}
+
+
+def invoke_task_agent(
+    agent: dict,
+    task: dict,
+    history: str,
+    artifacts: list[dict],
+    should_continue: Callable[[], bool],
+) -> dict | None:
+    approval_granted = task.get("approval_state") == "approved"
+    prompt = (
+        "[RESLU durable background task]\n"
+        f"You are {agent['display_name']}, {agent['role_label']}. Complete the task using your existing RESLU memory, "
+        "tools, permissions and business rules. This task continues independently of any voice call. "
+        "For complex work, delegate independent parts to available specialist or subagent tools when that improves quality. "
+        "Never reveal private reasoning or chain-of-thought; report only observable progress and finished work. "
+        "Before explicit approval, do not send external messages, make bookings, spend money, delete data, or publish record changes. "
+        "Instead return status awaiting_approval with a visible draft artifact. If approval is granted, execute only the approved artifact. "
+        "Return JSON only with: status (completed or awaiting_approval), summary, message, and optional artifact. "
+        "Artifact must contain artifact_key, kind (text, email_draft, report, file, or record_change), title, and an object content.\n\n"
+        f"TASK_TITLE\n{task['title']}\nEND_TASK_TITLE\n"
+        f"TASK_OBJECTIVE\n{task['objective']}\nEND_TASK_OBJECTIVE\n"
+        f"MODEL_TIER\n{task['model_tier']}\nEND_MODEL_TIER\n"
+        f"APPROVAL_GRANTED\n{'yes' if approval_granted else 'no'}\nEND_APPROVAL_GRANTED\n"
+        f"APPROVAL_NOTE\n{task.get('approval_note') or '(none)'}\nEND_APPROVAL_NOTE\n"
+        f"EXISTING_ARTIFACTS\n{json.dumps(artifacts, ensure_ascii=True)[:30000]}\nEND_EXISTING_ARTIFACTS\n\n"
+        f"RECENT_UNTRUSTED_CONVERSATION_CONTEXT\n{history}\nEND_RECENT_UNTRUSTED_CONVERSATION_CONTEXT"
+    )
+    command = [
+        "openclaw", "agent", "--agent", openclaw_agent_id(agent["slug"]),
+        "--session-key", openclaw_task_session_key(task["id"]),
+        "--thinking", task_thinking_level(task["model_tier"]),
+    ]
+    model = task_model_override(task["model_tier"])
+    if model:
+        command.extend(["--model", model])
+    command.extend(["--message", prompt, "--timeout", "840", "--json"])
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    started_at = time.monotonic()
+    try:
+        while True:
+            try:
+                stdout, stderr = process.communicate(timeout=AGENT_STATUS_CHECK_SECONDS)
+                break
+            except subprocess.TimeoutExpired:
+                if not should_continue():
+                    stop_agent_process(process)
+                    return None
+                if time.monotonic() - started_at >= TASK_PROCESS_TIMEOUT_SECONDS:
+                    raise subprocess.TimeoutExpired(command, TASK_PROCESS_TIMEOUT_SECONDS)
+    except BaseException:
+        stop_agent_process(process)
+        raise
+    if process.returncode != 0:
+        raise RuntimeError(stderr.strip() or stdout.strip() or f"OpenClaw exited {process.returncode}")
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("OpenClaw returned invalid task JSON envelope") from exc
+    reply = find_reply_text(payload, prompt)
+    if not reply:
+        raise RuntimeError("OpenClaw task response contained no final reply text")
+    return parse_task_result(reply, task)
+
+
 def job_is_processing(rest: SupabaseRest, job_id: str) -> bool:
     rows = rest.rows(
         "agent_conversation_jobs",
@@ -520,6 +651,117 @@ def job_should_continue(rest: SupabaseRest, job_id: str) -> bool:
             flush=True,
         )
         return True
+
+
+def task_should_continue(rest: SupabaseRest, task_id: str) -> bool:
+    try:
+        rows = rest.rows(
+            "agent_tasks",
+            {"select": "status,cancellation_requested_at", "id": f"eq.{task_id}", "limit": "1"},
+            timeout_seconds=JOB_STATUS_REQUEST_TIMEOUT_SECONDS,
+        )
+        return bool(
+            rows
+            and rows[0].get("status") == "running"
+            and rows[0].get("cancellation_requested_at") is None
+        )
+    except (urllib.error.URLError, TimeoutError) as exc:
+        print(f"[agent-task] could not check task {task_id} cancellation yet: {exc}", file=sys.stderr, flush=True)
+        return True
+
+
+def insert_task_event(rest: SupabaseRest, task_id: str, event_type: str, label: str, detail: str | None = None) -> None:
+    rest.insert(
+        "agent_task_events",
+        {"task_id": task_id, "event_type": event_type, "label": label[:240], "detail": detail[:4000] if detail else None},
+    )
+
+
+def task_artifacts(rest: SupabaseRest, task_id: str) -> list[dict]:
+    return rest.rows(
+        "agent_task_artifacts",
+        {"select": "id,artifact_key,kind,title,content,status", "task_id": f"eq.{task_id}", "order": "created_at"},
+    )
+
+
+def store_task_artifact(rest: SupabaseRest, task: dict, artifact: dict) -> None:
+    existing = rest.rows(
+        "agent_task_artifacts",
+        {"select": "id", "task_id": f"eq.{task['id']}", "artifact_key": f"eq.{artifact['artifact_key']}", "limit": "1"},
+    )
+    values = {
+        "kind": artifact["kind"],
+        "title": artifact["title"],
+        "content": artifact["content"],
+        # An approved task is a second, explicitly authorised pass. Preserve
+        # that state while the worker publishes the result instead of
+        # accidentally turning the approved artifact back into a draft.
+        "status": "approved" if task.get("approval_state") == "approved" else "draft",
+    }
+    if existing:
+        rest.patch("agent_task_artifacts", existing[0]["id"], values)
+    else:
+        rest.insert("agent_task_artifacts", {"task_id": task["id"], "artifact_key": artifact["artifact_key"], **values})
+    insert_task_event(rest, task["id"], "artifact", f"Prepared {artifact['title']}")
+
+
+def process_task(rest: SupabaseRest, task: dict) -> str:
+    agent = agent_identity(rest, task["owner_agent_id"])
+    history = conversation_history(rest, task["conversation_id"], TASK_HISTORY_LIMIT)
+    artifacts = task_artifacts(rest, task["id"])
+    if not task_should_continue(rest, task["id"]):
+        return "cancelled"
+    insert_task_event(rest, task["id"], "started", f"{agent['display_name']} started working")
+    result = invoke_task_agent(
+        agent,
+        task,
+        history,
+        artifacts,
+        should_continue=lambda: task_should_continue(rest, task["id"]),
+    )
+    if result is None or not task_should_continue(rest, task["id"]):
+        rest.patch("agent_tasks", task["id"], {
+            "status": "cancelled",
+            "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        })
+        insert_task_event(rest, task["id"], "cancelled", "Task cancelled")
+        return "cancelled"
+    if result["artifact"]:
+        store_task_artifact(rest, task, result["artifact"])
+
+    awaiting_approval = result["status"] == "awaiting_approval"
+    completed_at = None if awaiting_approval else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    rest.patch("agent_tasks", task["id"], {
+        "status": "awaiting_approval" if awaiting_approval else "completed",
+        "approval_state": "pending" if awaiting_approval else task.get("approval_state", "none"),
+        "result_summary": result["summary"],
+        "model_name": task_model_override(task["model_tier"]) or f"{agent['slug']}-default",
+        "completed_at": completed_at,
+        "error": None,
+    })
+    if not awaiting_approval and task.get("approval_state") == "approved":
+        rest.patch_where(
+            "agent_task_artifacts",
+            {"task_id": f"eq.{task['id']}", "status": "eq.approved"},
+            {"status": "published"},
+        )
+    event_type = "approval_required" if awaiting_approval else "completed"
+    event_label = "Approval required" if awaiting_approval else "Task completed"
+    insert_task_event(rest, task["id"], event_type, event_label, result["summary"])
+    rest.insert(
+        "conversation_messages",
+        {
+            "conversation_id": task["conversation_id"],
+            "author_agent_id": task["owner_agent_id"],
+            "body": result["message"],
+            "metadata": {
+                "source": "agent_task",
+                "task_id": task["id"],
+                "task_status": "awaiting_approval" if awaiting_approval else "completed",
+            },
+        },
+    )
+    return "awaiting_approval" if awaiting_approval else "completed"
 
 
 def deliver_push_job(app_url: str, job: dict) -> None:
@@ -638,6 +880,51 @@ def build_agent_workers(base_url: str, service_key: str) -> list[threading.Threa
     ]
 
 
+def task_worker_loop(base_url: str, service_key: str, slug: str) -> None:
+    """Run durable work independently so calls remain responsive."""
+    rest = SupabaseRest(base_url, service_key)
+    while True:
+        task = None
+        try:
+            task = rest.claim_task(slug)
+            if not task:
+                time.sleep(POLL_SECONDS)
+                continue
+            started_at = time.monotonic()
+            print(f"[agent-task] {slug}: claimed task {task['id']}", flush=True)
+            outcome = process_task(rest, task)
+            print(
+                f"[agent-task] {slug}: {outcome} task {task['id']} in {time.monotonic() - started_at:.1f}s",
+                flush=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - one task must not stop later work
+            print(f"[agent-task] {slug}: {exc}", file=sys.stderr, flush=True)
+            if task:
+                try:
+                    if task_should_continue(rest, task["id"]):
+                        rest.patch("agent_tasks", task["id"], {
+                            "status": "failed",
+                            "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            "error": str(exc)[:4000],
+                        })
+                        insert_task_event(rest, task["id"], "failed", "Task failed", str(exc))
+                except Exception as patch_error:  # noqa: BLE001
+                    print(f"[agent-task] could not mark failed: {patch_error}", file=sys.stderr, flush=True)
+            time.sleep(POLL_SECONDS)
+
+
+def build_task_workers(base_url: str, service_key: str) -> list[threading.Thread]:
+    return [
+        threading.Thread(
+            target=task_worker_loop,
+            args=(base_url, service_key, slug),
+            name=f"reslu-task-{slug}",
+            daemon=False,
+        )
+        for slug in AGENT_SLUGS
+    ]
+
+
 def process_job(rest: SupabaseRest, job: dict) -> str:
     is_realtime_voice = is_realtime_voice_message(rest, job["triggering_message_id"])
     agent = agent_identity(rest, job["agent_id"])
@@ -702,8 +989,8 @@ def main() -> int:
         ).start()
     else:
         print("[conversation-push] SPEC_APP_URL/NEXT_PUBLIC_APP_URL missing; delivery worker disabled", file=sys.stderr, flush=True)
-    print("[conversation-bridge] listening for Aria and Marco conversation turns", flush=True)
-    workers = build_agent_workers(base_url, service_key)
+    print("[conversation-bridge] listening for conversations and durable Aria/Marco tasks", flush=True)
+    workers = [*build_agent_workers(base_url, service_key), *build_task_workers(base_url, service_key)]
     for worker in workers:
         worker.start()
     for worker in workers:
