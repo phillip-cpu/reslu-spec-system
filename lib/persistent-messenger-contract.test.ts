@@ -19,7 +19,8 @@ test("the desktop messenger lives in the persistent dashboard layout", () => {
   assert.match(messenger, /Stays open while you move through RESLU/);
   assert.match(messenger, /onUnreadCountChange=\{setUnreadCount\}/);
   assert.match(workspace, /data\.conversations\.reduce\(\(total, conversation\) => total \+ conversation\.unread_count/);
-  assert.match(messenger, /const workspaceInteractive = \(panelVisible && \(!minimized \|\| onMessagesPage\)\) \|\| callActive/);
+  assert.match(messenger, /const panelChromeVisible = panelVisible && !callCompact/);
+  assert.match(messenger, /const workspaceInteractive = \(panelChromeVisible && \(!minimized \|\| onMessagesPage\)\) \|\| callActive/);
   assert.match(messenger, /active=\{workspaceInteractive\}/);
   assert.match(workspace, /if \(!interactionActiveRef\.current \|\| document\.visibilityState !== "visible"\) return/);
   assert.match(messenger, /useSyncExternalStore\(subscribeDesktop, desktopSnapshot/);
@@ -40,4 +41,10 @@ test("a live call escapes hidden drawer chrome and reports its state", () => {
   assert.match(workspace, /onCallActiveChange\?\.\(Boolean\(callOpening \|\| callId \|\| callError\)\)/);
   assert.match(workspace, /visible pointer-events-auto fixed inset-x-0/);
   assert.match(messenger, /\(panelVisible \|\| onMessagesPage \|\| callActive\) && "invisible pointer-events-none"/);
+  assert.match(messenger, /callCompact=\{callCompact\}/);
+  assert.match(messenger, /onCallCompactChange=\{setCallCompact\}/);
+  assert.match(workspace, /callCompact \? "Expand" : "Minimise"/);
+  assert.match(workspace, /callCompact && \([\s\S]*onClick=\{toggleMute\}/);
+  assert.match(workspace, /md:bottom-5 md:right-5 md:h-auto md:w-\[26rem\]/);
+  assert.match(workspace, /drawer && callCompact \? "flex md:hidden" : "flex"/);
 });

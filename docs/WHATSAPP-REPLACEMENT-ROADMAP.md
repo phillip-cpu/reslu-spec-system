@@ -326,8 +326,10 @@ desktop `/messages` route the same mounted workspace expands to the available
 dashboard area, avoiding a second competing chat instance. Mobile keeps the
 existing full-screen workspace and does not mount the desktop shell. An active
 call explicitly remains visible even while the drawer chrome is closed,
-minimised or the route changes. The final mini-player treatment and authenticated
-cross-route call test remain part of this stage gate.
+minimised or the route changes. On desktop the full call workspace can collapse
+into a compact always-on-top call bar, leaving project and office controls
+available while the same WebRTC call, transcript and background tasks continue.
+Authenticated cross-route call acceptance remains part of this stage gate.
 
 Work:
 

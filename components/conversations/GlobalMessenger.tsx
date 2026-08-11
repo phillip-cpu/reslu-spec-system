@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
 import { usePathname } from "next/navigation";
 import clsx from "clsx";
 import { ConversationWorkspace } from "@/components/conversations/ConversationWorkspace";
@@ -67,12 +67,18 @@ export function GlobalMessenger() {
   const [open, setOpen] = useState(false);
   const [minimized, setMinimized] = useState(false);
   const [callActive, setCallActive] = useState(false);
+  const [callCompact, setCallCompact] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [dimensions, setDimensions] = useState({ width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT });
   const resizeGestureRef = useRef<ResizeGesture | null>(null);
   const onMessagesPage = pathname.startsWith("/messages");
   const panelVisible = ready && (open || onMessagesPage);
-  const workspaceInteractive = (panelVisible && (!minimized || onMessagesPage)) || callActive;
+  const panelChromeVisible = panelVisible && !callCompact;
+  const workspaceInteractive = (panelChromeVisible && (!minimized || onMessagesPage)) || callActive;
+  const handleCallActiveChange = useCallback((nextActive: boolean) => {
+    setCallActive(nextActive);
+    if (!nextActive) setCallCompact(false);
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -154,7 +160,7 @@ export function GlobalMessenger() {
         className={clsx(
           "fixed z-[60] flex flex-col overflow-hidden border border-[#cfc6b8] bg-[#f5f1e8] shadow-[0_24px_90px_rgba(20,18,15,0.38)]",
           onMessagesPage ? "inset-y-0 left-56 right-0 rounded-none border-y-0 border-r-0 shadow-none" : "bottom-5 right-5 rounded-2xl",
-          !panelVisible && "invisible pointer-events-none",
+          !panelChromeVisible && "invisible pointer-events-none",
         )}
         style={onMessagesPage ? undefined : {
           width: dimensions.width,
@@ -210,7 +216,9 @@ export function GlobalMessenger() {
           <ConversationWorkspace
             presentation="drawer"
             active={workspaceInteractive}
-            onCallActiveChange={setCallActive}
+            onCallActiveChange={handleCallActiveChange}
+            callCompact={callCompact}
+            onCallCompactChange={setCallCompact}
             onUnreadCountChange={setUnreadCount}
           />
         </div>
