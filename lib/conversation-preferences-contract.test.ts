@@ -44,8 +44,9 @@ test("mobile Back remains on the conversation list after polling refreshes", () 
 });
 
 test("the database verifier exercises real participant preferences and rolls back", () => {
-  assert.match(verifier, /^--[\s\S]*\nbegin;/);
-  assert.match(verifier, /has_function_privilege\('anon'/);
+  assert.match(verifier, /do \$verify\$/);
+  assert.match(verifier, /has_function_privilege\(\s*'anon'/);
   assert.match(verifier, /PASS: mute, pin and archive/);
-  assert.match(verifier, /rollback;\s*$/);
+  assert.match(verifier, /when sqlstate 'P5096'/);
+  assert.doesNotMatch(verifier, /create temporary table/);
 });

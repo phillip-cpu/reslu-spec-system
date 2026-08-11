@@ -71,8 +71,9 @@ test("message order has an id tie-breaker so equal timestamps cannot skip histor
 });
 
 test("the database verifier proves search behavior and rolls back", () => {
-  assert.match(verifier, /^--[\s\S]*\nbegin;/);
-  assert.match(verifier, /has_function_privilege\('anon'/);
+  assert.match(verifier, /do \$verify\$/);
+  assert.match(verifier, /has_function_privilege\(\s*'anon'/);
   assert.match(verifier, /conversation_messages_body_trgm_idx/);
-  assert.match(verifier, /rollback;\s*$/);
+  assert.match(verifier, /when sqlstate 'P5097'/);
+  assert.doesNotMatch(verifier, /create temporary table/);
 });

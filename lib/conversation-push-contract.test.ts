@@ -30,11 +30,11 @@ test("every canonical message gets one durable job per subscribed device of each
   assert.match(migration, /revoke all on function enqueue_conversation_push_jobs\(\) from public, anon, authenticated/);
 });
 
-test("the hosted SQL verifier resolves its temporary test row at execution time", () => {
-  assert.match(verifier, /create temporary table reslu_push_delivery_test/);
-  assert.match(verifier, /test record;/);
-  assert.doesNotMatch(verifier, /reslu_push_delivery_test%rowtype/);
-  assert.match(verifier, /begin;[\s\S]*rollback;/);
+test("the hosted SQL verifier is one self-rolling-back statement", () => {
+  assert.match(verifier, /do \$verify\$/);
+  assert.match(verifier, /when sqlstate 'P5095'/);
+  assert.match(verifier, /message = 'RESLU_VERIFY_095_PASS'/);
+  assert.doesNotMatch(verifier, /create temporary table|reslu_push_delivery_test/);
 });
 
 test("private message previews are no longer team-readable notifications", () => {

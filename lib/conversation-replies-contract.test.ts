@@ -51,8 +51,10 @@ test("the message and composer UI expose reply, quote navigation and copy", () =
 });
 
 test("the database verifier proves target integrity and rolls back", () => {
-  assert.match(verifier, /^--[\s\S]*\nbegin;/);
+  assert.match(verifier, /do \$verify\$/);
   assert.match(verifier, /one client send id changed its reply target/);
+  assert.match(verifier, /a cross-conversation reply target was accepted/);
   assert.match(verifier, /PASS: quoted replies are canonical/);
-  assert.match(verifier, /rollback;\s*$/);
+  assert.match(verifier, /when sqlstate 'P5098'/);
+  assert.doesNotMatch(verifier, /create temporary table/);
 });
