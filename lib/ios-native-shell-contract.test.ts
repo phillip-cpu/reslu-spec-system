@@ -12,6 +12,7 @@ const webView = read("ios/RESLU/RESLU/RESLUWebView.swift");
 const voice = read("ios/RESLU/RESLU/VoiceSessionCoordinator.swift");
 const bridge = read("lib/native-voice-bridge.ts");
 const workspace = read("components/conversations/ConversationWorkspace.tsx");
+const verifier = read("scripts/verify-ios-shell.sh");
 
 test("the native target is an iPhone shell with explicit call background modes", () => {
   assert.match(project, /PRODUCT_BUNDLE_IDENTIFIER: au\.com\.reslu\.spec/);
@@ -43,4 +44,11 @@ test("web and native exchange lifecycle only while the browser path remains opti
   assert.match(workspace, /type: "call\.end"/);
   assert.match(workspace, /reslu-native-voice/);
   assert.match(workspace, /detail\?\.type === "end-requested"/);
+});
+
+test("the post-install verifier generates and compiles an unsigned simulator target", () => {
+  assert.match(verifier, /xcodegen generate/);
+  assert.match(verifier, /-sdk iphonesimulator/);
+  assert.match(verifier, /CODE_SIGNING_ALLOWED=NO/);
+  assert.match(verifier, /mktemp -d \/tmp\/reslu-ios-derived-data/);
 });

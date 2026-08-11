@@ -37,7 +37,8 @@ the checked-in source is generated with XcodeGen once Xcode is installed:
 1. Install current Xcode from the App Store and open it once.
 2. Run `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`.
 3. Install XcodeGen with `brew install xcodegen`.
-4. From `ios/RESLU`, run `xcodegen generate`.
+4. From the repository root, run `bash scripts/verify-ios-shell.sh`. This
+   generates the Xcode project and performs an unsigned simulator compile.
 5. Open `ios/RESLU/RESLU.xcodeproj`.
 6. Select the RESLU target, choose Phillip's Apple Developer team and confirm
    the bundle identifier `au.com.reslu.spec` is available.
