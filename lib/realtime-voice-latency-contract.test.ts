@@ -18,6 +18,8 @@ test("realtime calls measure actual WebRTC output audio instead of transcript ti
   assert.match(workspace, /speech_to_ack_ms/);
   assert.match(workspace, /speech_to_first_audio_ms/);
   assert.match(workspace, /response_to_first_audio_ms/);
+  assert.match(workspace, /output_audio_buffer\.cleared/);
+  assert.match(workspace, /interruption_to_buffer_cleared_ms/);
 });
 
 test("speech stop immediately requests one out-of-band truthful progress cue", () => {
@@ -48,6 +50,7 @@ test("call records retain bounded timing metadata without transcript or provider
   assert.match(callsRoute, /buildRealtimeVoiceLatencyMetadata/);
   assert.match(callsRoute, /p_voice_latency: voiceLatency/);
   assert.match(metrics, /MAX_REALTIME_VOICE_METRICS = 20/);
+  assert.match(metrics, /average_interruption_clear_ms/);
   assert.doesNotMatch(metrics, /transcript:/);
   assert.doesNotMatch(metrics, /tool_call_id:/);
 });

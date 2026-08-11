@@ -13,6 +13,8 @@ test("voice latency metrics retain bounded durations and discard identifiers or 
     speech_to_tool_ms: 120.4,
     queue_wait_ms: 37_700,
     agent_processing_ms: 35_300,
+    interruption_to_mute_ms: 4.4,
+    interruption_to_buffer_cleared_ms: 81.6,
     transcript: "private words",
     tool_call_id: "provider-secret",
     backend_total_ms: Number.POSITIVE_INFINITY,
@@ -22,13 +24,15 @@ test("voice latency metrics retain bounded durations and discard identifiers or 
     speech_to_tool_ms: 120,
     queue_wait_ms: 37_700,
     agent_processing_ms: 35_300,
+    interruption_to_mute_ms: 4,
+    interruption_to_buffer_cleared_ms: 82,
   }]);
 });
 
 test("voice latency metadata summarizes only the sanitized turn timings", () => {
   const metadata = buildRealtimeVoiceLatencyMetadata([
-    { turn: 1, outcome: "spoken", speech_to_ack_ms: 900, queue_wait_ms: 1000, agent_processing_ms: 3000, speech_to_first_audio_ms: 5000 },
-    { turn: 2, outcome: "spoken", speech_to_ack_ms: 1100, queue_wait_ms: 3000, agent_processing_ms: 5000, speech_to_first_audio_ms: 9000 },
+    { turn: 1, outcome: "spoken", speech_to_ack_ms: 900, queue_wait_ms: 1000, agent_processing_ms: 3000, speech_to_first_audio_ms: 5000, interruption_to_buffer_cleared_ms: 80 },
+    { turn: 2, outcome: "spoken", speech_to_ack_ms: 1100, queue_wait_ms: 3000, agent_processing_ms: 5000, speech_to_first_audio_ms: 9000, interruption_to_buffer_cleared_ms: 120 },
     { turn: 3, outcome: "cancelled", speech_to_tool_ms: 250 },
   ]);
   assert.deepEqual(metadata?.summary, {
@@ -39,6 +43,9 @@ test("voice latency metadata summarizes only the sanitized turn timings", () => 
     average_agent_processing_ms: 4000,
     average_total_turn_ms: 7000,
     slowest_total_turn_ms: 9000,
+    observed_interruptions: 2,
+    average_interruption_clear_ms: 100,
+    slowest_interruption_clear_ms: 120,
   });
 });
 
