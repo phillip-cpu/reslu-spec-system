@@ -121,7 +121,13 @@ the quote relationship. Message menus expose Reply and Copy on mobile/desktop.
 The same exact-once boundary now covers conversation creation, call start and
 call end: device intent ids recover a lost start response, and an ended call is
 retained locally until the single canonical same-thread call record is
-acknowledged. Ready attachment drafts are restored after navigation or reload,
+acknowledged. A production audit found one browser call left canonically active
+after the iPhone session had disappeared. Migration 104 closes that database
+gap: one person may have only one active call across conversations and devices;
+starting a genuinely new call truthfully drops and records the displaced turn,
+cancels only its unfinished conversational consult output and leaves durable
+background tasks running. Ready attachment drafts are restored after navigation
+or reload,
 interrupted finalisation is retryable, and switching chats cannot silently
 discard or cross-bind a staged file. The release also upgrades Next to 16.3.0,
 which removes the fixable production framework advisories found by the
@@ -137,9 +143,11 @@ Rollout order for this slice:
    `095_conversation_push_delivery.sql`, then
    `096_conversation_preferences.sql`, then
    `097_conversation_message_search.sql`, then
-   `098_conversation_quoted_replies.sql`, to Supabase.
-2. Run the matching rollback-only fixtures for migrations 093 through 098 in the
-   SQL Editor. Every fixture must report PASS and leave no test data.
+   `098_conversation_quoted_replies.sql`, then
+   `104_single_active_conversation_call.sql`, to Supabase.
+2. Run the matching rollback-only fixtures for migrations 093 through 098 and
+   migration 104 in the SQL Editor. Every fixture must report PASS and leave no
+   test data.
 3. Deploy the matching application release, pull it on the Mac and restart the
    conversation bridge so its independent push worker is active.
 4. Refresh every already-open RESLU client so it sends a stable client id.
