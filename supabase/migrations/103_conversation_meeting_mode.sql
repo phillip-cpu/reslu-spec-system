@@ -136,6 +136,17 @@ begin
     raise exception 'meeting capture identity and source are immutable';
   end if;
 
+  -- Capture lifecycle and deletion remain owned by the person who explicitly
+  -- started/consented to recording. Other thread members may collaborate on a
+  -- staged review draft, but cannot pause, finish, retry, fail or discard the
+  -- recorder's source by bypassing the authenticated API route.
+  if old.created_by <> auth.uid() and (
+       old.status in ('recording','paused','processing','failed')
+       or new.status = 'discarded'
+     ) then
+    raise exception 'only the recorder can control or discard this meeting capture';
+  end if;
+
   if new.filed_message_id is distinct from old.filed_message_id
      or new.filed_by is distinct from old.filed_by
      or new.filed_at is distinct from old.filed_at
@@ -307,6 +318,19 @@ begin
       into destination_label
     from leads lead
     where lead.id = minutes.lead_id and lead.deleted_at is null;
+    if destination_label is not null
+       and nullif(minutes.source_snapshot ->> 'source_reference', '') is not null
+       and minutes.source_snapshot ->> 'id' = minutes.lead_id::text
+       and not p_allow_duplicate
+       and exists (
+         select 1 from conversation_meeting_minutes existing
+         where existing.id <> minutes.id
+           and existing.lead_id = minutes.lead_id
+           and existing.status = 'filed'
+           and existing.source_snapshot ->> 'source_reference' = minutes.source_snapshot ->> 'source_reference'
+       ) then
+      raise exception 'minutes are already filed for this lead visit; confirm the duplicate before filing again';
+    end if;
   elsif minutes.destination_kind = 'project' then
     select coalesce(nullif(btrim(project.name), ''), 'Project')
       into destination_label
