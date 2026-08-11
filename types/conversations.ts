@@ -65,6 +65,10 @@ export interface ConversationMessage {
   pinned_by: string | null;
   attachments: ConversationAttachment[];
   author: ConversationParticipant;
+  search_match?: {
+    kind: "message" | "attachment" | "both";
+    attachment_filenames: string[];
+  };
 }
 
 export interface ConversationAgentActivity {
