@@ -74,6 +74,7 @@ export interface NotificationRow {
 export interface LatestUnreadNotificationResponse {
   notification: {
     id: string;
+    tag: string;
     title: string;
     body: string | null;
     link_href: string | null;

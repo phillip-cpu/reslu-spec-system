@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { conversationParticipants } from "@/lib/conversation-access";
-import { conversationAttachmentAccessUrl } from "@/lib/conversation-attachments";
-import { sniffFileKind } from "@/lib/file-sniff";
+import { conversationAttachmentAccessUrl, isConversationAttachmentSize } from "@/lib/conversation-attachments";
+import { inspectStorageObjectHead, sniffFileKind } from "@/lib/file-sniff";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
-import { sniffStorageObjectHead } from "@/lib/file-sniff";
 import { createClient } from "@/lib/supabase/server";
 import type { ConversationAttachment } from "@/types/conversations";
 
@@ -36,9 +35,10 @@ async function stagedAttachment(
   return data as ConversationAttachment | null;
 }
 
-async function readyMessageAttachment(
+async function accessibleReadyAttachment(
   supabase: Awaited<ReturnType<typeof createClient>>,
   conversationId: string,
+  userId: string,
   attachmentId: unknown
 ) {
   if (typeof attachmentId !== "string" || !attachmentId) return null;
@@ -48,9 +48,20 @@ async function readyMessageAttachment(
     .eq("id", attachmentId)
     .eq("conversation_id", conversationId)
     .eq("status", "ready")
-    .not("message_id", "is", null)
     .maybeSingle();
-  return data as ConversationAttachment | null;
+  const attachment = data as ConversationAttachment | null;
+  if (!attachment) return null;
+  return attachment.message_id || attachment.uploaded_by === userId ? attachment : null;
+}
+
+function attachmentResponse(conversationId: string, attachment: ConversationAttachment) {
+  return {
+    ...attachment,
+    metadata: attachment.metadata ?? {},
+    url: attachment.status === "ready"
+      ? conversationAttachmentAccessUrl(conversationId, attachment.id)
+      : null,
+  };
 }
 
 export async function GET(request: NextRequest, context: Context) {
@@ -62,9 +73,27 @@ export async function GET(request: NextRequest, context: Context) {
   const membership = await conversationParticipants(supabase, conversationId, user.id);
   if (membership.error) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
 
-  const attachment = await readyMessageAttachment(
+  if (request.nextUrl.searchParams.get("drafts") === "1") {
+    const { data, error } = await supabase
+      .from("conversation_attachments")
+      .select("*")
+      .eq("conversation_id", conversationId)
+      .eq("uploaded_by", user.id)
+      .is("message_id", null)
+      .in("status", ["uploading", "ready"])
+      .order("created_at");
+    if (error) return NextResponse.json({ error: "Could not restore attachment drafts" }, { status: 503 });
+    return NextResponse.json({
+      attachments: ((data ?? []) as ConversationAttachment[]).map((attachment) => (
+        attachmentResponse(conversationId, attachment)
+      )),
+    });
+  }
+
+  const attachment = await accessibleReadyAttachment(
     supabase,
     conversationId,
+    user.id,
     request.nextUrl.searchParams.get("attachment_id")
   );
   if (!attachment) return NextResponse.json({ error: "Attachment not found" }, { status: 404 });
@@ -93,14 +122,27 @@ export async function POST(request: NextRequest, context: Context) {
   const attachment = await stagedAttachment(supabase, conversationId, user.id, body?.attachment_id);
   if (!attachment) return NextResponse.json({ error: "Attachment not found" }, { status: 404 });
 
-  const head = await sniffStorageObjectHead(supabase, ASSET_BUCKET, attachment.storage_path);
-  const actualKind = head ? sniffFileKind(head) : "unknown";
+  const inspection = await inspectStorageObjectHead(supabase, ASSET_BUCKET, attachment.storage_path);
+  if (!inspection || inspection.byteSize == null) {
+    return NextResponse.json({
+      error: "The uploaded file could not be verified yet. Please retry.",
+    }, { status: 503 });
+  }
+  if (!isConversationAttachmentSize(inspection.byteSize) || inspection.byteSize !== attachment.byte_size) {
+    await supabase.storage.from(ASSET_BUCKET).remove([attachment.storage_path]);
+    await supabase.from("conversation_attachments").delete().eq("id", attachment.id);
+    return NextResponse.json({
+      error: "The uploaded file size did not match the selected file. Please choose it again.",
+    }, { status: 400 });
+  }
+
+  const actualKind = sniffFileKind(inspection.bytes);
   if (actualKind !== EXPECTED_KIND[attachment.mime_type]) {
     await supabase.storage.from(ASSET_BUCKET).remove([attachment.storage_path]);
     await supabase.from("conversation_attachments").delete().eq("id", attachment.id);
     return NextResponse.json({
       error: actualKind === "unknown"
-        ? "The uploaded file could not be verified. Please choose it again."
+        ? "The uploaded file contents could not be verified. Please choose it again."
         : "The file contents do not match its file type. Please check the file and try again.",
     }, { status: 400 });
   }
@@ -116,11 +158,7 @@ export async function POST(request: NextRequest, context: Context) {
   }
 
   return NextResponse.json({
-    attachment: {
-      ...ready,
-      metadata: ready.metadata ?? {},
-      url: conversationAttachmentAccessUrl(conversationId, ready.id),
-    },
+    attachment: attachmentResponse(conversationId, ready as ConversationAttachment),
   });
 }
 

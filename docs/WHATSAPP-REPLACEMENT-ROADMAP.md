@@ -36,9 +36,20 @@ Current implementation: PR #22 and migration 092 are live, and the updated Mac
 bridge is running. The first production iPhone photo reached Aria and was read
 accurately. That trace took about 74 seconds: 2 seconds to upload, 38 seconds
 waiting behind a cancelled voice consult, and 36 seconds in the agent runtime.
-The bridge cancellation repair is now live. Attachment recovery hardening adds
-explicit retry, all-or-nothing draft sending, safe mid-upload cancellation,
-eventual abandoned-object cleanup and stable authenticated attachment links.
+That trace completed before the bridge cancellation repair was installed, so it
+is not evidence of the repaired queue-release time. The repair is now live and
+a clean repeat is still required. Attachment recovery hardening adds explicit
+retry, all-or-nothing draft sending, safe mid-upload cancellation, eventual
+abandoned-object cleanup and stable authenticated attachment links. The same
+trace also found a separate attachment delay: the system temp path was outside
+Aria's image-tool workspace, causing a failed inspection, an `exec` copy, and a
+second inspection. PR #27 is now deployed and the restarted bridge stages each
+file privately inside the selected OpenClaw workspace, uses it in place, and
+cleans it up after the turn. A synthetic image benchmark on the production host
+completed in 4.5 seconds with native image input and no tool call, versus about
+30 seconds and three avoidable calls in the original real-image trace. This
+still requires the clean iPhone photo/PDF acceptance test before Stage 1 can
+close; the old 74-second trace is not evidence of the post-fix result.
 
 Work:
 
@@ -61,7 +72,77 @@ Stage gate:
 
 ## Stage 2 - Trustworthy everyday messaging
 
-Status: pending.
+Status: in progress; the first reliability slice is implemented locally and
+awaiting database-first rollout.
+
+Current implementation candidate: migration 093 adds a device-generated
+`client_message_id` and an atomic idempotent message RPC, so a lost HTTP
+response or multi-tab retry returns the original canonical message and cannot
+enqueue Aria or Marco twice. The client saves text sends into IndexedDB before
+clearing the composer, renders queued/sending/failed/delivered states, retries
+after reconnect, times out ambiguous requests safely, and reconciles with the
+canonical thread. Per-conversation text drafts persist synchronously on the
+device and are visible in the conversation list. Migration 094 adds canonical
+per-participant unread counts and a monotonic server read cursor, with visible
+badges that clear only when the intended thread is visible at its newest
+message. Migration 095 creates one private notification per unmuted recipient
+and one durable delivery job for each of that recipient's subscribed devices;
+Aria/Marco and human inserts share the same database trigger, delivery retries
+one device at a time in a background bridge worker, and notification taps target
+the exact canonical message. Device subscription credentials are owner-only,
+and a queued job is skipped if its recipient has since left the conversation.
+Each device receives only an encrypted opaque notification id; the signed-in
+service worker fetches private preview content from RESLU, so message text and
+links are not exported to the push provider. This is not yet the whole stage:
+Migration 096 adds private per-user mute, pin and archive controls, an archived
+inbox view, and preserves the mobile conversation list when polling refreshes
+after Back. The client now filters active or archived chats locally and searches
+the complete canonical text history of an authorised conversation. Selecting an
+older result loads its exact surrounding context without polling snapping back
+to newest, with an explicit return-to-latest action. Older history now pages
+backwards in bounded batches while preserving the reader's scroll position and
+remaining stable across background polling. Richer message actions,
+attachment-content search, full cold-start offline support and long-history
+virtualisation remain. Migration 097 puts full-history substring search behind a
+member-scoped RPC and a trigram index so response time does not degrade into a
+full table scan as the canonical history grows. Migration 098 makes quoted
+replies part of the exactly-once send contract; reply selection survives the
+offline outbox, replying to Aria or Marco in a group routes back to that existing
+agent, and the bridge gives the agent the referenced message rather than losing
+the quote relationship. Message menus expose Reply and Copy on mobile/desktop.
+The same exact-once boundary now covers conversation creation, call start and
+call end: device intent ids recover a lost start response, and an ended call is
+retained locally until the single canonical same-thread call record is
+acknowledged. Ready attachment drafts are restored after navigation or reload,
+interrupted finalisation is retryable, and switching chats cannot silently
+discard or cross-bind a staged file. The release also upgrades Next to 16.3.0,
+which removes the fixable production framework advisories found by the
+2026-08-11 audit. The remaining production advisories are inherited by the
+existing fixed text-embedding dependency and have no upstream fix; untrusted
+images, archives and file bytes remain excluded from that code path. The new
+`web-push` dependency adds no reported production advisory.
+
+Rollout order for this slice:
+
+1. Apply `093_conversation_message_reliability.sql`, followed by
+   `094_conversation_unread_state.sql` and
+   `095_conversation_push_delivery.sql`, then
+   `096_conversation_preferences.sql`, then
+   `097_conversation_message_search.sql`, then
+   `098_conversation_quoted_replies.sql`, to Supabase.
+2. Run the matching rollback-only fixtures for migrations 093 through 098 in the
+   SQL Editor. Every fixture must report PASS and leave no test data.
+3. Deploy the matching application release, pull it on the Mac and restart the
+   conversation bridge so its independent push worker is active.
+4. Refresh every already-open RESLU client so it sends a stable client id.
+5. Run an online send, a response-loss retry, an airplane-mode queued send, a
+   reconnect flush, a refresh-during-send test, a per-chat text/attachment draft
+   test, a lost-response conversation-create retry and a lost-response call
+   start/end retry.
+6. Confirm each send creates exactly one canonical message and one agent job,
+   each call creates exactly one call and one same-thread record, unread badges
+   agree on two devices, and mute/pin/archive affect only the signed-in team
+   member's inbox.
 
 Work:
 
@@ -91,14 +172,47 @@ Status: partially delivered; performance work remains.
 Already delivered: OpenAI Realtime WebRTC, semantic VAD, barge-in, precise
 cancellation and the existing-agent consult boundary.
 
+Local instrumentation candidate: every Realtime turn now records bounded,
+content-free durations for speech-stop to tool call, consult acceptance, bridge
+queue wait, OpenClaw processing, backend completion and first actual WebRTC
+audio. The call row and compact call record retain a per-call summary and up to
+20 turn measurements without transcripts or provider identifiers. The final
+spoken response is also requested before the non-critical message refresh,
+removing an avoidable client-side wait. Realtime gives one fixed, truthful
+spoken acknowledgement while the canonical Aria/Marco consult is active, and
+the text thread shows the member-scoped queued/working job state instead of
+appearing idle during a long attachment or tool turn. The slow attachment trace
+also showed why total model usage was high: four model/tool iterations replayed
+roughly 67,000 prompt tokens each, including about 41,700 characters of tool
+schemas. The first safe reduction removes the unnecessary failed image/copy
+iteration. Any broader tool-catalog or thinking-level change must be benchmarked
+for latency and task correctness before altering Aria's production capability.
+
+Local bridge-latency hardening now gives Aria and Marco independent serial
+workers, so a slow run or claim request for one cannot hold up the other.
+Queue claims time out after five seconds instead of inheriting the general
+30-second REST timeout, while cancellation/status checks use a three-second
+bound. Each agent still processes one ordered queue and retains its existing
+OpenClaw identity, stable RESLU conversation session, tools, memory and
+permissions. This contains transport stalls without introducing parallel turns
+against the same canonical agent session. It requires a fresh post-deployment
+photo, PDF and voice timing run; the 74-second pre-repair trace does not prove
+the new queue-release time.
+
 Work:
 
-- Record end-to-end timestamps for speech stop, Realtime acknowledgement,
-  consult creation, bridge claim, OpenClaw completion and first audible answer.
+- Publish and validate the end-to-end timing candidate on an iPhone call.
 - Start an ordinary acknowledgement within one second of speech stop.
 - Stop audible output within 250 ms of genuine interruption.
-- Give a short truthful progress cue during substantive OpenClaw work.
-- Stream or otherwise shorten the blocking OpenClaw response boundary where
+- Validate the fixed spoken progress cue and thread working indicator against
+  slow attachment and tool turns.
+- Replace the one-shot `openclaw agent --json` bridge boundary with the local
+  authenticated Gateway run/event interface, retaining the same stable session
+  identity and authoritative agent. Use its accepted run id and lifecycle/tool
+  events for truthful progress and explicit run tracking; retain the current
+  CLI's real Gateway-abort behavior during migration and never expose the
+  Gateway publicly.
+- Stream or otherwise shorten the remaining OpenClaw response boundary where
   the runtime safely supports it.
 - Test double-talk, throat clears, echo, road noise and ambiguous partial turns.
 - Test speaker, AirPods, car Bluetooth, weak reception and Wi-Fi/mobile handoff.
@@ -212,6 +326,11 @@ Work:
 - Performance budgets, thumbnail/lazy loading and cached recent conversations.
 - VoiceOver, large text, contrast, captions and reduced-motion support.
 - A real iPhone/car/desktop test matrix under poor networks and long histories.
+- Keep Next.js on a currently patched stable release. The Stage 2 dependency
+  audit moved the app from vulnerable 16.0.10 to stable 16.3.0 and cleared the
+  framework/proxy advisories. Track the remaining no-fix advisories inherited
+  by `@huggingface/transformers`; the current embedding wrapper is text-only
+  and must never receive untrusted images, archives or file bytes.
 
 Final product gate:
 
@@ -223,6 +342,7 @@ Final product gate:
 ## Current next action
 
 Rerun the iPhone attachment test after cancelling a live voice consult, then
-complete the PDF and desktop cases. Deploy and exercise explicit failure/retry,
-mid-upload chat switching and authenticated link refresh before closing Stage
-1.
+complete the PDF and desktop cases. Reauthenticate GitHub, publish the Stage 2
+candidate, apply migrations 093-098 and their rollback verifiers database-first,
+then deploy/restart the bridge and run the two-device send, reconnect, unread,
+preference and lock-screen notification matrix.

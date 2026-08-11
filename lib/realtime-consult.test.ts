@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { authorizedConversationAgent } from "./conversation-access.ts";
-import { consultStatus, parseRealtimeConsultRequest } from "./realtime-consult.ts";
+import { consultMessageMatchesIntent, consultStatus, parseRealtimeConsultRequest } from "./realtime-consult.ts";
 import type { ConversationParticipant } from "../types/conversations.ts";
 
 const participants: ConversationParticipant[] = [
@@ -38,4 +38,36 @@ test("a job is complete only when its canonical agent message exists", () => {
   assert.equal(consultStatus("done", false), "pending");
   assert.equal(consultStatus("done", true), "done");
   assert.equal(consultStatus("cancelled", true), "cancelled");
+});
+
+test("a retried realtime tool call must match the entire canonical voice intent", () => {
+  const intent = {
+    query: "What is on my list today?",
+    agentSlug: "aria" as const,
+    callId: "call-123",
+    toolCallId: "tool-123",
+    responseId: "response-123",
+  };
+  const message = {
+    body: intent.query,
+    metadata: {
+      source: "voice",
+      transport: "openai_realtime_webrtc",
+      realtime_call_id: intent.callId,
+      realtime_tool_call_id: intent.toolCallId,
+      realtime_response_id: intent.responseId,
+      target_agent_slugs: [intent.agentSlug],
+    },
+  };
+  assert.equal(consultMessageMatchesIntent(message, intent), true);
+  assert.equal(consultMessageMatchesIntent({ ...message, body: "Delete the project" }, intent), false);
+  assert.equal(consultMessageMatchesIntent({
+    ...message,
+    metadata: { ...message.metadata, target_agent_slugs: ["marco"] },
+  }, intent), false);
+  assert.equal(consultMessageMatchesIntent({
+    ...message,
+    metadata: { ...message.metadata, realtime_response_id: "response-other" },
+  }, intent), false);
+  assert.equal(consultMessageMatchesIntent({ ...message, metadata: [] }, intent), false);
 });

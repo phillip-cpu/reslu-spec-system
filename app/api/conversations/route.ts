@@ -10,6 +10,7 @@ import type {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type ParticipantLink = {
   conversation_id: string;
@@ -17,6 +18,16 @@ type ParticipantLink = {
   agent_id: string | null;
   profile: { id: string; full_name: string; avatar_url: string | null } | null;
   agent: { id: string; slug: AgentSlug; display_name: string; role_label: string; avatar_url: string | null } | null;
+};
+
+type ConversationInboxRow = {
+  conversation_id: string;
+  last_read_at: string | null;
+  notifications_muted: boolean;
+  archived_at: string | null;
+  pinned_at: string | null;
+  unread_count: number | string;
+  last_message_id: string | null;
 };
 
 function participantFromLink(link: ParticipantLink, userId: string): ConversationParticipant | null {
@@ -47,14 +58,20 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const [{ data: ownLinks, error: ownError }, { data: profiles }, { data: agents }] = await Promise.all([
-    supabase.from("conversation_participants").select("conversation_id").eq("profile_id", user.id),
+  const [{ data: inboxRows, error: inboxError }, { data: profiles }, { data: agents }] = await Promise.all([
+    supabase.rpc("get_conversation_inbox"),
     supabase.from("profiles").select("id,full_name,avatar_url").order("full_name"),
     supabase.from("conversation_agents").select("id,slug,display_name,role_label,avatar_url,auth_profile_id").eq("active", true).order("display_name"),
   ]);
-  if (ownError) return NextResponse.json({ error: ownError.message }, { status: 500 });
+  if (inboxError) return NextResponse.json({ error: inboxError.message }, { status: 500 });
 
-  const conversationIds = (ownLinks ?? []).map((link) => link.conversation_id);
+  const inbox = new Map(
+    ((inboxRows ?? []) as ConversationInboxRow[]).map((row) => [row.conversation_id, row])
+  );
+  const conversationIds = [...inbox.keys()];
+  const lastMessageIds = [...new Set(
+    ((inboxRows ?? []) as ConversationInboxRow[]).flatMap((row) => row.last_message_id ? [row.last_message_id] : [])
+  )];
   const agentAuthProfileIds = new Set(
     (agents ?? []).map((agent) => agent.auth_profile_id).filter((id): id is string => Boolean(id))
   );
@@ -83,13 +100,13 @@ export async function GET() {
       .from("conversation_participants")
       .select("conversation_id,profile_id,agent_id,profile:profiles(id,full_name,avatar_url),agent:conversation_agents(id,slug,display_name,role_label,avatar_url)")
       .in("conversation_id", conversationIds),
-    supabase
-      .from("conversation_messages")
-      .select("*")
-      .in("conversation_id", conversationIds)
-      .is("deleted_at", null)
-      .order("created_at", { ascending: false })
-      .limit(Math.min(500, conversationIds.length * 10)),
+    lastMessageIds.length > 0
+      ? supabase
+        .from("conversation_messages")
+        .select("*")
+        .in("id", lastMessageIds)
+        .is("deleted_at", null)
+      : Promise.resolve({ data: [] as ConversationMessage[] }),
   ]);
   if (conversationError) return NextResponse.json({ error: conversationError.message }, { status: 500 });
 
@@ -105,7 +122,6 @@ export async function GET() {
 
   const lastMessageByConversation = new Map<string, ConversationMessage>();
   for (const row of messages ?? []) {
-    if (lastMessageByConversation.has(row.conversation_id)) continue;
     const participants = participantsByConversation.get(row.conversation_id) ?? [];
     lastMessageByConversation.set(row.conversation_id, {
       ...row,
@@ -119,6 +135,10 @@ export async function GET() {
     const participants = participantsByConversation.get(conversation.id) ?? [];
     return {
       ...conversation,
+      unread_count: Number(inbox.get(conversation.id)?.unread_count ?? 0),
+      notifications_muted: inbox.get(conversation.id)?.notifications_muted ?? false,
+      archived_at: inbox.get(conversation.id)?.archived_at ?? null,
+      pinned_at: inbox.get(conversation.id)?.pinned_at ?? null,
       participants,
       display_title: conversationDisplayTitle(conversation.title, participants, user.id),
       last_message: lastMessageByConversation.get(conversation.id) ?? null,
@@ -133,81 +153,84 @@ export async function POST(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: { title?: string; profile_ids?: string[]; agent_slugs?: AgentSlug[] };
+  let rawBody: unknown;
   try {
-    body = await request.json();
+    rawBody = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-
-  const profileIds = [...new Set([user.id, ...(body.profile_ids ?? [])])];
-  const agentSlugs = [...new Set(body.agent_slugs ?? [])].filter((slug): slug is AgentSlug => slug === "aria" || slug === "marco");
-  if (profileIds.length + agentSlugs.length < 2) {
+  if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  const body = rawBody as {
+    title?: unknown;
+    profile_ids?: unknown;
+    agent_slugs?: unknown;
+    client_conversation_id?: unknown;
+  };
+  if (body.title != null && typeof body.title !== "string") {
+    return NextResponse.json({ error: "Invalid conversation title" }, { status: 400 });
+  }
+  const title = typeof body.title === "string" ? body.title.trim() : "";
+  if (title.length > 200) {
+    return NextResponse.json({ error: "Conversation title is too long" }, { status: 400 });
+  }
+  if (body.profile_ids != null && !Array.isArray(body.profile_ids)) {
+    return NextResponse.json({ error: "Invalid profile ids" }, { status: 400 });
+  }
+  const rawProfileIds = (body.profile_ids ?? []) as unknown[];
+  if (
+    rawProfileIds.length > 49
+    || rawProfileIds.some((value) => typeof value !== "string" || !UUID_PATTERN.test(value))
+    || rawProfileIds.length !== new Set(rawProfileIds).size
+  ) {
+    return NextResponse.json({ error: "Profile ids must be unique valid UUIDs" }, { status: 400 });
+  }
+  const profileIds = rawProfileIds as string[];
+  if (body.agent_slugs != null && !Array.isArray(body.agent_slugs)) {
+    return NextResponse.json({ error: "Invalid agent slugs" }, { status: 400 });
+  }
+  const rawAgentSlugs = (body.agent_slugs ?? []) as unknown[];
+  if (
+    rawAgentSlugs.length > 2
+    || rawAgentSlugs.some((value) => value !== "aria" && value !== "marco")
+    || rawAgentSlugs.length !== new Set(rawAgentSlugs).size
+  ) {
+    return NextResponse.json({ error: "Agent slugs must be unique Aria or Marco values" }, { status: 400 });
+  }
+  const agentSlugs = rawAgentSlugs as AgentSlug[];
+  if (profileIds.filter((profileId) => profileId !== user.id).length + agentSlugs.length < 1) {
     return NextResponse.json({ error: "Choose at least one other person or agent" }, { status: 400 });
   }
+  if (body.client_conversation_id != null && (
+    typeof body.client_conversation_id !== "string"
+    || !UUID_PATTERN.test(body.client_conversation_id)
+  )) {
+    return NextResponse.json({ error: "Invalid client conversation id" }, { status: 400 });
+  }
+  const clientConversationId = typeof body.client_conversation_id === "string"
+    ? body.client_conversation_id
+    : crypto.randomUUID();
 
-  const [{ data: validProfiles }, { data: validAgents }] = await Promise.all([
-    supabase.from("profiles").select("id").in("id", profileIds),
-    agentSlugs.length
-      ? supabase.from("conversation_agents").select("id,slug").in("slug", agentSlugs).eq("active", true)
-      : Promise.resolve({ data: [] as { id: string; slug: string }[] }),
-  ]);
-  if ((validProfiles ?? []).length !== profileIds.length || (validAgents ?? []).length !== agentSlugs.length) {
-    return NextResponse.json({ error: "One or more participants are unavailable" }, { status: 400 });
+  const { data, error } = await supabase.rpc("create_conversation_idempotent", {
+    p_title: title || null,
+    p_profile_ids: profileIds,
+    p_agent_slugs: agentSlugs,
+    p_client_conversation_id: clientConversationId,
+  }).single();
+  const created = data as { conversation_id: string; existing: boolean } | null;
+  if (error || !created) {
+    const message = error?.message ?? "Could not create conversation";
+    const status = /unavailable|invalid|required|too (?:many|long)|choose|unique/i.test(message)
+      ? 400
+      : /already used/i.test(message)
+        ? 409
+        : 500;
+    return NextResponse.json({ error: message }, { status });
   }
 
-  const kind = profileIds.length + agentSlugs.length === 2 ? "direct" : "group";
-  if (kind === "direct") {
-    const { data: ownMemberships } = await supabase
-      .from("conversation_participants")
-      .select("conversation_id")
-      .eq("profile_id", user.id);
-    const candidateIds = (ownMemberships ?? []).map((membership) => membership.conversation_id);
-    if (candidateIds.length > 0) {
-      const { data: candidates } = await supabase
-        .from("conversations")
-        .select("id")
-        .in("id", candidateIds)
-        .eq("kind", "direct")
-        .is("archived_at", null);
-      const directIds = (candidates ?? []).map((candidate) => candidate.id);
-      if (directIds.length > 0) {
-        const { data: candidateParticipants } = await supabase
-          .from("conversation_participants")
-          .select("conversation_id,profile_id,agent_id")
-          .in("conversation_id", directIds);
-        const expected = new Set([
-          ...profileIds.map((profileId) => `human:${profileId}`),
-          ...(validAgents ?? []).map((agent) => `agent:${agent.id}`),
-        ]);
-        for (const candidateId of directIds) {
-          const keys = (candidateParticipants ?? [])
-            .filter((participant) => participant.conversation_id === candidateId)
-            .map((participant) => participant.profile_id ? `human:${participant.profile_id}` : `agent:${participant.agent_id}`);
-          if (keys.length === expected.size && keys.every((key) => expected.has(key))) {
-            return NextResponse.json({ id: candidateId, existing: true });
-          }
-        }
-      }
-    }
-  }
-
-  const { data: conversation, error } = await supabase
-    .from("conversations")
-    .insert({ kind, title: body.title?.trim() || null, created_by: user.id })
-    .select("id")
-    .single();
-  if (error || !conversation) return NextResponse.json({ error: error?.message ?? "Could not create conversation" }, { status: 500 });
-
-  const participantRows = [
-    ...profileIds.map((profileId) => ({ conversation_id: conversation.id, profile_id: profileId, agent_id: null })),
-    ...(validAgents ?? []).map((agent) => ({ conversation_id: conversation.id, profile_id: null, agent_id: agent.id })),
-  ];
-  const { error: participantError } = await supabase.from("conversation_participants").insert(participantRows);
-  if (participantError) {
-    await supabase.from("conversations").delete().eq("id", conversation.id);
-    return NextResponse.json({ error: participantError.message }, { status: 500 });
-  }
-
-  return NextResponse.json({ id: conversation.id }, { status: 201 });
+  return NextResponse.json(
+    { id: created.conversation_id, existing: Boolean(created.existing) },
+    { status: created.existing ? 200 : 201 }
+  );
 }

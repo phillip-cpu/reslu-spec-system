@@ -48,8 +48,47 @@ This mirrors OpenClaw's own realtime Voice Call design, which exposes `openclaw_
 ### Mac mini
 
 - Claim realtime consult jobs and invoke the existing selected OpenClaw agent.
+- Run independent serial workers for Aria and Marco, with bounded claim and
+  cancellation-status request timeouts; never let one agent's network stall
+  block the other agent's queue.
 - Keep the stable RESLU conversation-to-OpenClaw session mapping.
 - Return tool output and auditable action results. Cancellation may stop waiting or suppress late speech, but it must not claim that an email, approval, calendar change or other completed side effect was undone.
+
+The current bridge shells out to the one-shot `openclaw agent --json` command,
+which exposes only the completed turn to the bridge. After the timing baseline is
+live, replace that wrapper with an authenticated loopback Gateway client. The
+Gateway `agent` RPC returns an accepted run id immediately and emits lifecycle,
+tool and assistant events before terminal completion. This allows RESLU to show
+truthful progress and retain the exact run id through cancellation without
+exposing the Gateway outside the Mac. The current CLI already forwards its
+termination signal to the accepted Gateway run as `chat.abort`; the direct
+client removes the opaque, whole-response boundary rather than inventing a new
+cancellation guarantee. Keep Gateway credentials on the Mac and continue to
+publish only bounded status/result data through Supabase.
+
+The immediate bridge hardening keeps one ordered worker per canonical agent,
+but isolates Aria from Marco and caps queue claims at five seconds and
+cancellation/status reads at three seconds. This is transport containment, not
+a substitute for the Gateway event migration: same-agent turns remain serial
+and the final substantive answer still waits for the authoritative OpenClaw
+run.
+
+Attachment timing has one additional avoidable boundary: files staged in the
+system temporary directory can sit outside the OpenClaw agent's readable
+workspace. In the observed iPhone image turn, Aria first received an image-tool
+access error, copied the file into her workspace through `exec`, and then retried
+the image tool. PR #27 is deployed and the restarted bridge now stages each
+private file in a mode-0700 ephemeral directory inside the selected agent's
+workspace, writes the file mode 0600, instructs the agent to use it in place,
+and removes the directory after the turn. This preserves private storage and
+the canonical agent while removing the failed tool/copy/retry loop. A synthetic
+production-host benchmark validated the mechanism: OpenClaw promoted the
+workspace image into the user message as native image input, made no tool call,
+and completed in 4.5 seconds.
+The earlier real attachment turn took about 30 seconds inside OpenClaw and made
+three avoidable calls around the inaccessible path. The synthetic measurement
+proves the transport improvement, while a clean iPhone photo/PDF acceptance
+test remains the authority for real-world latency.
 
 The safest first bridge remains an outbound Supabase job/result channel. Do not expose the Mac mini's full-operator OpenClaw Gateway API publicly merely to reduce latency.
 
@@ -61,6 +100,7 @@ The safest first bridge remains an outbound Supabase job/result channel. Do not 
 - When VAD reports new user speech, cancel the active Realtime response immediately. Ignore later completion events for that cancelled response and never play or persist them as a completed assistant turn.
 - A consult job may already have used a business tool. Cancellation suppresses its conversational output only; it does not reverse side effects. Existing action/audit records remain canonical.
 - Ending a call appends the existing `call_record` message and leaves text/voice turns in the same RESLU thread.
+- Persist bounded duration metrics for each turn in call metadata: speech stop to tool call, consult acceptance, queue wait, agent processing, backend total and first actual WebRTC audio. Keep transcripts, file contents and provider IDs out of this latency payload.
 
 ## Configuration required
 

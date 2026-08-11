@@ -1,10 +1,12 @@
 import importlib.util
+from datetime import datetime, timezone
 import os
 import stat
 import subprocess
 import tempfile
 import unittest
 import urllib.error
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -17,6 +19,83 @@ SPEC.loader.exec_module(conversation_agent_bridge)
 
 
 class ConversationAgentBridgeTests(unittest.TestCase):
+    def test_agent_claim_has_a_short_network_timeout(self):
+        rest = conversation_agent_bridge.SupabaseRest(
+            "https://example.supabase.co",
+            "secret",
+        )
+        with mock.patch.object(rest, "request", return_value=[]) as request:
+            self.assertIsNone(rest.claim("aria"))
+
+        self.assertEqual(
+            request.call_args.kwargs["timeout_seconds"],
+            conversation_agent_bridge.CLAIM_REQUEST_TIMEOUT_SECONDS,
+        )
+
+    def test_aria_and_marco_use_independent_serial_workers(self):
+        with mock.patch.object(conversation_agent_bridge.threading, "Thread") as thread:
+            workers = conversation_agent_bridge.build_agent_workers(
+                "https://example.supabase.co",
+                "secret",
+            )
+
+        self.assertEqual(len(workers), 2)
+        self.assertEqual(thread.call_count, 2)
+        calls_by_name = {call.kwargs["name"]: call for call in thread.call_args_list}
+        self.assertEqual(set(calls_by_name), {
+            "reslu-conversation-aria",
+            "reslu-conversation-marco",
+        })
+        for slug in conversation_agent_bridge.AGENT_SLUGS:
+            call = calls_by_name[f"reslu-conversation-{slug}"]
+            self.assertIs(
+                call.kwargs["target"],
+                conversation_agent_bridge.agent_worker_loop,
+            )
+            self.assertEqual(
+                call.kwargs["args"],
+                ("https://example.supabase.co", "secret", slug),
+            )
+            self.assertFalse(call.kwargs["daemon"])
+
+    def test_history_resolves_quoted_reply_target_outside_recent_window(self):
+        class FakeRest:
+            @staticmethod
+            def rows(table, params):
+                if table == "conversation_messages" and "id" not in params:
+                    return [{
+                        "id": "reply-1",
+                        "author_profile_id": "profile-phillip",
+                        "author_agent_id": None,
+                        "body": "Yes, use that option.",
+                        "kind": "text",
+                        "reply_to_id": "target-older",
+                        "created_at": "2026-08-10T11:00:00Z",
+                    }]
+                if table == "conversation_messages":
+                    return [{
+                        "id": "target-older",
+                        "author_profile_id": "profile-jane",
+                        "author_agent_id": None,
+                        "body": "Should we specify the limestone finish?",
+                        "kind": "text",
+                        "reply_to_id": None,
+                        "created_at": "2026-08-09T09:00:00Z",
+                    }]
+                if table == "profiles":
+                    return [
+                        {"id": "profile-phillip", "full_name": "Phillip"},
+                        {"id": "profile-jane", "full_name": "Jane"},
+                    ]
+                if table in ("conversation_agents", "conversation_attachments"):
+                    return []
+                raise AssertionError((table, params))
+
+        history = conversation_agent_bridge.conversation_history(FakeRest(), "conversation-1")
+
+        self.assertIn("[Replying to Jane: Should we specify the limestone finish?]", history)
+        self.assertIn("Phillip: Yes, use that option.", history)
+
     def test_reads_documented_final_reply(self):
         payload = {
             "ok": True,
@@ -194,13 +273,35 @@ class ConversationAgentBridgeTests(unittest.TestCase):
     def test_transient_status_read_does_not_cancel_running_agent(self):
         class UnavailableRest:
             @staticmethod
-            def rows(_table, _params):
+            def rows(_table, _params, **_kwargs):
                 raise urllib.error.URLError("temporary network failure")
 
         with mock.patch.object(conversation_agent_bridge.sys, "stderr"):
             self.assertTrue(
                 conversation_agent_bridge.job_should_continue(UnavailableRest(), "job-123")
             )
+
+    def test_status_timeout_does_not_cancel_running_agent(self):
+        class SlowRest:
+            @staticmethod
+            def rows(_table, _params, **_kwargs):
+                raise TimeoutError("temporary timeout")
+
+        with mock.patch.object(conversation_agent_bridge.sys, "stderr"):
+            self.assertTrue(
+                conversation_agent_bridge.job_should_continue(SlowRest(), "job-123")
+            )
+
+    def test_cancellation_status_check_has_a_short_network_timeout(self):
+        rest = mock.Mock()
+        rest.rows.return_value = [{"status": "processing"}]
+
+        self.assertTrue(conversation_agent_bridge.job_is_processing(rest, "job-123"))
+
+        self.assertEqual(
+            rest.rows.call_args.kwargs["timeout_seconds"],
+            conversation_agent_bridge.JOB_STATUS_REQUEST_TIMEOUT_SECONDS,
+        )
 
     def test_materializes_private_attachment_with_a_safe_ephemeral_filename(self):
         class FakeRest:
@@ -314,6 +415,43 @@ class ConversationAgentBridgeTests(unittest.TestCase):
 
         rest.insert.assert_called_once()
         rest.patch.assert_called_once()
+
+    @mock.patch.object(conversation_agent_bridge.urllib.request, "urlopen")
+    def test_push_delivery_uses_one_job_token_and_exact_job_id(self, urlopen):
+        response = urlopen.return_value.__enter__.return_value
+        response.read.return_value = b'{"ok":true}'
+        job = {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "delivery_token": "22222222-2222-4222-8222-222222222222",
+        }
+
+        conversation_agent_bridge.deliver_push_job("https://spec.reslu.com.au/", job)
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://spec.reslu.com.au/api/conversations/push/deliver")
+        self.assertEqual(request.headers["Authorization"], f"Bearer {job['delivery_token']}")
+        self.assertEqual(json.loads(request.data), {"job_id": job["id"]})
+
+    @mock.patch.object(conversation_agent_bridge, "datetime")
+    def test_failed_push_is_returned_to_durable_queue_with_backoff(self, mocked_datetime):
+        mocked_datetime.now.return_value = datetime(2026, 8, 10, tzinfo=timezone.utc)
+        rest = mock.Mock()
+        job = {"id": "push-job", "attempts": 3, "delivery_token": "claim-token"}
+
+        conversation_agent_bridge.mark_push_delivery_failed(rest, job, RuntimeError("temporary"))
+
+        values = rest.patch_where.call_args.args[2]
+        self.assertEqual(rest.patch_where.call_args.args[:2], (
+            "conversation_push_jobs",
+            {
+                "id": "eq.push-job",
+                "delivery_token": "eq.claim-token",
+                "status": "eq.processing",
+            },
+        ))
+        self.assertEqual(values["status"], "failed")
+        self.assertEqual(values["next_attempt_at"], "2026-08-10T00:00:08+00:00")
+        self.assertEqual(values["last_error"], "temporary")
 
 
 if __name__ == "__main__":

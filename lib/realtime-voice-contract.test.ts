@@ -26,6 +26,18 @@ test("consult turns persist once in the canonical thread and reuse the OpenClaw 
   assert.match(consultRoute, /contains\("metadata", \{ job_id: job\.id \}\)/);
   assert.match(migration, /conversation_messages_realtime_tool_call_unique/);
   assert.match(migration, /cancel_realtime_conversation_job/);
+  assert.match(consultRoute, /async function ensureAgentJob/);
+  assert.match(consultRoute, /if \(!result\.job\)/);
+  assert.match(consultRoute, /consultMessageMatchesIntent\(existing\.data, body\)/);
+  assert.match(consultRoute, /already used for a different voice turn/);
+  assert.match(consultRoute, /existing\.data[\s\S]*ensureAgentJob/);
+});
+
+test("realtime consult creation fails closed if supersession or enqueue is not proven", () => {
+  assert.match(consultRoute, /const \{ error: cancellationError \} = await supabase\.rpc\("cancel_agent_conversation_jobs"/);
+  assert.match(consultRoute, /previous voice turn could not be interrupted safely/);
+  assert.match(consultRoute, /Your voice turn was saved, but Aria or Marco could not be reached yet/);
+  assert.match(consultRoute, /status: 503/);
 });
 
 test("WebRTC call path performs immediate barge-in and suppresses cancelled late output", () => {

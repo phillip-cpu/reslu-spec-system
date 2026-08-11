@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authorizedConversationAgent, conversationParticipants } from "@/lib/conversation-access";
-import { consultStatus, parseRealtimeConsultRequest } from "@/lib/realtime-consult";
+import { consultMessageMatchesIntent, consultStatus, parseRealtimeConsultRequest } from "@/lib/realtime-consult";
+import { millisecondsBetween } from "@/lib/realtime-voice-metrics";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -22,7 +23,7 @@ async function authorizedRequest(id: string, requestedSlug?: string | null) {
 async function messageForToolCall(supabase: Awaited<ReturnType<typeof createClient>>, id: string, toolCallId: string) {
   return supabase
     .from("conversation_messages")
-    .select("id,body,metadata")
+    .select("id,body,metadata,created_at")
     .eq("conversation_id", id)
     .contains("metadata", { realtime_tool_call_id: toolCallId })
     .maybeSingle();
@@ -36,7 +37,7 @@ async function resultForMessage(
 ) {
   const { data: job, error: jobError } = await supabase
     .from("agent_conversation_jobs")
-    .select("id,status,error,claimed_at,completed_at")
+    .select("id,status,error,created_at,claimed_at,completed_at")
     .eq("conversation_id", id)
     .eq("triggering_message_id", messageId)
     .eq("agent_id", agentId)
@@ -53,6 +54,38 @@ async function resultForMessage(
   return { status: consultStatus(job.status, Boolean(reply)), job, reply };
 }
 
+async function ensureAgentJob(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  conversationId: string,
+  messageId: string,
+  agentId: string
+) {
+  const { error: enqueueError } = await supabase
+    .from("agent_conversation_jobs")
+    .upsert({
+      conversation_id: conversationId,
+      triggering_message_id: messageId,
+      agent_id: agentId,
+    }, { onConflict: "triggering_message_id,agent_id", ignoreDuplicates: true });
+  const result = await resultForMessage(supabase, conversationId, messageId, agentId);
+  if (!result.job) {
+    throw new Error(enqueueError?.message ?? "The RESLU agent consult could not be queued");
+  }
+  return result;
+}
+
+function backendLatency(
+  message: { created_at?: string | null },
+  job: { created_at?: string | null; claimed_at?: string | null; completed_at?: string | null } | null,
+  reply: { created_at?: string | null } | null
+) {
+  return {
+    queue_wait_ms: millisecondsBetween(job?.created_at, job?.claimed_at),
+    agent_processing_ms: millisecondsBetween(job?.claimed_at, job?.completed_at),
+    backend_total_ms: millisecondsBetween(message.created_at, reply?.created_at ?? job?.completed_at),
+  };
+}
+
 export async function POST(request: NextRequest, context: Context) {
   const { id } = await context.params;
   let raw: unknown;
@@ -67,20 +100,41 @@ export async function POST(request: NextRequest, context: Context) {
   const existing = await messageForToolCall(supabase, id, body.toolCallId);
   if (existing.error) return NextResponse.json({ error: existing.error.message }, { status: 500 });
   if (existing.data) {
-    const result = await resultForMessage(supabase, id, existing.data.id, agent.id);
-    return NextResponse.json({
-      consult_id: existing.data.id,
-      status: result.status,
-      job_id: result.job?.id ?? null,
-    }, { status: result.status === "done" ? 200 : 202 });
+    if (!consultMessageMatchesIntent(existing.data, body)) {
+      return NextResponse.json({
+        error: "This realtime tool call id was already used for a different voice turn.",
+      }, { status: 409 });
+    }
+    try {
+      const result = await ensureAgentJob(supabase, id, existing.data.id, agent.id);
+      return NextResponse.json({
+        consult_id: existing.data.id,
+        status: result.status,
+        job_id: result.job?.id ?? null,
+      }, { status: result.status === "done" ? 200 : 202 });
+    } catch (error) {
+      return NextResponse.json({
+        error: error instanceof Error ? error.message : "The RESLU agent consult could not be queued",
+      }, { status: 503 });
+    }
   }
 
   // A newer voice consult supersedes unfinished speech for this agent. This
   // suppresses late output but cannot reverse a business action already done.
-  await supabase.rpc("cancel_agent_conversation_jobs", {
+  const { error: cancellationError } = await supabase.rpc("cancel_agent_conversation_jobs", {
     p_conversation_id: id,
     p_agent_ids: [agent.id],
   });
+  if (cancellationError) {
+    console.error("could not establish realtime consult cancellation boundary", {
+      conversationId: id,
+      agentSlug: agent.agent_slug,
+      error: cancellationError.message,
+    });
+    return NextResponse.json({
+      error: "The previous voice turn could not be interrupted safely. Please try again.",
+    }, { status: 503 });
+  }
 
   const metadata = {
     source: "voice",
@@ -98,7 +152,7 @@ export async function POST(request: NextRequest, context: Context) {
       body: body.query,
       metadata,
     })
-    .select("id,body,metadata")
+    .select("id,body,metadata,created_at")
     .single();
 
   // The database unique index makes a repeated provider event idempotent.
@@ -111,31 +165,28 @@ export async function POST(request: NextRequest, context: Context) {
     return NextResponse.json({ error: messageError?.message ?? "Could not save voice turn" }, { status: 500 });
   }
 
-  // Migration 090 normally creates this in the message transaction. Retain
-  // the compatibility upsert used by text chat while environments roll out.
-  const { data: job, error: jobError } = await supabase
-    .from("agent_conversation_jobs")
-    .upsert({
-      conversation_id: id,
-      triggering_message_id: message.id,
-      agent_id: agent.id,
-    }, { onConflict: "triggering_message_id,agent_id", ignoreDuplicates: true })
-    .select("id,status")
-    .maybeSingle();
-  if (jobError) {
+  // Migration 090 normally creates this in the message transaction. The
+  // idempotent compatibility upsert also repairs a database-first rollout if
+  // the message exists but its job does not.
+  try {
+    const result = await ensureAgentJob(supabase, id, message.id, agent.id);
+    return NextResponse.json({
+      consult_id: message.id,
+      job_id: result.job?.id ?? null,
+      status: result.status,
+    }, { status: result.status === "done" ? 200 : 202 });
+  } catch (error) {
     console.error("Realtime voice turn saved but consult enqueue failed", {
       conversationId: id,
       messageId: message.id,
       agentSlug: agent.agent_slug,
-      error: jobError.message,
+      error: error instanceof Error ? error.message : "unknown enqueue error",
     });
+    return NextResponse.json({
+      error: "Your voice turn was saved, but Aria or Marco could not be reached yet. Please try again.",
+      consult_id: message.id,
+    }, { status: 503 });
   }
-  return NextResponse.json({
-    consult_id: message.id,
-    job_id: job?.id ?? null,
-    status: "pending",
-    queue_error: jobError?.message ?? null,
-  }, { status: 202 });
 }
 
 export async function GET(request: NextRequest, context: Context) {
@@ -158,6 +209,7 @@ export async function GET(request: NextRequest, context: Context) {
       answer: result.status === "done" ? result.reply?.body : null,
       error: result.status === "failed" ? result.job?.error ?? "Agent consult failed" : null,
       side_effects_may_have_completed: result.status === "cancelled",
+      latency: backendLatency(message.data, result.job, result.reply),
     });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not read consult" }, { status: 500 });
