@@ -4,6 +4,15 @@ export const MAX_MEETING_TRANSCRIPT_CHARS = 500_000;
 export const MAX_MEETING_SEGMENTS = 2_000;
 export const MAX_MEETING_LIST_ITEMS = 100;
 export const MAX_MEETING_AUDIO_BYTES = 250 * 1024 * 1024;
+const MEETING_RECORDING_MIME_TYPES = new Set([
+  "audio/mp4",
+  "audio/webm",
+  "audio/webm;codecs=opus",
+]);
+
+export function validMeetingRecordingMimeType(value: unknown): value is string {
+  return typeof value === "string" && MEETING_RECORDING_MIME_TYPES.has(value);
+}
 
 export function cleanMeetingString(value: unknown, maxLength: number): string | null {
   if (typeof value !== "string") return null;
@@ -84,5 +93,5 @@ export function validMeetingRecordingStoragePath(
   meetingId: string,
 ): boolean {
   const prefix = `meeting-minutes/${conversationId}/${userId}/${meetingId}/recording.`;
-  return path.startsWith(prefix) && /^[a-z0-9]+$/.test(path.slice(prefix.length));
+  return path.startsWith(prefix) && /^[a-z0-9]{1,8}$/.test(path.slice(prefix.length));
 }
