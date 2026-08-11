@@ -62,7 +62,10 @@ test("forwarding and the existing Aria\/Marco bridge preserve voice-note context
   assert.match(migration, /alter table conversation_forwarded_attachments/);
   assert.match(bridge, /metadata\.get\("voice_note"\) is True/);
   assert.match(bridge, /Private voice note/);
-  assert.match(bridge, /Voice note \(/);
+  assert.match(bridge, /"kind": "voice_note" if/);
+  assert.match(bridge, /descriptor\["duration_ms"\]/);
+  assert.match(bridge, /attachment_context_json = bounded_json_data/);
+  assert.match(bridge, /materialize_attachments\(rest, attachments/);
 });
 
 test("no new automatic transcription destination is introduced", () => {
