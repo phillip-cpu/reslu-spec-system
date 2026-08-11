@@ -35,6 +35,7 @@ test("admins can exactly-once rename and add bounded valid people or existing ag
   assert.match(migration, /is_conversation_admin\(p_conversation_id\)/i);
   assert.match(migration, /:group-management/i);
   assert.match(migration, /current_count \+ new_count > 50/i);
+  assert.match(migration, /conversation_agents agent[\s\S]*agent\.auth_profile_id = profile\.id/i);
   assert.match(migration, /on conflict \(conversation_id, profile_id\) where profile_id is not null do nothing/i);
   assert.match(migration, /on conflict \(conversation_id, agent_id\) where agent_id is not null do nothing/i);
   assert.match(groupRoute, /body\.action === "rename"/);
@@ -46,6 +47,7 @@ test("admins can exactly-once rename and add bounded valid people or existing ag
   assert.match(verifier, /add retry did not return its original result/i);
   assert.match(verifier, /rename retry duplicated canonical history/i);
   assert.match(verifier, /successful group actions were not recorded exactly once/i);
+  assert.match(verifier, /agent authentication profile was accepted as a human participant/i);
 });
 
 test("a group always retains a human admin and leaving revokes access atomically", () => {
