@@ -10,6 +10,11 @@ import {
   MAX_CONVERSATION_ATTACHMENTS,
   MAX_CONVERSATION_ATTACHMENT_BYTES,
 } from "@/lib/conversation-attachments";
+import {
+  awaitConversationUploadReady,
+  isRecoverableConversationUploadError,
+  type ConversationUploadProbe,
+} from "@/lib/conversation-upload-recovery";
 import { isFatalSpeechRecognitionError, speechRecognitionErrorMessage } from "@/lib/conversation-voice";
 import {
   listPendingConversationCallEnds,
@@ -42,6 +47,7 @@ import type {
 
 type CallState = "connecting" | "listening" | "thinking" | "speaking" | "interrupted" | "reconnecting";
 const MESSAGE_SEND_TIMEOUT_MS = 20000;
+const ATTACHMENT_FINALIZE_REQUEST_TIMEOUT_MS = 6000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface SpeechResultLike {
@@ -201,6 +207,39 @@ function timeLabel(value: string) {
 function fileSizeLabel(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function probeConversationAttachment(
+  conversationId: string,
+  attachmentId: string
+): Promise<ConversationUploadProbe<ConversationAttachment>> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), ATTACHMENT_FINALIZE_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(`/api/conversations/${conversationId}/attachments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ attachment_id: attachmentId }),
+      signal: controller.signal,
+    });
+    const body = await response.json().catch(() => ({})) as {
+      attachment?: ConversationAttachment;
+      error?: string;
+    };
+    if (response.ok && body.attachment) {
+      return { status: "ready", value: body.attachment };
+    }
+    if (response.status >= 500) return { status: "pending" };
+    return {
+      status: "failed",
+      error: new Error(body.error ?? "Could not finish upload"),
+      recoverable: false,
+    };
+  } catch {
+    return { status: "pending" };
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 function NewConversation({ people, onCreated, onClose }: {
@@ -1187,7 +1226,6 @@ export function ConversationWorkspace() {
   const uploadDraftAttachment = useCallback(async (draft: DraftAttachment) => {
     const { file, conversationId } = draft;
     let stagedAttachmentId: string | null = null;
-    let bytesUploaded = false;
     const discardIfCancelled = async () => {
       if (!cancelledDraftIdsRef.current.has(draft.localId)) return false;
       if (stagedAttachmentId) {
@@ -1220,39 +1258,37 @@ export function ConversationWorkspace() {
       const urlBody = await urlResponse.json();
       if (!urlResponse.ok) throw new Error(urlBody.error ?? "Could not start upload");
       stagedAttachmentId = urlBody.attachment_id;
+      if (typeof stagedAttachmentId !== "string" || !stagedAttachmentId) {
+        throw new Error("Could not start upload");
+      }
+      const activeAttachmentId = stagedAttachmentId;
       commitDraftAttachments((current) => current.map((item) => item.localId === draft.localId
         ? { ...item, stagedAttachmentId }
         : item), conversationId);
       if (await discardIfCancelled()) return;
 
       const supabase = createBrowserClient();
-      const { error: uploadError } = await supabase.storage
+      const upload = supabase.storage
         .from(ASSET_BUCKET)
         .uploadToSignedUrl(urlBody.path, urlBody.token, file, { contentType: draft.mimeType });
-      if (uploadError) throw new Error(uploadError.message);
-      bytesUploaded = true;
-      if (await discardIfCancelled()) return;
-
-      const finalResponse = await fetch(`/api/conversations/${conversationId}/attachments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ attachment_id: stagedAttachmentId }),
+      const readyAttachment = await awaitConversationUploadReady({
+        upload,
+        probe: () => probeConversationAttachment(conversationId, activeAttachmentId),
       });
-      const finalBody = await finalResponse.json();
-      if (!finalResponse.ok) throw new Error(finalBody.error ?? "Could not finish upload");
       if (await discardIfCancelled()) return;
       commitDraftAttachments((current) => current.map((item) => item.localId === draft.localId
         ? {
             ...item,
             status: "ready",
             stagedAttachmentId: null,
-            attachment: finalBody.attachment,
+            attachment: readyAttachment,
             error: null,
           }
         : item), conversationId);
     } catch (reason) {
       if (await discardIfCancelled()) return;
-      if (stagedAttachmentId && !bytesUploaded) {
+      const canRecover = stagedAttachmentId && isRecoverableConversationUploadError(reason);
+      if (stagedAttachmentId && !canRecover) {
         await fetch(
           `/api/conversations/${conversationId}/attachments?attachment_id=${encodeURIComponent(stagedAttachmentId)}`,
           { method: "DELETE" }
@@ -1262,7 +1298,7 @@ export function ConversationWorkspace() {
         ? {
             ...item,
             status: "error",
-            stagedAttachmentId: bytesUploaded ? stagedAttachmentId : null,
+            stagedAttachmentId: canRecover ? stagedAttachmentId : null,
             attachment: null,
             error: reason instanceof Error ? reason.message : "Upload failed",
           }
@@ -1274,27 +1310,12 @@ export function ConversationWorkspace() {
     if (!draft.stagedAttachmentId) return;
     const { conversationId, stagedAttachmentId } = draft;
     try {
-      const response = await fetch(`/api/conversations/${conversationId}/attachments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ attachment_id: stagedAttachmentId }),
+      const attachment = await awaitConversationUploadReady({
+        upload: Promise.resolve({ error: null }),
+        probe: () => probeConversationAttachment(conversationId, stagedAttachmentId),
+        initialProbeDelayMs: 0,
+        maxProbes: 5,
       });
-      const body = await response.json();
-      if (!response.ok) {
-        const retryable = response.status >= 500;
-        commitDraftAttachments((current) => current.map((item) => item.localId === draft.localId
-          ? {
-              ...item,
-              status: "error",
-              stagedAttachmentId: retryable ? stagedAttachmentId : null,
-              error: retryable
-                ? body.error ?? "Could not finish the upload. Try again."
-                : "The interrupted upload could not be recovered. Choose the file again.",
-            }
-          : item), conversationId);
-        return;
-      }
-      const attachment = body.attachment as ConversationAttachment;
       commitDraftAttachments((current) => current.map((item) => item.localId === draft.localId
         ? {
             ...item,
@@ -1305,9 +1326,17 @@ export function ConversationWorkspace() {
             error: null,
           }
         : item), conversationId);
-    } catch {
+    } catch (reason) {
+      const canRecover = isRecoverableConversationUploadError(reason);
       commitDraftAttachments((current) => current.map((item) => item.localId === draft.localId
-        ? { ...item, status: "error", error: "Could not finish the upload. Try again." }
+        ? {
+            ...item,
+            status: "error",
+            stagedAttachmentId: canRecover ? stagedAttachmentId : null,
+            error: canRecover
+              ? reason instanceof Error ? reason.message : "Could not finish the upload. Try again."
+              : "The interrupted upload could not be recovered. Choose the file again.",
+          }
         : item), conversationId);
     }
   }, [commitDraftAttachments]);

@@ -121,6 +121,9 @@ export async function POST(request: NextRequest, context: Context) {
   const body = await request.json().catch(() => null);
   const attachment = await stagedAttachment(supabase, conversationId, user.id, body?.attachment_id);
   if (!attachment) return NextResponse.json({ error: "Attachment not found" }, { status: 404 });
+  if (attachment.status === "ready") {
+    return NextResponse.json({ attachment: attachmentResponse(conversationId, attachment) });
+  }
 
   const inspection = await inspectStorageObjectHead(supabase, ASSET_BUCKET, attachment.storage_path);
   if (!inspection || inspection.byteSize == null) {

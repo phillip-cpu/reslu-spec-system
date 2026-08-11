@@ -13,6 +13,7 @@ const attachmentRoute = read("app/api/conversations/[id]/attachments/route.ts");
 const messageRoute = read("app/api/conversations/[id]/messages/route.ts");
 const workspace = read("components/conversations/ConversationWorkspace.tsx");
 const fileSniff = read("lib/file-sniff.ts");
+const uploadRecovery = read("lib/conversation-upload-recovery.ts");
 
 test("conversation attachments are private member-scoped canonical records", () => {
   assert.match(migration, /create table if not exists conversation_attachments/);
@@ -86,6 +87,15 @@ test("ready and interrupted attachment drafts survive chat switches and reloads"
   assert.match(workspace, /recoverStagedAttachment/);
   assert.match(workspace, /Ready, unbound server rows deliberately survive navigation\/reload/);
   assert.doesNotMatch(workspace, /useEffect\(\(\) => \(\) => \{[\s\S]{0,800}method: "DELETE"/);
+});
+
+test("a hung iPhone signed-upload response cannot block finalisation forever", () => {
+  assert.match(workspace, /awaitConversationUploadReady/);
+  assert.match(workspace, /probeConversationAttachment/);
+  assert.match(attachmentRoute, /attachment\.status === "ready"/);
+  assert.match(uploadRecovery, /Promise\.race\(\[uploadSettled, delay/);
+  assert.match(uploadRecovery, /CONVERSATION_UPLOAD_MAX_PROBES/);
+  assert.match(uploadRecovery, /recoverable/);
 });
 
 test("failed uploads are explicit, retryable and cannot be silently omitted", () => {
