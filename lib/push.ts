@@ -306,14 +306,12 @@ export async function sendPushToAdmins(
 }
 
 /**
- * Item 5's "dedupe: one alert per incident, not per check." Inserts a
- * notifications row (user_id=null, all-admins) + sends the push, but
- * ONLY if there is no existing UNREAD notification of this exact
- * `kind` already open — read_at doubles as the open/closed marker (see
- * migration 053's own notifications table comment). Callers that later
- * observe the underlying condition clear should call
- * resolveOpenIncident(kind) so the NEXT bad transition can fire a
- * fresh alert instead of staying permanently deduped.
+ * Item 5's "dedupe: one alert per incident, not per check." Migration
+ * 101's open_health_incident RPC atomically claims the transition and
+ * inserts the admin notification. Incident state is deliberately
+ * independent from notifications.read_at: the service worker marks a
+ * push read as soon as it displays it, which must not reopen a still-bad
+ * condition on the next ten-minute health check.
  *
  * Used by the silence-checker (GET /api/health/check) and the
  * channel-status route for incident-style conditions that can recur —
@@ -329,25 +327,21 @@ export async function notifyAdminsOnce(
 ): Promise<{ deduped: boolean }> {
   const supabase = createServiceRoleClient();
 
-  const { data: existingOpen } = await supabase
-    .from("notifications")
-    .select("id")
-    .eq("kind", kind)
-    .is("read_at", null)
-    .is("user_id", null)
-    .maybeSingle();
+  const { data: notificationId, error } = await supabase.rpc("open_health_incident", {
+    p_kind: kind,
+    p_title: title,
+    p_body: body,
+    p_link_href: link,
+  });
 
-  if (existingOpen) {
+  if (error) {
+    await reportError("open-health-incident", error);
+    // Failing closed prevents a database error from turning a ten-minute
+    // monitor into a push storm. The error remains visible in system health.
     return { deduped: true };
   }
 
-  await supabase.from("notifications").insert({
-    user_id: null,
-    kind,
-    title,
-    body,
-    link_href: link,
-  });
+  if (!notificationId) return { deduped: true };
 
   await sendPushToAdmins(kind, title, body, link);
 
@@ -355,21 +349,15 @@ export async function notifyAdminsOnce(
 }
 
 /**
- * Marks every open (unread) notification of `kind` as read — the
- * "incident cleared" half of notifyAdminsOnce's dedupe pair. Called by
- * the same routes that fired the incident once they observe the
- * condition has resolved (heartbeat resumed, channel back to ok).
+ * Resolves the independent incident state and marks any undelivered
+ * notification read so a stale alert cannot surface after recovery.
  * Best-effort, never throws.
  */
 export async function resolveOpenIncident(kind: string): Promise<void> {
   try {
     const supabase = createServiceRoleClient();
-    await supabase
-      .from("notifications")
-      .update({ read_at: new Date().toISOString() })
-      .eq("kind", kind)
-      .is("read_at", null)
-      .is("user_id", null);
+    const { error } = await supabase.rpc("resolve_health_incident", { p_kind: kind });
+    if (error) await reportError("resolve-health-incident", error);
   } catch (err) {
     await reportError("resolve-open-incident", err);
   }
