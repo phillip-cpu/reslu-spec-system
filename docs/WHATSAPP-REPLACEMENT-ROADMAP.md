@@ -17,6 +17,11 @@ invitation, notification, access-control and offboarding design.
 
 ## Delivery rules
 
+Live evidence and the remaining physical-device checks are tracked in
+[`WHATSAPP-REPLACEMENT-ACCEPTANCE.md`](./WHATSAPP-REPLACEMENT-ACCEPTANCE.md).
+That matrix is authoritative for stage-gate status; implementation notes below
+describe capability, not acceptance by themselves.
+
 - Work through the stages in order unless an earlier-stage production defect
   requires immediate repair.
 - Do not call a stage complete because its code is merged. Complete its live
