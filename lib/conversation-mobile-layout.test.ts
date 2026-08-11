@@ -16,7 +16,8 @@ test("mobile chat follows the iPhone visual viewport without a desktop minimum h
   assert.match(workspace, /--conversation-vh/);
   assert.match(workspace, /md:min-h-\[560px\]/);
   assert.doesNotMatch(workspace, /(?<!md:)min-h-\[560px\]/);
-  assert.match(messagesPage, /hidden md:block/);
+  assert.doesNotMatch(messagesPage, /<Header/);
+  assert.match(messagesPage, /overflow-hidden md:hidden/);
 });
 
 test("call controls account for notches, browser chrome and the home indicator", () => {

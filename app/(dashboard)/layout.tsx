@@ -5,6 +5,7 @@ import { ScrollMemory } from "@/components/shared/ScrollMemory";
 import { FocusOnLoad } from "@/components/shared/FocusOnLoad";
 import { Suspense } from "react";
 import { financeFoundationEnabled } from "@/lib/finance/feature-flags";
+import { GlobalMessenger } from "@/components/conversations/GlobalMessenger";
 
 /**
  * Dashboard shell (server component). Week 10 adds `isAdmin` here so
@@ -41,6 +42,7 @@ export default async function DashboardLayout({
           its width). This is the "window stretches forever, can't see
           the right-hand buttons" symptom Phillip reported on Timeline. */}
       <div className="min-w-0 flex-1 flex flex-col"><Suspense fallback={null}><ScrollMemory /><FocusOnLoad /></Suspense>{children}</div>
+      <GlobalMessenger />
     </div>
   );
 }
