@@ -40,6 +40,13 @@ create policy "members_read_message_pins"
   for select to authenticated
   using (is_conversation_member(conversation_id));
 
+-- Do not depend on project-level default privileges. Authenticated members
+-- may read through RLS, while every write must cross the bounded RPCs below.
+revoke all on table conversation_message_reactions from public, anon, authenticated;
+revoke all on table conversation_message_pins from public, anon, authenticated;
+grant select on table conversation_message_reactions to authenticated;
+grant select on table conversation_message_pins to authenticated;
+
 create or replace function toggle_conversation_message_reaction(
   p_conversation_id uuid,
   p_message_id uuid,
