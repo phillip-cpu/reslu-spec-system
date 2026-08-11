@@ -9,6 +9,7 @@ declare
   v_task_id uuid := gen_random_uuid();
   v_task agent_tasks;
   v_event_count integer;
+  v_event_id uuid;
   v_artifact_id uuid;
 begin
   if to_regprocedure('public.retry_failed_agent_task(uuid,uuid)') is null then
@@ -120,10 +121,56 @@ begin
       when others then
         if sqlerrm <> 'approved task cannot be retried automatically' then raise; end if;
     end;
+
+    update agent_task_artifacts
+    set status = 'published'
+    where id = v_artifact_id;
+
+    begin
+      perform retry_failed_agent_task(v_conversation_id, v_task_id);
+      raise exception 'FAIL: task with a published artifact was allowed to retry';
+    exception
+      when others then
+        if sqlerrm <> 'approved task cannot be retried automatically' then raise; end if;
+    end;
     delete from agent_task_artifacts where id = v_artifact_id;
 
+    insert into agent_task_events(task_id, event_type, label, metadata)
+    values (
+      v_task_id,
+      'approved',
+      'Synthetic approved event',
+      '{"rollback_verifier":true}'::jsonb
+    ) returning id into v_event_id;
+
+    begin
+      perform retry_failed_agent_task(v_conversation_id, v_task_id);
+      raise exception 'FAIL: task with an approved event was allowed to retry';
+    exception
+      when others then
+        if sqlerrm <> 'approved task cannot be retried automatically' then raise; end if;
+    end;
+    delete from agent_task_events where id = v_event_id;
+
     update agent_tasks
-    set status = 'failed', approval_state = 'none', retry_count = 3, error = 'Synthetic retry exhaustion'
+    set cancellation_requested_at = now(), error = 'Synthetic cancelled failure'
+    where id = v_task_id;
+
+    begin
+      perform retry_failed_agent_task(v_conversation_id, v_task_id);
+      raise exception 'FAIL: cancelled task was allowed to retry';
+    exception
+      when others then
+        if sqlerrm <> 'cancelled task cannot be retried' then raise; end if;
+    end;
+
+    update agent_tasks
+    set
+      status = 'failed',
+      approval_state = 'none',
+      cancellation_requested_at = null,
+      retry_count = 3,
+      error = 'Synthetic retry exhaustion'
     where id = v_task_id;
 
     begin
@@ -138,7 +185,7 @@ begin
   exception
     when sqlstate 'P5099' then
       if sqlerrm <> 'RESLU_VERIFY_111_PASS' then raise; end if;
-      raise notice 'PASS: failed unapproved tasks use bounded distinct attempts; approved actions cannot be replayed; all test changes rolled back';
+      raise notice 'PASS: failed unapproved tasks use bounded distinct attempts; pending, approved, published and cancelled work cannot be replayed; all test changes rolled back';
   end;
 end;
 $verify$;

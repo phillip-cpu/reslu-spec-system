@@ -58,6 +58,9 @@ test("the hosted verifier proves safe replay refusal and rolls back", () => {
   assert.match(verifier, /approved task cannot be retried automatically/);
   assert.match(verifier, /task with pending approval cannot be retried/);
   assert.match(verifier, /task with an approved artifact was allowed to retry/i);
+  assert.match(verifier, /task with a published artifact was allowed to retry/i);
+  assert.match(verifier, /task with an approved event was allowed to retry/i);
+  assert.match(verifier, /cancelled task cannot be retried/i);
   assert.match(verifier, /task retry limit reached/);
   assert.match(verifier, /gateway_run_id is not null/);
   assert.match(verifier, /when sqlstate 'P5099'/);
