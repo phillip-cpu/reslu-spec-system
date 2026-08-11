@@ -514,3 +514,22 @@ body {
     transform: none;
   }
 }
+
+/*
+ * Keep a loaded canonical history searchable and accessible while allowing the
+ * browser to skip layout and paint for message rows far outside the viewport.
+ * `auto` retains the measured block size after first render, so paging older
+ * history does not make the reader's scroll position jump. Browsers without
+ * content-visibility support simply render the complete timeline as before.
+ */
+.conversation-timeline-item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 112px;
+}
+
+/* Active menus and editors may paint outside their row, so lift containment
+ * while one is open instead of clipping the action surface. */
+.conversation-timeline-item-active {
+  content-visibility: visible;
+  contain-intrinsic-size: none;
+}

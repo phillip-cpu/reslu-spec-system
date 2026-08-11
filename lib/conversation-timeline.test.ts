@@ -48,3 +48,17 @@ test("private conversation photos open inside a full-screen accessible viewer", 
   assert.match(workspace, /Open original/);
   assert.match(workspace, /active: Boolean\(mediaViewer\),[\s\S]*containerRef: mediaViewerDialogRef/);
 });
+
+test("long histories skip off-screen layout without hiding canonical messages", () => {
+  const globalStyles = readFileSync(resolve(root, "app/globals.css"), "utf8");
+  const route = readFileSync(resolve(root, "app/api/conversations/[id]/messages/route.ts"), "utf8");
+
+  assert.match(route, /\.limit\(100\)/);
+  assert.match(workspace, /conversation-timeline-item border-y/);
+  assert.match(workspace, /"conversation-timeline-item flex gap-3"/);
+  assert.match(globalStyles, /\.conversation-timeline-item\s*\{[\s\S]*content-visibility:\s*auto/);
+  assert.match(globalStyles, /contain-intrinsic-size:\s*auto 112px/);
+  assert.match(globalStyles, /\.conversation-timeline-item-active\s*\{[\s\S]*content-visibility:\s*visible/);
+  assert.match(workspace, /messageMenuId === message\.id \|\| editingMessageId === message\.id/);
+  assert.doesNotMatch(globalStyles, /content-visibility:\s*hidden/);
+});

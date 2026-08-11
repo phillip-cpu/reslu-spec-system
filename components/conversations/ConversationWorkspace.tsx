@@ -4358,7 +4358,7 @@ export function ConversationWorkspace({
                   if (record) return (
                     <Fragment key={message.id}>
                       {daySeparator}
-                      <div id={`conversation-message-${message.id}`} className="border-y border-[#d4cbbd] py-3 text-center">
+                      <div id={`conversation-message-${message.id}`} className="conversation-timeline-item border-y border-[#d4cbbd] py-3 text-center">
                         <p className="label-caps">{message.kind === "call_record" ? "Call completed" : message.kind === "meeting_record" ? "Meeting completed" : "Group update"}</p>
                         <p className="mt-2 text-caption text-charcoal/60">{message.body}</p>
                         {message.kind === "meeting_record" && typeof message.metadata.meeting_minutes_id === "string" && (
@@ -4380,7 +4380,14 @@ export function ConversationWorkspace({
                   return (
                     <Fragment key={message.id}>
                     {daySeparator}
-                    <div id={`conversation-message-${message.id}`} className={clsx("flex gap-3", own && "flex-row-reverse")}>
+                    <div
+                      id={`conversation-message-${message.id}`}
+                      className={clsx(
+                        "conversation-timeline-item flex gap-3",
+                        own && "flex-row-reverse",
+                        (messageMenuId === message.id || editingMessageId === message.id) && "conversation-timeline-item-active"
+                      )}
+                    >
                       <Avatar participant={message.author} />
                       <div
                         data-message-long-press={message.id}
