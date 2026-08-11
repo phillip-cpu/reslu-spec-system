@@ -75,8 +75,9 @@ function reviewFromMeeting(meeting: ConversationMeetingMinutes): ReviewFields {
   };
 }
 
-function destinationValue(candidate: Pick<MeetingDestinationCandidate, "kind" | "id">) {
-  return `${candidate.kind}:${candidate.id}`;
+function destinationValue(candidate: Pick<MeetingDestinationCandidate, "kind" | "id" | "client_event_id">) {
+  const destination = `${candidate.kind}:${candidate.id}`;
+  return candidate.client_event_id ? `${destination}:event:${candidate.client_event_id}` : destination;
 }
 
 export function MeetingMode({
@@ -125,7 +126,11 @@ export function MeetingMode({
     setMeeting(next);
     if (next.status === "review") setReview(reviewFromMeeting(next));
     if (next.destination_kind && (next.lead_id || next.project_id)) {
-      setSelectedDestination(`${next.destination_kind}:${next.lead_id ?? next.project_id}`);
+      setSelectedDestination(destinationValue({
+        kind: next.destination_kind,
+        id: next.lead_id ?? next.project_id ?? "",
+        client_event_id: next.client_event_id,
+      }));
     }
     setMeetingType(next.meeting_type);
   }, []);
@@ -435,8 +440,7 @@ export function MeetingMode({
 
   async function saveReview() {
     if (!meeting) throw new Error("Draft is not available");
-    const [kind, id] = selectedDestination.split(":");
-    const destination = context?.candidates.find((candidate) => candidate.kind === kind && candidate.id === id) ?? null;
+    const destination = context?.candidates.find((candidate) => destinationValue(candidate) === selectedDestination) ?? null;
     return patchMeeting("save_draft", {
       expected_version: meeting.draft_version,
       meeting_type: meetingType,

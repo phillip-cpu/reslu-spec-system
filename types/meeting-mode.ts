@@ -15,6 +15,7 @@ export interface MeetingDestinationCandidate {
   label: string;
   subtitle: string | null;
   client_event_id: string | null;
+  source_reference: string | null;
   duplicate_filed_minutes_id: string | null;
   confidence: number;
   reasons: string[];

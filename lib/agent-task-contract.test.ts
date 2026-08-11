@@ -54,7 +54,10 @@ test("mobile agent work stays contained and the composer does not trigger iPhone
   assert.match(workspace, /max-w-full flex-1 flex-col overflow-x-hidden/);
   assert.match(workspace, /Show \$\{visibleAgentTasks\.length - 1\} more/);
   assert.match(workspace, /text-\[16px\].*md:text-body/);
-  assert.match(workspace, /function artifactContent/);
+  const artifact = read("lib/agent-task-artifact.ts");
+  assert.match(workspace, /normalizeAgentTaskArtifactContent/);
+  assert.match(artifact, /JSON\.parse\(embedded\)/);
+  assert.match(workspace, /text-\[16px\] leading-\[1\.55\] md:text-\[17px\]/);
   assert.doesNotMatch(workspace, /JSON\.stringify\(content, null, 2\)/);
 });
 
