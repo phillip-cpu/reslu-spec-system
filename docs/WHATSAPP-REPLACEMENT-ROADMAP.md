@@ -223,6 +223,18 @@ also uses high semantic-VAD eagerness and cancels the acknowledgement by its
 own response id so interruption and the authoritative Aria/Marco answer remain
 independent.
 
+Gateway event bridge candidate: migration 100 adds bounded accepted-run and
+progress fields to conversation jobs and durable tasks. The Mac bridge connects
+only to the authenticated loopback Gateway, sends the existing job/task id as
+the run idempotency key, retains the canonical Aria/Marco session key, and
+consumes accepted, lifecycle, safe tool-category, assistant-output and final
+chat events. Member-visible progress stores only labels such as “Checking the
+calendar” and “Drafting the response”; prompts, partial assistant text, tool
+arguments and tool results are excluded. Cancellation targets the exact run.
+The existing CLI remains a fallback only before Gateway acceptance, so an
+accepted turn can never be replayed and duplicate side effects cannot be
+introduced by transport recovery.
+
 Work:
 
 - Publish and validate the end-to-end timing candidate on an iPhone call.
@@ -230,6 +242,8 @@ Work:
 - Stop audible output within 250 ms of genuine interruption.
 - Validate the fixed spoken progress cue and thread working indicator against
   slow attachment and tool turns.
+- Apply migration 100 and its rollback verifier, then deploy and enable the
+  local Gateway event bridge on the Mac.
 - Replace the one-shot `openclaw agent --json` bridge boundary with the local
   authenticated Gateway run/event interface, retaining the same stable session
   identity and authoritative agent. Use its accepted run id and lifecycle/tool
@@ -241,8 +255,8 @@ Work:
 - Test double-talk, throat clears, echo, road noise and ambiguous partial turns.
 - Test speaker, AirPods, car Bluetooth, weak reception and Wi-Fi/mobile handoff.
 - Reconnect without replaying stale audio or duplicating canonical messages.
-- Apply migration 099, run its rollback verifier, deploy the task/caption UI,
-  and restart the Mac bridge so its independent task workers are active.
+- Keep migration 099 and the independent task workers active while the Gateway
+  transport is rolled out behind its explicit feature flag.
 - Prove that a task started by voice completes after the call ends, that a
   draft can be approved from the thread, and that an explicit task cancellation
   does not cancel or corrupt an unrelated conversation turn.

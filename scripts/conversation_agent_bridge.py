@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,8 @@ REALTIME_VOICE_HISTORY_LIMIT = 16
 TASK_HISTORY_LIMIT = 24
 REALTIME_VOICE_THINKING_DEFAULT = "minimal"
 OPENCLAW_SESSION_VERSION_DEFAULT = "v2"
+OPENCLAW_GATEWAY_EVENTS_DEFAULT = False
+OPENCLAW_GATEWAY_RUN_SCRIPT = Path(__file__).with_name("openclaw_gateway_run.mjs")
 OPENCLAW_THINKING_LEVELS = {
     "off",
     "minimal",
@@ -456,6 +459,147 @@ def stop_agent_process(process: subprocess.Popen[str]) -> None:
         process.wait(timeout=AGENT_TERMINATE_GRACE_SECONDS)
 
 
+class GatewayRunError(RuntimeError):
+    """A Gateway failure that records whether OpenClaw accepted the run."""
+
+    def __init__(self, message: str, *, accepted: bool) -> None:
+        super().__init__(message)
+        self.accepted = accepted
+
+
+def openclaw_gateway_events_enabled() -> bool:
+    value = os.environ.get("RESLU_OPENCLAW_GATEWAY_EVENTS_ENABLED")
+    if value is None:
+        return OPENCLAW_GATEWAY_EVENTS_DEFAULT
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def openclaw_progress_label(event: dict) -> str | None:
+    """Turn metadata-only Gateway events into small truthful UI labels."""
+    event_type = event.get("type")
+    if event_type == "accepted":
+        return "Accepted by the agent"
+    if event_type == "assistant_delta":
+        return "Drafting the response"
+    if event_type == "lifecycle":
+        return {
+            "start": "Thinking",
+            "finishing": "Finishing the response",
+        }.get(event.get("phase"))
+    if event_type != "tool" or event.get("phase") not in (None, "start", "started"):
+        return None
+    name = str(event.get("name") or "").lower()
+    if any(token in name for token in ("calendar", "schedule", "event")):
+        return "Checking the calendar"
+    if any(token in name for token in ("gmail", "email", "mail")):
+        return "Working with email"
+    if any(token in name for token in ("browser", "search", "web", "fetch")):
+        return "Researching"
+    if any(token in name for token in ("image", "file", "pdf", "document", "attachment")):
+        return "Reviewing files"
+    if any(token in name for token in ("reslu", "supabase", "project", "lead", "client", "spec")):
+        return "Checking RESLU records"
+    return "Working with RESLU tools"
+
+
+def invoke_agent_via_gateway(
+    *,
+    prompt: str,
+    agent_id: str,
+    session_key: str,
+    idempotency_key: str,
+    timeout_seconds: float,
+    should_continue: Callable[[], bool] | None,
+    thinking_level: str | None = None,
+    model: str | None = None,
+    on_progress: Callable[[dict], None] | None = None,
+) -> str | None:
+    """Run one canonical OpenClaw turn over the local authenticated Gateway."""
+    command = ["node", str(OPENCLAW_GATEWAY_RUN_SCRIPT)]
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        stop_agent_process(process)
+        raise GatewayRunError("Could not open Gateway helper pipes", accepted=False)
+    request = {
+        "message": prompt,
+        "agentId": agent_id,
+        "sessionKey": session_key,
+        "idempotencyKey": idempotency_key,
+        "timeoutSeconds": int(timeout_seconds),
+        "thinking": thinking_level,
+        "model": model,
+    }
+    process.stdin.write(json.dumps(request, ensure_ascii=True))
+    process.stdin.close()
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+    accepted = False
+    reply: str | None = None
+    errors: list[str] = []
+    started_at = time.monotonic()
+    try:
+        while selector.get_map():
+            if should_continue is not None and not should_continue():
+                stop_agent_process(process)
+                return None
+            if time.monotonic() - started_at >= timeout_seconds + 15:
+                raise subprocess.TimeoutExpired(command, timeout_seconds)
+            for key, _ in selector.select(timeout=AGENT_STATUS_CHECK_SECONDS):
+                line = key.fileobj.readline()
+                if line == "":
+                    selector.unregister(key.fileobj)
+                    continue
+                if key.data == "stderr":
+                    if len(errors) < 40:
+                        errors.append(line.strip())
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise GatewayRunError("Gateway helper returned invalid JSON", accepted=accepted) from exc
+                if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+                    raise GatewayRunError("Gateway helper returned an invalid event", accepted=accepted)
+                if event["type"] == "accepted":
+                    accepted = True
+                if on_progress is not None and event["type"] in {
+                    "accepted", "lifecycle", "tool", "assistant_delta"
+                }:
+                    on_progress(event)
+                if event["type"] == "final":
+                    reply = reply_candidate(event.get("reply"), prompt)
+                elif event["type"] in {"fatal", "error", "aborted"}:
+                    raise GatewayRunError(
+                        str(event.get("message") or "OpenClaw Gateway run failed"),
+                        accepted=accepted or bool(event.get("accepted")),
+                    )
+            if process.poll() is not None and not selector.get_map():
+                break
+    except BaseException:
+        stop_agent_process(process)
+        raise
+    finally:
+        selector.close()
+    return_code = process.wait(timeout=AGENT_TERMINATE_GRACE_SECONDS)
+    if return_code != 0:
+        raise GatewayRunError(
+            "\n".join(filter(None, errors))[-2000:] or f"Gateway helper exited {return_code}",
+            accepted=accepted,
+        )
+    if not accepted:
+        raise GatewayRunError("OpenClaw Gateway did not accept the run", accepted=False)
+    if not reply:
+        raise GatewayRunError("OpenClaw Gateway returned no final reply", accepted=True)
+    return reply
+
+
 def invoke_agent(
     agent: dict,
     history: str,
@@ -463,6 +607,8 @@ def invoke_agent(
     attachments: list[dict] | None = None,
     should_continue: Callable[[], bool] | None = None,
     thinking_level: str | None = None,
+    idempotency_key: str | None = None,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> str | None:
     attachment_lines = []
     for attachment in attachments or []:
@@ -488,6 +634,26 @@ def invoke_agent(
         f"{history}\n"
         "END_UNTRUSTED_CONVERSATION_HISTORY"
     )
+    if openclaw_gateway_events_enabled():
+        try:
+            return invoke_agent_via_gateway(
+                prompt=prompt,
+                agent_id=openclaw_agent_id(agent["slug"]),
+                session_key=openclaw_session_key(conversation_id),
+                idempotency_key=idempotency_key or f"reslu-conversation-{time.time_ns()}",
+                timeout_seconds=AGENT_PROCESS_TIMEOUT_SECONDS,
+                should_continue=should_continue,
+                thinking_level=thinking_level,
+                on_progress=on_progress,
+            )
+        except GatewayRunError as exc:
+            if exc.accepted:
+                raise
+            print(
+                f"[conversation-bridge] Gateway unavailable before acceptance; using CLI fallback: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
     command = [
         "openclaw", "agent", "--agent", openclaw_agent_id(agent["slug"]),
         "--session-key", openclaw_session_key(conversation_id),
@@ -581,6 +747,7 @@ def invoke_task_agent(
     history: str,
     artifacts: list[dict],
     should_continue: Callable[[], bool],
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict | None:
     approval_granted = task.get("approval_state") == "approved"
     prompt = (
@@ -601,12 +768,34 @@ def invoke_task_agent(
         f"EXISTING_ARTIFACTS\n{json.dumps(artifacts, ensure_ascii=True)[:30000]}\nEND_EXISTING_ARTIFACTS\n\n"
         f"RECENT_UNTRUSTED_CONVERSATION_CONTEXT\n{history}\nEND_RECENT_UNTRUSTED_CONVERSATION_CONTEXT"
     )
+    model = task_model_override(task["model_tier"])
+    if openclaw_gateway_events_enabled():
+        try:
+            reply = invoke_agent_via_gateway(
+                prompt=prompt,
+                agent_id=openclaw_agent_id(agent["slug"]),
+                session_key=openclaw_task_session_key(task["id"]),
+                idempotency_key=f"reslu-task-{task['id']}",
+                timeout_seconds=TASK_PROCESS_TIMEOUT_SECONDS,
+                should_continue=should_continue,
+                thinking_level=task_thinking_level(task["model_tier"]),
+                model=model,
+                on_progress=on_progress,
+            )
+            return None if reply is None else parse_task_result(reply, task)
+        except GatewayRunError as exc:
+            if exc.accepted:
+                raise
+            print(
+                f"[agent-task] Gateway unavailable before acceptance; using CLI fallback: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
     command = [
         "openclaw", "agent", "--agent", openclaw_agent_id(agent["slug"]),
         "--session-key", openclaw_task_session_key(task["id"]),
         "--thinking", task_thinking_level(task["model_tier"]),
     ]
-    model = task_model_override(task["model_tier"])
     if model:
         command.extend(["--model", model])
     command.extend(["--message", prompt, "--timeout", "840", "--json"])
@@ -684,6 +873,50 @@ def insert_task_event(rest: SupabaseRest, task_id: str, event_type: str, label: 
     )
 
 
+def gateway_progress_reporter(
+    rest: SupabaseRest,
+    table: str,
+    row_id: str,
+    *,
+    task_id: str | None = None,
+) -> Callable[[dict], None]:
+    """Persist bounded metadata-only progress without storing tool arguments."""
+    state: dict[str, str | None] = {"label": None, "run_id": None}
+
+    def report(event: dict) -> None:
+        label = openclaw_progress_label(event)
+        run_id = event.get("run_id") if event.get("type") == "accepted" else None
+        safe_run_id = str(run_id)[:160] if isinstance(run_id, str) and run_id else None
+        if safe_run_id:
+            # Retain this in memory even if one progress PATCH has a transient
+            # network failure; the next safe event retries the run-id write.
+            state["run_id"] = safe_run_id
+        if label == state["label"] and (safe_run_id is None or safe_run_id == state["run_id"]):
+            return
+        values: dict[str, object] = {
+            "progress_updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if label:
+            values["progress_label"] = label[:240]
+        if state["run_id"]:
+            values["gateway_run_id"] = state["run_id"]
+        try:
+            rest.patch(table, row_id, values)
+            if task_id and label and label != state["label"]:
+                insert_task_event(rest, task_id, "progress", label)
+        except Exception as exc:  # noqa: BLE001 - progress must not cancel canonical agent work
+            print(
+                f"[openclaw-gateway] could not persist progress for {table} {row_id}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return
+        if label:
+            state["label"] = label
+
+    return report
+
+
 def task_artifacts(rest: SupabaseRest, task_id: str) -> list[dict]:
     return rest.rows(
         "agent_task_artifacts",
@@ -719,12 +952,19 @@ def process_task(rest: SupabaseRest, task: dict) -> str:
     if not task_should_continue(rest, task["id"]):
         return "cancelled"
     insert_task_event(rest, task["id"], "started", f"{agent['display_name']} started working")
+    report_progress = gateway_progress_reporter(
+        rest,
+        "agent_tasks",
+        task["id"],
+        task_id=task["id"],
+    )
     result = invoke_task_agent(
         agent,
         task,
         history,
         artifacts,
         should_continue=lambda: task_should_continue(rest, task["id"]),
+        on_progress=report_progress,
     )
     if result is None or not task_should_continue(rest, task["id"]):
         rest.patch("agent_tasks", task["id"], {
@@ -948,6 +1188,7 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
         materialized = materialize_attachments(rest, attachments, Path(temporary_directory))
         if not job_is_processing(rest, job["id"]):
             return "cancelled"
+        report_progress = gateway_progress_reporter(rest, "agent_conversation_jobs", job["id"])
         reply = invoke_agent(
             agent,
             history,
@@ -955,6 +1196,8 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
             materialized,
             should_continue=lambda: job_should_continue(rest, job["id"]),
             thinking_level=realtime_voice_thinking_level() if is_realtime_voice else None,
+            idempotency_key=job["id"],
+            on_progress=report_progress,
         )
     if reply is None:
         return "cancelled"
