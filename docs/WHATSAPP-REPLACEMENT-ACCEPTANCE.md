@@ -20,8 +20,8 @@ build or plausible production row is not by itself a passed product gate.
 | Stage | Status | Direct evidence | Evidence still required |
 | --- | --- | --- | --- |
 | 1. Photo and PDF messaging | **PARTIAL** | A clean production JPEG and PDF each uploaded once, became `ready`, bound to one canonical message and produced one completed agent job. The actual files were inspected independently and Aria described both accurately. | From the same Aria thread on iPhone, ask one explicit follow-up about each file and verify the answer uses the prior attachment without re-upload. Exercise camera capture, library selection, PDF selection, retry, chat switching and signed-link recovery. |
-| 2. Trustworthy everyday messaging | **PARTIAL** | Migrations 093-098 and matching verifiers were applied successfully; exactly-once, drafts, unread, push, preferences, search and quoted-reply paths have focused automated coverage. | Complete the two-device online/offline/reconnect matrix, receive a real lock-screen message notification, open its exact unread message, and restore text plus attachment drafts in their original conversations. |
-| 3. Natural low-latency voice | **PARTIAL** | Latest driving call acknowledged in 904 ms, began its short spoken result in 3,499 ms and started a Gateway-backed durable task that continued after hang-up. | Deploy the interruption metric patch, then prove output clears within 250 ms after genuine barge-in. Complete the full contextual-question, interruption, subject-change, cross-agent consultation and voice-ended call gate without stale audio or duplicate canonical output. |
+| 2. Trustworthy everyday messaging | **PARTIAL** | Migrations 093-098 and matching verifiers were applied successfully; exactly-once, drafts, unread, push, preferences, search and quoted-reply paths have focused automated coverage. A production audit found seven successful push sends and no failed job among the latest 27 deliveries. | Subscribe a second device, then complete the two-device online/offline/reconnect matrix, receive a real lock-screen message notification, open its exact unread message, and restore text plus attachment drafts in their original conversations. |
+| 3. Natural low-latency voice | **PARTIAL** | Latest driving call acknowledged in 904 ms, began its short spoken result in 3,499 ms and started a Gateway-backed durable task that continued after hang-up. The authoritative interruption-buffer metric is now deployed. | Run a fresh iPhone call and prove output clears within 250 ms after genuine barge-in. Complete the full contextual-question, interruption, subject-change, cross-agent consultation and voice-ended call gate without stale audio or duplicate canonical output. |
 | 4. Native-feeling mobile and persistent desktop chat | **PARTIAL** | Persistent desktop messenger and mini-player are merged on `main`; mobile has a sticky call action and newest-message layout. | In an authenticated production desktop session, keep one typed turn and one call alive while navigating project, lead and office routes. On iPhone, prove newest message and call action are reachable without scrolling history. |
 | 5. iPhone background and in-car continuity | **PENDING** | Native shell candidate exists as draft PR #47. Browser foreground recovery is already delivered. | Install/activate Xcode, compile the native target and pass a physical-device call across screen lock, audio-route change and Wi-Fi/mobile handoff. |
 | 6. Meeting Mode and intelligent filing | **PENDING** | Staged Meeting Mode implementation is committed locally with migration 103, silent capture, checkpointing, review, explicit filing and audit safeguards; automated checks pass. | Publish and review the PR, apply migration 103 and its verifier, update/restart the Mac MCP runtime, then pass one lead consultation, one active-project meeting and one ambiguous-destination meeting. |
@@ -55,6 +55,23 @@ build or plausible production row is not by itself a passed product gate.
 
 The next user message after the PDF was only `Hello`, so it cannot prove the
 required attachment-context follow-up. Stage 1 therefore remains partial.
+
+## Stage 2 evidence: 12 August 2026 production audit
+
+- One push subscription exists for Phillip's profile, so a two-device test is
+  not currently possible.
+- The latest 27 conversation push jobs contain seven `sent` deliveries and 20
+  `skipped` deliveries, with no pending or failed job.
+- Every skipped job had the explicit reason `Notification was already read`,
+  which is the intended suppression when RESLU is already open and has consumed
+  the private notification.
+- Successful jobs completed in one attempt. The newest successful delivery was
+  claimed about one second after enqueue and completed about one second later.
+
+This proves the durable delivery worker can reach the currently subscribed
+device. It does not prove a lock-screen tap opens the exact unread message, and
+it cannot prove two-device unread/reconnect agreement until another device is
+subscribed.
 
 ## Stage 3 evidence: 11 August 2026 production trace
 
