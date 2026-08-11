@@ -26,6 +26,10 @@ import {
 } from "@/lib/conversation-call-outbox";
 import type { RealtimeVoiceLatencyMetric, RealtimeVoiceOutcome } from "@/lib/realtime-voice-metrics";
 import {
+  parseRealtimeConsultArguments,
+  parseRealtimeTaskArguments,
+} from "@/lib/realtime-tool-arguments";
+import {
   MAX_REALTIME_RECONNECT_ATTEMPTS,
   mediaStreamCanResume,
   realtimeReconnectDelay,
@@ -290,6 +294,7 @@ function AgentTaskCard({
   dark?: boolean;
   onAction: (taskId: string, action: "cancel" | "approve" | "reject", artifactId?: string) => void;
 }) {
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
   const latestEvent = task.events.at(-1);
   const active = task.status === "queued" || task.status === "running";
   return (
@@ -304,15 +309,39 @@ function AgentTaskCard({
           </p>
           <h3 className="mt-1 break-words text-[17px] font-semibold leading-snug md:text-[18px]">{task.title}</h3>
         </div>
-        {active && (
+        {active && !confirmingCancel && (
           <button
             type="button"
-            onClick={() => onAction(task.id, "cancel")}
+            onClick={() => setConfirmingCancel(true)}
             disabled={Boolean(task.cancellation_requested_at)}
             className={clsx("shrink-0 rounded-full px-3 py-2 text-caption font-semibold", dark ? "bg-white/10 text-white/70" : "bg-[#eee8de] text-charcoal/70")}
           >
             {task.cancellation_requested_at ? "Stopping…" : "Cancel"}
           </button>
+        )}
+        {active && confirmingCancel && !task.cancellation_requested_at && (
+          <div className="flex shrink-0 flex-col items-end gap-1" role="group" aria-label={`Confirm stopping ${task.title}`}>
+            <span className={clsx("text-[11px] font-semibold", dark ? "text-white/65" : "text-charcoal/65")}>Stop this task?</span>
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => setConfirmingCancel(false)}
+                className={clsx("rounded-full px-3 py-2 text-caption font-semibold", dark ? "bg-white/10 text-white" : "bg-[#eee8de] text-charcoal")}
+              >
+                Keep working
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmingCancel(false);
+                  onAction(task.id, "cancel");
+                }}
+                className="rounded-full bg-red-700 px-3 py-2 text-caption font-semibold text-white"
+              >
+                Stop task
+              </button>
+            </div>
+          </div>
         )}
       </div>
       {!compact && <p className={clsx("mt-2 line-clamp-4 text-[15px] leading-relaxed", dark ? "text-white/70" : "text-charcoal/70")}>{task.objective}</p>}
@@ -2106,21 +2135,24 @@ export function ConversationWorkspace() {
     activeRealtimeProgressCueRef.current = null;
   }, [sendRealtimeEvent]);
 
-  const runRealtimeConsult = useCallback(async (toolCallId: string, responseId: string | null, argumentsJson: string) => {
+  const runRealtimeConsult = useCallback(async (
+    toolCallId: string,
+    responseId: string | null,
+    argumentsJson: string,
+    deferInvalidArguments = false,
+  ) => {
     if (!selectedId || !callAgent?.agent_slug || !callIdRef.current || handledToolCallIdsRef.current.has(toolCallId)) return;
+    const parsedArguments = parseRealtimeConsultArguments(argumentsJson);
+    if (!parsedArguments && deferInvalidArguments) return;
     handledToolCallIdsRef.current.add(toolCallId);
     const timing = beginRealtimeTurnTiming(toolCallId);
-    let query = "";
-    try {
-      const parsed = JSON.parse(argumentsJson) as { query?: unknown };
-      query = typeof parsed.query === "string" ? parsed.query.trim() : "";
-    } catch { /* handled below */ }
-    if (!query) {
+    if (!parsedArguments) {
       timing.outcome = "failed";
       setCallError("I couldn’t understand that turn. Please say it again.");
       setCallState("listening");
       return;
     }
+    const { query } = parsedArguments;
 
     // A completed newer utterance is the point at which the prior consult is
     // genuinely superseded. Abort its local poll and cancel that exact job;
@@ -2230,20 +2262,24 @@ export function ConversationWorkspace() {
     }
   }, [beginRealtimeTurnTiming, callAgent, cancelActiveRealtimeConsult, loadMessages, selectedId, sendRealtimeEvent, stopRealtimeProgressCue]);
 
-  const runRealtimeTask = useCallback(async (toolCallId: string, responseId: string | null, argumentsJson: string) => {
+  const runRealtimeTask = useCallback(async (
+    toolCallId: string,
+    responseId: string | null,
+    argumentsJson: string,
+    deferInvalidArguments = false,
+  ) => {
     if (!selectedId || !callAgent?.agent_slug || !callIdRef.current || handledToolCallIdsRef.current.has(toolCallId)) return;
+    const parsedArguments = parseRealtimeTaskArguments(argumentsJson);
+    if (!parsedArguments && deferInvalidArguments) return;
     handledToolCallIdsRef.current.add(toolCallId);
     const timing = beginRealtimeTurnTiming(toolCallId);
-    let input: { title?: string; objective?: string; model_tier?: "fast" | "standard" | "strong" } = {};
-    try { input = JSON.parse(argumentsJson) as typeof input; } catch { /* handled below */ }
-    const title = input.title?.trim();
-    const objective = input.objective?.trim();
-    if (!title || !objective) {
+    if (!parsedArguments) {
       timing.outcome = "failed";
       setCallError("I couldn’t create that task. Please state the outcome you want.");
       setCallState("listening");
       return;
     }
+    const { title, objective, modelTier } = parsedArguments;
     if (activeRealtimeConsultRef.current) cancelActiveRealtimeConsult();
     setCallState("thinking");
     try {
@@ -2253,7 +2289,7 @@ export function ConversationWorkspace() {
         body: JSON.stringify({
           title,
           objective,
-          model_tier: input.model_tier ?? "standard",
+          model_tier: modelTier,
           agent_slug: callAgent.agent_slug,
           call_id: callIdRef.current,
           tool_call_id: toolCallId,
@@ -2429,11 +2465,11 @@ export function ConversationWorkspace() {
       return;
     }
     if (event.type === "response.function_call_arguments.done" && event.call_id && event.name === "consult_reslu_agent") {
-      void runRealtimeConsult(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}");
+      void runRealtimeConsult(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}", true);
       return;
     }
     if (event.type === "response.function_call_arguments.done" && event.call_id && event.name === "start_reslu_task") {
-      void runRealtimeTask(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}");
+      void runRealtimeTask(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}", true);
       return;
     }
     if (event.type === "response.done" && event.response) {

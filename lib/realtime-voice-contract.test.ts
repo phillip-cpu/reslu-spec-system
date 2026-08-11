@@ -72,3 +72,11 @@ test("foreground recovery reuses the canonical call without replaying its start 
   assert.match(workspace, /window\.addEventListener\("online", resumeRealtimeCall\)/);
   assert.match(workspace, />\s*Reconnect\s*<\/button>/);
 });
+
+test("partial provider tool arguments wait for response.done fallback", () => {
+  assert.match(workspace, /parseRealtimeConsultArguments\(argumentsJson\)/);
+  assert.match(workspace, /parseRealtimeTaskArguments\(argumentsJson\)/);
+  assert.match(workspace, /if \(!parsedArguments && deferInvalidArguments\) return/);
+  assert.match(workspace, /response\.function_call_arguments\.done[\s\S]*runRealtimeConsult\([^\n]+, true\)/);
+  assert.match(workspace, /response\.function_call_arguments\.done[\s\S]*runRealtimeTask\([^\n]+, true\)/);
+});
