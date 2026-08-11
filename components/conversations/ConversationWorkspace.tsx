@@ -15,6 +15,7 @@ import {
   isRecoverableConversationUploadError,
   type ConversationUploadProbe,
 } from "@/lib/conversation-upload-recovery";
+import { prepareConversationImageForUpload } from "@/lib/conversation-image-upload";
 import { isFatalSpeechRecognitionError, speechRecognitionErrorMessage } from "@/lib/conversation-voice";
 import {
   listPendingConversationCallEnds,
@@ -166,7 +167,7 @@ interface DraftAttachment {
   mimeType: string;
   byteSize: number;
   previewUrl: string | null;
-  status: "uploading" | "ready" | "error";
+  status: "preparing" | "uploading" | "ready" | "error";
   stagedAttachmentId: string | null;
   attachment: ConversationAttachment | null;
   error: string | null;
@@ -467,7 +468,9 @@ export function ConversationWorkspace() {
     ].some((value) => value?.toLowerCase().includes(term)));
   }, [conversationFilter, draftsByConversation, visibleConversations]);
   const draft = selectedId ? draftsByConversation[selectedId] ?? "" : "";
-  const attachmentUploadInProgress = draftAttachments.some((item) => item.status === "uploading");
+  const attachmentUploadInProgress = draftAttachments.some((item) => (
+    item.status === "preparing" || item.status === "uploading"
+  ));
   const attachmentUploadFailed = draftAttachments.some((item) => item.status === "error");
   const composerBusy = sending || attachmentUploadInProgress;
   const callAgent = participants.find((participant) => participant.type === "agent") ?? null;
@@ -1048,7 +1051,9 @@ export function ConversationWorkspace() {
   const removeDraftAttachment = useCallback((localId: string) => {
     const draft = draftAttachmentsRef.current.find((item) => item.localId === localId);
     if (!draft) return;
-    if (draft.status === "uploading") cancelledDraftIdsRef.current.add(localId);
+    if (draft.status === "preparing" || draft.status === "uploading") {
+      cancelledDraftIdsRef.current.add(localId);
+    }
     if (draft.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(draft.previewUrl);
     commitDraftAttachments(
       (current) => current.filter((item) => item.localId !== localId),
@@ -1443,7 +1448,7 @@ export function ConversationWorkspace() {
         mimeType,
         byteSize: file.size,
         previewUrl: mimeType.startsWith("image/") ? URL.createObjectURL(file) : null,
-        status: "uploading",
+        status: "preparing",
         stagedAttachmentId: null,
         attachment: null,
         error: null,
@@ -1451,7 +1456,22 @@ export function ConversationWorkspace() {
     });
     commitDraftAttachments((current) => [...current, ...drafts], conversationId);
     setAttachmentMenuOpen(false);
-    await Promise.all(drafts.map(uploadDraftAttachment));
+    const uploads: Promise<void>[] = [];
+    for (const draft of drafts) {
+      if (!draft.file) continue;
+      const preparedFile = await prepareConversationImageForUpload(draft.file);
+      const preparedDraft: DraftAttachment = {
+        ...draft,
+        file: preparedFile,
+        byteSize: preparedFile.size,
+        status: "uploading",
+      };
+      commitDraftAttachments((current) => current.map((item) => item.localId === draft.localId
+        ? { ...item, file: preparedFile, byteSize: preparedFile.size, status: "uploading" }
+        : item), conversationId);
+      uploads.push(uploadDraftAttachment(preparedDraft));
+    }
+    await Promise.all(uploads);
   }, [commitDraftAttachments, selectedId, uploadDraftAttachment]);
 
   const sendMessage = useCallback(async (
@@ -2769,7 +2789,13 @@ export function ConversationWorkspace() {
                         <div className="min-w-0 flex-1 pr-4">
                           <span className="block truncate text-caption font-semibold text-nearblack">{item.filename}</span>
                           <span className={clsx("mt-1 block truncate text-[10px]", item.status === "error" ? "text-red-700" : "text-charcoal/50")}>
-                            {item.status === "uploading" ? "Uploading…" : item.status === "error" ? item.error : fileSizeLabel(item.byteSize)}
+                            {item.status === "preparing"
+                              ? "Preparing…"
+                              : item.status === "uploading"
+                                ? "Uploading…"
+                                : item.status === "error"
+                                  ? item.error
+                                  : fileSizeLabel(item.byteSize)}
                           </span>
                           {item.status === "error" && (item.file || item.stagedAttachmentId) && (
                             <button
@@ -2784,7 +2810,9 @@ export function ConversationWorkspace() {
                         <button
                           type="button"
                           onClick={() => removeDraftAttachment(item.localId)}
-                          aria-label={item.status === "uploading" ? `Cancel upload of ${item.filename}` : `Remove ${item.filename}`}
+                          aria-label={item.status === "preparing" || item.status === "uploading"
+                            ? `Cancel upload of ${item.filename}`
+                            : `Remove ${item.filename}`}
                           className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-nearblack text-[11px] text-white"
                         >
                           ×
