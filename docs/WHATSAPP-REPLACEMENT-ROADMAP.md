@@ -141,6 +141,14 @@ cancels only that agent's unfinished work in the group. Every mutation leaves a
 canonical system record. The add-member UI explicitly says that RESLU team
 members receive the existing business history rather than silently applying
 WhatsApp's consumer-history assumptions.
+Migration 109 adds private voice notes without creating a second messaging
+system. iPhone Safari records MP4 audio and supported desktop browsers record
+WebM; the server verifies the actual container bytes, five-minute duration and
+10 MB size before the ordinary exact-once message outbox can bind the file.
+Authenticated range playback, forwarding and the existing private Aria/Marco
+attachment materialisation path all reuse the canonical conversation. Automatic
+third-party transcription is deliberately excluded until Phillip explicitly
+approves the provider, retention and disclosure wording.
 The same exact-once boundary now covers conversation creation, call start and
 call end: device intent ids recover a lost start response, and an ended call is
 retained locally until the single canonical same-thread call record is
@@ -171,9 +179,10 @@ Rollout order for this slice:
    `105_conversation_message_edit_delete.sql`, then
    `106_conversation_message_reactions_pins.sql`, then
    `107_conversation_message_forwarding.sql`, then
-   `108_conversation_group_management.sql`, to Supabase.
+   `108_conversation_group_management.sql`, then
+   `109_conversation_voice_notes.sql`, to Supabase.
 2. Run the matching rollback-only fixtures for migrations 093 through 098 and
-   migrations 104 through 108 in the SQL Editor. Every fixture must report PASS
+   migrations 104 through 109 in the SQL Editor. Every fixture must report PASS
    and leave no test data.
 3. Deploy the matching application release, pull it on the Mac and restart the
    conversation bridge so its independent push worker is active.
@@ -198,7 +207,8 @@ Work:
 - Reply/quote, copy, edit markers and recoverable delete.
 - Forward text and private attachments exactly once to up to ten chats.
 - Shared group names, human admins, safe participant management and reliable mentions.
-- Voice notes and expanded safe file types after the photo/PDF slice is proven.
+- Private record/cancel/send/play/forward voice notes, with optional automatic
+  transcription held behind a separate informed approval.
 - Pagination, virtualised long history and message/file search.
 
 Stage gate:

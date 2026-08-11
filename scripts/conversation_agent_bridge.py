@@ -323,9 +323,9 @@ def conversation_history(
         "profile:profiles!conversation_messages_author_profile_id_fkey(full_name),"
         "agent:conversation_agents!conversation_messages_author_agent_id_fkey(display_name),"
         "attachments:conversation_attachments("
-        "id,message_id,filename,mime_type,byte_size,status,created_at),"
+        "id,message_id,filename,mime_type,byte_size,status,metadata,created_at),"
         "forwarded_attachments:conversation_forwarded_attachments("
-        "id,message_id,filename,mime_type,byte_size,created_at)"
+        "id,message_id,filename,mime_type,byte_size,metadata,created_at)"
     )
     messages = rest.rows(
         "conversation_messages",
@@ -391,10 +391,18 @@ def conversation_history(
             lines.append("  [Forwarded message]")
         lines.append(f"[{row['created_at']}] {author}: {row['body']}")
         for attachment in attachments_by_message.get(row["id"], []):
-            lines.append(
-                f"  [Private attachment: {attachment['filename']} | "
-                f"{attachment['mime_type']} | {attachment['byte_size']} bytes]"
-            )
+            metadata = attachment.get("metadata")
+            if isinstance(metadata, dict) and metadata.get("voice_note") is True:
+                duration_ms = int(metadata.get("duration_ms") or 0)
+                lines.append(
+                    f"  [Private voice note: {duration_ms / 1000:.1f}s | "
+                    f"{attachment['mime_type']} | {attachment['byte_size']} bytes]"
+                )
+            else:
+                lines.append(
+                    f"  [Private attachment: {attachment['filename']} | "
+                    f"{attachment['mime_type']} | {attachment['byte_size']} bytes]"
+                )
     return "\n".join(lines)
 
 
@@ -431,9 +439,9 @@ def triggering_message_context(
             "select": (
                 "id,metadata,"
                 "attachments:conversation_attachments("
-                "id,filename,mime_type,byte_size,storage_path,status,created_at),"
+                "id,filename,mime_type,byte_size,storage_path,status,metadata,created_at),"
                 "forwarded_attachments:conversation_forwarded_attachments("
-                "id,filename,mime_type,byte_size,storage_path,created_at)"
+                "id,filename,mime_type,byte_size,storage_path,metadata,created_at)"
             ),
             "id": f"eq.{message_id}",
             "conversation_id": f"eq.{conversation_id}",
@@ -722,10 +730,18 @@ def invoke_agent(
 ) -> str | None:
     attachment_lines = []
     for attachment in attachments or []:
-        attachment_lines.append(
-            f"- {attachment['filename']} ({attachment['mime_type']}, {attachment['byte_size']} bytes): "
-            f"{attachment['local_path']}"
-        )
+        metadata = attachment.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("voice_note") is True:
+            duration_ms = int(metadata.get("duration_ms") or 0)
+            attachment_lines.append(
+                f"- Voice note ({duration_ms / 1000:.1f}s, {attachment['mime_type']}, "
+                f"{attachment['byte_size']} bytes): {attachment['local_path']}"
+            )
+        else:
+            attachment_lines.append(
+                f"- {attachment['filename']} ({attachment['mime_type']}, {attachment['byte_size']} bytes): "
+                f"{attachment['local_path']}"
+            )
     attachment_context = "\n".join(attachment_lines) or "(none)"
     prompt = (
         "[RESLU conversation]\n"

@@ -9,6 +9,12 @@ import {
   isConversationAttachmentSize,
 } from "@/lib/conversation-attachments";
 import { inspectStorageObjectHead, sniffFileKind } from "@/lib/file-sniff";
+import {
+  isConversationVoiceNoteDuration,
+  isConversationVoiceNoteMime,
+  MAX_CONVERSATION_VOICE_NOTE_BYTES,
+  voiceNoteMetadata,
+} from "@/lib/conversation-voice-note";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import type { ConversationAttachment } from "@/types/conversations";
@@ -22,6 +28,8 @@ const EXPECTED_KIND: Record<ConversationAttachment["mime_type"], string> = {
   "image/png": "png",
   "image/webp": "webp",
   "application/pdf": "pdf",
+  "audio/mp4": "mp4",
+  "audio/webm": "webm",
 };
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 type ForwardedAttachmentRow = {
@@ -166,12 +174,16 @@ export async function GET(request: NextRequest, context: Context) {
     if (error || !signed?.signedUrl) {
       return NextResponse.json({ error: "Could not open attachment" }, { status: 503 });
     }
-    const storedObject = await fetch(signed.signedUrl, { cache: "no-store" }).catch(() => null);
+    const requestedRange = request.headers.get("range");
+    const storedObject = await fetch(signed.signedUrl, {
+      cache: "no-store",
+      headers: requestedRange ? { Range: requestedRange } : undefined,
+    }).catch(() => null);
     if (!storedObject?.ok || !storedObject.body) {
       return NextResponse.json({ error: "Could not open attachment" }, { status: 503 });
     }
     const response = new NextResponse(storedObject.body, {
-      status: 200,
+      status: storedObject.status === 206 ? 206 : 200,
       headers: {
         "Content-Type": forwarded.mime_type,
         "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(forwarded.filename)}`,
@@ -179,6 +191,10 @@ export async function GET(request: NextRequest, context: Context) {
     });
     const contentLength = storedObject.headers.get("content-length");
     if (contentLength) response.headers.set("Content-Length", contentLength);
+    const contentRange = storedObject.headers.get("content-range");
+    if (contentRange) response.headers.set("Content-Range", contentRange);
+    const acceptRanges = storedObject.headers.get("accept-ranges");
+    if (acceptRanges) response.headers.set("Accept-Ranges", acceptRanges);
     response.headers.set("Cache-Control", "private, no-store");
     return response;
   }
@@ -224,10 +240,23 @@ export async function POST(request: NextRequest, context: Context) {
     const filename = cleanConversationAttachmentFilename(file.name);
     if (!filename) return NextResponse.json({ error: "Choose a file with a valid name" }, { status: 400 });
     if (!isConversationAttachmentMime(file.type)) {
-      return NextResponse.json({ error: "Choose a JPEG, PNG, WebP or PDF file" }, { status: 400 });
+      return NextResponse.json({ error: "Choose a JPEG, PNG, WebP, PDF or supported voice-note file" }, { status: 400 });
     }
     if (!isConversationAttachmentSize(file.size) || file.size > CONVERSATION_DIRECT_UPLOAD_MAX_BYTES) {
       return NextResponse.json({ error: "This file must use the large-file uploader" }, { status: 413 });
+    }
+
+    const voiceNote = isConversationVoiceNoteMime(file.type);
+    const rawDuration = form?.get("duration_ms");
+    const durationMs = typeof rawDuration === "string" ? Number(rawDuration) : null;
+    if (voiceNote && (form?.get("voice_note") !== "true" || !isConversationVoiceNoteDuration(durationMs))) {
+      return NextResponse.json({ error: "Voice-note duration is invalid" }, { status: 400 });
+    }
+    if (voiceNote && file.size > MAX_CONVERSATION_VOICE_NOTE_BYTES) {
+      return NextResponse.json({ error: "Voice notes must be no larger than 10 MB" }, { status: 400 });
+    }
+    if (!voiceNote && (form?.has("voice_note") || form?.has("duration_ms"))) {
+      return NextResponse.json({ error: "Voice-note metadata does not match this file" }, { status: 400 });
     }
 
     const existing = await stagedAttachment(supabase, conversationId, user.id, requestedAttachmentId);
@@ -266,6 +295,7 @@ export async function POST(request: NextRequest, context: Context) {
       filename,
       mime_type: file.type,
       byte_size: file.size,
+      metadata: voiceNote ? voiceNoteMetadata(durationMs as number) : {},
     });
     if (rowError) {
       const raced = await stagedAttachment(supabase, conversationId, user.id, attachmentId);

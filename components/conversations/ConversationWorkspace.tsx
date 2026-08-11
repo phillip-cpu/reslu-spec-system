@@ -53,6 +53,14 @@ import {
 } from "@/lib/conversation-outbox";
 import { ASSET_BUCKET } from "@/lib/storage";
 import { createClient as createBrowserClient } from "@/lib/supabase/client";
+import {
+  isConversationVoiceNoteDuration,
+  isConversationVoiceNoteMime,
+  isVoiceNoteMetadata,
+  MAX_CONVERSATION_VOICE_NOTE_DURATION_MS,
+  voiceNoteDurationLabel,
+  voiceNoteExtension,
+} from "@/lib/conversation-voice-note";
 import type {
   AgentSlug,
   AgentTask,
@@ -215,6 +223,7 @@ interface DraftAttachment {
   stagedAttachmentId: string | null;
   attachment: ConversationAttachment | null;
   error: string | null;
+  voiceNoteDurationMs: number | null;
 }
 
 interface ConversationTimelineItem {
@@ -252,6 +261,157 @@ function timeLabel(value: string) {
 function fileSizeLabel(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function VoiceNoteRecorder({
+  conversationId,
+  disabled,
+  onRecorded,
+  onError,
+  onRecordingChange,
+}: {
+  conversationId: string;
+  disabled: boolean;
+  onRecorded: (conversationId: string, file: File, durationMs: number) => void;
+  onError: (message: string) => void;
+  onRecordingChange: (recording: boolean) => void;
+}) {
+  const [recording, setRecording] = useState(false);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const startedAtRef = useRef(0);
+  const conversationIdRef = useRef(conversationId);
+  const keepRecordingRef = useRef(false);
+  const durationRef = useRef(0);
+
+  const release = useCallback(() => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    recorderRef.current = null;
+    setRecording(false);
+    setElapsedMs(0);
+    onRecordingChange(false);
+  }, [onRecordingChange]);
+
+  const stop = useCallback((keep: boolean) => {
+    const recorder = recorderRef.current;
+    if (!recorder || recorder.state === "inactive") return;
+    keepRecordingRef.current = keep;
+    durationRef.current = Math.min(
+      MAX_CONVERSATION_VOICE_NOTE_DURATION_MS,
+      Math.max(0, Date.now() - startedAtRef.current)
+    );
+    recorder.stop();
+  }, []);
+
+  useEffect(() => {
+    if (!recording) return;
+    const timer = window.setInterval(() => {
+      const next = Math.min(MAX_CONVERSATION_VOICE_NOTE_DURATION_MS, Date.now() - startedAtRef.current);
+      setElapsedMs(next);
+      if (next >= MAX_CONVERSATION_VOICE_NOTE_DURATION_MS) stop(true);
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [recording, stop]);
+
+  useEffect(() => () => {
+    keepRecordingRef.current = false;
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+  }, []);
+
+  async function start() {
+    if (disabled || recording) return;
+    if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      onError("Voice-note recording is not supported in this browser.");
+      return;
+    }
+    const mimeType = ([
+      "audio/mp4;codecs=mp4a.40.2",
+      "audio/mp4",
+      "audio/webm;codecs=opus",
+      "audio/webm",
+    ] as const).find((candidate) => MediaRecorder.isTypeSupported(candidate));
+    if (!mimeType) {
+      onError("This browser cannot create a supported voice-note format.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, { mimeType });
+      chunksRef.current = [];
+      keepRecordingRef.current = false;
+      conversationIdRef.current = conversationId;
+      streamRef.current = stream;
+      recorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data);
+      };
+      recorder.onerror = () => {
+        onError("Voice-note recording failed. Please try again.");
+        release();
+      };
+      recorder.onstop = () => {
+        const keep = keepRecordingRef.current;
+        const durationMs = durationRef.current;
+        const normalizedMime = recorder.mimeType.split(";", 1)[0];
+        const chunks = chunksRef.current;
+        chunksRef.current = [];
+        release();
+        if (!keep) return;
+        if (!isConversationVoiceNoteDuration(durationMs)) {
+          onError("Voice notes must be at least a quarter of a second long.");
+          return;
+        }
+        if (!isConversationVoiceNoteMime(normalizedMime)) {
+          onError("This browser produced an unsupported voice-note format.");
+          return;
+        }
+        const extension = voiceNoteExtension(normalizedMime);
+        const filename = `Voice note ${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`;
+        const file = new File(chunks, filename, { type: normalizedMime, lastModified: Date.now() });
+        if (file.size < 1) {
+          onError("The voice note was empty. Please record it again.");
+          return;
+        }
+        onRecorded(conversationIdRef.current, file, durationMs);
+      };
+      startedAtRef.current = Date.now();
+      durationRef.current = 0;
+      setElapsedMs(0);
+      setRecording(true);
+      onRecordingChange(true);
+      recorder.start(250);
+    } catch {
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      onError("Microphone access is required to record a voice note.");
+    }
+  }
+
+  if (!recording) return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => void start()}
+      aria-label="Record voice note"
+      className="flex h-10 w-10 items-center justify-center rounded-full border border-[#d7d0c5] text-lg text-nearblack hover:bg-[#f1ece3] disabled:opacity-40"
+    >
+      <span aria-hidden>●</span>
+    </button>
+  );
+
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl bg-red-50 px-3 py-2 text-red-800" role="status" aria-live="polite">
+      <span className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-red-600" aria-hidden />
+      <span className="min-w-0 flex-1 text-caption font-semibold">Recording · {voiceNoteDurationLabel(elapsedMs)}</span>
+      <button type="button" onClick={() => stop(false)} className="rounded-lg px-2 py-1 text-caption hover:bg-red-100">Cancel</button>
+      <button type="button" onClick={() => stop(true)} className="rounded-lg bg-red-700 px-3 py-1.5 text-caption font-semibold text-white">Finish</button>
+    </div>
+  );
 }
 
 function taskStatusLabel(task: AgentTask) {
@@ -937,6 +1097,7 @@ export function ConversationWorkspace({
   const [forwardingMessage, setForwardingMessage] = useState<ConversationMessage | null>(null);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [draftAttachments, setDraftAttachments] = useState<DraftAttachment[]>([]);
+  const [voiceNoteRecording, setVoiceNoteRecording] = useState(false);
   const [attachmentDropActive, setAttachmentDropActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -1107,7 +1268,7 @@ export function ConversationWorkspace({
     item.status === "preparing" || item.status === "uploading"
   ));
   const attachmentUploadFailed = draftAttachments.some((item) => item.status === "error");
-  const composerBusy = sending || attachmentUploadInProgress;
+  const composerBusy = sending || attachmentUploadInProgress || voiceNoteRecording;
   const callAgent = participants.find((participant) => participant.type === "agent") ?? null;
   const visibleAgentTasks = useMemo(() => {
     const active = agentTasks.filter((task) => ["queued", "running", "awaiting_approval"].includes(task.status));
@@ -2077,7 +2238,7 @@ export function ConversationWorkspace({
       if (await discardIfCancelled()) return;
       if (!file) throw new Error("Choose this file again to retry the upload.");
       if (!isConversationAttachmentMime(draft.mimeType)) {
-        throw new Error("Choose a JPEG, PNG, WebP or PDF file.");
+        throw new Error("Choose a JPEG, PNG, WebP, PDF or supported voice-note file.");
       }
       if (file.size <= 0 || file.size > MAX_CONVERSATION_ATTACHMENT_BYTES) {
         throw new Error("Attachments must be no larger than 25 MB.");
@@ -2092,6 +2253,10 @@ export function ConversationWorkspace({
         const form = new FormData();
         form.set("attachment_id", activeAttachmentId);
         form.set("file", file, file.name);
+        if (draft.voiceNoteDurationMs != null) {
+          form.set("voice_note", "true");
+          form.set("duration_ms", String(draft.voiceNoteDurationMs));
+        }
         let completedAttachment: ConversationAttachment | null = null;
         const upload = fetch(`/api/conversations/${conversationId}/attachments`, {
           method: "POST",
@@ -2135,6 +2300,10 @@ export function ConversationWorkspace({
           filename: file.name,
           mime_type: draft.mimeType,
           byte_size: file.size,
+          ...(draft.voiceNoteDurationMs != null ? {
+            voice_note: true,
+            duration_ms: draft.voiceNoteDurationMs,
+          } : {}),
         }),
       });
       const urlBody = await urlResponse.json();
@@ -2279,6 +2448,9 @@ export function ConversationWorkspace({
           stagedAttachmentId: attachment.status === "ready" ? null : attachment.id,
           attachment: attachment.status === "ready" ? attachment : null,
           error: null,
+          voiceNoteDurationMs: isVoiceNoteMetadata(attachment.metadata)
+            ? attachment.metadata.duration_ms
+            : null,
         }];
       });
       if (restored.length === 0) return;
@@ -2329,6 +2501,7 @@ export function ConversationWorkspace({
         stagedAttachmentId: null,
         attachment: null,
         error: null,
+        voiceNoteDurationMs: null,
       };
     });
     commitDraftAttachments((current) => [...current, ...drafts], conversationId);
@@ -2350,6 +2523,30 @@ export function ConversationWorkspace({
     }
     await Promise.all(uploads);
   }, [commitDraftAttachments, selectedId, uploadDraftAttachment]);
+
+  const addRecordedVoiceNote = useCallback((conversationId: string, file: File, durationMs: number) => {
+    if ((draftAttachmentsByConversationRef.current.get(conversationId)?.length ?? 0) >= MAX_CONVERSATION_ATTACHMENTS) {
+      setError(`Attach no more than ${MAX_CONVERSATION_ATTACHMENTS} files to one message.`);
+      return;
+    }
+    const draftAttachment: DraftAttachment = {
+      localId: `voice-note:${crypto.randomUUID()}`,
+      conversationId,
+      file,
+      filename: file.name,
+      mimeType: file.type,
+      byteSize: file.size,
+      previewUrl: null,
+      status: "uploading",
+      stagedAttachmentId: null,
+      attachment: null,
+      error: null,
+      voiceNoteDurationMs: durationMs,
+    };
+    setError(null);
+    commitDraftAttachments((current) => [...current, draftAttachment], conversationId);
+    void uploadDraftAttachment(draftAttachment);
+  }, [commitDraftAttachments, uploadDraftAttachment]);
 
   const sendMessage = useCallback(async (
     body: string,
@@ -2420,7 +2617,12 @@ export function ConversationWorkspace({
       setError("Message is too long.");
       return;
     }
-    const messageBody = body.trim() || `Shared ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}`;
+    const voiceNote = attachments.length === 1 && isVoiceNoteMetadata(attachments[0].metadata)
+      ? attachments[0]
+      : null;
+    const messageBody = body.trim() || (voiceNote
+      ? `Voice note · ${voiceNoteDurationLabel(voiceNote.metadata.duration_ms as number)}`
+      : `Shared ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}`);
     const createdAtMs = Math.max(Date.now(), lastOutboxCreatedAtMsRef.current + 1);
     lastOutboxCreatedAtMsRef.current = createdAtMs;
     const entry: PendingConversationMessage = {
@@ -2428,7 +2630,7 @@ export function ConversationWorkspace({
       ownerProfileId,
       conversationId,
       body: messageBody,
-      source: "text",
+      source: voiceNote ? "voice_note" : "text",
       replyToId: replyTarget?.id ?? null,
       attachmentIds: attachments.map((attachment) => attachment.id),
       attachments,
@@ -3920,10 +4122,15 @@ export function ConversationWorkspace({
                 {timelineItems.map(({ message, pending }) => {
                   const own = message.author.is_self;
                   const record = message.kind === "call_record" || message.kind === "meeting_record" || message.kind === "system";
+                  const voiceNoteAttachment = message.attachments.find((attachment) => (
+                    conversationAttachmentKind(attachment.mime_type) === "audio"
+                    && isVoiceNoteMetadata(attachment.metadata)
+                  )) ?? null;
                   const repliedMessage = message.reply_to_id ? timelineMessageById.get(message.reply_to_id) ?? null : null;
                   const canEdit = own
                     && !pending
                     && !message.deleted_at
+                    && !voiceNoteAttachment
                     && message.kind === "text"
                     && Date.now() - new Date(message.created_at).getTime() <= 15 * 60 * 1000;
                   if (record) return (
@@ -4039,13 +4246,14 @@ export function ConversationWorkspace({
                             </div>
                             <p className="mt-2 text-[9px] uppercase tracking-widest text-white/40">Editing changes the message history; it does not resend the request.</p>
                           </div>
-                        ) : (
+                        ) : !voiceNoteAttachment ? (
                           <p className={clsx("mt-2 whitespace-pre-wrap text-body leading-relaxed", message.deleted_at && "italic opacity-60")}>{message.body}</p>
-                        )}
+                        ) : null}
                         {!message.deleted_at && (message.attachments ?? []).length > 0 && (
                           <div className={clsx("mt-3 grid gap-2", message.attachments.length > 1 && "grid-cols-2")}>
                             {message.attachments.map((attachment) => {
-                              const imageAttachment = conversationAttachmentKind(attachment.mime_type) === "image";
+                              const attachmentKind = conversationAttachmentKind(attachment.mime_type);
+                              const imageAttachment = attachmentKind === "image";
                               if (imageAttachment && attachment.url) return (
                                 <a key={attachment.id} href={attachment.url} target="_blank" rel="noreferrer" className={clsx("block overflow-hidden border", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/50")}>
                                   <Image
@@ -4059,9 +4267,18 @@ export function ConversationWorkspace({
                                   <span className="block truncate px-2 py-2 text-[10px] opacity-65">{attachment.filename}</span>
                                 </a>
                               );
+                              if (attachmentKind === "audio" && attachment.url && isVoiceNoteMetadata(attachment.metadata)) return (
+                                <div key={attachment.id} className={clsx("min-w-[240px] rounded-xl border p-3", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/55") }>
+                                  <div className="mb-2 flex items-center justify-between gap-3 text-[10px] uppercase tracking-widest opacity-60">
+                                    <span>Voice note</span>
+                                    <span>{voiceNoteDurationLabel(attachment.metadata.duration_ms)}</span>
+                                  </div>
+                                  <audio controls playsInline preload="metadata" src={attachment.url} className="h-10 w-full" aria-label={`Voice note from ${message.author.display_name}`} />
+                                </div>
+                              );
                               return (
                                 <a key={attachment.id} href={attachment.url ?? undefined} target="_blank" rel="noreferrer" className={clsx("flex min-w-0 items-center gap-3 border px-3 py-3", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/50", !attachment.url && "pointer-events-none opacity-50")}>
-                                  <span aria-hidden className="flex h-10 w-10 shrink-0 items-center justify-center border border-current text-[10px] font-semibold">{imageAttachment ? "IMG" : "PDF"}</span>
+                                  <span aria-hidden className="flex h-10 w-10 shrink-0 items-center justify-center border border-current text-[10px] font-semibold">{imageAttachment ? "IMG" : attachmentKind === "audio" ? "AUDIO" : "PDF"}</span>
                                   <span className="min-w-0">
                                     <span className="block truncate text-caption font-semibold">{attachment.filename}</span>
                                     <span className="mt-1 block text-[10px] opacity-55">{fileSizeLabel(attachment.byte_size)}</span>
@@ -4094,6 +4311,7 @@ export function ConversationWorkspace({
                         )}
                         {!message.deleted_at && message.pinned_at && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Pinned</p>}
                         {!message.deleted_at && message.metadata.source === "forward" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Forwarded</p>}
+                        {!message.deleted_at && message.metadata.source === "voice_note" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Voice note</p>}
                         {!message.deleted_at && message.metadata.source === "voice" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Voice transcript</p>}
                         {!message.deleted_at && message.edited_at && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Edited</p>}
                         {own && (pending || message.client_message_id) && (
@@ -4221,7 +4439,7 @@ export function ConversationWorkspace({
                           <Image src={item.previewUrl} alt="" width={48} height={48} unoptimized className="h-12 w-12 shrink-0 rounded-lg object-cover" />
                         ) : (
                           <span aria-hidden className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-[#e9e2d6] text-[10px] font-semibold text-charcoal">
-                            {item.mimeType.startsWith("image/") ? "IMG" : "PDF"}
+                            {item.mimeType.startsWith("image/") ? "IMG" : item.voiceNoteDurationMs != null ? "VOICE" : "PDF"}
                           </span>
                         )}
                         <div className="min-w-0 flex-1 pr-4">
@@ -4230,10 +4448,12 @@ export function ConversationWorkspace({
                             {item.status === "preparing"
                               ? "Preparing…"
                               : item.status === "uploading"
-                                ? "Uploading…"
+                                ? item.voiceNoteDurationMs != null ? "Uploading voice note…" : "Uploading…"
                                 : item.status === "error"
                                   ? item.error
-                                  : fileSizeLabel(item.byteSize)}
+                                  : item.voiceNoteDurationMs != null
+                                    ? `${voiceNoteDurationLabel(item.voiceNoteDurationMs)} · ${fileSizeLabel(item.byteSize)}`
+                                    : fileSizeLabel(item.byteSize)}
                           </span>
                           {item.status === "error" && (item.file || item.stagedAttachmentId) && (
                             <button
@@ -4267,7 +4487,7 @@ export function ConversationWorkspace({
                 <textarea
                   ref={composerInputRef}
                   value={draft}
-                  disabled={sending}
+                  disabled={sending || voiceNoteRecording}
                   onChange={(event) => selectedId && updateDraft(selectedId, event.target.value)}
                   onPaste={(event) => {
                     if (!event.clipboardData.files.length) return;
@@ -4285,8 +4505,8 @@ export function ConversationWorkspace({
                   placeholder={participants.some((p) => p.type === "agent") && participants.length > 2 ? "Message the group — use @Aria or @Marco" : `Message ${callAgent?.display_name ?? "the conversation"}`}
                   className="max-h-36 min-h-12 w-full resize-none rounded-t-2xl bg-transparent px-4 pb-2 pt-3 text-[16px] outline-none disabled:opacity-60 md:text-body"
                 />
-                <div className="flex items-center justify-between gap-3 px-2.5 pb-2.5">
-                  <div className="relative">
+                <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
+                  <div className={clsx("relative", voiceNoteRecording && "hidden")}>
                     <button
                       type="button"
                       disabled={sending}
@@ -4308,14 +4528,23 @@ export function ConversationWorkspace({
                       </div>
                     )}
                   </div>
-                  <span className="hidden text-[10px] text-charcoal/40 sm:block">Up to 6 files · 25 MB each</span>
-                  <button
-                    disabled={composerBusy || attachmentUploadFailed || (!draft.trim() && !draftAttachments.some((item) => item.status === "ready"))}
-                    aria-label="Send message"
-                    className="flex h-10 min-w-10 shrink-0 items-center justify-center rounded-full bg-nearblack px-3 text-subhead text-white disabled:opacity-30"
-                  >
-                    <span aria-hidden>↑</span><span className="sr-only">Send</span>
-                  </button>
+                  <VoiceNoteRecorder
+                    conversationId={selectedConversation.id}
+                    disabled={sending || attachmentUploadInProgress || draftAttachments.length >= MAX_CONVERSATION_ATTACHMENTS}
+                    onRecorded={addRecordedVoiceNote}
+                    onError={setError}
+                    onRecordingChange={setVoiceNoteRecording}
+                  />
+                  {!voiceNoteRecording && <span className="hidden flex-1 text-center text-[10px] text-charcoal/40 sm:block">Up to 6 files · voice notes up to 5 min</span>}
+                  {!voiceNoteRecording && (
+                    <button
+                      disabled={composerBusy || attachmentUploadFailed || (!draft.trim() && !draftAttachments.some((item) => item.status === "ready"))}
+                      aria-label="Send message"
+                      className="flex h-10 min-w-10 shrink-0 items-center justify-center rounded-full bg-nearblack px-3 text-subhead text-white disabled:opacity-30"
+                    >
+                      <span aria-hidden>↑</span><span className="sr-only">Send</span>
+                    </button>
+                  )}
                 </div>
               </div>
               {error && <p className="mx-auto mt-2 max-w-3xl text-caption text-red-700">{error}</p>}
