@@ -7,6 +7,7 @@ declare
   v_admin_id uuid;
   v_member_id uuid;
   v_agent_id uuid;
+  v_agent_profile_id uuid;
   v_agent_slug text;
   v_conversation_id uuid := gen_random_uuid();
   v_source_message_id uuid := gen_random_uuid();
@@ -16,6 +17,7 @@ declare
   v_rename_action_id uuid := gen_random_uuid();
   v_add_action_id uuid := gen_random_uuid();
   v_add_noop_action_id uuid := gen_random_uuid();
+  v_add_agent_profile_action_id uuid := gen_random_uuid();
   v_demote_action_id uuid := gen_random_uuid();
   v_promote_action_id uuid := gen_random_uuid();
   v_remove_action_id uuid := gen_random_uuid();
@@ -24,6 +26,7 @@ declare
   v_count integer;
   v_last_admin_rejected boolean := false;
   v_reused_action_rejected boolean := false;
+  v_agent_profile_rejected boolean := false;
   v_status text;
 begin
   if to_regprocedure('public.rename_conversation_group(uuid,text,uuid)') is null
@@ -93,9 +96,12 @@ begin
     )
   order by profile.created_at nulls last, profile.id
   limit 1;
-  select agent.id, agent.slug into v_agent_id, v_agent_slug
+  select agent.id, agent.auth_profile_id, agent.slug
+  into v_agent_id, v_agent_profile_id, v_agent_slug
   from conversation_agents agent
-  where agent.active and agent.slug in ('aria', 'marco')
+  where agent.active
+    and agent.auth_profile_id is not null
+    and agent.slug in ('aria', 'marco')
   order by agent.slug
   limit 1;
   if v_admin_id is null or v_member_id is null or v_agent_id is null then
@@ -153,6 +159,21 @@ begin
     v_conversation_id, array[]::uuid[], array[v_agent_slug], v_add_noop_action_id
   ) into v_added;
   if v_added <> 0 then raise exception 'FAIL: a new add action duplicated an existing participant'; end if;
+  begin
+    perform add_conversation_group_participants(
+      v_conversation_id,
+      array[v_agent_profile_id],
+      array[]::text[],
+      v_add_agent_profile_action_id
+    );
+  exception
+    when others then
+      if sqlerrm not like '%participants are unavailable%' then raise; end if;
+      v_agent_profile_rejected := true;
+  end;
+  if not v_agent_profile_rejected then
+    raise exception 'FAIL: an agent authentication profile was accepted as a human participant';
+  end if;
 
   begin
     perform set_conversation_group_admin(v_conversation_id, v_admin_id, false, v_demote_action_id);
