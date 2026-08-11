@@ -13,6 +13,7 @@ declare
   v_minutes conversation_meeting_minutes;
   v_message_count integer;
   v_event_count integer;
+  v_invalid_recording_rejected boolean := false;
 begin
   if to_regclass('public.conversation_meeting_minutes') is null
      or to_regclass('public.conversation_meeting_minute_events') is null then
@@ -47,6 +48,17 @@ begin
   if (select count(*) from pg_policies where schemaname = 'public' and tablename = 'conversation_meeting_minutes') < 3 then
     raise exception 'FAIL: Meeting Mode member policies are incomplete';
   end if;
+  if has_table_privilege('authenticated', 'public.conversation_meeting_minutes', 'DELETE')
+     or has_table_privilege('authenticated', 'public.conversation_meeting_minute_events', 'INSERT')
+     or has_table_privilege('anon', 'public.conversation_meeting_minutes', 'SELECT') then
+    raise exception 'FAIL: Meeting Mode table privileges exceed the staged member boundary';
+  end if;
+  if position(
+    'meeting recording source is immutable after upload'
+    in pg_get_functiondef('public.guard_conversation_meeting_minutes_mutation()'::regprocedure)
+  ) = 0 then
+    raise exception 'FAIL: uploaded recording immutability guard is missing';
+  end if;
 
   select human.profile_id, human.conversation_id
   into v_profile_id, v_conversation_id
@@ -70,6 +82,22 @@ begin
   end if;
   if v_project_id is null and v_lead_id is null then
     raise exception 'FAIL: no lead or project exists for destination revalidation';
+  end if;
+
+  begin
+    insert into conversation_meeting_minutes(
+      conversation_id, created_by, client_session_id, consent_confirmed_at,
+      recording_storage_path, recording_filename, recording_mime_type, recording_byte_size
+    ) values (
+      v_conversation_id, v_profile_id, gen_random_uuid(), now(),
+      'meeting-minutes/another-conversation/another-user/another-meeting/recording.m4a',
+      'recording.m4a', 'audio/mp4', 1024
+    );
+  exception when check_violation then
+    v_invalid_recording_rejected := true;
+  end;
+  if not v_invalid_recording_rejected then
+    raise exception 'FAIL: a meeting accepted a recording path outside its private namespace';
   end if;
 
   begin

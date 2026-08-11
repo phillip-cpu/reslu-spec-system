@@ -57,6 +57,32 @@ create table if not exists conversation_meeting_minutes (
   created_at                   timestamptz not null default now(),
   updated_at                   timestamptz not null default now(),
   unique (conversation_id, client_session_id),
+  constraint conversation_meeting_recording_consistent check (
+    (
+      recording_storage_path is null
+      and recording_filename is null
+      and recording_mime_type is null
+      and recording_byte_size is null
+    )
+    or (
+      recording_storage_path is not null
+      and recording_filename is not null
+      and char_length(recording_filename) between 1 and 240
+      and recording_mime_type in ('audio/mp4', 'audio/webm', 'audio/webm;codecs=opus')
+      and recording_byte_size between 1 and 262144000
+      and recording_storage_path like (
+        'meeting-minutes/' || conversation_id::text || '/' || created_by::text || '/'
+        || id::text || '/recording.%'
+      )
+      and substring(
+        recording_storage_path
+        from char_length(
+          'meeting-minutes/' || conversation_id::text || '/' || created_by::text || '/'
+          || id::text || '/recording.'
+        ) + 1
+      ) ~ '^[a-z0-9]{1,8}$'
+    )
+  ),
   constraint conversation_meeting_destination_consistent check (
     (destination_kind is null and lead_id is null and project_id is null and client_event_id is null)
     or (destination_kind = 'lead' and lead_id is not null and project_id is null and client_event_id is null)
@@ -131,9 +157,34 @@ begin
      or new.client_session_id <> old.client_session_id
      or new.source_call_id is distinct from old.source_call_id
      or new.source_snapshot is distinct from old.source_snapshot
+     or new.destination_confidence is distinct from old.destination_confidence
+     or new.destination_reasons is distinct from old.destination_reasons
      or new.consent_confirmed_at <> old.consent_confirmed_at
      or new.started_at <> old.started_at then
     raise exception 'meeting capture identity and source are immutable';
+  end if;
+
+  if old.recording_storage_path is not null and (
+       (new.recording_storage_path, new.recording_filename, new.recording_mime_type, new.recording_byte_size)
+       is distinct from
+       (old.recording_storage_path, old.recording_filename, old.recording_mime_type, old.recording_byte_size)
+     ) then
+    raise exception 'meeting recording source is immutable after upload';
+  end if;
+  if old.recording_storage_path is null and new.recording_storage_path is not null and (
+       old.created_by <> auth.uid()
+       or old.status not in ('recording','paused')
+       or new.status <> 'processing'
+     ) then
+    raise exception 'only the recorder can bind a recording while finishing capture';
+  end if;
+  if (new.ended_at, new.duration_seconds) is distinct from (old.ended_at, old.duration_seconds)
+     and (old.created_by <> auth.uid() or old.status not in ('recording','paused')) then
+    raise exception 'meeting capture timing is recorder-controlled and immutable after finishing';
+  end if;
+  if new.metadata is distinct from old.metadata
+     and (old.created_by <> auth.uid() or old.status not in ('recording','paused')) then
+    raise exception 'meeting capture checkpoints are recorder-controlled and immutable after finishing';
   end if;
 
   -- Capture lifecycle and deletion remain owned by the person who explicitly
@@ -280,6 +331,11 @@ create policy "members_read_meeting_minute_events" on conversation_meeting_minut
         and is_conversation_member(minutes.conversation_id)
     )
   );
+
+revoke all on table conversation_meeting_minutes from public, anon, authenticated;
+revoke all on table conversation_meeting_minute_events from public, anon, authenticated;
+grant select, insert, update on table conversation_meeting_minutes to authenticated;
+grant select on table conversation_meeting_minute_events to authenticated;
 
 drop function if exists file_conversation_meeting_minutes(uuid, uuid, integer);
 create or replace function file_conversation_meeting_minutes(
