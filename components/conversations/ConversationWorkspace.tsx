@@ -52,6 +52,7 @@ import {
   canStartConversationSwipeBack,
   conversationSwipeBackProgress,
 } from "@/lib/conversation-swipe-back";
+import { useDialogFocusBoundary } from "@/lib/use-dialog-focus-boundary";
 import {
   listConversationDrafts,
   listPendingConversationMessages,
@@ -613,6 +614,8 @@ function NewConversation({ people, onCreated, onClose }: {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const createIntentRef = useRef<{ signature: string; id: string } | null>(null);
+  const newConversationDialogRef = useRef<HTMLFormElement>(null);
+  useDialogFocusBoundary({ active: true, containerRef: newConversationDialogRef, onEscape: onClose });
   const candidates = people.filter((person) => !person.is_self);
 
   async function createConversation(event: FormEvent) {
@@ -649,7 +652,7 @@ function NewConversation({ people, onCreated, onClose }: {
 
   return (
     <div className="absolute inset-0 z-20 flex items-center justify-center overflow-y-auto bg-nearblack/60 p-3 md:p-4">
-      <form onSubmit={createConversation} role="dialog" aria-modal="true" aria-labelledby="new-conversation-title" className="max-h-full w-full max-w-lg overflow-y-auto border border-[#d4cbbd] bg-[#f5f1e8] p-4 shadow-2xl md:p-6">
+      <form ref={newConversationDialogRef} tabIndex={-1} onSubmit={createConversation} role="dialog" aria-modal="true" aria-labelledby="new-conversation-title" className="max-h-full w-full max-w-lg overflow-y-auto border border-[#d4cbbd] bg-[#f5f1e8] p-4 shadow-2xl md:p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="label-caps">New conversation</p>
@@ -709,6 +712,8 @@ function ForwardMessageDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const intentRef = useRef<{ signature: string; id: string } | null>(null);
+  const forwardDialogRef = useRef<HTMLFormElement>(null);
+  useDialogFocusBoundary({ active: true, containerRef: forwardDialogRef, onEscape: onClose });
   const visible = useMemo(() => {
     const term = filter.trim().toLowerCase();
     if (!term) return conversations;
@@ -752,7 +757,7 @@ function ForwardMessageDialog({
 
   return (
     <div className="absolute inset-0 z-30 flex items-center justify-center overflow-y-auto bg-nearblack/60 p-3 md:p-4">
-      <form onSubmit={submit} role="dialog" aria-modal="true" aria-label="Forward message" className="flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-[#d4cbbd] bg-[#f5f1e8] shadow-2xl">
+      <form ref={forwardDialogRef} tabIndex={-1} onSubmit={submit} role="dialog" aria-modal="true" aria-label="Forward message" className="flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-[#d4cbbd] bg-[#f5f1e8] shadow-2xl">
         <div className="flex items-start justify-between gap-4 border-b border-[#d4cbbd] p-4 md:p-5">
           <div className="min-w-0">
             <p className="label-caps">Forward message</p>
@@ -828,6 +833,8 @@ function GroupDetailsDialog({
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const actionIntentRef = useRef<{ signature: string; id: string } | null>(null);
+  const groupDialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusBoundary({ active: true, containerRef: groupDialogRef, onEscape: onClose, escapeDisabled: Boolean(busyAction) });
   const self = participants.find((participant) => participant.type === "human" && participant.is_self);
   const canManage = Boolean(self?.is_admin);
   const participantKeys = new Set(participants.map((participant) => (
@@ -938,7 +945,7 @@ function GroupDetailsDialog({
 
   return (
     <div className="absolute inset-0 z-30 flex items-center justify-center overflow-y-auto bg-nearblack/60 p-3 md:p-4">
-      <div role="dialog" aria-modal="true" aria-label="Group details" className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-[#d4cbbd] bg-[#f5f1e8] shadow-2xl">
+      <div ref={groupDialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Group details" className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-[#d4cbbd] bg-[#f5f1e8] shadow-2xl">
         <div className="flex items-start justify-between gap-4 border-b border-[#d4cbbd] p-4 md:p-5">
           <div>
             <p className="label-caps">Group details</p>
@@ -1130,7 +1137,9 @@ export function ConversationWorkspace({
   const [meetingModeOpen, setMeetingModeOpen] = useState(false);
   const [meetingSourceCallId, setMeetingSourceCallId] = useState<string | null>(null);
   const [meetingMinutesId, setMeetingMinutesId] = useState<string | null>(null);
+  const [desktopViewport, setDesktopViewport] = useState(false);
   const drawer = presentation === "drawer";
+  const callModal = Boolean(callOpening || callId || callError) && !(drawer && callCompact && desktopViewport);
   const unreadCount = useMemo(
     () => data.conversations.reduce((total, conversation) => total + conversation.unread_count, 0),
     [data.conversations],
@@ -1140,6 +1149,9 @@ export function ConversationWorkspace({
   const messagesScrollerRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
   const workspaceRef = useRef<HTMLDivElement>(null);
+  const messageSearchDialogRef = useRef<HTMLDivElement>(null);
+  const mediaViewerDialogRef = useRef<HTMLDivElement>(null);
+  const callDialogRef = useRef<HTMLDivElement>(null);
   const draftAttachmentsRef = useRef<DraftAttachment[]>([]);
   const draftAttachmentsByConversationRef = useRef(new Map<string, DraftAttachment[]>());
   const draftAttachmentLoadSequenceRef = useRef(new Map<string, number>());
@@ -1204,6 +1216,21 @@ export function ConversationWorkspace({
   const messageLongPressRef = useRef<{ timer: number; messageId: string; x: number; y: number } | null>(null);
   const swipeBackRef = useRef<{ pointerId: number; x: number; y: number; latestX: number; latestY: number } | null>(null);
 
+  useDialogFocusBoundary({
+    active: messageSearchOpen,
+    containerRef: messageSearchDialogRef,
+    onEscape: () => setMessageSearchOpen(false),
+  });
+  useDialogFocusBoundary({
+    active: Boolean(mediaViewer),
+    containerRef: mediaViewerDialogRef,
+    onEscape: () => setMediaViewer(null),
+  });
+  useDialogFocusBoundary({
+    active: callModal,
+    containerRef: callDialogRef,
+  });
+
   const cancelMessageLongPress = useCallback(() => {
     if (messageLongPressRef.current) window.clearTimeout(messageLongPressRef.current.timer);
     messageLongPressRef.current = null;
@@ -1228,17 +1255,6 @@ export function ConversationWorkspace({
   }, [cancelMessageLongPress]);
 
   useEffect(() => cancelMessageLongPress, [cancelMessageLongPress]);
-
-  useEffect(() => {
-    if (!mediaViewer) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      setMediaViewer(null);
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [mediaViewer]);
 
   const commitDraftAttachments = useCallback((
     update: (current: DraftAttachment[]) => DraftAttachment[],
@@ -2090,6 +2106,14 @@ export function ConversationWorkspace({
       viewport?.removeEventListener("scroll", updateViewport);
       window.removeEventListener("resize", updateViewport);
     };
+  }, []);
+
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 768px)");
+    const update = () => setDesktopViewport(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
   }, []);
 
   const removeDraftAttachment = useCallback((localId: string) => {
@@ -4184,7 +4208,7 @@ export function ConversationWorkspace({
             )}
 
             {messageSearchOpen && (
-              <div role="dialog" aria-modal="true" aria-label="Search messages and files" className="absolute inset-0 z-40 flex min-h-0 flex-col bg-[#f5f1e8]">
+              <div ref={messageSearchDialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Search messages and files" className="absolute inset-0 z-40 flex min-h-0 flex-col bg-[#f5f1e8]">
                 <div className="flex min-h-16 shrink-0 items-center justify-between gap-4 border-b border-[#d4cbbd] py-3 pl-16 pr-3 md:min-h-20 md:px-5">
                   <div className="min-w-0">
                     <p className="label-caps">Search messages and files</p>
@@ -4788,6 +4812,8 @@ export function ConversationWorkspace({
 
       {mediaViewer && (
         <div
+          ref={mediaViewerDialogRef}
+          tabIndex={-1}
           role="dialog"
           aria-modal="true"
           aria-labelledby="conversation-media-viewer-title"
@@ -4867,7 +4893,7 @@ export function ConversationWorkspace({
       )}
 
       {(callOpening || callId || callError) && callAgent && (
-        <div role="dialog" aria-modal="true" aria-labelledby="active-call-agent" className={clsx(
+        <div ref={callDialogRef} tabIndex={-1} role={callModal ? "dialog" : "region"} aria-modal={callModal ? true : undefined} aria-labelledby="active-call-agent" className={clsx(
           "visible pointer-events-auto fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[70] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col overflow-hidden bg-nearblack text-white",
           drawer && callCompact && "md:inset-auto md:bottom-5 md:right-5 md:h-auto md:w-[26rem] md:max-w-[calc(100vw-2.5rem)] md:rounded-2xl md:border md:border-white/15 md:shadow-[0_20px_70px_rgba(20,18,15,0.45)]",
         )}>

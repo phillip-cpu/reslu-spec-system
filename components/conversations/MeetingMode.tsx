@@ -10,6 +10,7 @@ import {
 } from "@/lib/offline-meeting-outbox";
 import { createClient } from "@/lib/supabase/client";
 import { ASSET_BUCKET } from "@/lib/storage";
+import { useDialogFocusBoundary } from "@/lib/use-dialog-focus-boundary";
 import type {
   ConversationMeetingMinutes,
   MeetingContextResponse,
@@ -504,19 +505,12 @@ export function MeetingMode({
   const queuedForUpload = (paused || recording) && audioSafeOnDevice && !recorderActive;
   const interruptedCapture = (paused || recording) && !audioSafeOnDevice && !recorderActive;
 
-  useEffect(() => {
-    dialogRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || recording || paused || busy) return;
-      event.preventDefault();
-      onClose();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [busy, onClose, paused, recording]);
+  useDialogFocusBoundary({
+    active: true,
+    containerRef: dialogRef,
+    onEscape: onClose,
+    escapeDisabled: recording || paused || busy,
+  });
 
   return (
     <div
