@@ -296,7 +296,13 @@ begin
   if not found then raise exception 'group conversation not found'; end if;
 
   select count(*) into valid_count
-  from profiles profile where profile.id = any(requested_profile_ids);
+  from profiles profile
+  where profile.id = any(requested_profile_ids)
+    and not exists (
+      select 1
+      from conversation_agents agent
+      where agent.auth_profile_id = profile.id
+    );
   if valid_count <> cardinality(requested_profile_ids) then
     raise exception 'one or more participants are unavailable';
   end if;
