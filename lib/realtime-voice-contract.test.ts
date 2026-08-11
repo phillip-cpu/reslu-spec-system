@@ -57,3 +57,26 @@ test("VAD speech start interrupts audio without cancelling an unfinished agent c
   assert.doesNotMatch(speechStarted, /cancelActiveRealtime(?:Turn|Consult)\(\)/);
   assert.match(workspace, /if \(activeRealtimeConsultRef\.current\) cancelActiveRealtimeConsult\(\)/);
 });
+
+test("foreground recovery reuses the canonical call without replaying its start intent", () => {
+  const recovery = workspace.match(
+    /const recoverRealtimeCall = useCallback\(async \(\) => \{([\s\S]*?)\n  \}, \[scheduleRealtimeReconnect, startRealtimeCall\]\);/
+  )?.[1] ?? "";
+  assert.match(recovery, /const activeCallId = callIdRef\.current/);
+  assert.match(recovery, /await startRealtimeCall\(stream, activeCallId\)/);
+  assert.doesNotMatch(recovery, /createCallRecord/);
+  assert.doesNotMatch(recovery, /cancelActiveRealtimeConsult|cancelActiveRealtimeTurn/);
+  assert.match(workspace, /realtimeConnectionGenerationRef/);
+  assert.match(workspace, /MAX_REALTIME_RECONNECT_ATTEMPTS/);
+  assert.match(workspace, /document\.addEventListener\("visibilitychange", resumeRealtimeCall\)/);
+  assert.match(workspace, /window\.addEventListener\("online", resumeRealtimeCall\)/);
+  assert.match(workspace, />\s*Reconnect\s*<\/button>/);
+});
+
+test("partial provider tool arguments wait for response.done fallback", () => {
+  assert.match(workspace, /parseRealtimeConsultArguments\(argumentsJson\)/);
+  assert.match(workspace, /parseRealtimeTaskArguments\(argumentsJson\)/);
+  assert.match(workspace, /if \(!parsedArguments && deferInvalidArguments\) return/);
+  assert.match(workspace, /response\.function_call_arguments\.done[\s\S]*runRealtimeConsult\([^\n]+, true\)/);
+  assert.match(workspace, /response\.function_call_arguments\.done[\s\S]*runRealtimeTask\([^\n]+, true\)/);
+});

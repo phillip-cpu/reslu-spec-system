@@ -25,6 +25,16 @@ import {
   type PendingConversationCallEnd,
 } from "@/lib/conversation-call-outbox";
 import type { RealtimeVoiceLatencyMetric, RealtimeVoiceOutcome } from "@/lib/realtime-voice-metrics";
+import {
+  parseRealtimeConsultArguments,
+  parseRealtimeTaskArguments,
+} from "@/lib/realtime-tool-arguments";
+import {
+  MAX_REALTIME_RECONNECT_ATTEMPTS,
+  mediaStreamCanResume,
+  realtimeReconnectDelay,
+  shouldAttemptRealtimeReconnect,
+} from "@/lib/realtime-call-recovery";
 import { buildRealtimeProgressResponse, realtimeProgressCueId } from "@/lib/realtime-progress";
 import {
   listConversationDrafts,
@@ -284,6 +294,7 @@ function AgentTaskCard({
   dark?: boolean;
   onAction: (taskId: string, action: "cancel" | "approve" | "reject", artifactId?: string) => void;
 }) {
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
   const latestEvent = task.events.at(-1);
   const active = task.status === "queued" || task.status === "running";
   return (
@@ -298,15 +309,39 @@ function AgentTaskCard({
           </p>
           <h3 className="mt-1 break-words text-[17px] font-semibold leading-snug md:text-[18px]">{task.title}</h3>
         </div>
-        {active && (
+        {active && !confirmingCancel && (
           <button
             type="button"
-            onClick={() => onAction(task.id, "cancel")}
+            onClick={() => setConfirmingCancel(true)}
             disabled={Boolean(task.cancellation_requested_at)}
             className={clsx("shrink-0 rounded-full px-3 py-2 text-caption font-semibold", dark ? "bg-white/10 text-white/70" : "bg-[#eee8de] text-charcoal/70")}
           >
             {task.cancellation_requested_at ? "Stopping…" : "Cancel"}
           </button>
+        )}
+        {active && confirmingCancel && !task.cancellation_requested_at && (
+          <div className="flex shrink-0 flex-col items-end gap-1" role="group" aria-label={`Confirm stopping ${task.title}`}>
+            <span className={clsx("text-[11px] font-semibold", dark ? "text-white/65" : "text-charcoal/65")}>Stop this task?</span>
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => setConfirmingCancel(false)}
+                className={clsx("rounded-full px-3 py-2 text-caption font-semibold", dark ? "bg-white/10 text-white" : "bg-[#eee8de] text-charcoal")}
+              >
+                Keep working
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmingCancel(false);
+                  onAction(task.id, "cancel");
+                }}
+                className="rounded-full bg-red-700 px-3 py-2 text-caption font-semibold text-white"
+              >
+                Stop task
+              </button>
+            </div>
+          </div>
         )}
       </div>
       {!compact && <p className={clsx("mt-2 line-clamp-4 text-[15px] leading-relaxed", dark ? "text-white/70" : "text-charcoal/70")}>{task.objective}</p>}
@@ -554,6 +589,11 @@ export function ConversationWorkspace() {
   const microphoneStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const realtimeActiveRef = useRef(false);
+  const realtimeConnectionGenerationRef = useRef(0);
+  const realtimeReconnectAttemptsRef = useRef(0);
+  const realtimeReconnectInFlightRef = useRef(false);
+  const realtimeReconnectTimerRef = useRef<number | null>(null);
+  const realtimeReconnectRunnerRef = useRef<() => Promise<void>>(async () => undefined);
   const activeResponseIdRef = useRef<string | null>(null);
   const activeRealtimeConsultRef = useRef<ActiveRealtimeConsult | null>(null);
   const cancelledResponseIdsRef = useRef(new Set<string>());
@@ -1978,6 +2018,13 @@ export function ConversationWorkspace() {
   const endCall = useCallback(async (options?: { preserveStartIntent?: boolean }) => {
     callActiveRef.current = false;
     realtimeActiveRef.current = false;
+    realtimeConnectionGenerationRef.current += 1;
+    if (realtimeReconnectTimerRef.current != null) {
+      window.clearTimeout(realtimeReconnectTimerRef.current);
+      realtimeReconnectTimerRef.current = null;
+    }
+    realtimeReconnectAttemptsRef.current = 0;
+    realtimeReconnectInFlightRef.current = false;
     cancelActiveRealtimeTurn();
     const voiceMetrics = realtimeVoiceMetrics(realtimeTurnTimingsRef.current);
     dataChannelRef.current?.close();
@@ -2088,21 +2135,24 @@ export function ConversationWorkspace() {
     activeRealtimeProgressCueRef.current = null;
   }, [sendRealtimeEvent]);
 
-  const runRealtimeConsult = useCallback(async (toolCallId: string, responseId: string | null, argumentsJson: string) => {
+  const runRealtimeConsult = useCallback(async (
+    toolCallId: string,
+    responseId: string | null,
+    argumentsJson: string,
+    deferInvalidArguments = false,
+  ) => {
     if (!selectedId || !callAgent?.agent_slug || !callIdRef.current || handledToolCallIdsRef.current.has(toolCallId)) return;
+    const parsedArguments = parseRealtimeConsultArguments(argumentsJson);
+    if (!parsedArguments && deferInvalidArguments) return;
     handledToolCallIdsRef.current.add(toolCallId);
     const timing = beginRealtimeTurnTiming(toolCallId);
-    let query = "";
-    try {
-      const parsed = JSON.parse(argumentsJson) as { query?: unknown };
-      query = typeof parsed.query === "string" ? parsed.query.trim() : "";
-    } catch { /* handled below */ }
-    if (!query) {
+    if (!parsedArguments) {
       timing.outcome = "failed";
       setCallError("I couldn’t understand that turn. Please say it again.");
       setCallState("listening");
       return;
     }
+    const { query } = parsedArguments;
 
     // A completed newer utterance is the point at which the prior consult is
     // genuinely superseded. Abort its local poll and cancel that exact job;
@@ -2212,20 +2262,24 @@ export function ConversationWorkspace() {
     }
   }, [beginRealtimeTurnTiming, callAgent, cancelActiveRealtimeConsult, loadMessages, selectedId, sendRealtimeEvent, stopRealtimeProgressCue]);
 
-  const runRealtimeTask = useCallback(async (toolCallId: string, responseId: string | null, argumentsJson: string) => {
+  const runRealtimeTask = useCallback(async (
+    toolCallId: string,
+    responseId: string | null,
+    argumentsJson: string,
+    deferInvalidArguments = false,
+  ) => {
     if (!selectedId || !callAgent?.agent_slug || !callIdRef.current || handledToolCallIdsRef.current.has(toolCallId)) return;
+    const parsedArguments = parseRealtimeTaskArguments(argumentsJson);
+    if (!parsedArguments && deferInvalidArguments) return;
     handledToolCallIdsRef.current.add(toolCallId);
     const timing = beginRealtimeTurnTiming(toolCallId);
-    let input: { title?: string; objective?: string; model_tier?: "fast" | "standard" | "strong" } = {};
-    try { input = JSON.parse(argumentsJson) as typeof input; } catch { /* handled below */ }
-    const title = input.title?.trim();
-    const objective = input.objective?.trim();
-    if (!title || !objective) {
+    if (!parsedArguments) {
       timing.outcome = "failed";
       setCallError("I couldn’t create that task. Please state the outcome you want.");
       setCallState("listening");
       return;
     }
+    const { title, objective, modelTier } = parsedArguments;
     if (activeRealtimeConsultRef.current) cancelActiveRealtimeConsult();
     setCallState("thinking");
     try {
@@ -2235,7 +2289,7 @@ export function ConversationWorkspace() {
         body: JSON.stringify({
           title,
           objective,
-          model_tier: input.model_tier ?? "standard",
+          model_tier: modelTier,
           agent_slug: callAgent.agent_slug,
           call_id: callIdRef.current,
           tool_call_id: toolCallId,
@@ -2411,11 +2465,11 @@ export function ConversationWorkspace() {
       return;
     }
     if (event.type === "response.function_call_arguments.done" && event.call_id && event.name === "consult_reslu_agent") {
-      void runRealtimeConsult(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}");
+      void runRealtimeConsult(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}", true);
       return;
     }
     if (event.type === "response.function_call_arguments.done" && event.call_id && event.name === "start_reslu_task") {
-      void runRealtimeTask(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}");
+      void runRealtimeTask(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}", true);
       return;
     }
     if (event.type === "response.done" && event.response) {
@@ -2443,6 +2497,7 @@ export function ConversationWorkspace() {
     }
     if (event.type === "error") {
       setCallError("The realtime call hit an error. Please try again.");
+      setCallState("reconnecting");
     }
   }, [interruptRealtimePlayback, runRealtimeConsult, runRealtimeTask, sendRealtimeEvent, startRealtimeProgressCue, upsertCallTranscript]);
 
@@ -2467,8 +2522,32 @@ export function ConversationWorkspace() {
     return body.call.id as string;
   }, [selectedId]);
 
+  const scheduleRealtimeReconnect = useCallback((immediate = false) => {
+    if (realtimeReconnectTimerRef.current != null) return;
+    const peer = peerConnectionRef.current;
+    const channel = dataChannelRef.current;
+    if (!shouldAttemptRealtimeReconnect({
+      callActive: callActiveRef.current,
+      realtimeActive: realtimeActiveRef.current,
+      online: navigator.onLine,
+      visible: document.visibilityState === "visible",
+      inFlight: realtimeReconnectInFlightRef.current,
+      attempts: realtimeReconnectAttemptsRef.current,
+      microphoneReady: mediaStreamCanResume(microphoneStreamRef.current),
+      connectionState: peer?.connectionState ?? null,
+      dataChannelState: channel?.readyState ?? null,
+    })) return;
+    setCallState("reconnecting");
+    const delay = realtimeReconnectDelay(realtimeReconnectAttemptsRef.current, immediate);
+    realtimeReconnectTimerRef.current = window.setTimeout(() => {
+      realtimeReconnectTimerRef.current = null;
+      void realtimeReconnectRunnerRef.current();
+    }, delay);
+  }, []);
+
   const startRealtimeCall = useCallback(async (stream: MediaStream, activeCallId: string) => {
     if (!selectedId || !callAgent?.agent_slug) throw new Error("No RESLU agent selected");
+    const generation = ++realtimeConnectionGenerationRef.current;
     const peer = new RTCPeerConnection();
     const audio = document.createElement("audio");
     audio.autoplay = true;
@@ -2477,14 +2556,26 @@ export function ConversationWorkspace() {
     stream.getTracks().forEach((track) => peer.addTrack(track, stream));
     const channel = peer.createDataChannel("oai-events");
     channel.onopen = () => {
+      if (generation !== realtimeConnectionGenerationRef.current || !callActiveRef.current) return;
+      realtimeReconnectAttemptsRef.current = 0;
+      realtimeReconnectInFlightRef.current = false;
       setCallOpening(false);
-      setCallState("listening");
+      setCallError(null);
+      setCallState(activeRealtimeConsultRef.current ? "thinking" : "listening");
     };
     channel.onmessage = (message) => {
+      if (generation !== realtimeConnectionGenerationRef.current) return;
       try { handleRealtimeEvent(JSON.parse(message.data) as RealtimeEvent); } catch { /* ignore malformed provider events */ }
     };
     channel.onclose = () => {
-      if (callActiveRef.current && realtimeActiveRef.current) setCallState("reconnecting");
+      if (generation === realtimeConnectionGenerationRef.current) scheduleRealtimeReconnect();
+    };
+    peer.onconnectionstatechange = () => {
+      if (generation !== realtimeConnectionGenerationRef.current) return;
+      if (peer.connectionState === "failed") scheduleRealtimeReconnect(true);
+      else if (peer.connectionState === "disconnected" || peer.connectionState === "closed") {
+        scheduleRealtimeReconnect();
+      }
     };
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
@@ -2499,9 +2590,21 @@ export function ConversationWorkspace() {
       const error = new Error(body.error ?? "Could not start realtime voice") as Error & { code?: string };
       error.code = body.code;
       peer.close();
+      audio.pause();
+      audio.srcObject = null;
       throw error;
     }
     await peer.setRemoteDescription({ type: "answer", sdp: await response.text() });
+    if (generation !== realtimeConnectionGenerationRef.current || !callActiveRef.current) {
+      channel.close();
+      peer.close();
+      audio.pause();
+      audio.srcObject = null;
+      return;
+    }
+    const previousChannel = dataChannelRef.current;
+    const previousPeer = peerConnectionRef.current;
+    const previousAudio = remoteAudioRef.current;
     peerConnectionRef.current = peer;
     dataChannelRef.current = channel;
     remoteAudioRef.current = audio;
@@ -2509,7 +2612,104 @@ export function ConversationWorkspace() {
     realtimeActiveRef.current = true;
     callActiveRef.current = true;
     callIdRef.current = activeCallId;
-  }, [callAgent, handleRealtimeEvent, selectedId]);
+    if (previousChannel && previousChannel !== channel) previousChannel.close();
+    if (previousPeer && previousPeer !== peer) previousPeer.close();
+    if (previousAudio && previousAudio !== audio) {
+      previousAudio.pause();
+      previousAudio.srcObject = null;
+    }
+    window.setTimeout(() => {
+      if (
+        generation === realtimeConnectionGenerationRef.current
+        && callActiveRef.current
+        && channel.readyState !== "open"
+      ) {
+        channel.close();
+        peer.close();
+        scheduleRealtimeReconnect(true);
+      }
+    }, 8000);
+  }, [callAgent, handleRealtimeEvent, scheduleRealtimeReconnect, selectedId]);
+
+  const recoverRealtimeCall = useCallback(async () => {
+    const peer = peerConnectionRef.current;
+    const channel = dataChannelRef.current;
+    if (!shouldAttemptRealtimeReconnect({
+      callActive: callActiveRef.current,
+      realtimeActive: realtimeActiveRef.current,
+      online: navigator.onLine,
+      visible: document.visibilityState === "visible",
+      inFlight: realtimeReconnectInFlightRef.current,
+      attempts: realtimeReconnectAttemptsRef.current,
+      microphoneReady: mediaStreamCanResume(microphoneStreamRef.current),
+      connectionState: peer?.connectionState ?? null,
+      dataChannelState: channel?.readyState ?? null,
+    })) return;
+    const activeCallId = callIdRef.current;
+    if (!activeCallId) return;
+    realtimeReconnectInFlightRef.current = true;
+    setCallState("reconnecting");
+    remoteAudioRef.current?.pause();
+    activeResponseIdRef.current = null;
+    activeRealtimeProgressCueRef.current = null;
+    let retry = false;
+    try {
+      let stream = microphoneStreamRef.current;
+      if (!mediaStreamCanResume(stream)) {
+        stream?.getTracks().forEach((track) => track.stop());
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getAudioTracks().forEach((track) => { track.enabled = !mutedRef.current; });
+      }
+      if (!stream) throw new Error("Microphone audio is unavailable");
+      await startRealtimeCall(stream, activeCallId);
+    } catch (reason) {
+      realtimeReconnectAttemptsRef.current += 1;
+      const message = reason instanceof Error ? reason.message : "Could not reconnect the call";
+      if (realtimeReconnectAttemptsRef.current >= MAX_REALTIME_RECONNECT_ATTEMPTS) {
+        setCallError(`Call audio is paused. ${message}`);
+      } else {
+        retry = true;
+      }
+    } finally {
+      realtimeReconnectInFlightRef.current = false;
+      if (retry) scheduleRealtimeReconnect();
+    }
+  }, [scheduleRealtimeReconnect, startRealtimeCall]);
+
+  useEffect(() => {
+    realtimeReconnectRunnerRef.current = recoverRealtimeCall;
+  }, [recoverRealtimeCall]);
+
+  useEffect(() => {
+    const resumeRealtimeCall = () => {
+      if (document.visibilityState === "visible" && navigator.onLine) {
+        scheduleRealtimeReconnect(true);
+      }
+    };
+    window.addEventListener("online", resumeRealtimeCall);
+    window.addEventListener("focus", resumeRealtimeCall);
+    document.addEventListener("visibilitychange", resumeRealtimeCall);
+    return () => {
+      window.removeEventListener("online", resumeRealtimeCall);
+      window.removeEventListener("focus", resumeRealtimeCall);
+      document.removeEventListener("visibilitychange", resumeRealtimeCall);
+    };
+  }, [scheduleRealtimeReconnect]);
+
+  useEffect(() => () => {
+    if (realtimeReconnectTimerRef.current != null) {
+      window.clearTimeout(realtimeReconnectTimerRef.current);
+      realtimeReconnectTimerRef.current = null;
+    }
+  }, []);
+
+  const retryRealtimeCall = useCallback(() => {
+    realtimeReconnectAttemptsRef.current = 0;
+    setCallError(null);
+    dataChannelRef.current?.close();
+    peerConnectionRef.current?.close();
+    scheduleRealtimeReconnect(true);
+  }, [scheduleRealtimeReconnect]);
 
   const startLegacyCall = useCallback(async (existingCallId?: string) => {
     const SpeechRecognition = (window as Window & { SpeechRecognition?: SpeechRecognitionConstructor; webkitSpeechRecognition?: SpeechRecognitionConstructor }).SpeechRecognition
@@ -2607,6 +2807,12 @@ export function ConversationWorkspace() {
 
   async function startCall() {
     if (!selectedId || !callAgent) return;
+    if (realtimeReconnectTimerRef.current != null) {
+      window.clearTimeout(realtimeReconnectTimerRef.current);
+      realtimeReconnectTimerRef.current = null;
+    }
+    realtimeReconnectAttemptsRef.current = 0;
+    realtimeReconnectInFlightRef.current = false;
     callConversationIdRef.current ??= selectedId;
     clientCallIdRef.current ??= crypto.randomUUID();
     lastRealtimeSpeechStoppedAtRef.current = null;
@@ -3382,7 +3588,20 @@ export function ConversationWorkspace() {
                 </div>
                 <p className="shrink-0 text-caption text-white/35">Continues after the call</p>
               </div>
-              {callError && <p className="mx-4 mt-4 rounded-xl border border-red-300/30 bg-red-950/30 p-3 text-body text-red-100 md:mx-6">{callError}</p>}
+              {callError && (
+                <div className="mx-4 mt-4 flex items-center justify-between gap-3 rounded-xl border border-red-300/30 bg-red-950/30 p-3 text-body text-red-100 md:mx-6">
+                  <p>{callError}</p>
+                  {callState === "reconnecting" && callId && realtimeActiveRef.current && (
+                    <button
+                      type="button"
+                      onClick={retryRealtimeCall}
+                      className="shrink-0 rounded-full border border-red-100/40 px-3 py-2 text-caption font-semibold text-white"
+                    >
+                      Reconnect
+                    </button>
+                  )}
+                </div>
+              )}
               <div className="grid min-h-0 flex-1 auto-rows-max grid-cols-1 gap-4 overflow-y-auto p-4 md:grid-cols-2 md:p-6 xl:grid-cols-3">
                 {visibleAgentTasks.length === 0 ? (
                   <div className="col-span-full flex h-full min-h-48 items-center justify-center text-center">

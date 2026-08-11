@@ -43,6 +43,13 @@ test("the call surface exposes captions, durable work and approvals", () => {
   assert.match(workspace, /Continues after you leave this chat/);
 });
 
+test("cancelling durable work needs a deliberate second action", () => {
+  assert.match(workspace, /Stop this task\?/);
+  assert.match(workspace, />\s*Keep working\s*<\/button>/);
+  assert.match(workspace, />\s*Stop task\s*<\/button>/);
+  assert.doesNotMatch(workspace, /onClick=\{\(\) => onAction\(task\.id, "cancel"\)\}/);
+});
+
 test("mobile agent work stays contained and the composer does not trigger iPhone zoom", () => {
   assert.match(workspace, /max-w-full flex-1 flex-col overflow-x-hidden/);
   assert.match(workspace, /Show \$\{visibleAgentTasks\.length - 1\} more/);
