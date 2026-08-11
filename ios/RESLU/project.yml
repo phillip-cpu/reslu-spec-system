@@ -1,0 +1,27 @@
+name: RESLU
+options:
+  bundleIdPrefix: au.com.reslu
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+targets:
+  RESLU:
+    type: application
+    platform: iOS
+    sources:
+      - path: RESLU
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: au.com.reslu.spec
+        INFOPLIST_FILE: RESLU/Info.plist
+        CODE_SIGN_ENTITLEMENTS: RESLU/RESLU.entitlements
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: false
+    scheme:
+      testTargets: []

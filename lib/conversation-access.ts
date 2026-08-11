@@ -4,6 +4,7 @@ import type { createClient } from "@/lib/supabase/server";
 interface ConversationParticipantRow {
   profile_id: string | null;
   agent_id: string | null;
+  participant_role: "member" | "admin";
   profile: { id: string; full_name: string; avatar_url: string | null } | null;
   agent: { id: string; slug: AgentSlug; display_name: string; role_label: string; avatar_url: string | null } | null;
 }
@@ -15,7 +16,7 @@ export async function conversationParticipants(
 ): Promise<{ error: { message: string } | null; participants: ConversationParticipant[] }> {
   const { data, error } = await supabase
     .from("conversation_participants")
-    .select("profile_id,agent_id,profile:profiles(id,full_name,avatar_url),agent:conversation_agents(id,slug,display_name,role_label,avatar_url)")
+    .select("profile_id,agent_id,participant_role,profile:profiles(id,full_name,avatar_url),agent:conversation_agents(id,slug,display_name,role_label,avatar_url)")
     .eq("conversation_id", conversationId);
   if (error) return { error, participants: [] };
   const participants: ConversationParticipant[] = [];
@@ -27,6 +28,7 @@ export async function conversationParticipants(
       display_name: row.profile.full_name,
       avatar_url: row.profile.avatar_url,
       is_self: row.profile.id === userId,
+      is_admin: row.participant_role === "admin",
     });
     if (row.agent) participants.push({
       id: row.agent.id,

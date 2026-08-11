@@ -319,11 +319,13 @@ def conversation_history(
     limit: int = HISTORY_LIMIT,
 ) -> str:
     select = (
-        "id,author_profile_id,author_agent_id,body,kind,reply_to_id,created_at,"
+        "id,author_profile_id,author_agent_id,body,kind,metadata,reply_to_id,created_at,"
         "profile:profiles!conversation_messages_author_profile_id_fkey(full_name),"
         "agent:conversation_agents!conversation_messages_author_agent_id_fkey(display_name),"
         "attachments:conversation_attachments("
-        "id,message_id,filename,mime_type,byte_size,status,created_at)"
+        "id,message_id,filename,mime_type,byte_size,status,metadata,created_at),"
+        "forwarded_attachments:conversation_forwarded_attachments("
+        "id,message_id,filename,mime_type,byte_size,metadata,created_at)"
     )
     messages = rest.rows(
         "conversation_messages",
@@ -366,13 +368,13 @@ def conversation_history(
             names[row["author_agent_id"]] = str(agent["display_name"])
     for row in messages:
         row_attachments = sorted(
-            row.get("attachments") or [],
+            [*(row.get("attachments") or []), *(row.get("forwarded_attachments") or [])],
             key=lambda attachment: str(attachment.get("created_at") or "")
             if isinstance(attachment, dict)
             else "",
         )
         for attachment in row_attachments:
-            if isinstance(attachment, dict) and attachment.get("status") == "ready":
+            if isinstance(attachment, dict) and attachment.get("status", "ready") == "ready":
                 attachments_by_message.setdefault(row["id"], []).append(attachment)
     lines = []
     for row in messages:
@@ -384,12 +386,23 @@ def conversation_history(
             target_author = names.get(target_author_id, "Participant")
             target_body = re.sub(r"\s+", " ", str(reply_target.get("body") or "")).strip()[:500]
             lines.append(f"  [Replying to {target_author}: {target_body}]")
+        metadata = row.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("source") == "forward":
+            lines.append("  [Forwarded message]")
         lines.append(f"[{row['created_at']}] {author}: {row['body']}")
         for attachment in attachments_by_message.get(row["id"], []):
-            lines.append(
-                f"  [Private attachment: {attachment['filename']} | "
-                f"{attachment['mime_type']} | {attachment['byte_size']} bytes]"
-            )
+            metadata = attachment.get("metadata")
+            if isinstance(metadata, dict) and metadata.get("voice_note") is True:
+                duration_ms = int(metadata.get("duration_ms") or 0)
+                lines.append(
+                    f"  [Private voice note: {duration_ms / 1000:.1f}s | "
+                    f"{attachment['mime_type']} | {attachment['byte_size']} bytes]"
+                )
+            else:
+                lines.append(
+                    f"  [Private attachment: {attachment['filename']} | "
+                    f"{attachment['mime_type']} | {attachment['byte_size']} bytes]"
+                )
     return "\n".join(lines)
 
 
@@ -426,7 +439,9 @@ def triggering_message_context(
             "select": (
                 "id,metadata,"
                 "attachments:conversation_attachments("
-                "id,filename,mime_type,byte_size,storage_path,status,created_at)"
+                "id,filename,mime_type,byte_size,storage_path,status,metadata,created_at),"
+                "forwarded_attachments:conversation_forwarded_attachments("
+                "id,filename,mime_type,byte_size,storage_path,metadata,created_at)"
             ),
             "id": f"eq.{message_id}",
             "conversation_id": f"eq.{conversation_id}",
@@ -442,11 +457,17 @@ def triggering_message_context(
         and metadata.get("source") == "voice"
         and metadata.get("transport") == "openai_realtime_webrtc"
     )
-    attachments = [
+    uploaded_attachments = [
         attachment
         for attachment in rows[0].get("attachments") or []
         if isinstance(attachment, dict) and attachment.get("status") == "ready"
     ]
+    forwarded_attachments = [
+        attachment
+        for attachment in rows[0].get("forwarded_attachments") or []
+        if isinstance(attachment, dict)
+    ]
+    attachments = [*uploaded_attachments, *forwarded_attachments]
     attachments.sort(key=lambda attachment: str(attachment.get("created_at") or ""))
     return is_realtime_voice, attachments
 
@@ -709,10 +730,18 @@ def invoke_agent(
 ) -> str | None:
     attachment_lines = []
     for attachment in attachments or []:
-        attachment_lines.append(
-            f"- {attachment['filename']} ({attachment['mime_type']}, {attachment['byte_size']} bytes): "
-            f"{attachment['local_path']}"
-        )
+        metadata = attachment.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("voice_note") is True:
+            duration_ms = int(metadata.get("duration_ms") or 0)
+            attachment_lines.append(
+                f"- Voice note ({duration_ms / 1000:.1f}s, {attachment['mime_type']}, "
+                f"{attachment['byte_size']} bytes): {attachment['local_path']}"
+            )
+        else:
+            attachment_lines.append(
+                f"- {attachment['filename']} ({attachment['mime_type']}, {attachment['byte_size']} bytes): "
+                f"{attachment['local_path']}"
+            )
     attachment_context = "\n".join(attachment_lines) or "(none)"
     prompt = (
         "[RESLU conversation]\n"
