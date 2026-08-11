@@ -116,6 +116,7 @@ export function MeetingMode({
   const pendingAudioIdRef = useRef<string | null>(null);
   const clientSessionIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
   const mime = useMemo(() => recordingMime(), []);
 
   const setCurrentMeeting = useCallback((next: ConversationMeetingMinutes) => {
@@ -503,23 +504,44 @@ export function MeetingMode({
   const queuedForUpload = (paused || recording) && audioSafeOnDevice && !recorderActive;
   const interruptedCapture = (paused || recording) && !audioSafeOnDevice && !recorderActive;
 
+  useEffect(() => {
+    dialogRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || recording || paused || busy) return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [busy, onClose, paused, recording]);
+
   return (
-    <div className="fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[75] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col bg-[#f5f1e8] text-nearblack">
+    <div
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="meeting-mode-title"
+      tabIndex={-1}
+      className="meeting-mode-dialog fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[75] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col bg-[#f5f1e8] text-nearblack"
+    >
       <header className="flex shrink-0 items-center gap-3 border-b border-[#d4cbbd] px-4 pb-3 pt-[calc(env(safe-area-inset-top)+0.75rem)] md:px-6 md:py-4">
         <span className={clsx("h-3 w-3 rounded-full", recording ? "animate-pulse bg-red-700" : processing ? "bg-[#C9971E]" : "bg-[#66a466]")} />
         <div className="min-w-0 flex-1">
-          <p className="label-caps">Aria Meeting Mode</p>
-          <p className="mt-1 truncate text-caption text-charcoal/55">
+          <h1 id="meeting-mode-title" className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#806d55]">Aria Meeting Mode</h1>
+          <p className="mt-1 truncate text-caption text-charcoal/55" role="status" aria-live="polite" aria-atomic="true">
             {setup ? "Resolve context and confirm consent" : recording ? `Recording · ${secondsLabel(seconds)}` : paused ? `Paused · ${secondsLabel(seconds)}` : processing ? "Preparing draft minutes in background" : reviewReady ? "Review before filing" : failed ? "Draft preparation needs attention" : status}
           </p>
         </div>
-        <button type="button" onClick={onClose} disabled={recording || paused || busy} className="rounded-full border border-nearblack/30 px-3 py-2 text-caption disabled:opacity-30">Close</button>
+        <button type="button" onClick={onClose} disabled={recording || paused || busy} className="min-h-11 rounded-full border border-nearblack/30 px-4 py-2 text-caption disabled:opacity-30">Close</button>
       </header>
 
       <main className="min-h-0 flex-1 overflow-y-auto px-4 py-5 md:px-8 md:py-8">
         <div className="mx-auto max-w-4xl">
-          {error && <p className="mb-4 rounded-xl border border-red-700/30 bg-red-50 px-4 py-3 text-body text-red-800">{error}</p>}
-          {notice && <p className="mb-4 rounded-xl border border-sand bg-cream px-4 py-3 text-body text-charcoal">{notice}</p>}
+          {error && <p className="mb-4 rounded-xl border border-red-700/30 bg-red-50 px-4 py-3 text-body text-red-800" role="alert">{error}</p>}
+          {notice && <p className="mb-4 rounded-xl border border-sand bg-cream px-4 py-3 text-body text-charcoal" role="status" aria-live="polite">{notice}</p>}
 
           {setup && (
             <section className="rounded-2xl border border-[#d4cbbd] bg-white p-5 shadow-sm md:p-7">

@@ -28,6 +28,13 @@ body {
   font-weight: 300;
 }
 
+/* Keyboard focus must remain visible throughout the app, including the
+   full-screen conversation, call and Meeting Mode layers. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 3px solid #2f6feb;
+  outline-offset: 3px;
+}
+
 .label-caps {
   font-size: 7px;
   font-weight: 700;
@@ -483,6 +490,18 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .conversation-accessible *,
+  .conversation-accessible *::before,
+  .conversation-accessible *::after,
+  .meeting-mode-dialog *,
+  .meeting-mode-dialog *::before,
+  .meeting-mode-dialog *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+
   .pr-packet,
   .pr-strip-static,
   .pr-cap,

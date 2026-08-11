@@ -400,7 +400,7 @@ function VoiceNoteRecorder({
       disabled={disabled}
       onClick={() => void start()}
       aria-label="Record voice note"
-      className="flex h-10 w-10 items-center justify-center rounded-full border border-[#d7d0c5] text-lg text-nearblack hover:bg-[#f1ece3] disabled:opacity-40"
+      className="flex h-11 w-11 items-center justify-center rounded-full border border-[#d7d0c5] text-lg text-nearblack hover:bg-[#f1ece3] disabled:opacity-40"
     >
       <span aria-hidden>●</span>
     </button>
@@ -410,8 +410,8 @@ function VoiceNoteRecorder({
     <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl bg-red-50 px-3 py-2 text-red-800" role="status" aria-live="polite">
       <span className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-red-600" aria-hidden />
       <span className="min-w-0 flex-1 text-caption font-semibold">Recording · {voiceNoteDurationLabel(elapsedMs)}</span>
-      <button type="button" onClick={() => stop(false)} className="rounded-lg px-2 py-1 text-caption hover:bg-red-100">Cancel</button>
-      <button type="button" onClick={() => stop(true)} className="rounded-lg bg-red-700 px-3 py-1.5 text-caption font-semibold text-white">Finish</button>
+      <button type="button" onClick={() => stop(false)} className="min-h-11 rounded-lg px-3 py-2 text-caption hover:bg-red-100">Cancel</button>
+      <button type="button" onClick={() => stop(true)} className="min-h-11 rounded-lg bg-red-700 px-3 py-2 text-caption font-semibold text-white">Finish</button>
     </div>
   );
 }
@@ -639,13 +639,13 @@ function NewConversation({ people, onCreated, onClose }: {
 
   return (
     <div className="absolute inset-0 z-20 flex items-center justify-center overflow-y-auto bg-nearblack/60 p-3 md:p-4">
-      <form onSubmit={createConversation} className="max-h-full w-full max-w-lg overflow-y-auto border border-[#d4cbbd] bg-[#f5f1e8] p-4 shadow-2xl md:p-6">
+      <form onSubmit={createConversation} role="dialog" aria-modal="true" aria-labelledby="new-conversation-title" className="max-h-full w-full max-w-lg overflow-y-auto border border-[#d4cbbd] bg-[#f5f1e8] p-4 shadow-2xl md:p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="label-caps">New conversation</p>
-            <h2 className="mt-2 font-display text-section text-nearblack">Who’s in this chat?</h2>
+            <h2 id="new-conversation-title" className="mt-2 font-display text-section text-nearblack">Who’s in this chat?</h2>
           </div>
-          <button type="button" onClick={onClose} aria-label="Close" className="text-charcoal/50 hover:text-charcoal">✕</button>
+          <button type="button" onClick={onClose} aria-label="Close" className="flex h-11 w-11 items-center justify-center text-charcoal/50 hover:text-charcoal">✕</button>
         </div>
         <div className="mt-5 max-h-72 space-y-2 overflow-y-auto">
           {candidates.map((person) => {
@@ -749,7 +749,7 @@ function ForwardMessageDialog({
             <p className="mt-2 line-clamp-2 text-body leading-relaxed text-charcoal/65">{message.body}</p>
             {message.attachments.length > 0 && <p className="mt-1 text-caption text-charcoal/45">Includes {message.attachments.length} private attachment{message.attachments.length === 1 ? "" : "s"}</p>}
           </div>
-          <button type="button" onClick={onClose} aria-label="Close forwarding" className="shrink-0 text-charcoal/50 hover:text-charcoal">✕</button>
+          <button type="button" onClick={onClose} aria-label="Close forwarding" className="flex h-11 w-11 shrink-0 items-center justify-center text-charcoal/50 hover:text-charcoal">✕</button>
         </div>
         <div className="border-b border-[#d4cbbd] p-3 md:p-4">
           <label className="flex items-center gap-2 rounded-xl border border-[#d4cbbd] bg-white px-3 py-2 focus-within:border-nearblack">
@@ -935,7 +935,7 @@ function GroupDetailsDialog({
             <h2 className="mt-2 font-display text-section text-nearblack">{conversation.display_title}</h2>
             <p className="mt-1 text-caption text-charcoal/50">{participants.length} participant{participants.length === 1 ? "" : "s"}</p>
           </div>
-          <button type="button" onClick={onClose} aria-label="Close group details" className="shrink-0 text-charcoal/50 hover:text-charcoal">✕</button>
+          <button type="button" onClick={onClose} aria-label="Close group details" className="flex h-11 w-11 shrink-0 items-center justify-center text-charcoal/50 hover:text-charcoal">✕</button>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-5">
@@ -983,7 +983,7 @@ function GroupDetailsDialog({
                       disabled={Boolean(busyAction)}
                       onClick={() => void removeParticipant(participant)}
                       aria-label={`Remove ${participant.display_name}`}
-                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-red-700 hover:bg-red-50 disabled:opacity-30"
+                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-red-700 hover:bg-red-50 disabled:opacity-30"
                     >
                       ×
                     </button>
@@ -3821,7 +3821,7 @@ export function ConversationWorkspace({
     <div
       ref={workspaceRef}
       className={clsx(
-        "flex min-h-0 min-w-0 overflow-hidden border border-[#d4cbbd] bg-[#f5f1e8]",
+        "conversation-accessible flex min-h-0 min-w-0 overflow-hidden border border-[#d4cbbd] bg-[#f5f1e8]",
         drawer
           ? "relative h-full w-full border-0"
           : "fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-20 h-[var(--conversation-vh,100dvh)] md:relative md:inset-auto md:z-auto md:h-[calc(100vh-7.5rem)] md:min-h-[560px]",
@@ -4076,7 +4076,7 @@ export function ConversationWorkspace({
             )}
 
             {messageSearchOpen && (
-              <div className="absolute inset-0 z-40 flex min-h-0 flex-col bg-[#f5f1e8]">
+              <div role="dialog" aria-modal="true" aria-label="Search messages and files" className="absolute inset-0 z-40 flex min-h-0 flex-col bg-[#f5f1e8]">
                 <div className="flex min-h-16 shrink-0 items-center justify-between gap-4 border-b border-[#d4cbbd] py-3 pl-16 pr-3 md:min-h-20 md:px-5">
                   <div className="min-w-0">
                     <p className="label-caps">Search messages and files</p>
@@ -4085,7 +4085,7 @@ export function ConversationWorkspace({
                   <button
                     type="button"
                     onClick={() => setMessageSearchOpen(false)}
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-lg text-charcoal/65 hover:bg-[#e9e2d6]"
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-lg text-charcoal/65 hover:bg-[#e9e2d6]"
                     aria-label="Close message search"
                   >
                     ×
@@ -4246,7 +4246,7 @@ export function ConversationWorkspace({
                             aria-label={`Actions for message from ${message.author.display_name}`}
                             aria-haspopup="menu"
                             aria-expanded={messageMenuId === message.id}
-                            className={clsx("ml-auto -mr-1 flex h-7 w-7 items-center justify-center rounded-full text-[11px] tracking-widest transition-opacity focus:opacity-100 md:opacity-0 md:group-hover:opacity-100", own ? "text-white/65 hover:bg-white/10" : "text-charcoal/55 hover:bg-black/5")}
+                            className={clsx("ml-auto -my-2 -mr-2 flex h-11 w-11 items-center justify-center rounded-full text-[11px] tracking-widest transition-opacity focus:opacity-100 md:opacity-0 md:group-hover:opacity-100", own ? "text-white/65 hover:bg-white/10" : "text-charcoal/55 hover:bg-black/5")}
                           >
                             <span aria-hidden>•••</span>
                           </button>
@@ -4262,7 +4262,7 @@ export function ConversationWorkspace({
                                     role="menuitem"
                                     onClick={() => void toggleMessageReaction(message, reaction)}
                                     aria-label={`React ${reaction}`}
-                                    className="flex h-7 w-7 items-center justify-center rounded-full text-base hover:bg-[#f5f1e8]"
+                                    className="flex h-11 w-11 items-center justify-center rounded-full text-base hover:bg-[#f5f1e8]"
                                   >
                                     {reaction}
                                   </button>
@@ -4520,7 +4520,7 @@ export function ConversationWorkspace({
                       <p className="text-[10px] font-semibold text-nearblack">Replying to {replyingTo.author.display_name}</p>
                       <p className="mt-1 truncate text-caption text-charcoal/55">{replyingTo.body}</p>
                     </div>
-                    <button type="button" onClick={() => setReplyingTo(null)} aria-label="Cancel reply" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-lg text-charcoal/50 hover:bg-[#f1ece3]">
+                    <button type="button" onClick={() => setReplyingTo(null)} aria-label="Cancel reply" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-lg text-charcoal/50 hover:bg-[#f1ece3]">
                       ×
                     </button>
                   </div>
@@ -4565,7 +4565,7 @@ export function ConversationWorkspace({
                           aria-label={item.status === "preparing" || item.status === "uploading"
                             ? `Cancel upload of ${item.filename}`
                             : `Remove ${item.filename}`}
-                          className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-nearblack text-[11px] text-white"
+                          className="absolute right-0 top-0 flex h-11 w-11 items-center justify-center rounded-full bg-nearblack text-[14px] text-white"
                         >
                           ×
                         </button>
@@ -4607,7 +4607,7 @@ export function ConversationWorkspace({
                       onClick={() => setAttachmentMenuOpen((open) => !open)}
                       aria-label="Add photos or files"
                       aria-expanded={attachmentMenuOpen}
-                      className="flex h-10 w-10 items-center justify-center rounded-full border border-[#d7d0c5] text-xl text-nearblack hover:bg-[#f1ece3] disabled:opacity-40"
+                      className="flex h-11 w-11 items-center justify-center rounded-full border border-[#d7d0c5] text-xl text-nearblack hover:bg-[#f1ece3] disabled:opacity-40"
                     >
                       +
                     </button>
@@ -4634,7 +4634,7 @@ export function ConversationWorkspace({
                     <button
                       disabled={composerBusy || attachmentUploadFailed || (!draft.trim() && !draftAttachments.some((item) => item.status === "ready"))}
                       aria-label="Send message"
-                      className="flex h-10 min-w-10 shrink-0 items-center justify-center rounded-full bg-nearblack px-3 text-subhead text-white disabled:opacity-30"
+                      className="flex h-11 min-w-11 shrink-0 items-center justify-center rounded-full bg-nearblack px-3 text-subhead text-white disabled:opacity-30"
                     >
                       <span aria-hidden>↑</span><span className="sr-only">Send</span>
                     </button>
@@ -4706,7 +4706,7 @@ export function ConversationWorkspace({
       )}
 
       {(callOpening || callId || callError) && callAgent && (
-        <div className={clsx(
+        <div role="dialog" aria-modal="true" aria-labelledby="active-call-agent" className={clsx(
           "visible pointer-events-auto fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[70] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col overflow-hidden bg-nearblack text-white",
           drawer && callCompact && "md:inset-auto md:bottom-5 md:right-5 md:h-auto md:w-[26rem] md:max-w-[calc(100vw-2.5rem)] md:rounded-2xl md:border md:border-white/15 md:shadow-[0_20px_70px_rgba(20,18,15,0.45)]",
         )}>
@@ -4716,8 +4716,8 @@ export function ConversationWorkspace({
               <span className={clsx("absolute -bottom-1 -right-1 h-3.5 w-3.5 rounded-full border-2 border-nearblack", callState === "reconnecting" ? "bg-[#C9971E]" : "bg-[#66a466]")} />
             </div>
             <div className="min-w-0 flex-1">
-              <h2 className="truncate text-body font-semibold">{callAgent.display_name}</h2>
-              <p className={clsx("mt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em]", callError ? "text-[#e28b8b]" : "text-sand")}>{callError ? "Call interrupted" : callState}</p>
+              <h2 id="active-call-agent" className="truncate text-body font-semibold">{callAgent.display_name}</h2>
+              <p className={clsx("mt-0.5 text-[12px] font-semibold uppercase tracking-[0.14em]", callError ? "text-[#e28b8b]" : "text-sand")} role="status" aria-live="polite" aria-atomic="true">{callError ? "Call interrupted" : callState}</p>
             </div>
             <p className="hidden truncate text-caption text-white/40 sm:block">{selectedConversation?.display_title}</p>
             {drawer && (
@@ -4740,7 +4740,7 @@ export function ConversationWorkspace({
                 </button>
               </>
             )}
-            <button onClick={() => void endCall()} className="rounded-full border border-white/25 px-3 py-2 text-caption">End call</button>
+            <button onClick={() => void endCall()} className="min-h-11 rounded-full border border-white/25 px-4 py-2 text-caption">End call</button>
           </header>
           <main className={clsx("min-h-0 flex-1 flex-col", drawer && callCompact ? "flex md:hidden" : "flex")}>
             <section className="flex min-h-0 flex-1 flex-col bg-white/[0.025]" aria-label="Background agent work">
@@ -4785,7 +4785,7 @@ export function ConversationWorkspace({
                 aria-expanded={callTranscriptExpanded}
                 className="flex min-h-12 w-full items-center gap-3 px-4 py-2 text-left md:px-6"
               >
-                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.14em] text-sand">Captions</span>
+                <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.14em] text-sand">Captions</span>
                 <span className="min-w-0 flex-1 truncate text-caption text-white/45">
                   {interim || latestCallTranscript?.text || (callState === "connecting" ? "Connecting…" : "Optional live transcript")}
                 </span>
@@ -4807,7 +4807,7 @@ export function ConversationWorkspace({
                         entry.speaker === "user" ? "bg-white text-nearblack" : entry.speaker === "system" ? "border border-sand/30 bg-sand/10 text-white" : "bg-white/10 text-white",
                         !entry.final && "opacity-65",
                       )}>
-                        <p className={clsx("text-[9px] font-semibold uppercase tracking-[0.12em]", entry.speaker === "user" ? "text-charcoal/45" : "text-sand") }>
+                        <p className={clsx("text-[11px] font-semibold uppercase tracking-[0.12em]", entry.speaker === "user" ? "text-charcoal/45" : "text-sand") }>
                           {entry.speaker === "user" ? "You" : entry.speaker === "agent" ? callAgent.display_name : "Agent work"}
                         </p>
                         <p className="mt-0.5 whitespace-pre-wrap text-caption leading-relaxed">{entry.text}</p>
