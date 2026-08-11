@@ -230,14 +230,24 @@ export function XeroIntegrationSettings({
           </a>
         )}
         {status.connected && (
-          <button
-            type="button"
-            onClick={syncNow}
-            disabled={syncing}
-            className="bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal disabled:opacity-50"
-          >
-            {syncing ? "Syncing…" : "Sync now"}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            {!status.reporting_access && (
+              <a
+                href="/api/xero/connect"
+                className="bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal"
+              >
+                Upgrade reporting access
+              </a>
+            )}
+            <button
+              type="button"
+              onClick={syncNow}
+              disabled={syncing}
+              className="border border-nearblack px-4 py-2 text-subhead text-nearblack hover:bg-white disabled:opacity-50"
+            >
+              {syncing ? "Syncing…" : "Sync now"}
+            </button>
+          </div>
         )}
       </div>
 
@@ -272,6 +282,12 @@ export function XeroIntegrationSettings({
           </div>
         </dl>
         <div className="border-t border-[#e5e0d6] px-4 py-4">
+          {!status.reporting_access && (
+            <div className="mb-4 border border-amber-500/50 bg-amber-50 px-3 py-3 text-body text-nearblack">
+              This connection predates Xero reporting access. Select <strong>Upgrade reporting access</strong>,
+              sign in to Xero and approve RESLU Spec System once more.
+            </div>
+          )}
           <div>
             <h4 className="text-subhead text-nearblack">Pull a Xero report</h4>
             <p className="mt-1 text-caption text-charcoal/55">
@@ -313,7 +329,7 @@ export function XeroIntegrationSettings({
           <button
             type="button"
             onClick={pullReport}
-            disabled={reportLoading}
+            disabled={reportLoading || !status.reporting_access}
             className="mt-3 bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal disabled:opacity-50"
           >
             {reportLoading ? "Pulling report…" : "Pull report"}

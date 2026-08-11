@@ -1,12 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-export const XERO_SCOPES = [
-  "openid",
-  "profile",
-  "email",
-  "offline_access",
-  "accounting.invoices.read",
-  "accounting.payments.read",
+export const XERO_REPORT_SCOPES = [
   "accounting.reports.profitandloss.read",
   "accounting.reports.balancesheet.read",
   "accounting.reports.trialbalance.read",
@@ -14,6 +8,16 @@ export const XERO_SCOPES = [
   "accounting.reports.budgetsummary.read",
   "accounting.reports.executivesummary.read",
   "accounting.reports.taxreports.read",
+] as const;
+
+export const XERO_SCOPES = [
+  "openid",
+  "profile",
+  "email",
+  "offline_access",
+  "accounting.invoices.read",
+  "accounting.payments.read",
+  ...XERO_REPORT_SCOPES,
 ] as const;
 
 export const XERO_STATE_COOKIE = "reslu_xero_oauth_state";
