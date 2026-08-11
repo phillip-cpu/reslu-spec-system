@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { MeetingMode } from "@/components/conversations/MeetingMode";
 import Image from "next/image";
@@ -42,6 +42,12 @@ import {
   CONVERSATION_MESSAGE_REACTIONS,
   type ConversationMessageReactionValue,
 } from "@/lib/conversation-message-engagement";
+import {
+  CONVERSATION_MESSAGE_LONG_PRESS_MS,
+  conversationDayKey,
+  conversationDayLabel,
+  conversationLongPressMoved,
+} from "@/lib/conversation-timeline";
 import {
   listConversationDrafts,
   listPendingConversationMessages,
@@ -1093,6 +1099,7 @@ export function ConversationWorkspace({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [replyingTo, setReplyingTo] = useState<ConversationMessage | null>(null);
   const [messageMenuId, setMessageMenuId] = useState<string | null>(null);
+  const [mediaViewer, setMediaViewer] = useState<{ url: string; filename: string; author: string } | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageBody, setEditingMessageBody] = useState("");
   const [messageMutationId, setMessageMutationId] = useState<string | null>(null);
@@ -1188,6 +1195,43 @@ export function ConversationWorkspace({
   const conversationListRequestRef = useRef(0);
   const messageRequestSequenceRef = useRef(0);
   const activeMessageRequestRef = useRef(new Map<string, number>());
+  const messageLongPressRef = useRef<{ timer: number; messageId: string; x: number; y: number } | null>(null);
+
+  const cancelMessageLongPress = useCallback(() => {
+    if (messageLongPressRef.current) window.clearTimeout(messageLongPressRef.current.timer);
+    messageLongPressRef.current = null;
+  }, []);
+
+  const startMessageLongPress = useCallback((messageId: string, event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "mouse" || event.button !== 0) return;
+    if ((event.target as HTMLElement).closest("button, a, input, textarea, audio, select")) return;
+    cancelMessageLongPress();
+    const timer = window.setTimeout(() => {
+      messageLongPressRef.current = null;
+      setMessageMenuId(messageId);
+      navigator.vibrate?.(10);
+    }, CONVERSATION_MESSAGE_LONG_PRESS_MS);
+    messageLongPressRef.current = { timer, messageId, x: event.clientX, y: event.clientY };
+  }, [cancelMessageLongPress]);
+
+  const moveMessageLongPress = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const activePress = messageLongPressRef.current;
+    if (!activePress) return;
+    if (conversationLongPressMoved(activePress.x, activePress.y, event.clientX, event.clientY)) cancelMessageLongPress();
+  }, [cancelMessageLongPress]);
+
+  useEffect(() => cancelMessageLongPress, [cancelMessageLongPress]);
+
+  useEffect(() => {
+    if (!mediaViewer) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setMediaViewer(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [mediaViewer]);
 
   const commitDraftAttachments = useCallback((
     update: (current: DraftAttachment[]) => DraftAttachment[],
@@ -4200,8 +4244,17 @@ export function ConversationWorkspace({
               )}
               {messages.length === 0 && <p className="mx-auto mt-20 max-w-sm text-center text-body text-charcoal/50">This is the beginning of the conversation. Its history will stay here for everyone in the chat.</p>}
               <div className="mx-auto max-w-3xl space-y-4">
-                {timelineItems.map(({ message, pending }) => {
+                {timelineItems.map(({ message, pending }, index) => {
                   const own = message.author.is_self;
+                  const previousMessage = timelineItems[index - 1]?.message;
+                  const showDaySeparator = !previousMessage || conversationDayKey(previousMessage.created_at) !== conversationDayKey(message.created_at);
+                  const daySeparator = showDaySeparator ? (
+                    <div className="sticky top-2 z-[5] flex justify-center py-1" role="separator" aria-label={conversationDayLabel(message.created_at)}>
+                      <span className="rounded-full border border-[#d4cbbd] bg-[#f5f1e8]/95 px-3 py-1 text-[11px] font-semibold text-charcoal/60 shadow-sm backdrop-blur">
+                        {conversationDayLabel(message.created_at)}
+                      </span>
+                    </div>
+                  ) : null;
                   const record = message.kind === "call_record" || message.kind === "meeting_record" || message.kind === "system";
                   const voiceNoteAttachment = message.attachments.find((attachment) => (
                     conversationAttachmentKind(attachment.mime_type) === "audio"
@@ -4215,28 +4268,40 @@ export function ConversationWorkspace({
                     && message.kind === "text"
                     && Date.now() - new Date(message.created_at).getTime() <= 15 * 60 * 1000;
                   if (record) return (
-                    <div key={message.id} className="border-y border-[#d4cbbd] py-3 text-center">
-                      <p className="label-caps">{message.kind === "call_record" ? "Call completed" : message.kind === "meeting_record" ? "Meeting completed" : "Group update"}</p>
-                      <p className="mt-2 text-caption text-charcoal/60">{message.body}</p>
-                      {message.kind === "meeting_record" && typeof message.metadata.meeting_minutes_id === "string" && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setMeetingSourceCallId(null);
-                            setMeetingMinutesId(message.metadata.meeting_minutes_id as string);
-                            setMeetingModeOpen(true);
-                          }}
-                          className="mt-3 rounded-full border border-nearblack px-4 py-2 text-caption font-semibold text-nearblack hover:bg-nearblack hover:text-white"
-                        >
-                          Open filed minutes
-                        </button>
-                      )}
-                    </div>
+                    <Fragment key={message.id}>
+                      {daySeparator}
+                      <div id={`conversation-message-${message.id}`} className="border-y border-[#d4cbbd] py-3 text-center">
+                        <p className="label-caps">{message.kind === "call_record" ? "Call completed" : message.kind === "meeting_record" ? "Meeting completed" : "Group update"}</p>
+                        <p className="mt-2 text-caption text-charcoal/60">{message.body}</p>
+                        {message.kind === "meeting_record" && typeof message.metadata.meeting_minutes_id === "string" && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMeetingSourceCallId(null);
+                              setMeetingMinutesId(message.metadata.meeting_minutes_id as string);
+                              setMeetingModeOpen(true);
+                            }}
+                            className="mt-3 rounded-full border border-nearblack px-4 py-2 text-caption font-semibold text-nearblack hover:bg-nearblack hover:text-white"
+                          >
+                            Open filed minutes
+                          </button>
+                        )}
+                      </div>
+                    </Fragment>
                   );
                   return (
-                    <div id={`conversation-message-${message.id}`} key={message.id} className={clsx("flex gap-3", own && "flex-row-reverse")}>
+                    <Fragment key={message.id}>
+                    {daySeparator}
+                    <div id={`conversation-message-${message.id}`} className={clsx("flex gap-3", own && "flex-row-reverse")}>
                       <Avatar participant={message.author} />
-                      <div className={clsx("group relative min-w-0 max-w-[78%] border px-3 py-3 md:px-4", own ? "border-nearblack bg-nearblack text-white" : "border-[#d4cbbd] bg-[#f5f1e8] text-charcoal")}>
+                      <div
+                        data-message-long-press={message.id}
+                        onPointerDown={(event) => startMessageLongPress(message.id, event)}
+                        onPointerMove={moveMessageLongPress}
+                        onPointerUp={cancelMessageLongPress}
+                        onPointerCancel={cancelMessageLongPress}
+                        className={clsx("group relative min-w-0 max-w-[78%] border px-3 py-3 md:px-4", own ? "border-nearblack bg-nearblack text-white" : "border-[#d4cbbd] bg-[#f5f1e8] text-charcoal")}
+                      >
                         <div className="flex items-baseline gap-2">
                           <span className={clsx("text-caption font-semibold", own ? "text-white" : "text-nearblack")}>{message.author.display_name}</span>
                           <span className={clsx("text-[10px]", own ? "text-white/45" : "text-charcoal/40")}>{timeLabel(message.created_at)}</span>
@@ -4349,7 +4414,13 @@ export function ConversationWorkspace({
                               const attachmentKind = conversationAttachmentKind(attachment.mime_type);
                               const imageAttachment = attachmentKind === "image";
                               if (imageAttachment && attachment.url) return (
-                                <a key={attachment.id} href={attachment.url} target="_blank" rel="noreferrer" className={clsx("block overflow-hidden border", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/50")}>
+                                <button
+                                  key={attachment.id}
+                                  type="button"
+                                  onClick={() => setMediaViewer({ url: attachment.url!, filename: attachment.filename, author: message.author.display_name })}
+                                  aria-label={`View ${attachment.filename} full screen`}
+                                  className={clsx("block w-full overflow-hidden border text-left", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/50")}
+                                >
                                   <Image
                                     src={attachment.url}
                                     alt={attachment.filename}
@@ -4359,7 +4430,7 @@ export function ConversationWorkspace({
                                     className="h-36 w-full object-cover md:h-48"
                                   />
                                   <span className="block truncate px-2 py-2 text-[10px] opacity-65">{attachment.filename}</span>
-                                </a>
+                                </button>
                               );
                               if (attachmentKind === "audio" && attachment.url && isVoiceNoteMetadata(attachment.metadata)) return (
                                 <div key={attachment.id} className={clsx("min-w-[240px] rounded-xl border p-3", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/55") }>
@@ -4457,6 +4528,7 @@ export function ConversationWorkspace({
                         )}
                       </div>
                     </div>
+                    </Fragment>
                   );
                 })}
                 {!historyAnchorMessageId && agentActivity.map((activity) => {
@@ -4649,6 +4721,31 @@ export function ConversationWorkspace({
           <div className="flex flex-1 items-center justify-center text-body text-charcoal/45">Choose a conversation or start a new one.</div>
         )}
       </section>
+
+      {mediaViewer && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="conversation-media-viewer-title"
+          className="fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[85] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col bg-black text-white"
+        >
+          <header className="flex min-h-16 shrink-0 items-center gap-3 border-b border-white/15 px-3 pb-3 pt-[calc(env(safe-area-inset-top)+0.75rem)] md:px-5 md:py-4">
+            <div className="min-w-0 flex-1">
+              <h2 id="conversation-media-viewer-title" className="truncate text-body font-semibold">{mediaViewer.filename}</h2>
+              <p className="mt-1 truncate text-caption text-white/55">Shared by {mediaViewer.author}</p>
+            </div>
+            <a href={mediaViewer.url} target="_blank" rel="noreferrer" className="flex min-h-11 items-center rounded-full border border-white/25 px-4 text-caption font-semibold text-white">
+              Open original
+            </a>
+            <button autoFocus type="button" onClick={() => setMediaViewer(null)} aria-label="Close photo viewer" className="flex h-11 w-11 items-center justify-center rounded-full border border-white/25 text-xl text-white">
+              ×
+            </button>
+          </header>
+          <div className="relative min-h-0 flex-1 overflow-hidden p-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] md:p-6">
+            <Image src={mediaViewer.url} alt={mediaViewer.filename} fill sizes="100vw" unoptimized className="object-contain" />
+          </div>
+        </div>
+      )}
 
       {newOpen && <NewConversation people={data.people} onClose={() => setNewOpen(false)} onCreated={(id) => {
         draftAttachmentsRef.current = draftAttachmentsByConversationRef.current.get(id) ?? [];
