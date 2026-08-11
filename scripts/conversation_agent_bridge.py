@@ -24,7 +24,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-POLL_SECONDS = 1.0
+POLL_SECONDS = 0.5
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
 CLAIM_REQUEST_TIMEOUT_SECONDS = 5.0
 JOB_STATUS_REQUEST_TIMEOUT_SECONDS = 3.0
@@ -34,6 +34,18 @@ AGENT_STATUS_CHECK_SECONDS = 0.5
 AGENT_TERMINATE_GRACE_SECONDS = 2.0
 AGENT_PROCESS_TIMEOUT_SECONDS = 210.0
 HISTORY_LIMIT = 80
+REALTIME_VOICE_HISTORY_LIMIT = 16
+REALTIME_VOICE_THINKING_DEFAULT = "minimal"
+OPENCLAW_THINKING_LEVELS = {
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "adaptive",
+    "max",
+}
 AGENT_SLUGS = ("aria", "marco")
 OPENCLAW_CONTROL_VALUES = {
     "completed",
@@ -229,7 +241,11 @@ def agent_identity(rest: SupabaseRest, agent_id: str) -> dict:
     return rows[0]
 
 
-def conversation_history(rest: SupabaseRest, conversation_id: str) -> str:
+def conversation_history(
+    rest: SupabaseRest,
+    conversation_id: str,
+    limit: int = HISTORY_LIMIT,
+) -> str:
     messages = rest.rows(
         "conversation_messages",
         {
@@ -237,7 +253,7 @@ def conversation_history(rest: SupabaseRest, conversation_id: str) -> str:
             "conversation_id": f"eq.{conversation_id}",
             "deleted_at": "is.null",
             "order": "created_at.desc",
-            "limit": str(HISTORY_LIMIT),
+            "limit": str(limit),
         },
     )
     messages.reverse()
@@ -300,6 +316,35 @@ def conversation_history(rest: SupabaseRest, conversation_id: str) -> str:
                 f"{attachment['mime_type']} | {attachment['byte_size']} bytes]"
             )
     return "\n".join(lines)
+
+
+def is_realtime_voice_message(rest: SupabaseRest, message_id: str) -> bool:
+    """Keep voice latency tuning off the normal typed-chat path."""
+    rows = rest.rows(
+        "conversation_messages",
+        {
+            "select": "id,metadata",
+            "id": f"eq.{message_id}",
+            "limit": "1",
+        },
+        timeout_seconds=JOB_STATUS_REQUEST_TIMEOUT_SECONDS,
+    )
+    if not isinstance(rows, list) or not rows:
+        return False
+    metadata = rows[0].get("metadata")
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("source") == "voice"
+        and metadata.get("transport") == "openai_realtime_webrtc"
+    )
+
+
+def realtime_voice_thinking_level() -> str:
+    configured = os.environ.get(
+        "RESLU_REALTIME_AGENT_THINKING",
+        REALTIME_VOICE_THINKING_DEFAULT,
+    ).strip().lower()
+    return configured if configured in OPENCLAW_THINKING_LEVELS else REALTIME_VOICE_THINKING_DEFAULT
 
 
 def ready_message_attachments(rest: SupabaseRest, conversation_id: str, message_id: str) -> list[dict]:
@@ -383,6 +428,7 @@ def invoke_agent(
     conversation_id: str,
     attachments: list[dict] | None = None,
     should_continue: Callable[[], bool] | None = None,
+    thinking_level: str | None = None,
 ) -> str | None:
     attachment_lines = []
     for attachment in attachments or []:
@@ -394,7 +440,7 @@ def invoke_agent(
     prompt = (
         "[RESLU conversation]\n"
         f"You are {agent['display_name']}, {agent['role_label']}, replying inside the canonical RESLU staff chat. "
-        "Use your existing memory, RESLU tools, permissions and business rules. Read the full supplied thread before replying. "
+        "Use your existing memory, RESLU tools, permissions and business rules. Read the supplied recent thread context before replying. "
         "Reply naturally to the newest human message. Keep voice-friendly replies concise unless detail is needed. "
         "Never claim that stopping audio undid a task, email, approval or other side effect. "
         "When ATTACHMENTS_FOR_NEWEST_MESSAGE lists files, inspect every relevant file at its local path before answering. "
@@ -411,8 +457,10 @@ def invoke_agent(
     command = [
         "openclaw", "agent", "--agent", openclaw_agent_id(agent["slug"]),
         "--session-key", openclaw_session_key(conversation_id),
-        "--message", prompt, "--timeout", "180", "--json",
     ]
+    if thinking_level:
+        command.extend(["--thinking", thinking_level])
+    command.extend(["--message", prompt, "--timeout", "180", "--json"])
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -585,8 +633,10 @@ def build_agent_workers(base_url: str, service_key: str) -> list[threading.Threa
 
 
 def process_job(rest: SupabaseRest, job: dict) -> str:
+    is_realtime_voice = is_realtime_voice_message(rest, job["triggering_message_id"])
     agent = agent_identity(rest, job["agent_id"])
-    history = conversation_history(rest, job["conversation_id"])
+    history_limit = REALTIME_VOICE_HISTORY_LIMIT if is_realtime_voice else HISTORY_LIMIT
+    history = conversation_history(rest, job["conversation_id"], history_limit)
     attachments = ready_message_attachments(rest, job["conversation_id"], job["triggering_message_id"])
     if not job_is_processing(rest, job["id"]):
         return "cancelled"
@@ -604,6 +654,7 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
             job["conversation_id"],
             materialized,
             should_continue=lambda: job_should_continue(rest, job["id"]),
+            thinking_level=realtime_voice_thinking_level() if is_realtime_voice else None,
         )
     if reply is None:
         return "cancelled"

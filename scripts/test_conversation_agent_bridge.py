@@ -96,6 +96,37 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         self.assertIn("[Replying to Jane: Should we specify the limestone finish?]", history)
         self.assertIn("Phillip: Yes, use that option.", history)
 
+    def test_history_uses_requested_voice_window(self):
+        class FakeRest:
+            params = None
+
+            @classmethod
+            def rows(cls, table, params):
+                if table == "conversation_messages":
+                    cls.params = params
+                    return []
+                raise AssertionError((table, params))
+
+        conversation_agent_bridge.conversation_history(FakeRest(), "conversation-1", 16)
+
+        self.assertEqual(FakeRest.params["limit"], "16")
+
+    def test_only_openai_realtime_messages_use_voice_tuning(self):
+        class FakeRest:
+            @staticmethod
+            def rows(_table, _params, **_kwargs):
+                return [{
+                    "id": "message-1",
+                    "metadata": {
+                        "source": "voice",
+                        "transport": "openai_realtime_webrtc",
+                    },
+                }]
+
+        self.assertTrue(
+            conversation_agent_bridge.is_realtime_voice_message(FakeRest(), "message-1")
+        )
+
     def test_reads_documented_final_reply(self):
         payload = {
             "ok": True,
@@ -189,6 +220,24 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         self.assertEqual(reply, "Agent answer")
         self.assertIn("--session-key", command)
         self.assertEqual(command[command.index("--session-key") + 1], "reslu-conversation-conversation-123")
+        self.assertNotIn("--thinking", command)
+
+    @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
+    def test_realtime_voice_invocation_uses_low_latency_thinking(self, popen):
+        process = popen.return_value
+        process.communicate.return_value = ('{"final":"Short answer"}', "")
+        process.returncode = 0
+
+        reply = conversation_agent_bridge.invoke_agent(
+            {"slug": "aria", "display_name": "Aria", "role_label": "Studio assistant"},
+            "Phillip: What is on my list?",
+            "conversation-123",
+            thinking_level="minimal",
+        )
+
+        command = popen.call_args.args[0]
+        self.assertEqual(reply, "Short answer")
+        self.assertEqual(command[command.index("--thinking") + 1], "minimal")
 
     @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
     def test_agent_invocation_requires_inspection_of_private_attachments(self, popen):
