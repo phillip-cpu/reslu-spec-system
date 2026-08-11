@@ -36,6 +36,11 @@ test("reaction and pin tables are member-readable but RPC-only for writes", () =
   assert.match(migration, /members_read_message_reactions[\s\S]*is_conversation_member\(conversation_id\)/i);
   assert.match(migration, /members_read_message_pins[\s\S]*is_conversation_member\(conversation_id\)/i);
   assert.doesNotMatch(migration, /for (insert|update|delete) to authenticated/i);
+  assert.match(migration, /revoke all on table conversation_message_reactions from public, anon, authenticated/i);
+  assert.match(migration, /revoke all on table conversation_message_pins from public, anon, authenticated/i);
+  assert.match(migration, /grant select on table conversation_message_reactions to authenticated/i);
+  assert.match(migration, /grant select on table conversation_message_pins to authenticated/i);
+  assert.match(verifier, /engagement read privileges are not authenticated-only/i);
   assert.match(migration, /grant execute on function toggle_conversation_message_reaction[\s\S]*to authenticated/i);
   assert.match(migration, /grant execute on function set_conversation_message_pinned[\s\S]*to authenticated/i);
 });
