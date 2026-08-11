@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
+import { hasXeroAccess } from "@/lib/xero/access";
 import { xeroReportDefinition } from "@/lib/xero/report-definitions";
 import { pullXeroReport } from "@/lib/xero/reports";
 import type { XeroReportKey } from "@/types/xero";
@@ -8,8 +9,8 @@ import type { XeroReportKey } from "@/types/xero";
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
   const user = await getUserRole(supabase);
-  if (!user || user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
+  if (!hasXeroAccess(user)) {
+    return NextResponse.json({ error: "Xero access required" }, { status: 403 });
   }
 
   try {

@@ -9,7 +9,7 @@ import type { ProfileRole } from "@/types";
  */
 export async function getUserRole(
   supabase: SupabaseClient
-): Promise<{ userId: string; role: ProfileRole } | null> {
+): Promise<{ userId: string; email: string | null; role: ProfileRole } | null> {
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -21,7 +21,11 @@ export async function getUserRole(
     .eq("id", user.id)
     .single();
 
-  return { userId: user.id, role: (profile?.role as ProfileRole) ?? "designer" };
+  return {
+    userId: user.id,
+    email: user.email?.toLowerCase() ?? null,
+    role: (profile?.role as ProfileRole) ?? "designer",
+  };
 }
 
 export async function isAdmin(supabase: SupabaseClient): Promise<boolean> {

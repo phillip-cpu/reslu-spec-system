@@ -30,6 +30,7 @@ import type { DesignTaskTemplatesMap } from "@/types/round-c";
 import type { InvoiceBankDetails } from "@/types/client-invoices";
 import type { CpdDefaults } from "@/types/cpd";
 import { getXeroConnectionStatus } from "@/lib/xero/status";
+import { hasXeroAccess } from "@/lib/xero/access";
 
 /**
  * Settings — category management, team roster + role editing (both
@@ -53,6 +54,7 @@ export default async function SettingsPage({
   const supabase = await createClient();
   const info = await getUserRole(supabase);
   const isAdmin = info?.role === "admin";
+  const canAccessXero = hasXeroAccess(info);
 
   // Phase 14A caching: both are stable reference data re-queried on
   // nearly every page in the app — see lib/reference-data.ts. This is
@@ -168,7 +170,7 @@ export default async function SettingsPage({
       process.env.GMAIL_CLIENT_SECRET &&
       process.env.ARIA_GMAIL_REFRESH_TOKEN
   );
-  const xeroStatus = isAdmin
+  const xeroStatus = canAccessXero
     ? await getXeroConnectionStatus()
     : null;
   const xeroCallbackUrl = `${(process.env.NEXT_PUBLIC_APP_URL ?? "https://spec.reslu.com.au").replace(/\/$/, "")}/api/xero/callback`;
@@ -424,7 +426,7 @@ export default async function SettingsPage({
             mondayConfigured={mondayConfigured}
             gmailConfigured={gmailConfigured}
           />
-          {isAdmin && xeroStatus && (
+          {canAccessXero && xeroStatus && (
             <div className="mt-4">
               <XeroIntegrationSettings
                 initialStatus={xeroStatus}

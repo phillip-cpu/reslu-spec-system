@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { isAdmin } from "@/lib/auth";
+import { getUserRole } from "@/lib/auth";
+import { hasXeroAccess } from "@/lib/xero/access";
 import {
   createXeroState,
   XERO_STATE_COOKIE,
@@ -10,8 +11,8 @@ import {
 
 export async function GET() {
   const supabase = await createClient();
-  if (!(await isAdmin(supabase))) {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
+  if (!hasXeroAccess(await getUserRole(supabase))) {
+    return NextResponse.json({ error: "Xero access required" }, { status: 403 });
   }
   if (!xeroConfigured()) {
     return NextResponse.json({ error: "Xero integration is not configured" }, { status: 503 });
