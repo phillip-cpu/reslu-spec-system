@@ -34,6 +34,20 @@ begin
   ) then
     raise exception 'FAIL: clients can bypass the reaction/pin RPC boundary';
   end if;
+  if has_table_privilege('authenticated', 'public.conversation_message_reactions', 'INSERT')
+     or has_table_privilege('authenticated', 'public.conversation_message_reactions', 'UPDATE')
+     or has_table_privilege('authenticated', 'public.conversation_message_reactions', 'DELETE')
+     or has_table_privilege('authenticated', 'public.conversation_message_pins', 'INSERT')
+     or has_table_privilege('authenticated', 'public.conversation_message_pins', 'UPDATE')
+     or has_table_privilege('authenticated', 'public.conversation_message_pins', 'DELETE') then
+    raise exception 'FAIL: authenticated clients retain direct engagement write privileges';
+  end if;
+  if not has_table_privilege('authenticated', 'public.conversation_message_reactions', 'SELECT')
+     or not has_table_privilege('authenticated', 'public.conversation_message_pins', 'SELECT')
+     or has_table_privilege('anon', 'public.conversation_message_reactions', 'SELECT')
+     or has_table_privilege('anon', 'public.conversation_message_pins', 'SELECT') then
+    raise exception 'FAIL: engagement read privileges are not authenticated-only';
+  end if;
 
   select participant.profile_id, participant.conversation_id
   into v_profile_id, v_conversation_id
