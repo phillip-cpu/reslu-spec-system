@@ -118,6 +118,17 @@ export function buildRealtimeSession(agent: { slug: AgentSlug; display_name: str
           required: ["title", "objective", "model_tier"],
         },
       },
+      ...(agent.slug === "aria" ? [{
+        type: "function",
+        name: "start_meeting_mode",
+        description: "Switch this Aria call into silent Meeting Mode when the user asks to take, record or capture meeting minutes. Do not use for ordinary notes or call summaries.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {},
+          required: [] as string[],
+        },
+      }] : []),
     ],
     tool_choice: "required",
   };

@@ -32,4 +32,9 @@ The bridge polls only the dedicated lightweight agent job table. Each worker reu
 - Up to six private JPEG, PNG, WebP or PDF attachments per canonical message, 25 MB each; folders and filing to a lead/project remain later phases.
 - No WhatsApp dependency.
 
-Aria Meeting Mode’s staged minutes, destination confidence and explicit filing approval should be built next on `conversation_calls.presentation = 'meeting'`; do not publish minutes directly from raw capture.
+Aria Meeting Mode is implemented behind migration 103. It records to private
+storage with recoverable on-device checkpoints, transcribes through local
+Whisper, prepares a seven-section draft through the existing Aria runtime and
+files only after explicit destination approval. Apply migration 103 and update
+the Mac-mini MCP checkout before enabling the UI; never publish minutes directly
+from raw capture.

@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
+import { MeetingMode } from "@/components/conversations/MeetingMode";
 import Image from "next/image";
 import { initials } from "@/lib/conversations";
 import {
@@ -565,6 +566,9 @@ export function ConversationWorkspace({
   const [callTranscriptExpanded, setCallTranscriptExpanded] = useState(false);
   const [agentTasks, setAgentTasks] = useState<AgentTask[]>([]);
   const [agentWorkExpanded, setAgentWorkExpanded] = useState(false);
+  const [meetingModeOpen, setMeetingModeOpen] = useState(false);
+  const [meetingSourceCallId, setMeetingSourceCallId] = useState<string | null>(null);
+  const [meetingMinutesId, setMeetingMinutesId] = useState<string | null>(null);
   const drawer = presentation === "drawer";
   const unreadCount = useMemo(
     () => data.conversations.reduce((total, conversation) => total + conversation.unread_count, 0),
@@ -2369,6 +2373,21 @@ export function ConversationWorkspace({
     }
   }, [beginRealtimeTurnTiming, callAgent, cancelActiveRealtimeConsult, loadAgentTasks, loadMessages, selectedId, sendRealtimeEvent, stopRealtimeProgressCue, upsertCallTranscript]);
 
+  const runRealtimeMeetingMode = useCallback((toolCallId: string) => {
+    if (!selectedId || callAgent?.agent_slug !== "aria" || handledToolCallIdsRef.current.has(toolCallId)) return;
+    handledToolCallIdsRef.current.add(toolCallId);
+    const sourceCallId = callIdRef.current;
+    upsertCallTranscript({
+      id: `system-meeting-${toolCallId}`,
+      speaker: "system",
+      text: "Switching to silent Meeting Mode",
+      final: true,
+    });
+    setMeetingSourceCallId(sourceCallId);
+    setMeetingMinutesId(null);
+    void endCall().then(() => setMeetingModeOpen(true));
+  }, [callAgent, endCall, selectedId, upsertCallTranscript]);
+
   const startRealtimeProgressCue = useCallback((speechStoppedAt: number) => {
     const previous = activeRealtimeProgressCueRef.current;
     if (previous?.responseId && !previous.done) {
@@ -2501,6 +2520,10 @@ export function ConversationWorkspace({
       void runRealtimeTask(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}", true);
       return;
     }
+    if (event.type === "response.function_call_arguments.done" && event.call_id && event.name === "start_meeting_mode") {
+      runRealtimeMeetingMode(event.call_id);
+      return;
+    }
     if (event.type === "response.done" && event.response) {
       const progressCueId = realtimeProgressCueId(event.response);
       if (progressCueId) {
@@ -2518,6 +2541,9 @@ export function ConversationWorkspace({
         if (output.type === "function_call" && output.name === "start_reslu_task" && output.call_id) {
           void runRealtimeTask(output.call_id, responseId ?? null, output.arguments ?? "{}");
         }
+        if (output.type === "function_call" && output.name === "start_meeting_mode" && output.call_id) {
+          runRealtimeMeetingMode(output.call_id);
+        }
       }
       if (event.response.status === "completed" && !(event.response.output ?? []).some((item) => item.type === "function_call")) {
         setCallState(activeRealtimeConsultRef.current ? "thinking" : "listening");
@@ -2528,7 +2554,7 @@ export function ConversationWorkspace({
       setCallError("The realtime call hit an error. Please try again.");
       setCallState("reconnecting");
     }
-  }, [interruptRealtimePlayback, runRealtimeConsult, runRealtimeTask, sendRealtimeEvent, startRealtimeProgressCue, upsertCallTranscript]);
+  }, [interruptRealtimePlayback, runRealtimeConsult, runRealtimeMeetingMode, runRealtimeTask, sendRealtimeEvent, startRealtimeProgressCue, upsertCallTranscript]);
 
   const createCallRecord = useCallback(async () => {
     const conversationId = callConversationIdRef.current ?? selectedId;
@@ -3091,6 +3117,21 @@ export function ConversationWorkspace({
                   <span className="hidden text-subhead sm:inline">Call {callAgent.display_name}</span>
                 </button>
               )}
+              {callAgent?.agent_slug === "aria" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMeetingSourceCallId(null);
+                    setMeetingMinutesId(null);
+                    setMeetingModeOpen(true);
+                  }}
+                  aria-label="Ask Aria to take meeting minutes"
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-[#c9b998] text-caption font-semibold text-nearblack hover:bg-[#e9e2d6] sm:w-auto sm:px-3"
+                >
+                  <span aria-hidden className="text-lg sm:hidden">≣</span>
+                  <span className="hidden sm:inline">Take minutes</span>
+                </button>
+              )}
               <div className="relative shrink-0">
                 <button
                   type="button"
@@ -3279,6 +3320,19 @@ export function ConversationWorkspace({
                     <div key={message.id} className="border-y border-[#d4cbbd] py-3 text-center">
                       <p className="label-caps">{message.kind === "call_record" ? "Call completed" : "Meeting completed"}</p>
                       <p className="mt-2 text-caption text-charcoal/60">{message.body}</p>
+                      {message.kind === "meeting_record" && typeof message.metadata.meeting_minutes_id === "string" && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMeetingSourceCallId(null);
+                            setMeetingMinutesId(message.metadata.meeting_minutes_id as string);
+                            setMeetingModeOpen(true);
+                          }}
+                          className="mt-3 rounded-full border border-nearblack px-4 py-2 text-caption font-semibold text-nearblack hover:bg-nearblack hover:text-white"
+                        >
+                          Open filed minutes
+                        </button>
+                      )}
                     </div>
                   );
                   return (
@@ -3728,6 +3782,22 @@ export function ConversationWorkspace({
             </div>
           )}
         </div>
+      )}
+      {meetingModeOpen && selectedId && callAgent?.agent_slug === "aria" && (
+        <MeetingMode
+          conversationId={selectedId}
+          initialMeetingId={meetingMinutesId}
+          sourceCallId={meetingSourceCallId}
+          onClose={() => {
+            setMeetingModeOpen(false);
+            setMeetingSourceCallId(null);
+            setMeetingMinutesId(null);
+          }}
+          onFiled={() => {
+            void loadMessages(selectedId);
+            void loadConversations({ preserveError: true });
+          }}
+        />
       )}
     </div>
   );

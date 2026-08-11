@@ -370,7 +370,32 @@ Stage gate:
 
 ## Stage 6 - Meeting Mode and intelligent filing
 
-Status: behaviour and safeguards defined; implementation pending.
+Status: core implementation complete on the Meeting Mode branch; migration,
+Mac-mini MCP update and real client-meeting acceptance are pending.
+
+Implemented in the core slice:
+
+- One-tap entry from an Aria thread and a `start_meeting_mode` transition from
+  an active Aria voice call.
+- Calendar/lead/project candidate ranking with visible confidence reasons,
+  an unassigned fallback and no fuzzy-name auto-filing.
+- Explicit participant-consent gate, silent capture, pause/resume/finish,
+  30-second private on-device audio/session checkpoints and recoverable upload.
+- Private Supabase source audio and local-Whisper transcription on the Mac mini;
+  full client meetings are not sent to OpenAI.
+- Durable strong-model Aria drafting that continues after the capture screen
+  closes, with seven editable minutes sections and the source transcript.
+- Optimistic draft versioning, destination revalidation, duplicate-event
+  confirmation, one transactional canonical record/timeline link and an audit
+  trail for capture, destination, draft and filing state changes.
+
+Still required before the stage gate can pass:
+
+- Apply and verify migration 103, update the Mac-mini MCP checkout, then test
+  the complete local-Whisper task on production data.
+- Add speaker labels only if a locally approved diarization path proves reliable;
+  the current source is a verbatim meeting-level transcript.
+- Prove lead, active-project and ambiguous-destination scenarios in real meetings.
 
 Work:
 
@@ -378,7 +403,8 @@ Work:
 - Resolve calendar event, meeting type and candidate lead/project.
 - Remain silent unless directly addressed.
 - Display a persistent recording/listening and consent indicator.
-- Checkpoint transcript, speaker information and session health.
+- Checkpoint source audio and session health; retain transcript provenance and
+  add speaker information only where a reliable local model can supply it.
 - Produce an editable structured draft: summary, decisions, client requests,
   RESLU actions, client actions, open questions and important notes.
 - Show the proposed destination and confidence reasons.
