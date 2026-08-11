@@ -25,9 +25,15 @@ scope and operational source of truth.
 The application now includes the X1 connection and cache foundation:
 
 - admin-only OAuth routes at `/api/xero/connect` and `/api/xero/callback`;
-- granular read scopes for invoices and payments only (contact summaries arrive on invoices; broader contact/settings reads are deferred until a feature needs them);
+- granular read scopes for invoices, payments and the seven supported financial
+  report families (contact summaries arrive on invoices; broader contact/settings
+  reads are deferred until a feature needs them);
 - AES-256-GCM encrypted access and rotating refresh tokens stored in service-role-only tables;
 - a manual `/api/xero/sync` import of invoices, purchase bills and payments;
+- an on-demand, admin-only `/api/xero/reports` reader for Profit & Loss,
+  Balance Sheet, Trial Balance, Bank Summary, Budget Summary, Executive
+  Summary and published Australian BAS reports, including in-app display and
+  CSV download;
 - durable sync-run audit rows and an admin Settings connection/status panel.
 
 Before connecting production, apply `102_xero_readonly.sql`, configure the
@@ -37,12 +43,13 @@ three required Xero environment variables documented in `.env.local.example`
 exceptions UI described below remains the next X1 delivery slice.
 
 1. Connect one RESLU Xero organisation through OAuth 2.0.
-2. Request only the minimum read scopes needed. The connection foundation
-   starts with invoice and payment reads plus `offline_access`; contact
-   summaries included on invoices cover initial matching. Add contact or
-   organisation/settings reads only when a later feature actually calls those
-   endpoints. Xero assigned granular scopes to Web/PKCE apps from March 2026,
-   so use those rather than the older broad transaction scope.
+2. Request only the minimum read scopes needed. The connection foundation uses
+   invoice and payment reads, granular scopes for the report families surfaced
+   by RESLU, and `offline_access`; contact summaries included on invoices cover
+   initial matching. Add contact or organisation/settings reads only when a
+   later feature actually calls those endpoints. Xero assigned granular scopes
+   to Web/PKCE apps from March 2026, so use those rather than the older broad
+   transaction or report scopes.
 3. Encrypt refresh tokens at rest and keep them server-side. Never put
    Xero credentials in browser code, Aria's workspace files or logs.
 4. Import Xero sales invoices and purchase bills, their contact,
