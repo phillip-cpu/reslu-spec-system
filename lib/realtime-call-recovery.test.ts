@@ -12,6 +12,7 @@ const disconnected = {
   realtimeActive: true,
   online: true,
   visible: true,
+  backgroundCapable: false,
   inFlight: false,
   attempts: 0,
   microphoneReady: true,
@@ -23,6 +24,7 @@ test("realtime recovery requires a visible online active call", () => {
   assert.equal(shouldAttemptRealtimeReconnect(disconnected), true);
   assert.equal(shouldAttemptRealtimeReconnect({ ...disconnected, online: false }), false);
   assert.equal(shouldAttemptRealtimeReconnect({ ...disconnected, visible: false }), false);
+  assert.equal(shouldAttemptRealtimeReconnect({ ...disconnected, visible: false, backgroundCapable: true }), true);
   assert.equal(shouldAttemptRealtimeReconnect({ ...disconnected, callActive: false }), false);
   assert.equal(shouldAttemptRealtimeReconnect({ ...disconnected, inFlight: true }), false);
 });
