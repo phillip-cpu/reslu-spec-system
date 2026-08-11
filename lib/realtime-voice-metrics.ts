@@ -17,6 +17,8 @@ export interface RealtimeVoiceLatencyMetric {
   backend_total_ms?: number;
   response_to_first_audio_ms?: number;
   speech_to_first_audio_ms?: number;
+  interruption_to_mute_ms?: number;
+  interruption_to_buffer_cleared_ms?: number;
 }
 
 export interface RealtimeVoiceLatencyMetadata {
@@ -30,6 +32,9 @@ export interface RealtimeVoiceLatencyMetadata {
     average_agent_processing_ms: number | null;
     average_total_turn_ms: number | null;
     slowest_total_turn_ms: number | null;
+    observed_interruptions: number;
+    average_interruption_clear_ms: number | null;
+    slowest_interruption_clear_ms: number | null;
   };
   turns: RealtimeVoiceLatencyMetric[];
 }
@@ -45,6 +50,8 @@ const DURATION_KEYS = [
   "backend_total_ms",
   "response_to_first_audio_ms",
   "speech_to_first_audio_ms",
+  "interruption_to_mute_ms",
+  "interruption_to_buffer_cleared_ms",
 ] as const satisfies ReadonlyArray<keyof RealtimeVoiceLatencyMetric>;
 
 function safeDuration(value: unknown): number | null {
@@ -96,6 +103,9 @@ export function buildRealtimeVoiceLatencyMetadata(value: unknown): RealtimeVoice
   const totalTurns = turns.flatMap((metric) => typeof metric.speech_to_first_audio_ms === "number"
     ? [metric.speech_to_first_audio_ms]
     : []);
+  const interruptions = turns.flatMap((metric) => typeof metric.interruption_to_buffer_cleared_ms === "number"
+    ? [metric.interruption_to_buffer_cleared_ms]
+    : []);
   return {
     schema_version: 1,
     transport: "openai_realtime_webrtc",
@@ -107,6 +117,9 @@ export function buildRealtimeVoiceLatencyMetadata(value: unknown): RealtimeVoice
       average_agent_processing_ms: average(turns, "agent_processing_ms"),
       average_total_turn_ms: average(turns, "speech_to_first_audio_ms"),
       slowest_total_turn_ms: totalTurns.length > 0 ? Math.max(...totalTurns) : null,
+      observed_interruptions: interruptions.length,
+      average_interruption_clear_ms: average(turns, "interruption_to_buffer_cleared_ms"),
+      slowest_interruption_clear_ms: interruptions.length > 0 ? Math.max(...interruptions) : null,
     },
     turns,
   };

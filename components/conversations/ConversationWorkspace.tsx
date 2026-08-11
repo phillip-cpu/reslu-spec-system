@@ -137,6 +137,12 @@ interface RealtimeProgressCue {
   done: boolean;
 }
 
+interface RealtimeInterruptionTiming {
+  detectedAt: number;
+  mutedAt: number;
+  toolCallId: string | null;
+}
+
 interface RealtimeTurnTiming {
   turn: number;
   outcome: RealtimeVoiceOutcome;
@@ -152,6 +158,8 @@ interface RealtimeTurnTiming {
   queueWaitMs: number | null;
   agentProcessingMs: number | null;
   backendTotalMs: number | null;
+  interruptionToMuteMs: number | null;
+  interruptionToBufferClearedMs: number | null;
 }
 
 interface RealtimeConsultStatusResponse {
@@ -186,6 +194,8 @@ function realtimeVoiceMetrics(timings: Map<string, RealtimeTurnTiming>): Realtim
       backend_total_ms: timing.backendTotalMs ?? undefined,
       response_to_first_audio_ms: performanceDuration(timing.responseRequestedAt, timing.firstAudioAt),
       speech_to_first_audio_ms: performanceDuration(timing.speechStoppedAt, timing.firstAudioAt),
+      interruption_to_mute_ms: timing.interruptionToMuteMs ?? undefined,
+      interruption_to_buffer_cleared_ms: timing.interruptionToBufferClearedMs ?? undefined,
     }));
 }
 
@@ -619,6 +629,7 @@ export function ConversationWorkspace({
   const realtimeReconnectTimerRef = useRef<number | null>(null);
   const realtimeReconnectRunnerRef = useRef<() => Promise<void>>(async () => undefined);
   const activeResponseIdRef = useRef<string | null>(null);
+  const activeOutputAudioResponseIdRef = useRef<string | null>(null);
   const activeRealtimeConsultRef = useRef<ActiveRealtimeConsult | null>(null);
   const cancelledResponseIdsRef = useRef(new Set<string>());
   const cancelledToolCallIdsRef = useRef(new Set<string>());
@@ -630,6 +641,8 @@ export function ConversationWorkspace({
   const realtimeProgressResponseToolCallIdsRef = useRef(new Map<string, string>());
   const activeRealtimeProgressCueRef = useRef<RealtimeProgressCue | null>(null);
   const realtimeProgressResponseCueIdsRef = useRef(new Map<string, string>());
+  const realtimeAudibleResponseIdsRef = useRef(new Set<string>());
+  const pendingRealtimeInterruptionsRef = useRef(new Map<string, RealtimeInterruptionTiming>());
   const pendingSpokenToolCallIdRef = useRef<string | null>(null);
   const inputTranscriptByItemRef = useRef(new Map<string, string>());
   const lastReadMessageByConversationRef = useRef(new Map<string, string>());
@@ -1928,16 +1941,32 @@ export function ConversationWorkspace({
     if (channel?.readyState === "open") channel.send(JSON.stringify(event));
   }, []);
 
-  const interruptRealtimePlayback = useCallback(() => {
-    const responseId = activeResponseIdRef.current;
+  const interruptRealtimePlayback = useCallback((detectedAt = performance.now()) => {
+    const generatingResponseId = activeResponseIdRef.current;
     const progressCue = activeRealtimeProgressCueRef.current;
+    // `response.done` can arrive while WebRTC still has buffered audio. Keep a
+    // separate output-audio id so barge-in clears that audible tail instead of
+    // treating generation completion as playback completion.
+    const responseId = activeOutputAudioResponseIdRef.current ?? progressCue?.responseId ?? generatingResponseId ?? null;
+    const toolCallId = responseId
+      ? realtimeResponseToolCallIdsRef.current.get(responseId)
+        ?? realtimeProgressResponseToolCallIdsRef.current.get(responseId)
+        ?? progressCue?.toolCallId
+        ?? null
+      : null;
+    const outputWasAudible = Boolean(responseId && realtimeAudibleResponseIdsRef.current.has(responseId));
+    if (generatingResponseId && generatingResponseId !== responseId) {
+      cancelledResponseIdsRef.current.add(generatingResponseId);
+      const generatingToolCallId = realtimeResponseToolCallIdsRef.current.get(generatingResponseId);
+      const generatingTiming = generatingToolCallId ? realtimeTurnTimingsRef.current.get(generatingToolCallId) : null;
+      if (generatingTiming && generatingTiming.outcome === "pending") generatingTiming.outcome = "cancelled";
+    }
     if (responseId) {
       cancelledResponseIdsRef.current.add(responseId);
-      const toolCallId = realtimeResponseToolCallIdsRef.current.get(responseId);
       const timing = toolCallId ? realtimeTurnTimingsRef.current.get(toolCallId) : null;
       if (timing && timing.outcome === "pending") timing.outcome = "cancelled";
     }
-    activeResponseIdRef.current = null;
+    if (generatingResponseId) activeResponseIdRef.current = null;
     if (progressCue?.responseId) {
       cancelledResponseIdsRef.current.add(progressCue.responseId);
       if (!progressCue.done) {
@@ -1949,13 +1978,20 @@ export function ConversationWorkspace({
     // not yet a completed replacement request: road noise, echo and a throat
     // clear can all produce this event. Keep the authoritative OpenClaw
     // consult alive until a newer completed tool call supersedes it.
-    if (responseId) {
-      sendRealtimeEvent({ type: "response.cancel" });
-    }
+    // Cancel only a response that is still generating. If `response.done`
+    // already arrived, the remaining work is buffered playback and clearing
+    // the output buffer is sufficient (and avoids a harmless provider error).
+    if (generatingResponseId) sendRealtimeEvent({ type: "response.cancel", response_id: generatingResponseId });
     if (responseId || progressCue?.responseId) {
       sendRealtimeEvent({ type: "output_audio_buffer.clear" });
     }
     if (remoteAudioRef.current) remoteAudioRef.current.muted = true;
+    const mutedAt = performance.now();
+    if (responseId && outputWasAudible) {
+      pendingRealtimeInterruptionsRef.current.set(responseId, { detectedAt, mutedAt, toolCallId });
+      const timing = toolCallId ? realtimeTurnTimingsRef.current.get(toolCallId) : null;
+      if (timing) timing.interruptionToMuteMs = performanceDuration(detectedAt, mutedAt) ?? null;
+    }
     setCallState("interrupted");
   }, [sendRealtimeEvent]);
 
@@ -2094,6 +2130,7 @@ export function ConversationWorkspace({
     setCallError(null);
     setInterim("");
     activeResponseIdRef.current = null;
+    activeOutputAudioResponseIdRef.current = null;
     activeRealtimeConsultRef.current = null;
     cancelledResponseIdsRef.current.clear();
     cancelledToolCallIdsRef.current.clear();
@@ -2104,6 +2141,8 @@ export function ConversationWorkspace({
     realtimeResponseToolCallIdsRef.current.clear();
     realtimeProgressResponseToolCallIdsRef.current.clear();
     realtimeProgressResponseCueIdsRef.current.clear();
+    realtimeAudibleResponseIdsRef.current.clear();
+    pendingRealtimeInterruptionsRef.current.clear();
     activeRealtimeProgressCueRef.current = null;
     pendingSpokenToolCallIdRef.current = null;
     inputTranscriptByItemRef.current.clear();
@@ -2148,6 +2187,8 @@ export function ConversationWorkspace({
       queueWaitMs: null,
       agentProcessingMs: null,
       backendTotalMs: null,
+      interruptionToMuteMs: null,
+      interruptionToBufferClearedMs: null,
     };
     if (matchingCue?.responseId) {
       realtimeProgressResponseToolCallIdsRef.current.set(matchingCue.responseId, toolCallId);
@@ -2409,7 +2450,7 @@ export function ConversationWorkspace({
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.type === "input_audio_buffer.speech_started") {
-      interruptRealtimePlayback();
+      interruptRealtimePlayback(performance.now());
       setInterim("");
       return;
     }
@@ -2454,6 +2495,10 @@ export function ConversationWorkspace({
     if (event.type === "output_audio_buffer.started" || event.type === "response.output_audio.delta") {
       const responseId = event.response_id ?? activeResponseIdRef.current;
       if (responseId && !cancelledResponseIdsRef.current.has(responseId)) {
+        if (event.type === "output_audio_buffer.started") {
+          activeOutputAudioResponseIdRef.current = responseId;
+          realtimeAudibleResponseIdsRef.current.add(responseId);
+        }
         const progressCueId = realtimeProgressResponseCueIdsRef.current.get(responseId);
         const activeProgressCue = activeRealtimeProgressCueRef.current;
         if (
@@ -2476,6 +2521,30 @@ export function ConversationWorkspace({
         }
         setCallState("speaking");
       }
+      return;
+    }
+    if (event.type === "output_audio_buffer.cleared" && event.response_id) {
+      const interruption = pendingRealtimeInterruptionsRef.current.get(event.response_id);
+      if (interruption) {
+        const toolCallId = interruption.toolCallId
+          ?? realtimeResponseToolCallIdsRef.current.get(event.response_id)
+          ?? realtimeProgressResponseToolCallIdsRef.current.get(event.response_id)
+          ?? null;
+        const timing = toolCallId ? realtimeTurnTimingsRef.current.get(toolCallId) : null;
+        if (timing) {
+          timing.interruptionToMuteMs ??= performanceDuration(interruption.detectedAt, interruption.mutedAt) ?? null;
+          timing.interruptionToBufferClearedMs = performanceDuration(interruption.detectedAt, performance.now()) ?? null;
+        }
+        pendingRealtimeInterruptionsRef.current.delete(event.response_id);
+      }
+      realtimeAudibleResponseIdsRef.current.delete(event.response_id);
+      if (activeOutputAudioResponseIdRef.current === event.response_id) activeOutputAudioResponseIdRef.current = null;
+      return;
+    }
+    if (event.type === "output_audio_buffer.stopped" && event.response_id) {
+      realtimeAudibleResponseIdsRef.current.delete(event.response_id);
+      pendingRealtimeInterruptionsRef.current.delete(event.response_id);
+      if (activeOutputAudioResponseIdRef.current === event.response_id) activeOutputAudioResponseIdRef.current = null;
       return;
     }
     if (event.type === "conversation.item.input_audio_transcription.delta" && event.item_id && event.delta) {
@@ -2706,6 +2775,9 @@ export function ConversationWorkspace({
     setCallState("reconnecting");
     remoteAudioRef.current?.pause();
     activeResponseIdRef.current = null;
+    activeOutputAudioResponseIdRef.current = null;
+    realtimeAudibleResponseIdsRef.current.clear();
+    pendingRealtimeInterruptionsRef.current.clear();
     activeRealtimeProgressCueRef.current = null;
     let retry = false;
     try {
@@ -2871,11 +2943,15 @@ export function ConversationWorkspace({
     callConversationIdRef.current ??= selectedId;
     clientCallIdRef.current ??= crypto.randomUUID();
     lastRealtimeSpeechStoppedAtRef.current = null;
+    activeResponseIdRef.current = null;
+    activeOutputAudioResponseIdRef.current = null;
     realtimeTurnSequenceRef.current = 0;
     realtimeTurnTimingsRef.current.clear();
     realtimeResponseToolCallIdsRef.current.clear();
     realtimeProgressResponseToolCallIdsRef.current.clear();
     realtimeProgressResponseCueIdsRef.current.clear();
+    realtimeAudibleResponseIdsRef.current.clear();
+    pendingRealtimeInterruptionsRef.current.clear();
     activeRealtimeProgressCueRef.current = null;
     pendingSpokenToolCallIdRef.current = null;
     inputTranscriptByItemRef.current.clear();
