@@ -37,6 +37,10 @@ import {
 } from "@/lib/realtime-call-recovery";
 import { buildRealtimeProgressResponse, realtimeProgressCueId } from "@/lib/realtime-progress";
 import {
+  CONVERSATION_MESSAGE_REACTIONS,
+  type ConversationMessageReactionValue,
+} from "@/lib/conversation-message-engagement";
+import {
   listConversationDrafts,
   listPendingConversationMessages,
   mergePendingConversationMessages,
@@ -535,6 +539,7 @@ export function ConversationWorkspace({
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [pinnedMessages, setPinnedMessages] = useState<ConversationMessage[]>([]);
   const [participants, setParticipants] = useState<ConversationParticipant[]>([]);
   const [agentActivity, setAgentActivity] = useState<ConversationAgentActivity[]>([]);
   const [draftsByConversation, setDraftsByConversation] = useState<Record<string, string>>({});
@@ -775,6 +780,9 @@ export function ConversationWorkspace({
           created_at: entry.createdAt,
           edited_at: null,
           deleted_at: null,
+          reactions: [],
+          pinned_at: null,
+          pinned_by: null,
           attachments: entry.attachments,
           author: selfParticipant,
         },
@@ -919,6 +927,7 @@ export function ConversationWorkspace({
       }
       setParticipants(body.participants);
       setAgentActivity(Array.isArray(body.agent_activity) ? body.agent_activity as ConversationAgentActivity[] : []);
+      setPinnedMessages(Array.isArray(body.pinned_messages) ? body.pinned_messages as ConversationMessage[] : []);
       const requestedMessage = requestedMessageIdRef.current
         ? incoming.find((message) => message.id === requestedMessageIdRef.current)
         : null;
@@ -1159,6 +1168,9 @@ export function ConversationWorkspace({
 
   const applyMessageMutation = useCallback((message: ConversationMessage) => {
     setMessages((current) => current.map((candidate) => candidate.id === message.id ? message : candidate));
+    setPinnedMessages((current) => message.pinned_at
+      ? current.map((candidate) => candidate.id === message.id ? message : candidate)
+      : current.filter((candidate) => candidate.id !== message.id));
     if (message.deleted_at) {
       setReplyingTo((current) => current?.id === message.id ? null : current);
       setEditingMessageId((current) => current === message.id ? null : current);
@@ -1247,6 +1259,63 @@ export function ConversationWorkspace({
       setMessageMutationId(null);
     }
   }, [applyMessageMutation, messageMutationId]);
+
+  const toggleMessageReaction = useCallback(async (
+    message: ConversationMessage,
+    reaction: ConversationMessageReactionValue
+  ) => {
+    const conversationId = selectedIdRef.current;
+    if (!conversationId || messageMutationId) return;
+    setMessageMenuId(null);
+    setMessageMutationId(message.id);
+    setError(null);
+    try {
+      const response = await fetch(`/api/conversations/${conversationId}/messages/${message.id}/reaction`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reaction }),
+      });
+      const result = await response.json().catch(() => ({})) as { reactions?: ConversationMessage["reactions"]; error?: string };
+      if (!response.ok || !result.reactions) throw new Error(result.error ?? "Could not update reaction");
+      setMessages((current) => current.map((candidate) => candidate.id === message.id
+        ? { ...candidate, reactions: result.reactions! }
+        : candidate));
+      setPinnedMessages((current) => current.map((candidate) => candidate.id === message.id
+        ? { ...candidate, reactions: result.reactions! }
+        : candidate));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not update reaction");
+    } finally {
+      setMessageMutationId(null);
+    }
+  }, [messageMutationId]);
+
+  const toggleMessagePin = useCallback(async (message: ConversationMessage) => {
+    const conversationId = selectedIdRef.current;
+    if (!conversationId || messageMutationId) return;
+    const nextPinned = !message.pinned_at;
+    setMessageMenuId(null);
+    setMessageMutationId(message.id);
+    setError(null);
+    try {
+      const response = await fetch(`/api/conversations/${conversationId}/messages/${message.id}/pin`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pinned: nextPinned }),
+      });
+      const result = await response.json().catch(() => ({})) as { pinned_at?: string | null; pinned_by?: string | null; error?: string };
+      if (!response.ok || !("pinned_at" in result)) throw new Error(result.error ?? "Could not update pinned message");
+      const updated = { ...message, pinned_at: result.pinned_at ?? null, pinned_by: result.pinned_by ?? null };
+      setMessages((current) => current.map((candidate) => candidate.id === message.id ? updated : candidate));
+      setPinnedMessages((current) => result.pinned_at
+        ? [updated, ...current.filter((candidate) => candidate.id !== message.id)].slice(0, 5)
+        : current.filter((candidate) => candidate.id !== message.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not update pinned message");
+    } finally {
+      setMessageMutationId(null);
+    }
+  }, [messageMutationId]);
 
   const discardFailedOutboxEntry = useCallback((entry: PendingConversationMessage) => {
     if (!window.confirm("Discard this unsent message from this device?")) return;
@@ -1487,6 +1556,7 @@ export function ConversationWorkspace({
     setMessageSearch({ query: "", results: [], loading: false, error: null, hasSearched: false });
     selectedIdRef.current = conversationId;
     setMessages([]);
+    setPinnedMessages([]);
     setParticipants([]);
     setAgentActivity([]);
     setConversationMenuOpen(false);
@@ -3421,6 +3491,24 @@ export function ConversationWorkspace({
               </div>
             )}
 
+            {pinnedMessages.length > 0 && (
+              <div className="shrink-0 border-b border-[#d4cbbd] bg-[#f5f1e8] px-3 py-2 md:px-5" aria-label="Pinned messages">
+                <div className="mx-auto flex max-w-3xl items-center gap-2 overflow-x-auto">
+                  <span className="shrink-0 text-[10px] font-semibold uppercase tracking-widest text-charcoal/45">Pinned</span>
+                  {pinnedMessages.map((message) => (
+                    <button
+                      key={message.id}
+                      type="button"
+                      onClick={() => jumpToReferencedMessage(message.id)}
+                      className="max-w-64 shrink-0 truncate rounded-full border border-[#d4cbbd] bg-white/70 px-3 py-1.5 text-left text-caption text-charcoal/70 hover:border-charcoal/40 hover:text-nearblack"
+                    >
+                      <span aria-hidden>📌 </span>{message.body}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div
               ref={messagesScrollerRef}
               onScroll={(event) => {
@@ -3481,7 +3569,23 @@ export function ConversationWorkspace({
                           </button>
                         </div>
                         {messageMenuId === message.id && (
-                          <div role="menu" className="absolute right-2 top-10 z-20 w-36 overflow-hidden rounded-xl border border-[#d4cbbd] bg-white py-1 text-caption text-nearblack shadow-2xl">
+                          <div role="menu" className="absolute right-2 top-10 z-20 w-48 overflow-hidden rounded-xl border border-[#d4cbbd] bg-white py-1 text-caption text-nearblack shadow-2xl">
+                            {!pending && !message.deleted_at && (
+                              <div className="flex items-center justify-between border-b border-[#eee8de] px-2 py-2" aria-label="React to message">
+                                {CONVERSATION_MESSAGE_REACTIONS.map((reaction) => (
+                                  <button
+                                    key={reaction}
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => void toggleMessageReaction(message, reaction)}
+                                    aria-label={`React ${reaction}`}
+                                    className="flex h-7 w-7 items-center justify-center rounded-full text-base hover:bg-[#f5f1e8]"
+                                  >
+                                    {reaction}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                             {!pending && !message.deleted_at && (
                               <button type="button" role="menuitem" onClick={() => beginReply(message)} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f1e8]">
                                 Reply
@@ -3495,6 +3599,11 @@ export function ConversationWorkspace({
                             {canEdit && (
                               <button type="button" role="menuitem" onClick={() => beginMessageEdit(message)} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f1e8]">
                                 Edit
+                              </button>
+                            )}
+                            {!pending && !message.deleted_at && (
+                              <button type="button" role="menuitem" onClick={() => void toggleMessagePin(message)} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f1e8]">
+                                {message.pinned_at ? "Unpin" : "Pin message"}
                               </button>
                             )}
                             {own && !pending && !message.deleted_at && message.kind === "text" && (
@@ -3567,6 +3676,28 @@ export function ConversationWorkspace({
                             })}
                           </div>
                         )}
+                        {!message.deleted_at && (message.reactions ?? []).length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5" aria-label="Message reactions">
+                            {(message.reactions ?? []).map((reaction) => (
+                              <button
+                                key={reaction.reaction}
+                                type="button"
+                                onClick={() => void toggleMessageReaction(message, reaction.reaction)}
+                                disabled={messageMutationId === message.id}
+                                aria-label={`${reaction.reaction}, ${reaction.count}${reaction.self_reacted ? ", reacted by you" : ""}`}
+                                className={clsx(
+                                  "rounded-full border px-2 py-1 text-caption disabled:opacity-40",
+                                  reaction.self_reacted
+                                    ? own ? "border-white/55 bg-white/20 text-white" : "border-charcoal/45 bg-white text-nearblack"
+                                    : own ? "border-white/20 bg-white/10 text-white/75" : "border-[#d4cbbd] bg-white/60 text-charcoal/65"
+                                )}
+                              >
+                                {reaction.reaction} {reaction.count}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {!message.deleted_at && message.pinned_at && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Pinned</p>}
                         {!message.deleted_at && message.metadata.source === "voice" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Voice transcript</p>}
                         {!message.deleted_at && message.edited_at && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Edited</p>}
                         {own && (pending || message.client_message_id) && (

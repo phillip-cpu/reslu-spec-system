@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { conversationParticipants } from "@/lib/conversation-access";
 import { conversationAttachmentAccessUrl } from "@/lib/conversation-attachments";
+import {
+  summarizeConversationMessageReactions,
+  type ConversationMessageReactionRow,
+} from "@/lib/conversation-message-engagement";
 import { messageAuthor } from "@/lib/conversations";
 import { createClient } from "@/lib/supabase/server";
 import type { ConversationAttachment, ConversationMessage } from "@/types/conversations";
@@ -14,8 +18,10 @@ type MutationInput = {
   body?: unknown;
   expected_version?: unknown;
 };
-type MessageRow = Omit<ConversationMessage, "attachments" | "author"> & {
+type MessageRow = Omit<ConversationMessage, "attachments" | "author" | "reactions" | "pinned_at" | "pinned_by"> & {
   conversation_attachments?: ConversationAttachment[];
+  conversation_message_reactions?: ConversationMessageReactionRow[];
+  conversation_message_pins?: Array<{ pinned_at: string; pinned_by: string }>;
 };
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -34,7 +40,7 @@ async function hydratedMessage(
 ) {
   const { data, error } = await supabase
     .from("conversation_messages")
-    .select("*, conversation_attachments(*)")
+    .select("*, conversation_attachments(*), conversation_message_reactions(reaction,profile_id), conversation_message_pins(pinned_at,pinned_by)")
     .eq("id", messageId)
     .eq("conversation_id", conversationId)
     .single();
@@ -47,11 +53,24 @@ async function hydratedMessage(
       metadata: attachment.metadata ?? {},
       url: conversationAttachmentAccessUrl(conversationId, attachment.id),
     }));
-  const { conversation_attachments: _joined, ...message } = row;
+  const selfProfileId = participants.find((participant) => participant.is_self)?.id ?? null;
+  const pin = row.deleted_at ? null : row.conversation_message_pins?.[0] ?? null;
+  const reactions = row.deleted_at
+    ? []
+    : summarizeConversationMessageReactions(row.conversation_message_reactions ?? [], selfProfileId);
+  const {
+    conversation_attachments: _joinedAttachments,
+    conversation_message_reactions: _joinedReactions,
+    conversation_message_pins: _joinedPins,
+    ...message
+  } = row;
   return {
     ...message,
     metadata: message.metadata ?? {},
     attachments,
+    reactions,
+    pinned_at: pin?.pinned_at ?? null,
+    pinned_by: pin?.pinned_by ?? null,
     author: messageAuthor(message, participants),
   } as ConversationMessage;
 }
