@@ -69,6 +69,7 @@ export function buildRealtimeSession(agent: { slug: AgentSlug; display_name: str
         },
         turn_detection: {
           type: "semantic_vad",
+          eagerness: "high",
           create_response: true,
           interrupt_response: true,
         },

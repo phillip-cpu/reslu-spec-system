@@ -10,6 +10,7 @@ const workspace = read("components/conversations/ConversationWorkspace.tsx");
 const consultRoute = read("app/api/conversations/[id]/realtime/consult/route.ts");
 const callsRoute = read("app/api/conversations/[id]/calls/route.ts");
 const metrics = read("lib/realtime-voice-metrics.ts");
+const progress = read("lib/realtime-progress.ts");
 
 test("realtime calls measure actual WebRTC output audio instead of transcript timing", () => {
   assert.match(workspace, /output_audio_buffer\.started/);
@@ -19,11 +20,20 @@ test("realtime calls measure actual WebRTC output audio instead of transcript ti
   assert.match(workspace, /response_to_first_audio_ms/);
 });
 
-test("a slow substantive consult gets one bounded truthful spoken progress cue", () => {
-  assert.match(workspace, /progressCuePlayed/);
-  assert.match(workspace, /Say exactly: \"I’m checking that now\.\"/);
-  assert.match(workspace, /tool_choice: "none"/);
+test("speech stop immediately requests one out-of-band truthful progress cue", () => {
+  assert.match(workspace, /startRealtimeProgressCue\(speechStoppedAt\)/);
+  assert.match(workspace, /sendRealtimeEvent\(buildRealtimeProgressResponse\(cueId\)\)/);
+  assert.match(progress, /conversation: "none"/);
+  assert.match(progress, /Say exactly: \"I’m checking that now\.\"/);
+  assert.match(progress, /tool_choice: "none"/);
   assert.match(workspace, /activeRealtimeConsultRef\.current \? "thinking" : "listening"/);
+  assert.doesNotMatch(workspace, /scheduleRealtimeProgressCue/);
+});
+
+test("progress audio is independently cancellable and excluded from the transcript", () => {
+  assert.match(workspace, /type: "response\.cancel", response_id: cue\.responseId/);
+  assert.match(workspace, /realtimeProgressResponseCueIdsRef\.current\.has\(responseId\)/);
+  assert.match(workspace, /realtimeProgressCueId\(event\.response\)/);
 });
 
 test("consult timing separates queue wait, agent processing and backend total", () => {

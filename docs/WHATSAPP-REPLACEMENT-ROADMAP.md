@@ -33,7 +33,9 @@ invitation, notification, access-control and offboarding design.
 Status: in progress.
 
 Current implementation: PR #22 and migration 092 are live, and the updated Mac
-bridge is running. The first production iPhone photo reached Aria and was read
+bridge is running. Production currently contains one PDF and three images; all
+four attachment rows are ready and each is bound to one canonical message. The
+first production iPhone photo reached Aria and was read
 accurately. That trace took about 74 seconds: 2 seconds to upload, 38 seconds
 waiting behind a cancelled voice consult, and 36 seconds in the agent runtime.
 That trace completed before the bridge cancellation repair was installed, so it
@@ -72,10 +74,11 @@ Stage gate:
 
 ## Stage 2 - Trustworthy everyday messaging
 
-Status: in progress; the first reliability slice is implemented locally and
-awaiting database-first rollout.
+Status: in progress; migrations 093 through 098 and the matching application
+and bridge releases are live. The final two-device and lock-screen acceptance
+gate remains.
 
-Current implementation candidate: migration 093 adds a device-generated
+Current implementation: migration 093 adds a device-generated
 `client_message_id` and an atomic idempotent message RPC, so a lost HTTP
 response or multi-tab retry returns the original canonical message and cannot
 enqueue Aria or Marco twice. The client saves text sends into IndexedDB before
@@ -185,7 +188,7 @@ drafts; the same task cards remain in the text thread after the call. Sending,
 publishing, booking, spending, deletion and record changes remain behind an
 explicit approval boundary.
 
-Local instrumentation candidate: every Realtime turn now records bounded,
+Live instrumentation: every Realtime turn now records bounded,
 content-free durations for speech-stop to tool call, consult acceptance, bridge
 queue wait, OpenClaw processing, backend completion and first actual WebRTC
 audio. The call row and compact call record retain a per-call summary and up to
@@ -201,7 +204,7 @@ schemas. The first safe reduction removes the unnecessary failed image/copy
 iteration. Any broader tool-catalog or thinking-level change must be benchmarked
 for latency and task correctness before altering Aria's production capability.
 
-Local bridge-latency hardening now gives Aria and Marco independent serial
+Live bridge-latency hardening now gives Aria and Marco independent serial
 workers, so a slow run or claim request for one cannot hold up the other.
 Queue claims time out after five seconds instead of inheriting the general
 30-second REST timeout, while cancellation/status checks use a three-second
@@ -210,7 +213,15 @@ OpenClaw identity, stable RESLU conversation session, tools, memory and
 permissions. This contains transport stalls without introducing parallel turns
 against the same canonical agent session. It requires a fresh post-deployment
 photo, PDF and voice timing run; the 74-second pre-repair trace does not prove
-the new queue-release time.
+the new queue-release time. Six production calls now contain timing evidence.
+Recent measured acknowledgements ranged from 1.775 to 4.876 seconds and agent
+processing ranged from 13.8 to 44.1 seconds, so the Stage 3 latency gate is not
+met. The next candidate requests the fixed acknowledgement as an independent
+out-of-band Realtime audio response immediately on speech stop, rather than
+waiting for the default response to finish choosing the RESLU agent tool. It
+also uses high semantic-VAD eagerness and cancels the acknowledgement by its
+own response id so interruption and the authoritative Aria/Marco answer remain
+independent.
 
 Work:
 
@@ -359,10 +370,13 @@ Final product gate:
 
 ## Current next action
 
-Review the persistent-agent workspace candidate, apply migration 099 and its
-rollback-only verifier database-first, deploy the application, then pull and
-restart the Mac bridge. Run one iPhone acceptance flow: ask Aria to draft an
-email with the strong model, continue talking, end the call, watch the task
-continue in the thread, review the visible draft, approve it, and confirm the
-completion message is posted exactly once. Then continue the remaining
-attachment, notification, latency and two-device acceptance matrix.
+Deploy the immediate out-of-band acknowledgement candidate, make a fresh
+iPhone call and inspect its content-free call timing metadata. Do not close
+Stage 3 until speech-to-acknowledgement is below one second and interruption is
+measured below 250 ms without stale audio. Then replace the remaining blocking
+OpenClaw CLI boundary with the authenticated local Gateway run/event interface
+while retaining canonical Aria/Marco sessions and tools.
+
+The persistent-agent workspace, migration 099 and bridge worker are already
+live. Preserve that boundary while validating the remaining attachment,
+notification, latency and two-device acceptance matrix.
