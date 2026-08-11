@@ -111,7 +111,11 @@ to newest, with an explicit return-to-latest action. Older history now pages
 backwards in bounded batches while preserving the reader's scroll position and
 remaining stable across background polling. Richer message actions,
 attachment-content search, full cold-start offline support and long-history
-virtualisation remain. Migration 097 puts full-history substring search behind a
+virtualisation remain. Migration 105 adds author-owned 15-minute message edits
+with multi-device conflict detection, plus a recoverable delete that leaves a
+truthful tombstone, keeps original text private to its author for 30 days and
+immediately blocks deleted attachments. Restore changes history without
+silently re-running Aria, Marco or durable work. Migration 097 puts full-history substring search behind a
 member-scoped RPC and a trigram index so response time does not degrade into a
 full table scan as the canonical history grows. Migration 098 makes quoted
 replies part of the exactly-once send contract; reply selection survives the
@@ -168,8 +172,8 @@ Work:
 - Message push notifications, badges and unread counts.
 - Notification tap opens the exact conversation.
 - Pin, archive, mute, search and conversation notification preferences.
-- Reply/quote, copy, edit markers, recoverable delete, forward, reactions and
-  pinned messages.
+- Reply/quote, copy, edit markers and recoverable delete.
+- Forward, reactions and pinned messages.
 - Group naming, participant management and reliable mentions.
 - Voice notes and expanded safe file types after the photo/PDF slice is proven.
 - Pagination, virtualised long history and message/file search.

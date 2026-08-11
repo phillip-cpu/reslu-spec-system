@@ -560,6 +560,9 @@ export function ConversationWorkspace({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [replyingTo, setReplyingTo] = useState<ConversationMessage | null>(null);
   const [messageMenuId, setMessageMenuId] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingMessageBody, setEditingMessageBody] = useState("");
+  const [messageMutationId, setMessageMutationId] = useState<string | null>(null);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [draftAttachments, setDraftAttachments] = useState<DraftAttachment[]>([]);
   const [attachmentDropActive, setAttachmentDropActive] = useState(false);
@@ -771,6 +774,7 @@ export function ConversationWorkspace({
           reply_to_id: entry.replyToId ?? null,
           created_at: entry.createdAt,
           edited_at: null,
+          deleted_at: null,
           attachments: entry.attachments,
           author: selfParticipant,
         },
@@ -918,7 +922,10 @@ export function ConversationWorkspace({
       const requestedMessage = requestedMessageIdRef.current
         ? incoming.find((message) => message.id === requestedMessageIdRef.current)
         : null;
-      const readThroughMessage = requestedMessage ?? (shouldStickToBottomRef.current ? incoming.at(-1) : null);
+      const newestReadableMessage = shouldStickToBottomRef.current
+        ? incoming.findLast((message) => !message.deleted_at) ?? null
+        : null;
+      const readThroughMessage = requestedMessage?.deleted_at ? null : requestedMessage ?? newestReadableMessage;
       if (readThroughMessage) {
         void markConversationRead(conversationId, readThroughMessage.id);
       }
@@ -1150,6 +1157,97 @@ export function ConversationWorkspace({
     window.setTimeout(() => composerInputRef.current?.focus(), 0);
   }, []);
 
+  const applyMessageMutation = useCallback((message: ConversationMessage) => {
+    setMessages((current) => current.map((candidate) => candidate.id === message.id ? message : candidate));
+    if (message.deleted_at) {
+      setReplyingTo((current) => current?.id === message.id ? null : current);
+      setEditingMessageId((current) => current === message.id ? null : current);
+    }
+    void loadConversations({ preserveError: true });
+  }, [loadConversations]);
+
+  const beginMessageEdit = useCallback((message: ConversationMessage) => {
+    setMessageMenuId(null);
+    setEditingMessageId(message.id);
+    setEditingMessageBody(message.body);
+  }, []);
+
+  const cancelMessageEdit = useCallback(() => {
+    setEditingMessageId(null);
+    setEditingMessageBody("");
+  }, []);
+
+  const saveMessageEdit = useCallback(async (message: ConversationMessage) => {
+    if (!selectedIdRef.current || messageMutationId || editingMessageId !== message.id) return;
+    const normalized = editingMessageBody.trim();
+    if (!normalized) {
+      setError("A message cannot be empty.");
+      return;
+    }
+    setMessageMutationId(message.id);
+    setError(null);
+    try {
+      const response = await fetch(`/api/conversations/${selectedIdRef.current}/messages/${message.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "edit",
+          body: normalized,
+          expected_version: message.edited_at ?? message.created_at,
+        }),
+      });
+      const result = await response.json().catch(() => ({})) as { message?: ConversationMessage; error?: string };
+      if (!response.ok || !result.message) throw new Error(result.error ?? "Could not edit this message");
+      applyMessageMutation(result.message);
+      cancelMessageEdit();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not edit this message");
+    } finally {
+      setMessageMutationId(null);
+    }
+  }, [applyMessageMutation, cancelMessageEdit, editingMessageBody, editingMessageId, messageMutationId]);
+
+  const deleteMessageRecoverably = useCallback(async (message: ConversationMessage) => {
+    const conversationId = selectedIdRef.current;
+    if (!conversationId || messageMutationId) return;
+    setMessageMenuId(null);
+    if (!window.confirm("Delete this message for everyone? You can restore it for 30 days.")) return;
+    setMessageMutationId(message.id);
+    setError(null);
+    try {
+      const response = await fetch(`/api/conversations/${conversationId}/messages/${message.id}`, { method: "DELETE" });
+      const result = await response.json().catch(() => ({})) as { message?: ConversationMessage; error?: string };
+      if (!response.ok || !result.message) throw new Error(result.error ?? "Could not delete this message");
+      applyMessageMutation(result.message);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not delete this message");
+    } finally {
+      setMessageMutationId(null);
+    }
+  }, [applyMessageMutation, messageMutationId]);
+
+  const restoreMessage = useCallback(async (message: ConversationMessage) => {
+    const conversationId = selectedIdRef.current;
+    if (!conversationId || messageMutationId) return;
+    setMessageMenuId(null);
+    setMessageMutationId(message.id);
+    setError(null);
+    try {
+      const response = await fetch(`/api/conversations/${conversationId}/messages/${message.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "restore" }),
+      });
+      const result = await response.json().catch(() => ({})) as { message?: ConversationMessage; error?: string };
+      if (!response.ok || !result.message) throw new Error(result.error ?? "Could not restore this message");
+      applyMessageMutation(result.message);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not restore this message");
+    } finally {
+      setMessageMutationId(null);
+    }
+  }, [applyMessageMutation, messageMutationId]);
+
   const discardFailedOutboxEntry = useCallback((entry: PendingConversationMessage) => {
     if (!window.confirm("Discard this unsent message from this device?")) return;
     void discardOutboxEntry(entry.clientMessageId).catch(() => {
@@ -1380,6 +1478,8 @@ export function ConversationWorkspace({
     setMessageSearchOpen(false);
     setReplyingTo(null);
     setMessageMenuId(null);
+    setEditingMessageId(null);
+    setEditingMessageBody("");
     setAgentWorkExpanded(false);
     messageSearchRequestRef.current += 1;
     if (selectedId) activeMessageRequestRef.current.delete(selectedId);
@@ -3351,6 +3451,11 @@ export function ConversationWorkspace({
                   const own = message.author.is_self;
                   const record = message.kind === "call_record" || message.kind === "meeting_record";
                   const repliedMessage = message.reply_to_id ? timelineMessageById.get(message.reply_to_id) ?? null : null;
+                  const canEdit = own
+                    && !pending
+                    && !message.deleted_at
+                    && message.kind === "text"
+                    && Date.now() - new Date(message.created_at).getTime() <= 15 * 60 * 1000;
                   if (record) return (
                     <div key={message.id} className="border-y border-[#d4cbbd] py-3 text-center">
                       <p className="label-caps">{message.kind === "call_record" ? "Call completed" : "Meeting completed"}</p>
@@ -3377,28 +3482,63 @@ export function ConversationWorkspace({
                         </div>
                         {messageMenuId === message.id && (
                           <div role="menu" className="absolute right-2 top-10 z-20 w-36 overflow-hidden rounded-xl border border-[#d4cbbd] bg-white py-1 text-caption text-nearblack shadow-2xl">
-                            {!pending && (
+                            {!pending && !message.deleted_at && (
                               <button type="button" role="menuitem" onClick={() => beginReply(message)} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f1e8]">
                                 Reply
                               </button>
                             )}
-                            <button type="button" role="menuitem" onClick={() => void copyCanonicalMessage(message)} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f1e8]">
-                              Copy
-                            </button>
+                            {!message.deleted_at && (
+                              <button type="button" role="menuitem" onClick={() => void copyCanonicalMessage(message)} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f1e8]">
+                                Copy
+                              </button>
+                            )}
+                            {canEdit && (
+                              <button type="button" role="menuitem" onClick={() => beginMessageEdit(message)} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f1e8]">
+                                Edit
+                              </button>
+                            )}
+                            {own && !pending && !message.deleted_at && message.kind === "text" && (
+                              <button type="button" role="menuitem" onClick={() => void deleteMessageRecoverably(message)} className="block w-full px-4 py-2.5 text-left text-red-700 hover:bg-red-50">
+                                Delete
+                              </button>
+                            )}
+                            {own && message.deleted_at && (
+                              <button type="button" role="menuitem" onClick={() => void restoreMessage(message)} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f1e8]">
+                                Restore
+                              </button>
+                            )}
                           </div>
                         )}
-                        {message.reply_to_id && (
+                        {message.reply_to_id && !message.deleted_at && (
                           <button
                             type="button"
                             onClick={() => jumpToReferencedMessage(message.reply_to_id!)}
                             className={clsx("mt-2 block w-full border-l-2 px-3 py-2 text-left", own ? "border-white/40 bg-white/10" : "border-charcoal/30 bg-white/55")}
                           >
                             <span className={clsx("block truncate text-[10px] font-semibold", own ? "text-white/65" : "text-charcoal/55")}>{repliedMessage?.author.display_name ?? "Earlier message"}</span>
-                            <span className={clsx("mt-1 block truncate text-caption", own ? "text-white/80" : "text-charcoal/70")}>{repliedMessage?.body ?? "Open original message"}</span>
+                            <span className={clsx("mt-1 block truncate text-caption", own ? "text-white/80" : "text-charcoal/70")}>{repliedMessage?.deleted_at ? "Message deleted" : repliedMessage?.body ?? "Open original message"}</span>
                           </button>
                         )}
-                        <p className="mt-2 whitespace-pre-wrap text-body leading-relaxed">{message.body}</p>
-                        {(message.attachments ?? []).length > 0 && (
+                        {editingMessageId === message.id ? (
+                          <div className="mt-3">
+                            <textarea
+                              autoFocus
+                              value={editingMessageBody}
+                              onChange={(event) => setEditingMessageBody(event.target.value)}
+                              rows={3}
+                              maxLength={20000}
+                              className="w-full resize-y rounded-lg border border-white/25 bg-white/10 px-3 py-2 text-body text-white outline-none focus:border-white/60"
+                            />
+                            <div className="mt-2 flex justify-end gap-2 text-caption">
+                              <button type="button" onClick={cancelMessageEdit} className="rounded-lg px-3 py-2 text-white/70 hover:bg-white/10">Cancel</button>
+                              <button type="button" onClick={() => void saveMessageEdit(message)} disabled={messageMutationId === message.id || !editingMessageBody.trim()} className="rounded-lg bg-white px-3 py-2 font-semibold text-nearblack disabled:opacity-40">Save</button>
+                            </div>
+                            <p className="mt-2 text-[9px] uppercase tracking-widest text-white/40">Editing changes the message history; it does not resend the request.</p>
+                          </div>
+                        ) : (
+                          <p className={clsx("mt-2 whitespace-pre-wrap text-body leading-relaxed", message.deleted_at && "italic opacity-60")}>{message.body}</p>
+                        )}
+                        {!message.deleted_at && (message.attachments ?? []).length > 0 && (
                           <div className={clsx("mt-3 grid gap-2", message.attachments.length > 1 && "grid-cols-2")}>
                             {message.attachments.map((attachment) => {
                               const imageAttachment = conversationAttachmentKind(attachment.mime_type) === "image";
@@ -3427,7 +3567,8 @@ export function ConversationWorkspace({
                             })}
                           </div>
                         )}
-                        {message.metadata.source === "voice" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Voice transcript</p>}
+                        {!message.deleted_at && message.metadata.source === "voice" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Voice transcript</p>}
+                        {!message.deleted_at && message.edited_at && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Edited</p>}
                         {own && (pending || message.client_message_id) && (
                           <div className="mt-2 flex items-center justify-end gap-2 text-[9px] uppercase tracking-widest text-white/45">
                             <span>

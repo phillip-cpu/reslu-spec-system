@@ -51,6 +51,7 @@ export interface ConversationMessage {
   reply_to_id: string | null;
   created_at: string;
   edited_at: string | null;
+  deleted_at: string | null;
   attachments: ConversationAttachment[];
   author: ConversationParticipant;
 }
