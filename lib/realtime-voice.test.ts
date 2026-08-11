@@ -24,6 +24,7 @@ test("session forces substantive turns through the existing RESLU agent", () => 
   const session = buildRealtimeSession({ slug: "aria", display_name: "Aria" }, config);
   assert.equal(session.tool_choice, "required");
   assert.equal(session.audio.input.turn_detection.type, "semantic_vad");
+  assert.equal(session.audio.input.turn_detection.eagerness, "high");
   assert.equal(session.audio.input.turn_detection.interrupt_response, true);
   assert.equal(session.audio.input.transcription.model, "gpt-live-transcribe");
   assert.equal(session.audio.input.transcription.delay, "low");
