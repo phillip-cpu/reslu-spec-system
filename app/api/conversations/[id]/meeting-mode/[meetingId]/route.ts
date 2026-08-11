@@ -4,8 +4,11 @@ import {
   cleanMeetingString,
   cleanMeetingStringList,
   validMeetingRecordingStoragePath,
+  validMeetingRecordingMimeType,
 } from "@/lib/meeting-mode";
+import { inspectStorageObjectHead, sniffFileKind } from "@/lib/file-sniff";
 import { requireMeetingModeAccess } from "@/lib/meeting-mode-server";
+import { ASSET_BUCKET } from "@/lib/storage";
 import { createClient } from "@/lib/supabase/server";
 import type { ConversationMeetingMinutes, MeetingDestinationKind, MeetingType } from "@/types/meeting-mode";
 
@@ -156,6 +159,18 @@ export async function PATCH(request: NextRequest, context: Context) {
     }
     if (!Number.isInteger(byteSize) || byteSize <= 0 || byteSize > MAX_MEETING_AUDIO_BYTES) {
       return NextResponse.json({ error: "Meeting audio must be between 1 byte and 250 MB" }, { status: 400 });
+    }
+    if (!validMeetingRecordingMimeType(mimeType)) {
+      return NextResponse.json({ error: "Meeting audio must be an MP4 or WebM recording" }, { status: 400 });
+    }
+    const inspection = await inspectStorageObjectHead(result.supabase, ASSET_BUCKET, storagePath);
+    if (!inspection || inspection.byteSize !== byteSize) {
+      return NextResponse.json({ error: "The private meeting upload is incomplete or its size changed. Retry the upload." }, { status: 409 });
+    }
+    const sniffedKind = sniffFileKind(inspection.bytes);
+    const expectedKind = mimeType === "audio/mp4" ? "mp4" : "webm";
+    if (sniffedKind !== expectedKind) {
+      return NextResponse.json({ error: "The uploaded meeting audio does not match its recording format" }, { status: 400 });
     }
 
     const { data: updated, error: updateError } = await result.supabase
