@@ -132,6 +132,15 @@ private attachments are shared through target-scoped snapshot rows instead of
 duplicating their unique storage record, and forwarding an already-forwarded
 message keeps the file available without exposing its original chat. The Mac
 bridge receives forwarded files through the same private materialisation path.
+Migration 108 replaces broad direct group-row writes with explicit, exactly-once
+human-admin operations. Stable client action IDs make retries safe after lost
+responses. The creator starts as admin; admins can rename a group, add/remove
+people or Aria/Marco, and promote another human. The last admin cannot be
+removed, leaving promotes a successor when necessary, and removing an agent
+cancels only that agent's unfinished work in the group. Every mutation leaves a
+canonical system record. The add-member UI explicitly says that RESLU team
+members receive the existing business history rather than silently applying
+WhatsApp's consumer-history assumptions.
 The same exact-once boundary now covers conversation creation, call start and
 call end: device intent ids recover a lost start response, and an ended call is
 retained locally until the single canonical same-thread call record is
@@ -161,9 +170,10 @@ Rollout order for this slice:
    `104_single_active_conversation_call.sql`, then
    `105_conversation_message_edit_delete.sql`, then
    `106_conversation_message_reactions_pins.sql`, then
-   `107_conversation_message_forwarding.sql`, to Supabase.
+   `107_conversation_message_forwarding.sql`, then
+   `108_conversation_group_management.sql`, to Supabase.
 2. Run the matching rollback-only fixtures for migrations 093 through 098 and
-   migrations 104 through 107 in the SQL Editor. Every fixture must report PASS
+   migrations 104 through 108 in the SQL Editor. Every fixture must report PASS
    and leave no test data.
 3. Deploy the matching application release, pull it on the Mac and restart the
    conversation bridge so its independent push worker is active.
@@ -187,7 +197,7 @@ Work:
 - Pin, archive, mute, search and conversation notification preferences.
 - Reply/quote, copy, edit markers and recoverable delete.
 - Forward text and private attachments exactly once to up to ten chats.
-- Group naming, participant management and reliable mentions.
+- Shared group names, human admins, safe participant management and reliable mentions.
 - Voice notes and expanded safe file types after the photo/PDF slice is proven.
 - Pagination, virtualised long history and message/file search.
 
