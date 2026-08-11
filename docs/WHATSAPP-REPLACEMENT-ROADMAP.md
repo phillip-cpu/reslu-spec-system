@@ -235,6 +235,24 @@ The existing CLI remains a fallback only before Gateway acceptance, so an
 accepted turn can never be replayed and duplicate side effects cannot be
 introduced by transport recovery.
 
+Migration 100, the Gateway bridge and its feature flag are now live. An isolated
+production turn proved accepted/lifecycle/drafting/finishing progress, and a
+second isolated turn proved that cancellation suppresses late output. The first
+fresh iPhone acceptance call after rollout still failed its latency gate: the
+job was claimed in under one second but was cancelled 12.2 seconds later at
+hang-up without a Gateway run id or progress event. The call also retained no
+client timing sample, so it is not counted as a successful measurement. The Mac
+error log showed repeated Supabase TLS handshake/read failures, and the bridge
+was opening a new encrypted connection for every half-second poll and every
+small context lookup across its independent workers. The current repair reuses
+one Supabase connection per worker, combines transport/file lookup, joins recent
+message authors and files into one request, caches the fixed agent identity, and
+removes a redundant pre-invocation status read. Against the same real Aria
+thread, measured pre-Gateway preparation fell from roughly three seconds in a
+healthy sequential run (and up to the whole 12-second call window during
+failures) to 0.16-0.97 seconds after warm-up. A new iPhone acceptance call is
+required after the repaired bridge is deployed and restarted.
+
 Work:
 
 - Publish and validate the end-to-end timing candidate on an iPhone call.
@@ -384,13 +402,18 @@ Final product gate:
 
 ## Current next action
 
-Deploy the immediate out-of-band acknowledgement candidate, make a fresh
-iPhone call and inspect its content-free call timing metadata. Do not close
-Stage 3 until speech-to-acknowledgement is below one second and interruption is
-measured below 250 ms without stale audio. Then replace the remaining blocking
-OpenClaw CLI boundary with the authenticated local Gateway run/event interface
-while retaining canonical Aria/Marco sessions and tools.
+Deploy the persistent Supabase transport repair to the Mac bridge, restart it,
+and repeat the same iPhone voice acceptance call. Require a Gateway run id and
+visible safe progress before waiting for Aria's answer; interrupt one answer,
+start one durable task, end the call, and confirm that the durable task keeps
+working. Require saved content-free timing metadata for the call. Do not close
+Stage 3 until acknowledgement is below one second, interruption is under 250 ms,
+and the canonical answer/task behavior is correct.
 
-The persistent-agent workspace, migration 099 and bridge worker are already
-live. Preserve that boundary while validating the remaining attachment,
-notification, latency and two-device acceptance matrix.
+In parallel with that acceptance evidence, complete the remaining live Stage 1
+photo/PDF gate and the Stage 2 two-device, notification, mute/pin/archive,
+reply/search and lock-screen matrix. Then continue Stage 4 with the persistent
+desktop messenger shell, followed by Stage 5 native iPhone continuity, Meeting
+Mode, intelligent filing, team collaboration, hardening and the final
+no-WhatsApp pilot. Record each stage's result here and in the notification,
+latency and two-device acceptance matrix.

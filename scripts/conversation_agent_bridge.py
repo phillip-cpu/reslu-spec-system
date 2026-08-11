@@ -9,6 +9,8 @@ calendar, email, tools, permissions, or business logic.
 
 from __future__ import annotations
 
+import http.client
+import io
 import json
 import os
 from pathlib import Path
@@ -79,11 +81,45 @@ def load_env_file(path: Path) -> None:
 class SupabaseRest:
     def __init__(self, base_url: str, service_key: str) -> None:
         self.base_url = base_url.rstrip("/")
+        parsed_url = urllib.parse.urlsplit(self.base_url)
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname:
+            raise ValueError("Supabase URL must be an absolute HTTP(S) URL")
+        self._parsed_url = parsed_url
+        self._rest_path = f"{parsed_url.path.rstrip('/')}/rest/v1"
+        self._connection: http.client.HTTPConnection | None = None
         self.headers = {
             "apikey": service_key,
             "Authorization": f"Bearer {service_key}",
             "Content-Type": "application/json",
         }
+
+    def _reset_connection(self) -> None:
+        connection = self._connection
+        self._connection = None
+        if connection is not None:
+            try:
+                connection.close()
+            except OSError:
+                pass
+
+    def _active_connection(self, timeout_seconds: float) -> http.client.HTTPConnection:
+        connection = self._connection
+        if connection is None:
+            connection_type = (
+                http.client.HTTPSConnection
+                if self._parsed_url.scheme == "https"
+                else http.client.HTTPConnection
+            )
+            connection = connection_type(
+                self._parsed_url.hostname,
+                self._parsed_url.port,
+                timeout=timeout_seconds,
+            )
+            self._connection = connection
+        connection.timeout = timeout_seconds
+        if connection.sock is not None:
+            connection.sock.settimeout(timeout_seconds)
+        return connection
 
     def request(
         self,
@@ -96,15 +132,28 @@ class SupabaseRest:
         headers = dict(self.headers)
         if prefer:
             headers["Prefer"] = prefer
-        request = urllib.request.Request(
-            f"{self.base_url}/rest/v1/{path}",
-            data=None if body is None else json.dumps(body).encode("utf-8"),
-            method=method,
-            headers=headers,
-        )
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            raw = response.read().decode("utf-8")
-        return json.loads(raw) if raw else None
+        encoded_body = None if body is None else json.dumps(body).encode("utf-8")
+        request_path = f"{self._rest_path}/{path}"
+        request_url = f"{self.base_url}/rest/v1/{path}"
+        try:
+            connection = self._active_connection(timeout_seconds)
+            connection.request(method, request_path, body=encoded_body, headers=headers)
+            response = connection.getresponse()
+            raw = response.read()
+        except (http.client.HTTPException, OSError) as exc:
+            self._reset_connection()
+            raise urllib.error.URLError(exc) from exc
+        if response.will_close:
+            self._reset_connection()
+        if response.status < 200 or response.status >= 300:
+            raise urllib.error.HTTPError(
+                request_url,
+                response.status,
+                response.reason,
+                response.headers,
+                io.BytesIO(raw),
+            )
+        return json.loads(raw.decode("utf-8")) if raw else None
 
     def claim(self, slug: str) -> dict | None:
         result = self.request(
@@ -247,12 +296,20 @@ def find_reply_text(value: object, prompt: str) -> str | None:
 
 
 def agent_identity(rest: SupabaseRest, agent_id: str) -> dict:
+    cached = getattr(rest, "_agent_identity_cache", {}).get(agent_id)
+    if cached:
+        return cached
     rows = rest.rows(
         "conversation_agents",
         {"select": "id,slug,display_name,role_label", "id": f"eq.{agent_id}", "limit": "1"},
     )
     if not rows:
         raise RuntimeError(f"conversation agent {agent_id} not found")
+    cache = getattr(rest, "_agent_identity_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(rest, "_agent_identity_cache", cache)
+    cache[agent_id] = rows[0]
     return rows[0]
 
 
@@ -261,10 +318,17 @@ def conversation_history(
     conversation_id: str,
     limit: int = HISTORY_LIMIT,
 ) -> str:
+    select = (
+        "id,author_profile_id,author_agent_id,body,kind,reply_to_id,created_at,"
+        "profile:profiles!conversation_messages_author_profile_id_fkey(full_name),"
+        "agent:conversation_agents!conversation_messages_author_agent_id_fkey(display_name),"
+        "attachments:conversation_attachments("
+        "id,message_id,filename,mime_type,byte_size,status,created_at)"
+    )
     messages = rest.rows(
         "conversation_messages",
         {
-            "select": "id,author_profile_id,author_agent_id,body,kind,reply_to_id,created_at",
+            "select": select,
             "conversation_id": f"eq.{conversation_id}",
             "deleted_at": "is.null",
             "order": "created_at.desc",
@@ -283,7 +347,7 @@ def conversation_history(
         reply_targets = rest.rows(
             "conversation_messages",
             {
-                "select": "id,author_profile_id,author_agent_id,body,kind,reply_to_id,created_at",
+                "select": select,
                 "id": f"in.({','.join(missing_reply_ids)})",
                 "conversation_id": f"eq.{conversation_id}",
                 "deleted_at": "is.null",
@@ -291,29 +355,25 @@ def conversation_history(
         )
         messages_by_id.update({row["id"]: row for row in reply_targets})
     context_rows = [*messages, *reply_targets]
-    profile_ids = sorted({row["author_profile_id"] for row in context_rows if row.get("author_profile_id")})
-    agent_ids = sorted({row["author_agent_id"] for row in context_rows if row.get("author_agent_id")})
     names: dict[str, str] = {}
-    if profile_ids:
-        for row in rest.rows("profiles", {"select": "id,full_name", "id": f"in.({','.join(profile_ids)})"}):
-            names[row["id"]] = row["full_name"]
-    if agent_ids:
-        for row in rest.rows("conversation_agents", {"select": "id,display_name", "id": f"in.({','.join(agent_ids)})"}):
-            names[row["id"]] = row["display_name"]
-    message_ids = [row["id"] for row in messages]
     attachments_by_message: dict[str, list[dict]] = {}
-    if message_ids:
-        attachments = rest.rows(
-            "conversation_attachments",
-            {
-                "select": "id,message_id,filename,mime_type,byte_size,status",
-                "message_id": f"in.({','.join(message_ids)})",
-                "status": "eq.ready",
-                "order": "created_at",
-            },
+    for row in context_rows:
+        profile = row.get("profile")
+        agent = row.get("agent")
+        if row.get("author_profile_id") and isinstance(profile, dict) and profile.get("full_name"):
+            names[row["author_profile_id"]] = str(profile["full_name"])
+        if row.get("author_agent_id") and isinstance(agent, dict) and agent.get("display_name"):
+            names[row["author_agent_id"]] = str(agent["display_name"])
+    for row in messages:
+        row_attachments = sorted(
+            row.get("attachments") or [],
+            key=lambda attachment: str(attachment.get("created_at") or "")
+            if isinstance(attachment, dict)
+            else "",
         )
-        for attachment in attachments:
-            attachments_by_message.setdefault(attachment["message_id"], []).append(attachment)
+        for attachment in row_attachments:
+            if isinstance(attachment, dict) and attachment.get("status") == "ready":
+                attachments_by_message.setdefault(row["id"], []).append(attachment)
     lines = []
     for row in messages:
         author_id = row.get("author_profile_id") or row.get("author_agent_id")
@@ -352,6 +412,43 @@ def is_realtime_voice_message(rest: SupabaseRest, message_id: str) -> bool:
         and metadata.get("source") == "voice"
         and metadata.get("transport") == "openai_realtime_webrtc"
     )
+
+
+def triggering_message_context(
+    rest: SupabaseRest,
+    conversation_id: str,
+    message_id: str,
+) -> tuple[bool, list[dict]]:
+    """Fetch voice transport metadata and newest-message files together."""
+    rows = rest.rows(
+        "conversation_messages",
+        {
+            "select": (
+                "id,metadata,"
+                "attachments:conversation_attachments("
+                "id,filename,mime_type,byte_size,storage_path,status,created_at)"
+            ),
+            "id": f"eq.{message_id}",
+            "conversation_id": f"eq.{conversation_id}",
+            "limit": "1",
+        },
+        timeout_seconds=JOB_STATUS_REQUEST_TIMEOUT_SECONDS,
+    )
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("triggering conversation message not found")
+    metadata = rows[0].get("metadata")
+    is_realtime_voice = (
+        isinstance(metadata, dict)
+        and metadata.get("source") == "voice"
+        and metadata.get("transport") == "openai_realtime_webrtc"
+    )
+    attachments = [
+        attachment
+        for attachment in rows[0].get("attachments") or []
+        if isinstance(attachment, dict) and attachment.get("status") == "ready"
+    ]
+    attachments.sort(key=lambda attachment: str(attachment.get("created_at") or ""))
+    return is_realtime_voice, attachments
 
 
 def realtime_voice_thinking_level() -> str:
@@ -1173,13 +1270,14 @@ def build_task_workers(base_url: str, service_key: str) -> list[threading.Thread
 
 
 def process_job(rest: SupabaseRest, job: dict) -> str:
-    is_realtime_voice = is_realtime_voice_message(rest, job["triggering_message_id"])
+    is_realtime_voice, attachments = triggering_message_context(
+        rest,
+        job["conversation_id"],
+        job["triggering_message_id"],
+    )
     agent = agent_identity(rest, job["agent_id"])
     history_limit = REALTIME_VOICE_HISTORY_LIMIT if is_realtime_voice else HISTORY_LIMIT
     history = conversation_history(rest, job["conversation_id"], history_limit)
-    attachments = ready_message_attachments(rest, job["conversation_id"], job["triggering_message_id"])
-    if not job_is_processing(rest, job["id"]):
-        return "cancelled"
     staging_parent = attachment_staging_parent(agent["slug"])
     with tempfile.TemporaryDirectory(
         prefix="reslu-conversation-attachments-",
