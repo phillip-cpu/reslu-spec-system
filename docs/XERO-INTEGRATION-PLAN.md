@@ -20,12 +20,29 @@ scope and operational source of truth.
 
 ## Phase X1 — read-only reporting
 
+### Connection foundation implemented
+
+The application now includes the X1 connection and cache foundation:
+
+- admin-only OAuth routes at `/api/xero/connect` and `/api/xero/callback`;
+- granular read scopes for invoices and payments only (contact summaries arrive on invoices; broader contact/settings reads are deferred until a feature needs them);
+- AES-256-GCM encrypted access and rotating refresh tokens stored in service-role-only tables;
+- a manual `/api/xero/sync` import of invoices, purchase bills and payments;
+- durable sync-run audit rows and an admin Settings connection/status panel.
+
+Before connecting production, apply `102_xero_readonly.sql`, configure the
+three required Xero environment variables documented in `.env.local.example`
+(`XERO_CLIENT_ID`, `XERO_CLIENT_SECRET`, `XERO_TOKEN_ENCRYPTION_KEY`), and add
+`https://spec.reslu.com.au/api/xero/callback` to the Xero app. The matching and
+exceptions UI described below remains the next X1 delivery slice.
+
 1. Connect one RESLU Xero organisation through OAuth 2.0.
-2. Request only the minimum read scopes needed: invoice, payment,
-   contact and organisation/settings reads, plus `offline_access` for a
-   durable connection. Xero assigned granular scopes to Web/PKCE apps
-   from March 2026, so the implementation should use those rather than
-   the older broad transaction scope.
+2. Request only the minimum read scopes needed. The connection foundation
+   starts with invoice and payment reads plus `offline_access`; contact
+   summaries included on invoices cover initial matching. Add contact or
+   organisation/settings reads only when a later feature actually calls those
+   endpoints. Xero assigned granular scopes to Web/PKCE apps from March 2026,
+   so use those rather than the older broad transaction scope.
 3. Encrypt refresh tokens at rest and keep them server-side. Never put
    Xero credentials in browser code, Aria's workspace files or logs.
 4. Import Xero sales invoices and purchase bills, their contact,

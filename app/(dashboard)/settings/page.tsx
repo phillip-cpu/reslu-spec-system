@@ -15,6 +15,7 @@ import { BankDetailsSettings } from "@/components/settings/BankDetailsSettings";
 import { CpdDefaultsSettings } from "@/components/settings/CpdDefaultsSettings";
 import { EmailSignaturesSettings } from "@/components/settings/EmailSignaturesSettings";
 import { PushSettings } from "@/components/settings/PushSettings";
+import { XeroIntegrationSettings } from "@/components/settings/XeroIntegrationSettings";
 import { SettingsGroup, SettingsJumpNav } from "@/components/settings/SettingsGroup";
 import { getSignaturePeople } from "@/lib/email-signatures";
 import { FALLBACK_PHASE_TEMPLATE, FALLBACK_PHASE_TASK_TEMPLATES } from "@/lib/phase-template";
@@ -28,6 +29,7 @@ import type { PhaseTaskTemplatesMap } from "@/types/board-cockpit";
 import type { DesignTaskTemplatesMap } from "@/types/round-c";
 import type { InvoiceBankDetails } from "@/types/client-invoices";
 import type { CpdDefaults } from "@/types/cpd";
+import { getXeroConnectionStatus } from "@/lib/xero/status";
 
 /**
  * Settings — category management, team roster + role editing (both
@@ -42,7 +44,12 @@ import type { CpdDefaults } from "@/types/cpd";
  * here, server-side, from process.env — never by exposing the env
  * vars themselves to the client.
  */
-export default async function SettingsPage() {
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ xero?: string }>;
+}) {
+  const { xero: xeroNotice } = await searchParams;
   const supabase = await createClient();
   const info = await getUserRole(supabase);
   const isAdmin = info?.role === "admin";
@@ -161,6 +168,10 @@ export default async function SettingsPage() {
       process.env.GMAIL_CLIENT_SECRET &&
       process.env.ARIA_GMAIL_REFRESH_TOKEN
   );
+  const xeroStatus = isAdmin
+    ? await getXeroConnectionStatus()
+    : null;
+  const xeroCallbackUrl = `${(process.env.NEXT_PUBLIC_APP_URL ?? "https://spec.reslu.com.au").replace(/\/$/, "")}/api/xero/callback`;
 
   // Phase 14A error visibility (BUILD-SPEC.md Phase 14 "admin Settings
   // section 'System health'") — admin-only, last 50 app_errors rows
@@ -404,16 +415,24 @@ export default async function SettingsPage() {
         <section>
           <h2 className="mb-1 text-subhead text-nearblack">Integrations</h2>
           <p className="mb-4 text-body text-charcoal/60">
-            Monday.com procurement sync and the Gmail team digest are configured
-            with credentials in <code>.env.local</code> (or the Vercel project&apos;s
-            environment variables in production). They stay dormant until those
-            values are supplied — this list only reflects whether the app can see
-            them, not whether the credentials are valid.
+            External connections are configured with credentials in <code>.env.local</code>
+            (or the Vercel project&apos;s environment variables in production). Monday.com
+            and Gmail stay dormant until configured. Xero is separately admin-authorised
+            below and remains read-only.
           </p>
           <IntegrationStatus
             mondayConfigured={mondayConfigured}
             gmailConfigured={gmailConfigured}
           />
+          {isAdmin && xeroStatus && (
+            <div className="mt-4">
+              <XeroIntegrationSettings
+                initialStatus={xeroStatus}
+                callbackUrl={xeroCallbackUrl}
+                notice={xeroNotice}
+              />
+            </div>
+          )}
         </section>
 
         <section>
