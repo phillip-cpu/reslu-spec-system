@@ -536,7 +536,14 @@ def parse_task_result(reply: str, task: dict) -> dict:
     try:
         value = json.loads(candidate)
     except json.JSONDecodeError:
-        value = None
+        # Some agent transports wrap an otherwise valid envelope in a short
+        # introduction or leave text after it. Recover the first complete JSON
+        # object so a draft cannot be mislabeled as a completed text task.
+        start = candidate.find("{")
+        try:
+            value, _ = json.JSONDecoder().raw_decode(candidate[start:]) if start >= 0 else (None, 0)
+        except json.JSONDecodeError:
+            value = None
     if not isinstance(value, dict):
         return {
             "status": "completed",

@@ -43,6 +43,14 @@ test("the call surface exposes captions, durable work and approvals", () => {
   assert.match(workspace, /Continues after you leave this chat/);
 });
 
+test("mobile agent work stays contained and the composer does not trigger iPhone zoom", () => {
+  assert.match(workspace, /max-w-full flex-1 flex-col overflow-x-hidden/);
+  assert.match(workspace, /Show \$\{visibleAgentTasks\.length - 1\} more/);
+  assert.match(workspace, /text-\[16px\].*md:text-body/);
+  assert.match(workspace, /function artifactContent/);
+  assert.doesNotMatch(workspace, /JSON\.stringify\(content, null, 2\)/);
+});
+
 test("background work has separate workers, sessions and stronger model routing", () => {
   assert.match(bridge, /def build_task_workers/);
   assert.match(bridge, /reslu-task-\{task_id\}/);

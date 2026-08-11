@@ -100,6 +100,24 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         self.assertEqual(result["artifact"]["kind"], "email_draft")
         self.assertEqual(result["artifact"]["content"]["subject"], "Friday")
 
+    def test_task_result_recovers_wrapped_json_without_losing_approval(self):
+        reply = "Here is the finished draft:\n```json\n" + json.dumps({
+            "status": "awaiting_approval",
+            "summary": "Email draft is ready.",
+            "message": "Please review it.",
+            "artifact": {
+                "kind": "email_draft",
+                "title": "Email to Phillip",
+                "content": {"to": "phillip@example.com", "subject": "Voice workspace", "body": "Hi Phillip"},
+            },
+        }) + "\n```\nLet me know if you want changes."
+
+        result = conversation_agent_bridge.parse_task_result(reply, {"title": "Draft email"})
+
+        self.assertEqual(result["status"], "awaiting_approval")
+        self.assertEqual(result["artifact"]["kind"], "email_draft")
+        self.assertEqual(result["artifact"]["content"]["body"], "Hi Phillip")
+
     @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
     def test_task_invocation_uses_a_task_session_and_stops_only_on_explicit_cancel(self, popen):
         process = popen.return_value
