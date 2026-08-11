@@ -37,6 +37,13 @@ begin
      or has_table_privilege('authenticated', 'public.conversation_message_forwards', 'INSERT') then
     raise exception 'FAIL: authenticated clients can directly create forwarding rows';
   end if;
+  if not has_function_privilege(
+    'service_role',
+    'public.forward_conversation_message(uuid,uuid,uuid[],uuid)',
+    'EXECUTE'
+  ) then
+    raise exception 'FAIL: health cannot probe the forwarding capability';
+  end if;
   if has_column_privilege(
     'authenticated',
     'public.conversation_forwarded_attachments',

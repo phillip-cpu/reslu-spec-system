@@ -31,6 +31,7 @@ import {
   parseRealtimeConsultArguments,
   parseRealtimeTaskArguments,
 } from "@/lib/realtime-tool-arguments";
+import { realtimeConsultPollDelay } from "@/lib/realtime-consult-poll";
 import {
   MAX_REALTIME_RECONNECT_ATTEMPTS,
   mediaStreamCanResume,
@@ -3244,7 +3245,8 @@ export function ConversationWorkspace({
         }
         if (statusBody.status === "failed") throw new Error(statusBody.error ?? "The RESLU agent could not answer");
         await new Promise<void>((resolve, reject) => {
-          const timer = window.setTimeout(resolve, 650);
+          const elapsedMs = timing.consultStartedAt === null ? 0 : performance.now() - timing.consultStartedAt;
+          const timer = window.setTimeout(resolve, realtimeConsultPollDelay(elapsedMs));
           abortController.signal.addEventListener("abort", () => {
             window.clearTimeout(timer);
             reject(new DOMException("Aborted", "AbortError"));

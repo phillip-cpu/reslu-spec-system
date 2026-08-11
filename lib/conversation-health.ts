@@ -8,6 +8,16 @@ export const VOICE_INTERRUPTION_TARGET_MS = 250;
 
 type CallLatencyRow = { realtime_voice_latency?: unknown };
 
+type ConversationCapabilityProbeError = { code?: string | null; message?: string | null } | null;
+
+export function conversationCapabilityUnavailable(error: ConversationCapabilityProbeError) {
+  if (!error) return false;
+  const code = error.code ?? "";
+  const message = error.message ?? "";
+  return ["PGRST202", "42883", "42501"].includes(code)
+    || /could not find the function|function .* does not exist|permission denied for function/i.test(message);
+}
+
 function average(values: number[]) {
   if (values.length === 0) return null;
   return Math.round(values.reduce((total, value) => total + value, 0) / values.length);
@@ -35,6 +45,7 @@ export function summarizeConversationVoiceHealth(calls: CallLatencyRow[]) {
 
 export function conversationTransportHasIncident(health: Omit<ConversationTransportHealth, "level" | "operational_incident">) {
   return health.query_errors > 0
+    || health.unavailable_capabilities.length > 0
     || health.processing_jobs_stuck > 0
     || health.failed_jobs_24h > 0
     || health.running_tasks_stuck > 0
