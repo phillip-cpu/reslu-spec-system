@@ -7,6 +7,13 @@ export const XERO_SCOPES = [
   "offline_access",
   "accounting.invoices.read",
   "accounting.payments.read",
+  "accounting.reports.profitandloss.read",
+  "accounting.reports.balancesheet.read",
+  "accounting.reports.trialbalance.read",
+  "accounting.reports.banksummary.read",
+  "accounting.reports.budgetsummary.read",
+  "accounting.reports.executivesummary.read",
+  "accounting.reports.taxreports.read",
 ] as const;
 
 export const XERO_STATE_COOKIE = "reslu_xero_oauth_state";
