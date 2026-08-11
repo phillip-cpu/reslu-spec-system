@@ -29,6 +29,9 @@ test("one client intent forwards atomically to one through ten unique member cha
 test("a retry returns the same target message and cannot duplicate the agent job", () => {
   assert.match(migration, /unique \(forwarded_by, client_forward_id, destination_conversation_id\)/i);
   assert.match(migration, /return query[\s\S]*audit\.forwarded_message_id, true/i);
+  assert.match(migration, /old audit row must never become a capability after membership changes/i);
+  assert.match(verifier, /exactly-once retry bypassed current conversation membership/i);
+  assert.match(verifier, /current-member scoped/i);
   assert.match(migration, /insert into conversation_messages/i);
   assert.match(migration, /'target_agent_slugs', '\[\]'::jsonb/i);
   assert.match(verifier, /retry created duplicate forward audit rows/i);
