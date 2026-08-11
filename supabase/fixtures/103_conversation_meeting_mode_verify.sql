@@ -24,6 +24,12 @@ begin
   if to_regprocedure('public.guard_conversation_meeting_minutes_mutation()') is null then
     raise exception 'FAIL: migration 103 lifecycle guard is missing';
   end if;
+  if position(
+    'only the recorder can control or discard this meeting capture'
+    in pg_get_functiondef('public.guard_conversation_meeting_minutes_mutation()'::regprocedure)
+  ) = 0 then
+    raise exception 'FAIL: recorder-only capture/discard guard is missing';
+  end if;
   if not exists (
     select 1 from pg_trigger
     where tgrelid = 'public.conversation_meeting_minutes'::regclass
