@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { conversationParticipants } from "@/lib/conversation-access";
-import { conversationAttachmentAccessUrl, isConversationAttachmentSize } from "@/lib/conversation-attachments";
+import {
+  cleanConversationAttachmentFilename,
+  CONVERSATION_DIRECT_UPLOAD_MAX_BYTES,
+  conversationAttachmentAccessUrl,
+  conversationAttachmentStoragePath,
+  isConversationAttachmentMime,
+  isConversationAttachmentSize,
+} from "@/lib/conversation-attachments";
 import { inspectStorageObjectHead, sniffFileKind } from "@/lib/file-sniff";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
 import { createClient } from "@/lib/supabase/server";
@@ -16,6 +23,7 @@ const EXPECTED_KIND: Record<ConversationAttachment["mime_type"], string> = {
   "image/webp": "webp",
   "application/pdf": "pdf",
 };
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 async function stagedAttachment(
   supabase: Awaited<ReturnType<typeof createClient>>,
@@ -117,6 +125,99 @@ export async function POST(request: NextRequest, context: Context) {
 
   const membership = await conversationParticipants(supabase, conversationId, user.id);
   if (membership.error) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
+
+  if ((request.headers.get("content-type") ?? "").includes("multipart/form-data")) {
+    const form = await request.formData().catch(() => null);
+    const file = form?.get("file");
+    const requestedAttachmentId = form?.get("attachment_id");
+    if (!(file instanceof File)) {
+      return NextResponse.json({ error: "Choose a file to upload" }, { status: 400 });
+    }
+    if (typeof requestedAttachmentId !== "string" || !UUID_PATTERN.test(requestedAttachmentId)) {
+      return NextResponse.json({ error: "The attachment upload id is invalid" }, { status: 400 });
+    }
+    const filename = cleanConversationAttachmentFilename(file.name);
+    if (!filename) return NextResponse.json({ error: "Choose a file with a valid name" }, { status: 400 });
+    if (!isConversationAttachmentMime(file.type)) {
+      return NextResponse.json({ error: "Choose a JPEG, PNG, WebP or PDF file" }, { status: 400 });
+    }
+    if (!isConversationAttachmentSize(file.size) || file.size > CONVERSATION_DIRECT_UPLOAD_MAX_BYTES) {
+      return NextResponse.json({ error: "This file must use the large-file uploader" }, { status: 413 });
+    }
+
+    const existing = await stagedAttachment(supabase, conversationId, user.id, requestedAttachmentId);
+    if (existing?.status === "ready") {
+      return NextResponse.json({ attachment: attachmentResponse(conversationId, existing) });
+    }
+    if (existing) {
+      return NextResponse.json({
+        error: "This attachment is still being stored",
+        retryable: true,
+      }, { status: 409 });
+    }
+
+    const bytes = Buffer.from(await file.arrayBuffer());
+    const actualKind = sniffFileKind(bytes.subarray(0, 16));
+    if (actualKind !== EXPECTED_KIND[file.type]) {
+      return NextResponse.json({
+        error: actualKind === "unknown"
+          ? "The uploaded file contents could not be verified. Please choose it again."
+          : "The file contents do not match its file type. Please check the file and try again.",
+      }, { status: 400 });
+    }
+
+    const attachmentId = requestedAttachmentId;
+    const storagePath = conversationAttachmentStoragePath({
+      conversationId,
+      userId: user.id,
+      attachmentId,
+      filename,
+    });
+    const { error: rowError } = await supabase.from("conversation_attachments").insert({
+      id: attachmentId,
+      conversation_id: conversationId,
+      uploaded_by: user.id,
+      storage_path: storagePath,
+      filename,
+      mime_type: file.type,
+      byte_size: file.size,
+    });
+    if (rowError) {
+      const raced = await stagedAttachment(supabase, conversationId, user.id, attachmentId);
+      if (raced?.status === "ready") {
+        return NextResponse.json({ attachment: attachmentResponse(conversationId, raced) });
+      }
+      return NextResponse.json({
+        error: raced ? "This attachment is still being stored" : rowError.message,
+        retryable: Boolean(raced),
+      }, { status: raced ? 409 : 500 });
+    }
+
+    const { error: uploadError } = await supabase.storage.from(ASSET_BUCKET).upload(storagePath, bytes, {
+      contentType: file.type,
+      upsert: false,
+    });
+    if (uploadError) {
+      await supabase.storage.from(ASSET_BUCKET).remove([storagePath]);
+      await supabase.from("conversation_attachments").delete().eq("id", attachmentId);
+      return NextResponse.json({ error: uploadError.message }, { status: 503 });
+    }
+
+    const { data: ready, error: readyError } = await supabase
+      .from("conversation_attachments")
+      .update({ status: "ready", ready_at: new Date().toISOString() })
+      .eq("id", attachmentId)
+      .select("*")
+      .single();
+    if (readyError || !ready) {
+      // Preserve the bytes and staged row. The idempotent confirmation path
+      // can complete it after a transient database response failure.
+      return NextResponse.json({ error: readyError?.message ?? "Could not finish upload" }, { status: 503 });
+    }
+    return NextResponse.json({
+      attachment: attachmentResponse(conversationId, ready as ConversationAttachment),
+    }, { status: 201 });
+  }
 
   const body = await request.json().catch(() => null);
   const attachment = await stagedAttachment(supabase, conversationId, user.id, body?.attachment_id);
