@@ -32,8 +32,12 @@ test("speech creates a task through one idempotent server boundary", () => {
 
 test("the call surface exposes captions, durable work and approvals", () => {
   assert.match(workspace, /conversation\.item\.input_audio_transcription\.delta/);
-  assert.match(workspace, /Live transcript/);
-  assert.match(workspace, /Keeps running after this call/);
+  assert.match(workspace, /aria-label="Background agent work"/);
+  assert.match(workspace, /aria-label="Call captions"/);
+  assert.match(workspace, /setCallTranscriptExpanded\(false\)/);
+  assert.ok(workspace.indexOf("Background agent work") < workspace.indexOf("Call captions"));
+  assert.match(workspace, /Continues after the call/);
+  assert.match(workspace, /Drafts and results appear here while you keep talking/);
   assert.match(workspace, /Approve/);
   assert.match(workspace, /Reject/);
   assert.match(workspace, /Continues after you leave this chat/);

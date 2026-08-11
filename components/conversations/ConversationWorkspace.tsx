@@ -258,44 +258,50 @@ function AgentTaskCard({
     )}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className={clsx("text-[10px] font-semibold uppercase tracking-[0.14em]", dark ? "text-sand" : "text-charcoal/50") }>
+          <p className={clsx("text-[11px] font-semibold uppercase tracking-[0.13em]", dark ? "text-sand" : "text-charcoal/50") }>
             {taskStatusLabel(task)} · {task.model_tier} model
           </p>
-          <h3 className="mt-1 truncate text-body font-semibold">{task.title}</h3>
+          <h3 className="mt-1 truncate text-[17px] font-semibold leading-snug md:text-[18px]">{task.title}</h3>
         </div>
         {active && (
           <button
             type="button"
             onClick={() => onAction(task.id, "cancel")}
             disabled={Boolean(task.cancellation_requested_at)}
-            className={clsx("shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold", dark ? "bg-white/10 text-white/70" : "bg-[#eee8de] text-charcoal/70")}
+            className={clsx("shrink-0 rounded-full px-3 py-2 text-caption font-semibold", dark ? "bg-white/10 text-white/70" : "bg-[#eee8de] text-charcoal/70")}
           >
             {task.cancellation_requested_at ? "Stopping…" : "Cancel"}
           </button>
         )}
       </div>
-      {!compact && <p className={clsx("mt-2 line-clamp-3 text-caption", dark ? "text-white/65" : "text-charcoal/65")}>{task.objective}</p>}
+      {!compact && <p className={clsx("mt-2 line-clamp-4 text-[15px] leading-relaxed", dark ? "text-white/70" : "text-charcoal/70")}>{task.objective}</p>}
       {(latestEvent || task.result_summary || task.error) && (
-        <p className={clsx("mt-2 text-caption", task.error ? "text-red-600" : dark ? "text-white/50" : "text-charcoal/50") }>
+        <p className={clsx("mt-2 text-[14px] leading-relaxed", task.error ? "text-red-600" : dark ? "text-white/55" : "text-charcoal/55") }>
           {task.error ?? latestEvent?.label ?? task.result_summary}
         </p>
+      )}
+      {active && task.artifacts.length === 0 && !compact && (
+        <div className={clsx("mt-4 rounded-xl border border-dashed p-4", dark ? "border-white/15 bg-black/15" : "border-[#d8d0c4] bg-[#f8f5ef]") }>
+          <p className="text-[15px] font-medium">Preparing the first reviewable version…</p>
+          <p className={clsx("mt-1 text-caption", dark ? "text-white/45" : "text-charcoal/45")}>The draft will appear here when it is ready to read.</p>
+        </div>
       )}
       {task.artifacts.map((artifact) => {
         const recipient = typeof artifact.content.to === "string" ? artifact.content.to : null;
         const subject = typeof artifact.content.subject === "string" ? artifact.content.subject : null;
         return (
-          <div key={artifact.id} className={clsx("mt-3 rounded-xl border p-3", dark ? "border-white/10 bg-black/20" : "border-[#ded7cd] bg-[#f8f5ef]") }>
-            <p className="text-caption font-semibold">{artifact.title}</p>
+          <div key={artifact.id} className={clsx("mt-4 rounded-xl border p-4", dark ? "border-white/10 bg-black/20" : "border-[#ded7cd] bg-[#f8f5ef]") }>
+            <p className="text-[17px] font-semibold leading-snug">{artifact.title}</p>
             {(recipient || subject) && (
               <p className={clsx("mt-1 text-[11px]", dark ? "text-white/50" : "text-charcoal/50") }>
                 {[recipient && `To: ${recipient}`, subject && `Subject: ${subject}`].filter(Boolean).join(" · ")}
               </p>
             )}
-            <pre className={clsx("mt-2 max-h-44 overflow-auto whitespace-pre-wrap font-sans text-caption", dark ? "text-white/70" : "text-charcoal/75") }>{artifactText(artifact.content)}</pre>
+            <pre className={clsx("mt-3 max-h-80 overflow-auto whitespace-pre-wrap font-sans text-[15px] leading-relaxed md:text-[16px]", dark ? "text-white/80" : "text-charcoal/80") }>{artifactText(artifact.content)}</pre>
             {task.status === "awaiting_approval" && artifact.status === "draft" && (
               <div className="mt-3 grid grid-cols-2 gap-2">
-                <button type="button" onClick={() => onAction(task.id, "reject", artifact.id)} className={clsx("rounded-lg border px-3 py-2 text-caption", dark ? "border-white/20" : "border-[#cfc6b8]")}>Reject</button>
-                <button type="button" onClick={() => onAction(task.id, "approve", artifact.id)} className={clsx("rounded-lg px-3 py-2 text-caption font-semibold", dark ? "bg-sand text-nearblack" : "bg-nearblack text-white")}>Approve</button>
+                <button type="button" onClick={() => onAction(task.id, "reject", artifact.id)} className={clsx("min-h-11 rounded-lg border px-3 py-2 text-body", dark ? "border-white/20" : "border-[#cfc6b8]")}>Reject</button>
+                <button type="button" onClick={() => onAction(task.id, "approve", artifact.id)} className={clsx("min-h-11 rounded-lg px-3 py-2 text-body font-semibold", dark ? "bg-sand text-nearblack" : "bg-nearblack text-white")}>Approve</button>
               </div>
             )}
             {artifact.status !== "draft" && <p className={clsx("mt-2 text-[10px] font-semibold uppercase tracking-[0.14em]", dark ? "text-sand" : "text-charcoal/45")}>{artifact.status}</p>}
@@ -471,6 +477,7 @@ export function ConversationWorkspace() {
   const [callError, setCallError] = useState<string | null>(null);
   const [lastSpoken, setLastSpoken] = useState("");
   const [callTranscript, setCallTranscript] = useState<CallTranscriptEntry[]>([]);
+  const [callTranscriptExpanded, setCallTranscriptExpanded] = useState(false);
   const [agentTasks, setAgentTasks] = useState<AgentTask[]>([]);
   const callTranscriptScrollerRef = useRef<HTMLDivElement>(null);
   const callTranscriptStickRef = useRef(true);
@@ -620,6 +627,7 @@ export function ConversationWorkspace() {
     const recent = agentTasks.filter((task) => !active.includes(task)).slice(0, Math.max(0, 4 - active.length));
     return [...active, ...recent].slice(0, 6);
   }, [agentTasks]);
+  const latestCallTranscript = callTranscript.at(-1);
   const handleTaskAction = useCallback((taskId: string, action: "cancel" | "approve" | "reject", artifactId?: string) => {
     void updateAgentTask(taskId, action, artifactId).catch((reason) => {
       setError(reason instanceof Error ? reason.message : "Could not update background task");
@@ -1972,6 +1980,7 @@ export function ConversationWorkspace() {
     pendingProgressToolCallIdRef.current = null;
     inputTranscriptByItemRef.current.clear();
     callTranscriptStickRef.current = true;
+    setCallTranscriptExpanded(false);
     setCallTranscript([]);
     return callRecordSaved;
   }, [cancelActiveRealtimeTurn, persistCallEnd, selectedId]);
@@ -2513,6 +2522,7 @@ export function ConversationWorkspace() {
     pendingProgressToolCallIdRef.current = null;
     inputTranscriptByItemRef.current.clear();
     callTranscriptStickRef.current = true;
+    setCallTranscriptExpanded(false);
     setCallTranscript([]);
     setCallError(null);
     setCallOpening(true);
@@ -3258,60 +3268,71 @@ export function ConversationWorkspace() {
             <p className="hidden truncate text-caption text-white/40 sm:block">{selectedConversation?.display_title}</p>
             <button onClick={() => void endCall()} className="rounded-full border border-white/25 px-3 py-2 text-caption">Close</button>
           </header>
-          <main className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(9rem,42%)] md:grid-cols-[minmax(0,1fr)_24rem] md:grid-rows-1">
-            <section className="flex min-h-0 flex-col border-b border-white/10 md:border-b-0 md:border-r" aria-label="Live call transcript">
-              <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-                <p className="label-caps text-white/55">Live transcript</p>
-                <p className="text-[10px] text-white/35">You can glance instead of hearing every detail</p>
+          <main className="flex min-h-0 flex-1 flex-col">
+            <section className="flex min-h-0 flex-1 flex-col bg-white/[0.025]" aria-label="Background agent work">
+              <div className="flex items-end justify-between gap-4 border-b border-white/10 px-4 py-3 md:px-6 md:py-4">
+                <div>
+                  <p className="label-caps text-sand">Agent work</p>
+                  <p className="mt-1 text-[15px] text-white/65 md:text-[16px]">Drafts and results appear here while you keep talking.</p>
+                </div>
+                <p className="shrink-0 text-caption text-white/35">Continues after the call</p>
               </div>
-              <div
-                ref={callTranscriptScrollerRef}
-                onScroll={(event) => {
-                  const target = event.currentTarget;
-                  callTranscriptStickRef.current = target.scrollHeight - target.scrollTop - target.clientHeight < 100;
-                }}
-                className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4 md:px-6"
-              >
-                {callTranscript.length === 0 && !interim && !callError && (
-                  <div className="flex h-full min-h-32 items-center justify-center text-center text-body text-white/40">
-                    <p>{callState === "connecting" ? "Connecting…" : `Speak naturally. Your conversation with ${callAgent.display_name} will appear here.`}</p>
-                  </div>
-                )}
-                {callTranscript.map((entry) => (
-                  <div key={entry.id} className={clsx("flex", entry.speaker === "user" ? "justify-end" : "justify-start") }>
-                    <div className={clsx(
-                      "max-w-[88%] rounded-2xl px-3.5 py-2.5 md:max-w-[72%]",
-                      entry.speaker === "user" ? "rounded-br-sm bg-white text-nearblack" : entry.speaker === "system" ? "border border-sand/35 bg-sand/10 text-white" : "rounded-bl-sm bg-white/10 text-white",
-                      !entry.final && "opacity-65",
-                    )}>
-                      <p className={clsx("mb-1 text-[9px] font-semibold uppercase tracking-[0.14em]", entry.speaker === "user" ? "text-charcoal/45" : "text-sand") }>
-                        {entry.speaker === "user" ? "You" : entry.speaker === "agent" ? callAgent.display_name : "Agent work"}
-                      </p>
-                      <p className="whitespace-pre-wrap text-body leading-relaxed">{entry.text}</p>
-                    </div>
-                  </div>
-                ))}
-                {interim && !callTranscript.some((entry) => entry.id === "legacy-user-live") && (
-                  <div className="flex justify-end"><p className="max-w-[88%] rounded-2xl rounded-br-sm bg-white/70 px-3.5 py-2.5 text-body text-nearblack">{interim}</p></div>
-                )}
-                {callError && <p className="rounded-xl border border-red-300/30 bg-red-950/30 p-3 text-body text-red-100">{callError}</p>}
-              </div>
-            </section>
-            <aside className="flex min-h-0 flex-col bg-white/[0.025]" aria-label="Background agent work">
-              <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-                <p className="label-caps text-white/55">Agent work</p>
-                <p className="text-[10px] text-white/35">Keeps running after this call</p>
-              </div>
-              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 md:p-4">
+              {callError && <p className="mx-4 mt-4 rounded-xl border border-red-300/30 bg-red-950/30 p-3 text-body text-red-100 md:mx-6">{callError}</p>}
+              <div className="grid min-h-0 flex-1 auto-rows-max grid-cols-1 gap-4 overflow-y-auto p-4 md:grid-cols-2 md:p-6 xl:grid-cols-3">
                 {visibleAgentTasks.length === 0 ? (
-                  <div className="flex h-full min-h-24 items-center justify-center text-center text-caption text-white/40">
-                    Ask {callAgent.display_name} to compose, research, review, prepare or create something. The work will appear here.
+                  <div className="col-span-full flex h-full min-h-48 items-center justify-center text-center">
+                    <div className="max-w-lg">
+                      <p className="text-[20px] font-semibold text-white/80">Nothing running yet</p>
+                      <p className="mt-2 text-[16px] leading-relaxed text-white/45">Ask {callAgent.display_name} to compose an email, prepare a report, research something or review a document. The work will take over this screen.</p>
+                    </div>
                   </div>
                 ) : visibleAgentTasks.map((task) => (
                   <AgentTaskCard key={task.id} task={task} dark onAction={handleTaskAction} />
                 ))}
               </div>
-            </aside>
+            </section>
+            <section className="shrink-0 border-t border-white/10 bg-black/20" aria-label="Call captions">
+              <button
+                type="button"
+                onClick={() => setCallTranscriptExpanded((expanded) => !expanded)}
+                aria-expanded={callTranscriptExpanded}
+                className="flex min-h-12 w-full items-center gap-3 px-4 py-2 text-left md:px-6"
+              >
+                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.14em] text-sand">Captions</span>
+                <span className="min-w-0 flex-1 truncate text-caption text-white/45">
+                  {interim || latestCallTranscript?.text || (callState === "connecting" ? "Connecting…" : "Optional live transcript")}
+                </span>
+                <span aria-hidden className="shrink-0 text-white/45">{callTranscriptExpanded ? "⌄" : "⌃"}</span>
+              </button>
+              {callTranscriptExpanded && (
+                <div
+                  ref={callTranscriptScrollerRef}
+                  onScroll={(event) => {
+                    const target = event.currentTarget;
+                    callTranscriptStickRef.current = target.scrollHeight - target.scrollTop - target.clientHeight < 100;
+                  }}
+                  className="max-h-[28vh] space-y-2 overflow-y-auto border-t border-white/10 px-4 py-3 md:px-6"
+                >
+                  {callTranscript.map((entry) => (
+                    <div key={entry.id} className={clsx("flex", entry.speaker === "user" ? "justify-end" : "justify-start") }>
+                      <div className={clsx(
+                        "max-w-[88%] rounded-xl px-3 py-2 md:max-w-[65%]",
+                        entry.speaker === "user" ? "bg-white text-nearblack" : entry.speaker === "system" ? "border border-sand/30 bg-sand/10 text-white" : "bg-white/10 text-white",
+                        !entry.final && "opacity-65",
+                      )}>
+                        <p className={clsx("text-[9px] font-semibold uppercase tracking-[0.12em]", entry.speaker === "user" ? "text-charcoal/45" : "text-sand") }>
+                          {entry.speaker === "user" ? "You" : entry.speaker === "agent" ? callAgent.display_name : "Agent work"}
+                        </p>
+                        <p className="mt-0.5 whitespace-pre-wrap text-caption leading-relaxed">{entry.text}</p>
+                      </div>
+                    </div>
+                  ))}
+                  {interim && !callTranscript.some((entry) => entry.id === "legacy-user-live") && (
+                    <div className="flex justify-end"><p className="max-w-[88%] rounded-xl bg-white/70 px-3 py-2 text-caption text-nearblack">{interim}</p></div>
+                  )}
+                </div>
+              )}
+            </section>
           </main>
           {callError ? (
             <div className="grid shrink-0 grid-cols-2 border-t border-white/10 pb-[env(safe-area-inset-bottom)]">
