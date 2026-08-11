@@ -6,6 +6,10 @@ import { MeetingMode } from "@/components/conversations/MeetingMode";
 import Image from "next/image";
 import { initials } from "@/lib/conversations";
 import {
+  agentTaskArtifactText,
+  normalizeAgentTaskArtifactContent,
+} from "@/lib/agent-task-artifact";
+import {
   CONVERSATION_DIRECT_UPLOAD_MAX_BYTES,
   conversationAttachmentKind,
   isConversationAttachmentMime,
@@ -428,38 +432,6 @@ function taskStatusLabel(task: AgentTask) {
   }[task.status];
 }
 
-function artifactContent(content: Record<string, unknown>, depth = 0): Record<string, unknown> {
-  if (depth > 3) return content;
-  const embedded = typeof content.text === "string" ? content.text.trim() : null;
-  if (embedded?.startsWith("{")) {
-    try {
-      const parsed = JSON.parse(embedded) as unknown;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        return artifactContent(parsed as Record<string, unknown>, depth + 1);
-      }
-    } catch {
-      // A normal text artifact may start with a brace; show it unchanged.
-    }
-  }
-  const artifact = content.artifact;
-  if (artifact && typeof artifact === "object" && !Array.isArray(artifact)) {
-    const nested = (artifact as Record<string, unknown>).content;
-    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
-      return artifactContent(nested as Record<string, unknown>, depth + 1);
-    }
-  }
-  return content;
-}
-
-function artifactText(content: Record<string, unknown>) {
-  const normalized = artifactContent(content);
-  const body = typeof normalized.body === "string" ? normalized.body : null;
-  const text = typeof normalized.text === "string" ? normalized.text : null;
-  const message = typeof normalized.message === "string" ? normalized.message : null;
-  const summary = typeof normalized.summary === "string" ? normalized.summary : null;
-  return body ?? text ?? message ?? summary ?? "Draft details are not available yet.";
-}
-
 function AgentTaskCard({
   task,
   compact = false,
@@ -534,18 +506,18 @@ function AgentTaskCard({
         </div>
       )}
       {task.artifacts.map((artifact) => {
-        const content = artifactContent(artifact.content);
+        const content = normalizeAgentTaskArtifactContent(artifact.content);
         const recipient = typeof content.to === "string" ? content.to : null;
         const subject = typeof content.subject === "string" ? content.subject : null;
         return (
           <div key={artifact.id} className={clsx("mt-4 rounded-xl border p-4", dark ? "border-white/10 bg-black/20" : "border-[#ded7cd] bg-[#f8f5ef]") }>
-            <p className="text-[17px] font-semibold leading-snug">{artifact.title}</p>
+            <p className="text-[18px] font-semibold leading-snug md:text-[19px]">{artifact.title}</p>
             {(recipient || subject) && (
-              <p className={clsx("mt-1 text-[11px]", dark ? "text-white/50" : "text-charcoal/50") }>
+              <p className={clsx("mt-1 text-[13px] leading-relaxed", dark ? "text-white/55" : "text-charcoal/55") }>
                 {[recipient && `To: ${recipient}`, subject && `Subject: ${subject}`].filter(Boolean).join(" · ")}
               </p>
             )}
-            <div className={clsx("mt-3 max-h-80 max-w-full overflow-y-auto whitespace-pre-wrap break-words font-sans text-[15px] leading-relaxed md:text-[16px]", dark ? "text-white/80" : "text-charcoal/80") }>{artifactText(content)}</div>
+            <div className={clsx("mt-3 max-h-80 max-w-full overflow-y-auto whitespace-pre-wrap break-words font-sans text-[16px] leading-[1.55] md:text-[17px]", dark ? "text-white/85" : "text-charcoal/85") }>{agentTaskArtifactText(content)}</div>
             {task.status === "awaiting_approval" && artifact.status === "draft" && (
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button type="button" onClick={() => onAction(task.id, "reject", artifact.id)} className={clsx("min-h-11 rounded-lg border px-3 py-2 text-body", dark ? "border-white/20" : "border-[#cfc6b8]")}>Reject</button>
