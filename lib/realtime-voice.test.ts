@@ -13,6 +13,7 @@ test("realtime defaults remain agent-specific and configurable", () => {
   const aria = realtimeConfig({ RESLU_REALTIME_VOICE_ENABLED: "true", OPENAI_API_KEY: "server-key" }, "aria");
   const marco = realtimeConfig({ RESLU_REALTIME_VOICE_ENABLED: "true", OPENAI_API_KEY: "server-key" }, "marco");
   assert.equal(aria.model, "gpt-realtime-2.1");
+  assert.equal(aria.transcriptionModel, "gpt-live-transcribe");
   assert.equal(aria.voice, "marin");
   assert.equal(marco.voice, "cedar");
   assert.equal(realtimeConfig({ RESLU_REALTIME_ARIA_VOICE: "coral" }, "aria").voice, "coral");
@@ -24,7 +25,11 @@ test("session forces substantive turns through the existing RESLU agent", () => 
   assert.equal(session.tool_choice, "required");
   assert.equal(session.audio.input.turn_detection.type, "semantic_vad");
   assert.equal(session.audio.input.turn_detection.interrupt_response, true);
+  assert.equal(session.audio.input.transcription.model, "gpt-live-transcribe");
+  assert.equal(session.audio.input.transcription.delay, "low");
   assert.equal(session.tools[0].name, "consult_reslu_agent");
+  assert.equal(session.tools[1].name, "start_reslu_task");
+  assert.match(session.tools[1].description, /continues if speech is interrupted/i);
   assert.match(session.instructions, /do not possess RESLU memory/i);
   assert.match(session.instructions, /Never answer a substantive question yourself/i);
 });

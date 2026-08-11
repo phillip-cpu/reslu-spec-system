@@ -172,6 +172,19 @@ Status: partially delivered; performance work remains.
 Already delivered: OpenAI Realtime WebRTC, semantic VAD, barge-in, precise
 cancellation and the existing-agent consult boundary.
 
+Persistent-agent workspace candidate: migration 099 adds durable Aria/Marco
+tasks, append-only observable task events, reviewable artifacts and explicit
+approval. Realtime now routes quick questions to the existing cancellable
+conversation consult, but routes requests to create, prepare, compose,
+research, review or organise work into a separate task. Each task has its own
+OpenClaw session and worker, so interruption, hang-up, screen lock and browser
+closure do not cancel it. Strong tasks route to the configured capable model
+and may use the existing runtime's specialist/subagent capability. The call UI
+shows low-latency user/agent captions alongside truthful task state and visible
+drafts; the same task cards remain in the text thread after the call. Sending,
+publishing, booking, spending, deletion and record changes remain behind an
+explicit approval boundary.
+
 Local instrumentation candidate: every Realtime turn now records bounded,
 content-free durations for speech-stop to tool call, consult acceptance, bridge
 queue wait, OpenClaw processing, backend completion and first actual WebRTC
@@ -217,6 +230,11 @@ Work:
 - Test double-talk, throat clears, echo, road noise and ambiguous partial turns.
 - Test speaker, AirPods, car Bluetooth, weak reception and Wi-Fi/mobile handoff.
 - Reconnect without replaying stale audio or duplicating canonical messages.
+- Apply migration 099, run its rollback verifier, deploy the task/caption UI,
+  and restart the Mac bridge so its independent task workers are active.
+- Prove that a task started by voice completes after the call ends, that a
+  draft can be approved from the thread, and that an explicit task cancellation
+  does not cancel or corrupt an unrelated conversation turn.
 
 Stage gate:
 
@@ -341,8 +359,10 @@ Final product gate:
 
 ## Current next action
 
-Rerun the iPhone attachment test after cancelling a live voice consult, then
-complete the PDF and desktop cases. Reauthenticate GitHub, publish the Stage 2
-candidate, apply migrations 093-098 and their rollback verifiers database-first,
-then deploy/restart the bridge and run the two-device send, reconnect, unread,
-preference and lock-screen notification matrix.
+Review the persistent-agent workspace candidate, apply migration 099 and its
+rollback-only verifier database-first, deploy the application, then pull and
+restart the Mac bridge. Run one iPhone acceptance flow: ask Aria to draft an
+email with the strong model, continue talking, end the call, watch the task
+continue in the thread, review the visible draft, approve it, and confirm the
+completion message is posted exactly once. Then continue the remaining
+attachment, notification, latency and two-device acceptance matrix.

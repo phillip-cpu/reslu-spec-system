@@ -58,6 +58,82 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             )
             self.assertFalse(call.kwargs["daemon"])
 
+    def test_background_tasks_have_workers_independent_from_conversation_turns(self):
+        with mock.patch.object(conversation_agent_bridge.threading, "Thread") as thread:
+            workers = conversation_agent_bridge.build_task_workers(
+                "https://example.supabase.co",
+                "secret",
+            )
+
+        self.assertEqual(len(workers), 2)
+        calls_by_name = {call.kwargs["name"]: call for call in thread.call_args_list}
+        self.assertEqual(set(calls_by_name), {"reslu-task-aria", "reslu-task-marco"})
+        self.assertTrue(all(call.kwargs["target"] is conversation_agent_bridge.task_worker_loop for call in thread.call_args_list))
+
+    def test_strong_tasks_route_to_the_configured_capable_model(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                conversation_agent_bridge.task_model_override("strong"),
+                "openai/gpt-5.6-sol",
+            )
+            self.assertIsNone(conversation_agent_bridge.task_model_override("standard"))
+        with mock.patch.dict(os.environ, {"RESLU_TASK_STRONG_MODEL": "anthropic/claude-opus-4-6"}):
+            self.assertEqual(
+                conversation_agent_bridge.task_model_override("strong"),
+                "anthropic/claude-opus-4-6",
+            )
+
+    def test_task_result_keeps_a_reviewable_email_draft(self):
+        result = conversation_agent_bridge.parse_task_result(json.dumps({
+            "status": "awaiting_approval",
+            "summary": "Email draft is ready.",
+            "message": "I drafted the email for your approval.",
+            "artifact": {
+                "artifact_key": "client-email",
+                "kind": "email_draft",
+                "title": "Email to Jane",
+                "content": {"to": "jane@example.com", "subject": "Friday", "body": "Hi Jane"},
+            },
+        }), {"title": "Draft email"})
+
+        self.assertEqual(result["status"], "awaiting_approval")
+        self.assertEqual(result["artifact"]["kind"], "email_draft")
+        self.assertEqual(result["artifact"]["content"]["subject"], "Friday")
+
+    @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
+    def test_task_invocation_uses_a_task_session_and_stops_only_on_explicit_cancel(self, popen):
+        process = popen.return_value
+        process.communicate.return_value = ('{"final":"{\\"status\\":\\"completed\\",\\"summary\\":\\"Done\\",\\"message\\":\\"Done\\"}"}', "")
+        process.returncode = 0
+        task = {
+            "id": "task-123",
+            "title": "Prepare report",
+            "objective": "Prepare the report",
+            "model_tier": "strong",
+            "approval_state": "none",
+            "approval_note": None,
+        }
+
+        result = conversation_agent_bridge.invoke_task_agent(
+            {"slug": "aria", "display_name": "Aria", "role_label": "Studio assistant"},
+            task,
+            "Phillip: Please prepare it.",
+            [],
+            should_continue=lambda: True,
+        )
+
+        command = popen.call_args.args[0]
+        self.assertEqual(command[command.index("--session-key") + 1], "reslu-task-task-123")
+        self.assertEqual(command[command.index("--model") + 1], "openai/gpt-5.6-sol")
+        self.assertEqual(result["status"], "completed")
+
+    def test_task_cancellation_is_separate_from_call_or_conversation_state(self):
+        rest = mock.Mock()
+        rest.rows.return_value = [{"status": "running", "cancellation_requested_at": None}]
+        self.assertTrue(conversation_agent_bridge.task_should_continue(rest, "task-1"))
+        rest.rows.return_value = [{"status": "running", "cancellation_requested_at": "2026-08-11T00:00:00Z"}]
+        self.assertFalse(conversation_agent_bridge.task_should_continue(rest, "task-1"))
+
     def test_history_resolves_quoted_reply_target_outside_recent_window(self):
         class FakeRest:
             @staticmethod

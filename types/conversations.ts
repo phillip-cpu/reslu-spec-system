@@ -1,6 +1,8 @@
 export type ConversationKind = "direct" | "group";
 export type ConversationMessageKind = "text" | "call_record" | "meeting_record" | "system";
 export type AgentSlug = "aria" | "marco";
+export type AgentTaskStatus = "queued" | "running" | "awaiting_approval" | "completed" | "failed" | "cancelled";
+export type AgentTaskModelTier = "fast" | "standard" | "strong";
 
 export interface ConversationAttachment {
   id: string;
@@ -59,6 +61,56 @@ export interface ConversationAgentActivity {
   pending_turns: number;
   queued_at: string;
   claimed_at: string | null;
+}
+
+export interface AgentTaskEvent {
+  id: string;
+  task_id: string;
+  event_type: "created" | "queued" | "started" | "progress" | "artifact" | "approval_required" | "approved" | "rejected" | "completed" | "failed" | "cancelled";
+  label: string;
+  detail: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AgentTaskArtifact {
+  id: string;
+  task_id: string;
+  artifact_key: string;
+  kind: "text" | "email_draft" | "report" | "file" | "record_change";
+  title: string;
+  content: Record<string, unknown>;
+  status: "draft" | "approved" | "rejected" | "published";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentTask {
+  id: string;
+  conversation_id: string;
+  requested_by: string;
+  owner_agent_id: string;
+  source_message_id: string | null;
+  source_call_id: string | null;
+  client_task_id: string;
+  title: string;
+  objective: string;
+  requested_via: "text" | "voice" | "system";
+  status: AgentTaskStatus;
+  model_tier: AgentTaskModelTier;
+  model_name: string | null;
+  approval_state: "none" | "pending" | "approved" | "rejected";
+  approval_note: string | null;
+  result_summary: string | null;
+  error: string | null;
+  cancellation_requested_at: string | null;
+  claimed_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  owner_agent?: ConversationParticipant;
+  events: AgentTaskEvent[];
+  artifacts: AgentTaskArtifact[];
 }
 
 export interface ConversationSummary {

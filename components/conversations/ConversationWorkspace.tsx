@@ -40,6 +40,7 @@ import { ASSET_BUCKET } from "@/lib/storage";
 import { createClient as createBrowserClient } from "@/lib/supabase/client";
 import type {
   AgentSlug,
+  AgentTask,
   ConversationAgentActivity,
   ConversationAttachment,
   ConversationMessage,
@@ -98,6 +99,13 @@ interface RealtimeEvent {
       content?: Array<{ transcript?: string }>;
     }>;
   };
+}
+
+interface CallTranscriptEntry {
+  id: string;
+  speaker: "user" | "agent" | "system";
+  text: string;
+  final: boolean;
 }
 
 interface ActiveRealtimeConsult {
@@ -209,6 +217,93 @@ function timeLabel(value: string) {
 function fileSizeLabel(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function taskStatusLabel(task: AgentTask) {
+  if (task.cancellation_requested_at && task.status === "running") return "Stopping";
+  return {
+    queued: "Queued",
+    running: "Working",
+    awaiting_approval: "Needs approval",
+    completed: "Completed",
+    failed: "Failed",
+    cancelled: "Cancelled",
+  }[task.status];
+}
+
+function artifactText(content: Record<string, unknown>) {
+  const body = typeof content.body === "string" ? content.body : null;
+  const text = typeof content.text === "string" ? content.text : null;
+  const summary = typeof content.summary === "string" ? content.summary : null;
+  return body ?? text ?? summary ?? JSON.stringify(content, null, 2);
+}
+
+function AgentTaskCard({
+  task,
+  compact = false,
+  dark = false,
+  onAction,
+}: {
+  task: AgentTask;
+  compact?: boolean;
+  dark?: boolean;
+  onAction: (taskId: string, action: "cancel" | "approve" | "reject", artifactId?: string) => void;
+}) {
+  const latestEvent = task.events.at(-1);
+  const active = task.status === "queued" || task.status === "running";
+  return (
+    <article className={clsx(
+      "rounded-2xl border p-3",
+      dark ? "border-white/15 bg-white/[0.06] text-white" : "border-[#d4cbbd] bg-white/65 text-nearblack",
+    )}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className={clsx("text-[10px] font-semibold uppercase tracking-[0.14em]", dark ? "text-sand" : "text-charcoal/50") }>
+            {taskStatusLabel(task)} · {task.model_tier} model
+          </p>
+          <h3 className="mt-1 truncate text-body font-semibold">{task.title}</h3>
+        </div>
+        {active && (
+          <button
+            type="button"
+            onClick={() => onAction(task.id, "cancel")}
+            disabled={Boolean(task.cancellation_requested_at)}
+            className={clsx("shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold", dark ? "bg-white/10 text-white/70" : "bg-[#eee8de] text-charcoal/70")}
+          >
+            {task.cancellation_requested_at ? "Stopping…" : "Cancel"}
+          </button>
+        )}
+      </div>
+      {!compact && <p className={clsx("mt-2 line-clamp-3 text-caption", dark ? "text-white/65" : "text-charcoal/65")}>{task.objective}</p>}
+      {(latestEvent || task.result_summary || task.error) && (
+        <p className={clsx("mt-2 text-caption", task.error ? "text-red-600" : dark ? "text-white/50" : "text-charcoal/50") }>
+          {task.error ?? latestEvent?.label ?? task.result_summary}
+        </p>
+      )}
+      {task.artifacts.map((artifact) => {
+        const recipient = typeof artifact.content.to === "string" ? artifact.content.to : null;
+        const subject = typeof artifact.content.subject === "string" ? artifact.content.subject : null;
+        return (
+          <div key={artifact.id} className={clsx("mt-3 rounded-xl border p-3", dark ? "border-white/10 bg-black/20" : "border-[#ded7cd] bg-[#f8f5ef]") }>
+            <p className="text-caption font-semibold">{artifact.title}</p>
+            {(recipient || subject) && (
+              <p className={clsx("mt-1 text-[11px]", dark ? "text-white/50" : "text-charcoal/50") }>
+                {[recipient && `To: ${recipient}`, subject && `Subject: ${subject}`].filter(Boolean).join(" · ")}
+              </p>
+            )}
+            <pre className={clsx("mt-2 max-h-44 overflow-auto whitespace-pre-wrap font-sans text-caption", dark ? "text-white/70" : "text-charcoal/75") }>{artifactText(artifact.content)}</pre>
+            {task.status === "awaiting_approval" && artifact.status === "draft" && (
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button type="button" onClick={() => onAction(task.id, "reject", artifact.id)} className={clsx("rounded-lg border px-3 py-2 text-caption", dark ? "border-white/20" : "border-[#cfc6b8]")}>Reject</button>
+                <button type="button" onClick={() => onAction(task.id, "approve", artifact.id)} className={clsx("rounded-lg px-3 py-2 text-caption font-semibold", dark ? "bg-sand text-nearblack" : "bg-nearblack text-white")}>Approve</button>
+              </div>
+            )}
+            {artifact.status !== "draft" && <p className={clsx("mt-2 text-[10px] font-semibold uppercase tracking-[0.14em]", dark ? "text-sand" : "text-charcoal/45")}>{artifact.status}</p>}
+          </div>
+        );
+      })}
+    </article>
+  );
 }
 
 async function probeConversationAttachment(
@@ -375,6 +470,10 @@ export function ConversationWorkspace() {
   const [interim, setInterim] = useState("");
   const [callError, setCallError] = useState<string | null>(null);
   const [lastSpoken, setLastSpoken] = useState("");
+  const [callTranscript, setCallTranscript] = useState<CallTranscriptEntry[]>([]);
+  const [agentTasks, setAgentTasks] = useState<AgentTask[]>([]);
+  const callTranscriptScrollerRef = useRef<HTMLDivElement>(null);
+  const callTranscriptStickRef = useRef(true);
   const messagesScrollerRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -423,6 +522,7 @@ export function ConversationWorkspace() {
   const realtimeProgressResponseToolCallIdsRef = useRef(new Map<string, string>());
   const pendingSpokenToolCallIdRef = useRef<string | null>(null);
   const pendingProgressToolCallIdRef = useRef<string | null>(null);
+  const inputTranscriptByItemRef = useRef(new Map<string, string>());
   const lastReadMessageByConversationRef = useRef(new Map<string, string>());
   const messageSearchRequestRef = useRef(0);
   const conversationListRequestRef = useRef(0);
@@ -444,6 +544,46 @@ export function ConversationWorkspace() {
     }
     return next;
   }, []);
+
+  const upsertCallTranscript = useCallback((entry: CallTranscriptEntry) => {
+    setCallTranscript((current) => {
+      const index = current.findIndex((candidate) => candidate.id === entry.id);
+      if (index < 0) return [...current, entry].slice(-80);
+      const next = [...current];
+      next[index] = entry;
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const scroller = callTranscriptScrollerRef.current;
+    if (!scroller || !callTranscriptStickRef.current) return;
+    scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+  }, [callTranscript]);
+
+  const loadAgentTasks = useCallback(async (conversationId: string) => {
+    const response = await fetch(`/api/conversations/${conversationId}/tasks`, { cache: "no-store" });
+    const body = await response.json() as { tasks?: AgentTask[]; error?: string };
+    if (!response.ok) throw new Error(body.error ?? "Could not load background tasks");
+    if (selectedIdRef.current === conversationId) setAgentTasks(body.tasks ?? []);
+  }, []);
+
+  const updateAgentTask = useCallback(async (
+    taskId: string,
+    action: "cancel" | "approve" | "reject",
+    artifactId?: string
+  ) => {
+    const conversationId = selectedIdRef.current;
+    if (!conversationId) return;
+    const response = await fetch(`/api/conversations/${conversationId}/tasks/${taskId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, artifact_id: artifactId }),
+    });
+    const body = await response.json() as { error?: string };
+    if (!response.ok) throw new Error(body.error ?? "Could not update task");
+    await loadAgentTasks(conversationId);
+  }, [loadAgentTasks]);
 
   const selectedConversation = useMemo(
     () => data.conversations.find((conversation) => conversation.id === selectedId) ?? null,
@@ -475,6 +615,16 @@ export function ConversationWorkspace() {
   const attachmentUploadFailed = draftAttachments.some((item) => item.status === "error");
   const composerBusy = sending || attachmentUploadInProgress;
   const callAgent = participants.find((participant) => participant.type === "agent") ?? null;
+  const visibleAgentTasks = useMemo(() => {
+    const active = agentTasks.filter((task) => ["queued", "running", "awaiting_approval"].includes(task.status));
+    const recent = agentTasks.filter((task) => !active.includes(task)).slice(0, Math.max(0, 4 - active.length));
+    return [...active, ...recent].slice(0, 6);
+  }, [agentTasks]);
+  const handleTaskAction = useCallback((taskId: string, action: "cancel" | "approve" | "reject", artifactId?: string) => {
+    void updateAgentTask(taskId, action, artifactId).catch((reason) => {
+      setError(reason instanceof Error ? reason.message : "Could not update background task");
+    });
+  }, [updateAgentTask]);
   const headerParticipant = callAgent
     ?? selectedConversation?.participants.find((participant) => !participant.is_self)
     ?? selectedConversation?.participants[0]
@@ -972,6 +1122,19 @@ export function ConversationWorkspace() {
       window.clearInterval(timer);
     };
   }, [selectedId, loadMessages, callId]);
+  useEffect(() => {
+    if (!selectedId) {
+      setAgentTasks([]);
+      return;
+    }
+    const refresh = () => void loadAgentTasks(selectedId).catch(() => null);
+    const initial = window.setTimeout(refresh, 0);
+    const timer = window.setInterval(refresh, callId ? 1500 : 6000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(timer);
+    };
+  }, [callId, loadAgentTasks, selectedId]);
   useEffect(() => {
     if (!selectedId) return;
     const refreshVisibleConversation = () => {
@@ -1807,6 +1970,9 @@ export function ConversationWorkspace() {
     realtimeProgressResponseToolCallIdsRef.current.clear();
     pendingSpokenToolCallIdRef.current = null;
     pendingProgressToolCallIdRef.current = null;
+    inputTranscriptByItemRef.current.clear();
+    callTranscriptStickRef.current = true;
+    setCallTranscript([]);
     return callRecordSaved;
   }, [cancelActiveRealtimeTurn, persistCallEnd, selectedId]);
 
@@ -1977,6 +2143,72 @@ export function ConversationWorkspace() {
     }
   }, [callAgent, cancelActiveRealtimeConsult, loadMessages, selectedId, sendRealtimeEvent]);
 
+  const runRealtimeTask = useCallback(async (toolCallId: string, responseId: string | null, argumentsJson: string) => {
+    if (!selectedId || !callAgent?.agent_slug || !callIdRef.current || handledToolCallIdsRef.current.has(toolCallId)) return;
+    handledToolCallIdsRef.current.add(toolCallId);
+    let input: { title?: string; objective?: string; model_tier?: "fast" | "standard" | "strong" } = {};
+    try { input = JSON.parse(argumentsJson) as typeof input; } catch { /* handled below */ }
+    const title = input.title?.trim();
+    const objective = input.objective?.trim();
+    if (!title || !objective) {
+      setCallError("I couldn’t create that task. Please state the outcome you want.");
+      setCallState("listening");
+      return;
+    }
+    if (activeRealtimeConsultRef.current) cancelActiveRealtimeConsult();
+    setCallState("thinking");
+    try {
+      const response = await fetch(`/api/conversations/${selectedId}/realtime/task`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          objective,
+          model_tier: input.model_tier ?? "standard",
+          agent_slug: callAgent.agent_slug,
+          call_id: callIdRef.current,
+          tool_call_id: toolCallId,
+          response_id: responseId,
+        }),
+      });
+      const body = await response.json() as { acknowledgement?: string; task?: AgentTask; error?: string };
+      if (!response.ok || !body.task || !body.acknowledgement) {
+        throw new Error(body.error ?? "Could not start the background task");
+      }
+      void loadMessages(selectedId);
+      void loadAgentTasks(selectedId);
+      upsertCallTranscript({
+        id: `system-task-${body.task.id}`,
+        speaker: "system",
+        text: `${body.task.title} · working in background`,
+        final: true,
+      });
+      sendRealtimeEvent({
+        type: "conversation.item.create",
+        item: {
+          type: "function_call_output",
+          call_id: toolCallId,
+          output: JSON.stringify({
+            task_id: body.task.id,
+            status: body.task.status,
+            answer: body.acknowledgement,
+          }),
+        },
+      });
+      sendRealtimeEvent({
+        type: "response.create",
+        response: {
+          output_modalities: ["audio"],
+          tool_choice: "none",
+          instructions: "Speak only the start_reslu_task answer. Add no facts, promises or actions.",
+        },
+      });
+    } catch (reason) {
+      setCallError(reason instanceof Error ? reason.message : "Could not start the background task");
+      setCallState("listening");
+    }
+  }, [callAgent, cancelActiveRealtimeConsult, loadAgentTasks, loadMessages, selectedId, sendRealtimeEvent, upsertCallTranscript]);
+
   const scheduleRealtimeProgressCue = useCallback((toolCallId: string, initialResponseId: string | null) => {
     const consult = activeRealtimeConsultRef.current;
     if (!consult || consult.toolCallId !== toolCallId || consult.progressCuePlayed || consult.progressTimer != null) return;
@@ -2048,18 +2280,42 @@ export function ConversationWorkspace() {
       }
       return;
     }
+    if (event.type === "conversation.item.input_audio_transcription.delta" && event.item_id && event.delta) {
+      const text = `${inputTranscriptByItemRef.current.get(event.item_id) ?? ""}${event.delta}`;
+      inputTranscriptByItemRef.current.set(event.item_id, text);
+      upsertCallTranscript({ id: `user-${event.item_id}`, speaker: "user", text, final: false });
+      return;
+    }
+    if (event.type === "conversation.item.input_audio_transcription.completed" && event.item_id && event.transcript) {
+      inputTranscriptByItemRef.current.set(event.item_id, event.transcript);
+      upsertCallTranscript({ id: `user-${event.item_id}`, speaker: "user", text: event.transcript, final: true });
+      return;
+    }
     if (event.type === "response.output_audio_transcript.delta" && event.delta) {
       setCallState("speaking");
       setInterim((current) => `${current}${event.delta}`);
+      const responseId = event.response_id ?? activeResponseIdRef.current ?? "current";
+      setCallTranscript((current) => {
+        const id = `agent-${responseId}`;
+        const existing = current.find((entry) => entry.id === id);
+        const entry = { id, speaker: "agent" as const, text: `${existing?.text ?? ""}${event.delta}`, final: false };
+        return existing ? current.map((candidate) => candidate.id === id ? entry : candidate) : [...current, entry].slice(-80);
+      });
       return;
     }
     if (event.type === "response.output_audio_transcript.done" && event.transcript) {
       setLastSpoken(event.transcript);
       setInterim("");
+      const responseId = event.response_id ?? activeResponseIdRef.current ?? `done-${Date.now()}`;
+      upsertCallTranscript({ id: `agent-${responseId}`, speaker: "agent", text: event.transcript, final: true });
       return;
     }
     if (event.type === "response.function_call_arguments.done" && event.call_id && event.name === "consult_reslu_agent") {
       void runRealtimeConsult(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}");
+      return;
+    }
+    if (event.type === "response.function_call_arguments.done" && event.call_id && event.name === "start_reslu_task") {
+      void runRealtimeTask(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}");
       return;
     }
     if (event.type === "response.done" && event.response) {
@@ -2071,6 +2327,9 @@ export function ConversationWorkspace() {
           void runRealtimeConsult(output.call_id, responseId ?? null, output.arguments ?? "{}");
           scheduleRealtimeProgressCue(output.call_id, responseId ?? null);
         }
+        if (output.type === "function_call" && output.name === "start_reslu_task" && output.call_id) {
+          void runRealtimeTask(output.call_id, responseId ?? null, output.arguments ?? "{}");
+        }
       }
       if (event.response.status === "completed" && !(event.response.output ?? []).some((item) => item.type === "function_call")) {
         setCallState(activeRealtimeConsultRef.current ? "thinking" : "listening");
@@ -2080,7 +2339,7 @@ export function ConversationWorkspace() {
     if (event.type === "error") {
       setCallError("The realtime call hit an error. Please try again.");
     }
-  }, [interruptRealtimePlayback, runRealtimeConsult, scheduleRealtimeProgressCue]);
+  }, [interruptRealtimePlayback, runRealtimeConsult, runRealtimeTask, scheduleRealtimeProgressCue, upsertCallTranscript]);
 
   const createCallRecord = useCallback(async () => {
     const conversationId = callConversationIdRef.current ?? selectedId;
@@ -2180,10 +2439,24 @@ export function ConversationWorkspace() {
         let live = "";
         for (let index = event.resultIndex; index < event.results.length; index += 1) {
           const result = event.results[index];
-          if (result.isFinal) handleVoiceText(result[0].transcript);
+          if (result.isFinal) {
+            const transcript = result[0].transcript.trim();
+            if (!transcript) continue;
+            setCallTranscript((current) => current.filter((entry) => entry.id !== "legacy-user-live"));
+            upsertCallTranscript({
+              id: `legacy-user-${Date.now()}-${index}`,
+              speaker: "user",
+              text: transcript,
+              final: true,
+            });
+            handleVoiceText(transcript);
+          }
           else live += result[0].transcript;
         }
         setInterim(live);
+        if (live.trim()) {
+          upsertCallTranscript({ id: "legacy-user-live", speaker: "user", text: live.trim(), final: false });
+        }
       };
       recognition.onerror = (event) => {
         if (!callActiveRef.current || event.error === "aborted") return;
@@ -2225,7 +2498,7 @@ export function ConversationWorkspace() {
       const message = reason instanceof Error ? reason.message : "Could not start call";
       setCallError(reason instanceof DOMException ? speechRecognitionErrorMessage(reason.name) : message);
     }
-  }, [createCallRecord, handleVoiceText, messages, persistCallEnd, selectedId]);
+  }, [createCallRecord, handleVoiceText, messages, persistCallEnd, selectedId, upsertCallTranscript]);
 
   async function startCall() {
     if (!selectedId || !callAgent) return;
@@ -2238,6 +2511,9 @@ export function ConversationWorkspace() {
     realtimeProgressResponseToolCallIdsRef.current.clear();
     pendingSpokenToolCallIdRef.current = null;
     pendingProgressToolCallIdRef.current = null;
+    inputTranscriptByItemRef.current.clear();
+    callTranscriptStickRef.current = true;
+    setCallTranscript([]);
     setCallError(null);
     setCallOpening(true);
     setCallState("connecting");
@@ -2525,6 +2801,22 @@ export function ConversationWorkspace() {
                 )}
               </div>
             </header>
+
+            {visibleAgentTasks.length > 0 && (
+              <section className="shrink-0 border-b border-[#d4cbbd] bg-[#eee9df] px-3 py-2.5 md:px-4" aria-label="Agent work">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <p className="label-caps">Agent work</p>
+                  <p className="text-[10px] text-charcoal/45">Continues after you leave this chat</p>
+                </div>
+                <div className="flex max-h-52 snap-x gap-3 overflow-x-auto pb-1">
+                  {visibleAgentTasks.map((task) => (
+                    <div key={task.id} className="w-[min(82vw,22rem)] shrink-0 snap-start md:w-80">
+                      <AgentTaskCard task={task} compact onAction={handleTaskAction} />
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
 
             {messageSearchOpen && (
               <div className="absolute inset-0 z-40 flex min-h-0 flex-col bg-[#f5f1e8]">
@@ -2954,22 +3246,73 @@ export function ConversationWorkspace() {
 
       {(callOpening || callId || callError) && callAgent && (
         <div className="fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[70] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col overflow-hidden bg-nearblack text-white">
-          <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 pb-4 pt-[calc(env(safe-area-inset-top)+1rem)] md:px-6 md:py-5">
-            <div>
-              <p className="label-caps text-sand">RESLU call</p>
-              <p className="mt-1 text-caption text-white/45">{selectedConversation?.display_title}</p>
-            </div>
-            <button onClick={() => void endCall()} className="border border-white/30 px-4 py-2 text-caption">Close</button>
-          </div>
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-4 py-4 text-center md:px-6">
+          <header className="flex shrink-0 items-center gap-3 border-b border-white/10 px-3 pb-3 pt-[calc(env(safe-area-inset-top)+0.75rem)] md:px-6 md:py-4">
             <div className={clsx("relative", callState === "speaking" && "animate-pulse")}>
-              <Avatar participant={callAgent} large />
-              <span className={clsx("absolute -bottom-2 -right-2 h-5 w-5 border-4 border-nearblack", callState === "reconnecting" ? "bg-[#C9971E]" : "bg-[#5f895f]")} />
+              <Avatar participant={callAgent} />
+              <span className={clsx("absolute -bottom-1 -right-1 h-3.5 w-3.5 rounded-full border-2 border-nearblack", callState === "reconnecting" ? "bg-[#C9971E]" : "bg-[#66a466]")} />
             </div>
-            <h2 className="mt-5 font-display text-[36px] leading-none md:mt-8 md:text-[42px]">{callAgent.display_name}</h2>
-            <p className={clsx("mt-3 text-subhead uppercase tracking-[0.24em]", callError ? "text-[#e28b8b]" : "text-sand")}>{callError ? "Call interrupted" : callState}</p>
-            <p className="mt-5 min-h-12 max-w-xl text-body text-white/60 md:mt-8 md:min-h-16">{callError ?? (interim ? `“${interim}”` : callState === "listening" ? "I’m listening." : callState === "thinking" ? `${callAgent.display_name} is checking that…` : "")}</p>
-          </div>
+            <div className="min-w-0 flex-1">
+              <h2 className="truncate text-body font-semibold">{callAgent.display_name}</h2>
+              <p className={clsx("mt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em]", callError ? "text-[#e28b8b]" : "text-sand")}>{callError ? "Call interrupted" : callState}</p>
+            </div>
+            <p className="hidden truncate text-caption text-white/40 sm:block">{selectedConversation?.display_title}</p>
+            <button onClick={() => void endCall()} className="rounded-full border border-white/25 px-3 py-2 text-caption">Close</button>
+          </header>
+          <main className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(9rem,42%)] md:grid-cols-[minmax(0,1fr)_24rem] md:grid-rows-1">
+            <section className="flex min-h-0 flex-col border-b border-white/10 md:border-b-0 md:border-r" aria-label="Live call transcript">
+              <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+                <p className="label-caps text-white/55">Live transcript</p>
+                <p className="text-[10px] text-white/35">You can glance instead of hearing every detail</p>
+              </div>
+              <div
+                ref={callTranscriptScrollerRef}
+                onScroll={(event) => {
+                  const target = event.currentTarget;
+                  callTranscriptStickRef.current = target.scrollHeight - target.scrollTop - target.clientHeight < 100;
+                }}
+                className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4 md:px-6"
+              >
+                {callTranscript.length === 0 && !interim && !callError && (
+                  <div className="flex h-full min-h-32 items-center justify-center text-center text-body text-white/40">
+                    <p>{callState === "connecting" ? "Connecting…" : `Speak naturally. Your conversation with ${callAgent.display_name} will appear here.`}</p>
+                  </div>
+                )}
+                {callTranscript.map((entry) => (
+                  <div key={entry.id} className={clsx("flex", entry.speaker === "user" ? "justify-end" : "justify-start") }>
+                    <div className={clsx(
+                      "max-w-[88%] rounded-2xl px-3.5 py-2.5 md:max-w-[72%]",
+                      entry.speaker === "user" ? "rounded-br-sm bg-white text-nearblack" : entry.speaker === "system" ? "border border-sand/35 bg-sand/10 text-white" : "rounded-bl-sm bg-white/10 text-white",
+                      !entry.final && "opacity-65",
+                    )}>
+                      <p className={clsx("mb-1 text-[9px] font-semibold uppercase tracking-[0.14em]", entry.speaker === "user" ? "text-charcoal/45" : "text-sand") }>
+                        {entry.speaker === "user" ? "You" : entry.speaker === "agent" ? callAgent.display_name : "Agent work"}
+                      </p>
+                      <p className="whitespace-pre-wrap text-body leading-relaxed">{entry.text}</p>
+                    </div>
+                  </div>
+                ))}
+                {interim && !callTranscript.some((entry) => entry.id === "legacy-user-live") && (
+                  <div className="flex justify-end"><p className="max-w-[88%] rounded-2xl rounded-br-sm bg-white/70 px-3.5 py-2.5 text-body text-nearblack">{interim}</p></div>
+                )}
+                {callError && <p className="rounded-xl border border-red-300/30 bg-red-950/30 p-3 text-body text-red-100">{callError}</p>}
+              </div>
+            </section>
+            <aside className="flex min-h-0 flex-col bg-white/[0.025]" aria-label="Background agent work">
+              <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+                <p className="label-caps text-white/55">Agent work</p>
+                <p className="text-[10px] text-white/35">Keeps running after this call</p>
+              </div>
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 md:p-4">
+                {visibleAgentTasks.length === 0 ? (
+                  <div className="flex h-full min-h-24 items-center justify-center text-center text-caption text-white/40">
+                    Ask {callAgent.display_name} to compose, research, review, prepare or create something. The work will appear here.
+                  </div>
+                ) : visibleAgentTasks.map((task) => (
+                  <AgentTaskCard key={task.id} task={task} dark onAction={handleTaskAction} />
+                ))}
+              </div>
+            </aside>
+          </main>
           {callError ? (
             <div className="grid shrink-0 grid-cols-2 border-t border-white/10 pb-[env(safe-area-inset-bottom)]">
               <button onClick={() => void endCall()} className="border-r border-white/10 px-3 py-5 text-subhead text-white/75">Back to chat</button>
