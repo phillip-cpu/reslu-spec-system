@@ -506,7 +506,17 @@ function NewConversation({ people, onCreated, onClose }: {
   );
 }
 
-export function ConversationWorkspace() {
+export function ConversationWorkspace({
+  presentation = "page",
+  active = true,
+  onCallActiveChange,
+  onUnreadCountChange,
+}: {
+  presentation?: "page" | "drawer";
+  active?: boolean;
+  onCallActiveChange?: (active: boolean) => void;
+  onUnreadCountChange?: (count: number) => void;
+} = {}) {
   const [data, setData] = useState<ConversationsResponse>({ conversations: [], people: [] });
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -551,6 +561,11 @@ export function ConversationWorkspace() {
   const [callTranscriptExpanded, setCallTranscriptExpanded] = useState(false);
   const [agentTasks, setAgentTasks] = useState<AgentTask[]>([]);
   const [agentWorkExpanded, setAgentWorkExpanded] = useState(false);
+  const drawer = presentation === "drawer";
+  const unreadCount = useMemo(
+    () => data.conversations.reduce((total, conversation) => total + conversation.unread_count, 0),
+    [data.conversations],
+  );
   const callTranscriptScrollerRef = useRef<HTMLDivElement>(null);
   const callTranscriptStickRef = useRef(true);
   const messagesScrollerRef = useRef<HTMLDivElement>(null);
@@ -588,6 +603,7 @@ export function ConversationWorkspace() {
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const microphoneStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const interactionActiveRef = useRef(active);
   const realtimeActiveRef = useRef(false);
   const realtimeConnectionGenerationRef = useRef(0);
   const realtimeReconnectAttemptsRef = useRef(0);
@@ -818,7 +834,7 @@ export function ConversationWorkspace() {
   }, [callAgent?.agent_slug]);
 
   const markConversationRead = useCallback(async (conversationId: string, throughMessageId: string) => {
-    if (document.visibilityState !== "visible") return;
+    if (!interactionActiveRef.current || document.visibilityState !== "visible") return;
     if (lastReadMessageByConversationRef.current.get(conversationId) === throughMessageId) return;
     lastReadMessageByConversationRef.current.set(conversationId, throughMessageId);
     try {
@@ -1269,6 +1285,15 @@ export function ConversationWorkspace() {
     if (selectedConversation?.archived_at) setShowArchived(true);
   }, [selectedConversation?.archived_at]);
   useEffect(() => { mutedRef.current = muted; }, [muted]);
+  useEffect(() => { interactionActiveRef.current = active; }, [active]);
+
+  useEffect(() => {
+    onCallActiveChange?.(Boolean(callOpening || callId || callError));
+  }, [callError, callId, callOpening, onCallActiveChange]);
+
+  useEffect(() => {
+    onUnreadCountChange?.(unreadCount);
+  }, [onUnreadCountChange, unreadCount]);
   useEffect(() => () => {
     for (const drafts of draftAttachmentsByConversationRef.current.values()) {
       for (const item of drafts) {
@@ -2913,14 +2938,19 @@ export function ConversationWorkspace() {
     void queueDraftMessage(selectedId, draft, attachments, replyingTo);
   }
 
-  if (loading) return <div className="flex h-[70vh] items-center justify-center text-body text-charcoal/50">Loading conversations…</div>;
+  if (loading) return <div className={clsx("flex items-center justify-center text-body text-charcoal/50", drawer ? "h-full" : "h-[70vh]")}>Loading conversations…</div>;
 
   return (
     <div
       ref={workspaceRef}
-      className="fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-20 flex h-[var(--conversation-vh,100dvh)] min-h-0 min-w-0 overflow-hidden border border-[#d4cbbd] bg-[#f5f1e8] md:relative md:inset-auto md:z-auto md:h-[calc(100vh-7.5rem)] md:min-h-[560px]"
+      className={clsx(
+        "flex min-h-0 min-w-0 overflow-hidden border border-[#d4cbbd] bg-[#f5f1e8]",
+        drawer
+          ? "relative h-full w-full border-0"
+          : "fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-20 h-[var(--conversation-vh,100dvh)] md:relative md:inset-auto md:z-auto md:h-[calc(100vh-7.5rem)] md:min-h-[560px]",
+      )}
     >
-      <aside className={clsx("flex min-h-0 w-full shrink-0 flex-col border-r border-[#d4cbbd] bg-[#ede8de] md:w-80", selectedId && "hidden md:flex")}>
+      <aside className={clsx("flex min-h-0 w-full shrink-0 flex-col border-r border-[#d4cbbd] bg-[#ede8de]", drawer ? "md:w-64" : "md:w-80", selectedId && "hidden md:flex")}>
         <div className="flex items-center justify-between border-b border-[#d4cbbd] py-3 pl-20 pr-3 md:p-4">
           <p className="label-caps">Conversations</p>
           <button onClick={() => setNewOpen(true)} disabled={sending} className="bg-nearblack px-3 py-2 text-caption text-white disabled:opacity-30">New chat</button>
@@ -3566,7 +3596,7 @@ export function ConversationWorkspace() {
       }} />}
 
       {(callOpening || callId || callError) && callAgent && (
-        <div className="fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[70] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col overflow-hidden bg-nearblack text-white">
+        <div className="visible pointer-events-auto fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[70] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col overflow-hidden bg-nearblack text-white">
           <header className="flex shrink-0 items-center gap-3 border-b border-white/10 px-3 pb-3 pt-[calc(env(safe-area-inset-top)+0.75rem)] md:px-6 md:py-4">
             <div className={clsx("relative", callState === "speaking" && "animate-pulse")}>
               <Avatar participant={callAgent} />

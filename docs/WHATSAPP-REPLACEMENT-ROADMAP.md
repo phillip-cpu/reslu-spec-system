@@ -313,7 +313,21 @@ Stage gate:
 
 ## Stage 4 - Native-feeling mobile and persistent desktop chat
 
-Status: mobile foundation delivered; desktop layer pending.
+Status: mobile foundation delivered; persistent desktop candidate implemented,
+authenticated acceptance pending.
+
+The desktop candidate mounts one conversation workspace in the persistent
+dashboard layout rather than creating a second chat or agent. A Messenger-style
+launcher opens a resizable, minimisable window above project, lead, office and
+other dashboard pages; its open state and dimensions survive navigation and
+reload. The canonical conversation selector, unread counts, drafts, attachments,
+outbox, Aria/Marco calls and durable agent work are reused unchanged. On the
+desktop `/messages` route the same mounted workspace expands to the available
+dashboard area, avoiding a second competing chat instance. Mobile keeps the
+existing full-screen workspace and does not mount the desktop shell. An active
+call explicitly remains visible even while the drawer chrome is closed,
+minimised or the route changes. The final mini-player treatment and authenticated
+cross-route call test remain part of this stage gate.
 
 Work:
 
