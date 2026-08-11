@@ -49,6 +49,10 @@ import {
   conversationLongPressMoved,
 } from "@/lib/conversation-timeline";
 import {
+  canStartConversationSwipeBack,
+  conversationSwipeBackProgress,
+} from "@/lib/conversation-swipe-back";
+import {
   listConversationDrafts,
   listPendingConversationMessages,
   mergePendingConversationMessages,
@@ -1100,6 +1104,8 @@ export function ConversationWorkspace({
   const [replyingTo, setReplyingTo] = useState<ConversationMessage | null>(null);
   const [messageMenuId, setMessageMenuId] = useState<string | null>(null);
   const [mediaViewer, setMediaViewer] = useState<{ url: string; filename: string; author: string } | null>(null);
+  const [swipeBackOffset, setSwipeBackOffset] = useState(0);
+  const [swipeBackDragging, setSwipeBackDragging] = useState(false);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageBody, setEditingMessageBody] = useState("");
   const [messageMutationId, setMessageMutationId] = useState<string | null>(null);
@@ -1196,6 +1202,7 @@ export function ConversationWorkspace({
   const messageRequestSequenceRef = useRef(0);
   const activeMessageRequestRef = useRef(new Map<string, number>());
   const messageLongPressRef = useRef<{ timer: number; messageId: string; x: number; y: number } | null>(null);
+  const swipeBackRef = useRef<{ pointerId: number; x: number; y: number; latestX: number; latestY: number } | null>(null);
 
   const cancelMessageLongPress = useCallback(() => {
     if (messageLongPressRef.current) window.clearTimeout(messageLongPressRef.current.timer);
@@ -2144,6 +2151,54 @@ export function ConversationWorkspace({
     setConversationMenuOpen(false);
     setSelectedId(conversationId);
   }, [selectedId, sending, voiceNoteRecording]);
+
+  const resetConversationSwipeBack = useCallback(() => {
+    swipeBackRef.current = null;
+    setSwipeBackDragging(false);
+    setSwipeBackOffset(0);
+  }, []);
+
+  const startConversationSwipeBack = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const enabled = Boolean(
+      selectedId
+      && !sending
+      && !voiceNoteRecording
+      && !callOpening
+      && !callId
+      && !callError
+      && !meetingModeOpen
+      && !mediaViewer
+    );
+    if (!canStartConversationSwipeBack(event.clientX, event.pointerType, enabled)) return;
+    if ((event.target as HTMLElement).closest("button, a, input, textarea, audio, select")) return;
+    swipeBackRef.current = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      latestX: event.clientX,
+      latestY: event.clientY,
+    };
+    setSwipeBackDragging(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, [callError, callId, callOpening, mediaViewer, meetingModeOpen, selectedId, sending, voiceNoteRecording]);
+
+  const moveConversationSwipeBack = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const gesture = swipeBackRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    gesture.latestX = event.clientX;
+    gesture.latestY = event.clientY;
+    const progress = conversationSwipeBackProgress(gesture.x, gesture.y, event.clientX, event.clientY);
+    setSwipeBackOffset(progress.offset);
+    if (progress.cancelled) resetConversationSwipeBack();
+  }, [resetConversationSwipeBack]);
+
+  const finishConversationSwipeBack = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const gesture = swipeBackRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    const progress = conversationSwipeBackProgress(gesture.x, gesture.y, gesture.latestX, gesture.latestY);
+    resetConversationSwipeBack();
+    if (progress.committed) selectConversation(null);
+  }, [resetConversationSwipeBack, selectConversation]);
 
   const updateConversationPreferences = useCallback(async (
     changes: { notifications_muted?: boolean; archived?: boolean; pinned?: boolean }
@@ -3958,6 +4013,15 @@ export function ConversationWorkspace({
 
       <section
         className={clsx("relative min-w-0 max-w-full flex-1 flex-col overflow-x-hidden", selectedId ? "flex" : "hidden md:flex")}
+        onPointerDown={startConversationSwipeBack}
+        onPointerMove={moveConversationSwipeBack}
+        onPointerUp={finishConversationSwipeBack}
+        onPointerCancel={resetConversationSwipeBack}
+        style={{
+          touchAction: "pan-y",
+          transform: swipeBackOffset > 0 ? `translateX(${swipeBackOffset}px)` : undefined,
+          transition: swipeBackDragging ? "none" : "transform 140ms ease-out",
+        }}
         onDragEnter={(event) => {
           if (!selectedId || !event.dataTransfer.types.includes("Files")) return;
           event.preventDefault();
