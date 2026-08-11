@@ -5,6 +5,7 @@ import clsx from "clsx";
 import Image from "next/image";
 import { initials } from "@/lib/conversations";
 import {
+  CONVERSATION_DIRECT_UPLOAD_MAX_BYTES,
   conversationAttachmentKind,
   isConversationAttachmentMime,
   MAX_CONVERSATION_ATTACHMENTS,
@@ -1251,6 +1252,52 @@ export function ConversationWorkspace() {
       if (file.size <= 0 || file.size > MAX_CONVERSATION_ATTACHMENT_BYTES) {
         throw new Error("Attachments must be no larger than 25 MB.");
       }
+
+      if (file.size <= CONVERSATION_DIRECT_UPLOAD_MAX_BYTES) {
+        stagedAttachmentId = crypto.randomUUID();
+        const activeAttachmentId = stagedAttachmentId;
+        commitDraftAttachments((current) => current.map((item) => item.localId === draft.localId
+          ? { ...item, stagedAttachmentId: activeAttachmentId }
+          : item), conversationId);
+        const form = new FormData();
+        form.set("attachment_id", activeAttachmentId);
+        form.set("file", file, file.name);
+        let completedAttachment: ConversationAttachment | null = null;
+        const upload = fetch(`/api/conversations/${conversationId}/attachments`, {
+          method: "POST",
+          body: form,
+        }).then(async (response) => {
+          const body = await response.json().catch(() => ({})) as {
+            attachment?: ConversationAttachment;
+            error?: string;
+            retryable?: boolean;
+          };
+          if (response.ok && body.attachment) {
+            completedAttachment = body.attachment;
+            return { error: null };
+          }
+          if (response.status === 409 && body.retryable) return { error: null };
+          return { error: { message: body.error ?? "Could not upload attachment" } };
+        });
+        const readyAttachment = await awaitConversationUploadReady({
+          upload,
+          probe: () => completedAttachment
+            ? Promise.resolve({ status: "ready", value: completedAttachment })
+            : probeConversationAttachment(conversationId, activeAttachmentId),
+        });
+        if (await discardIfCancelled()) return;
+        commitDraftAttachments((current) => current.map((item) => item.localId === draft.localId
+          ? {
+              ...item,
+              status: "ready",
+              stagedAttachmentId: null,
+              attachment: readyAttachment,
+              error: null,
+            }
+          : item), conversationId);
+        return;
+      }
+
       const urlResponse = await fetch(`/api/conversations/${conversationId}/attachments/upload-url`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

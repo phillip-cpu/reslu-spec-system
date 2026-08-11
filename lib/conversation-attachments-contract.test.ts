@@ -107,6 +107,17 @@ test("large phone photos are resized before their signed upload", () => {
   assert.match(imageUpload, /canvas\.toBlob/);
 });
 
+test("normal photos use one authenticated request through ready state", () => {
+  assert.match(workspace, /CONVERSATION_DIRECT_UPLOAD_MAX_BYTES/);
+  assert.match(workspace, /new FormData\(\)/);
+  assert.match(workspace, /completedAttachment/);
+  assert.match(attachmentRoute, /multipart\/form-data/);
+  assert.match(attachmentRoute, /request\.formData\(\)/);
+  assert.match(attachmentRoute, /\.upload\(storagePath, bytes/);
+  assert.match(attachmentRoute, /status: "ready"/);
+  assert.match(attachmentRoute, /retryable: true/);
+});
+
 test("failed uploads are explicit, retryable and cannot be silently omitted", () => {
   assert.match(workspace, /retryDraftAttachment/);
   assert.match(workspace, /Retry upload/);

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   cleanConversationAttachmentFilename,
+  CONVERSATION_DIRECT_UPLOAD_MAX_BYTES,
   conversationAttachmentAccessUrl,
   conversationAttachmentKind,
   conversationAttachmentStoragePath,
@@ -37,6 +38,7 @@ test("conversation attachment size and kind stay bounded", () => {
   assert.equal(isConversationAttachmentSize(1), true);
   assert.equal(isConversationAttachmentSize(MAX_CONVERSATION_ATTACHMENT_BYTES), true);
   assert.equal(isConversationAttachmentSize(MAX_CONVERSATION_ATTACHMENT_BYTES + 1), false);
+  assert.equal(CONVERSATION_DIRECT_UPLOAD_MAX_BYTES, 4 * 1024 * 1024);
   assert.equal(isConversationAttachmentSize(0), false);
   assert.equal(conversationAttachmentKind("image/jpeg"), "image");
   assert.equal(conversationAttachmentKind("application/pdf"), "document");

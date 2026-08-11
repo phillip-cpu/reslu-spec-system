@@ -11,6 +11,9 @@ export type ConversationAttachmentMime = typeof CONVERSATION_ATTACHMENT_MIME_TYP
 
 export const MAX_CONVERSATION_ATTACHMENTS = 6;
 export const MAX_CONVERSATION_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+// Keep the complete multipart request below Vercel's request-body ceiling.
+// Larger files retain the signed direct-to-Storage path.
+export const CONVERSATION_DIRECT_UPLOAD_MAX_BYTES = 4 * 1024 * 1024;
 export const STAGED_CONVERSATION_ATTACHMENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export function isConversationAttachmentMime(value: unknown): value is ConversationAttachmentMime {
