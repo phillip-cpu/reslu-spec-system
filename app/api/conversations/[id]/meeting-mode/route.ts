@@ -71,9 +71,20 @@ export async function POST(request: NextRequest, context: Context) {
   const meetingType = typeof body.meeting_type === "string" && MEETING_TYPES.has(body.meeting_type as MeetingType)
     ? body.meeting_type as MeetingType
     : selected?.meeting_type ?? "client_meeting";
+  let sourceCallId: string | null = null;
+  if (typeof body.source_call_id === "string" && UUID_PATTERN.test(body.source_call_id)) {
+    const call = await supabase
+      .from("conversation_calls")
+      .select("id")
+      .eq("id", body.source_call_id)
+      .eq("conversation_id", id)
+      .maybeSingle();
+    if (call.error || !call.data) return NextResponse.json({ error: "Call not found" }, { status: 400 });
+    sourceCallId = call.data.id;
+  }
   const values = {
     conversation_id: id,
-    source_call_id: typeof body.source_call_id === "string" && UUID_PATTERN.test(body.source_call_id) ? body.source_call_id : null,
+    source_call_id: sourceCallId,
     created_by: user.id,
     client_session_id: body.client_session_id,
     status: "recording",

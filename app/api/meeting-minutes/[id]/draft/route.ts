@@ -38,7 +38,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   const result = await authenticatedMinutes(id);
   if ("response" in result) return result.response;
   if (!result.meeting.recording_storage_path) return NextResponse.json({ error: "Meeting recording is not available" }, { status: 409 });
-  if (!["processing", "review", "failed"].includes(result.meeting.status)) {
+  if (result.meeting.status !== "processing") {
     return NextResponse.json({ error: "Meeting is not ready for drafting" }, { status: 409 });
   }
 
@@ -46,9 +46,6 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     .from(ASSET_BUCKET)
     .createSignedUrl(result.meeting.recording_storage_path, 15 * 60);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  if (result.meeting.status === "failed") {
-    await result.supabase.from("conversation_meeting_minutes").update({ status: "processing", failure_note: null }).eq("id", id);
-  }
   return NextResponse.json({
     meeting: {
       id: result.meeting.id,
@@ -76,17 +73,25 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "status must be done or failed" }, { status: 400 });
   }
   if (body.status === "failed") {
+    if (result.meeting.status !== "processing") {
+      return NextResponse.json({ error: "Meeting is no longer processing; late failure ignored" }, { status: 409 });
+    }
     const failureNote = cleanMeetingString(body.failure_note, 4_000) ?? "Meeting transcription failed";
     const { data, error } = await result.supabase
       .from("conversation_meeting_minutes")
       .update({ status: "failed", failure_note: failureNote })
       .eq("id", id)
+      .eq("status", "processing")
       .select()
-      .single();
+      .maybeSingle();
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (!data) return NextResponse.json({ error: "Meeting is no longer processing; late failure ignored" }, { status: 409 });
     return NextResponse.json({ meeting: data });
   }
 
+  if (result.meeting.status !== "processing") {
+    return NextResponse.json({ error: "Meeting is no longer processing; late draft ignored" }, { status: 409 });
+  }
   const transcript = cleanMeetingString(body.transcript, MAX_MEETING_TRANSCRIPT_CHARS);
   const summary = cleanMeetingString(body.summary, 20_000);
   if (!transcript || !summary) return NextResponse.json({ error: "transcript and summary are required" }, { status: 400 });
@@ -107,6 +112,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       failure_note: null,
     })
     .eq("id", id)
+    .eq("status", "processing")
     .eq("draft_version", result.meeting.draft_version)
     .select()
     .maybeSingle();

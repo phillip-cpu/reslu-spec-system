@@ -110,6 +110,10 @@ export async function PATCH(request: NextRequest, context: Context) {
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   const action = typeof body?.action === "string" ? body.action : "";
   if (!body || !action) return NextResponse.json({ error: "A meeting action is required" }, { status: 400 });
+  if (["checkpoint", "pause", "resume", "finish", "retry_processing", "discard"].includes(action)
+      && result.meeting.created_by !== result.user.id) {
+    return NextResponse.json({ error: "Only the recorder can control this meeting capture" }, { status: 403 });
+  }
 
   if (action === "checkpoint") {
     if (!["recording", "paused"].includes(result.meeting.status)) return NextResponse.json({ error: "Meeting capture is not active" }, { status: 409 });
@@ -141,7 +145,7 @@ export async function PATCH(request: NextRequest, context: Context) {
   }
 
   if (action === "finish") {
-    if (!["recording", "paused", "failed"].includes(result.meeting.status)) return NextResponse.json({ error: "Meeting capture is already finished" }, { status: 409 });
+    if (!["recording", "paused"].includes(result.meeting.status)) return NextResponse.json({ error: "Meeting capture is already finished" }, { status: 409 });
     const storagePath = typeof body.recording_storage_path === "string" ? body.recording_storage_path.trim() : "";
     const filename = cleanMeetingString(body.recording_filename, 240);
     const mimeType = cleanMeetingString(body.recording_mime_type, 100);
@@ -167,9 +171,11 @@ export async function PATCH(request: NextRequest, context: Context) {
         failure_note: null,
       })
       .eq("id", result.meeting.id)
+      .eq("status", result.meeting.status)
       .select()
-      .single();
+      .maybeSingle();
     if (updateError) return NextResponse.json({ error: updateError.message }, { status: 500 });
+    if (!updated) return NextResponse.json({ error: "Meeting capture changed. Refresh before finishing." }, { status: 409 });
 
     const clientTaskId = `meeting-minutes:${result.meeting.id}`;
     const { data: existingTask } = await result.supabase
@@ -180,9 +186,13 @@ export async function PATCH(request: NextRequest, context: Context) {
       .maybeSingle();
     let taskId = existingTask?.id ?? null;
     if (!taskId) {
-      const queued = await queueMeetingDraftTask(result.supabase, result.meeting, result.conversationId, result.user.id, clientTaskId);
+      const queued = await queueMeetingDraftTask(result.supabase, updated as ConversationMeetingMinutes, result.conversationId, result.user.id, clientTaskId);
       if (queued.error || !queued.taskId) {
-        await result.supabase.from("conversation_meeting_minutes").update({ status: "failed", failure_note: queued.error ?? "Aria could not be queued" }).eq("id", result.meeting.id);
+        await result.supabase
+          .from("conversation_meeting_minutes")
+          .update({ status: "failed", failure_note: queued.error ?? "Aria could not be queued" })
+          .eq("id", result.meeting.id)
+          .eq("status", "processing");
         return NextResponse.json({ error: "The recording is safe, but Aria could not be queued. Please retry." }, { status: 500 });
       }
       taskId = queued.taskId;
@@ -191,20 +201,29 @@ export async function PATCH(request: NextRequest, context: Context) {
   }
 
   if (action === "retry_processing") {
-    if (!["failed", "processing"].includes(result.meeting.status) || !result.meeting.recording_storage_path) {
+    if (result.meeting.status !== "failed" || !result.meeting.recording_storage_path) {
       return NextResponse.json({ error: "This meeting is not ready to retry" }, { status: 409 });
     }
-    const clientTaskId = `meeting-minutes:${result.meeting.id}:retry:${crypto.randomUUID()}`;
-    const queued = await queueMeetingDraftTask(result.supabase, result.meeting, result.conversationId, result.user.id, clientTaskId);
-    if (queued.error || !queued.taskId) return NextResponse.json({ error: queued.error ?? "Aria could not be queued" }, { status: 500 });
-    const { data, error } = await result.supabase
+    const { data: retrying, error: transitionError } = await result.supabase
       .from("conversation_meeting_minutes")
       .update({ status: "processing", failure_note: null })
       .eq("id", result.meeting.id)
+      .eq("status", "failed")
       .select()
-      .single();
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    return NextResponse.json({ meeting: data, task_id: queued.taskId });
+      .maybeSingle();
+    if (transitionError) return NextResponse.json({ error: transitionError.message }, { status: 500 });
+    if (!retrying) return NextResponse.json({ error: "Meeting processing already resumed" }, { status: 409 });
+    const clientTaskId = `meeting-minutes:${result.meeting.id}:retry:${crypto.randomUUID()}`;
+    const queued = await queueMeetingDraftTask(result.supabase, retrying as ConversationMeetingMinutes, result.conversationId, result.user.id, clientTaskId);
+    if (queued.error || !queued.taskId) {
+      await result.supabase
+        .from("conversation_meeting_minutes")
+        .update({ status: "failed", failure_note: queued.error ?? "Aria could not be queued" })
+        .eq("id", result.meeting.id)
+        .eq("status", "processing");
+      return NextResponse.json({ error: queued.error ?? "Aria could not be queued" }, { status: 500 });
+    }
+    return NextResponse.json({ meeting: retrying, task_id: queued.taskId });
   }
 
   if (action === "save_draft") {

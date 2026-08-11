@@ -63,7 +63,13 @@ test("Meeting Mode stays local-Whisper, staged and explicitly filed", () => {
   assert.match(component, /Approve & file/);
   assert.match(component, /Unassigned draft/);
   assert.match(lifecycle, /transcribe it with local Whisper only/i);
+  assert.match(lifecycle, /Only the recorder can control this meeting capture/);
+  assert.match(lifecycle, /\.eq\("status", "failed"\)[\s\S]*Meeting processing already resumed/);
   assert.match(draft, /Only Aria can prepare this draft/);
+  assert.match(draft, /Meeting is no longer processing; late draft ignored/);
+  assert.match(draft, /\.eq\("status", "processing"\)[\s\S]*\.eq\("draft_version"/);
   assert.match(realtime, /name: "start_meeting_mode"/);
-  assert.doesNotMatch(read("app/api/conversations/[id]/meeting-mode/route.ts"), /api\.openai\.com/);
+  const start = read("app/api/conversations/[id]/meeting-mode/route.ts");
+  assert.match(start, /from\("conversation_calls"\)[\s\S]*\.eq\("conversation_id", id\)/);
+  assert.doesNotMatch(start, /api\.openai\.com/);
 });
