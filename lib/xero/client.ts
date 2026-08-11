@@ -9,6 +9,7 @@ export interface StoredXeroConnection {
   access_token_encrypted: string;
   refresh_token_encrypted: string;
   access_token_expires_at: string;
+  scopes: string[];
 }
 
 interface XeroTokenResponse {
@@ -68,7 +69,7 @@ export async function getActiveXeroConnection(): Promise<StoredXeroConnection | 
   const service = createServiceRoleClient();
   const { data, error } = await service
     .from("xero_connections")
-    .select("id,tenant_id,tenant_name,access_token_encrypted,refresh_token_encrypted,access_token_expires_at")
+    .select("id,tenant_id,tenant_name,access_token_encrypted,refresh_token_encrypted,access_token_expires_at,scopes")
     .eq("is_active", true)
     .maybeSingle();
   if (error) throw new Error(error.message);

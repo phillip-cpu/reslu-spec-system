@@ -94,6 +94,9 @@ async function fetchAll(
 export async function syncXeroReadModel(triggeredBy: string): Promise<XeroSyncResult> {
   const connection = await getActiveXeroConnection();
   if (!connection) throw new Error("Xero is not connected");
+  if (!connection.scopes.includes("accounting.settings.read")) {
+    throw new Error("Reconnect Xero once to grant read-only bank account access");
+  }
   const service = createServiceRoleClient();
   const startedAt = new Date().toISOString();
   const { data: run, error: runError } = await service
