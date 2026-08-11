@@ -15,6 +15,8 @@ declare
   v_existing boolean;
   v_count integer;
   v_mismatch_rejected boolean := false;
+  v_revoked_retry_rejected boolean := false;
+  v_participant conversation_participants%rowtype;
 begin
   if to_regclass('public.conversation_forwarded_attachments') is null
      or to_regclass('public.conversation_message_forwards') is null
@@ -126,6 +128,29 @@ begin
     raise exception 'FAIL: retry did not return the canonical existing forward';
   end if;
 
+  delete from conversation_participants participant
+  where participant.conversation_id = v_conversation_id
+    and participant.profile_id = v_profile_id
+  returning participant.* into strict v_participant;
+  begin
+    perform *
+    from forward_conversation_message(
+      v_conversation_id,
+      v_source_message_id,
+      array[v_conversation_id],
+      v_client_forward_id
+    );
+  exception
+    when others then
+      if sqlerrm not like '%source message not found%' then raise; end if;
+      v_revoked_retry_rejected := true;
+  end;
+  insert into conversation_participants
+  select (v_participant).*;
+  if not v_revoked_retry_rejected then
+    raise exception 'FAIL: exactly-once retry bypassed current conversation membership';
+  end if;
+
   select count(*) into v_count
   from conversation_message_forwards audit
   where audit.forwarded_by = v_profile_id
@@ -210,6 +235,6 @@ begin
 exception
   when sqlstate 'P5107' then
     if sqlerrm <> 'RESLU_VERIFY_107_PASS' then raise; end if;
-    raise notice 'PASS: message forwarding is exactly-once, private-file safe, repeatable and direct-agent aware; all test changes rolled back';
+    raise notice 'PASS: message forwarding is exactly-once, current-member scoped, private-file safe, repeatable and direct-agent aware; all test changes rolled back';
 end;
 $verify$;
