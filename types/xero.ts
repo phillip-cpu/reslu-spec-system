@@ -1,6 +1,7 @@
 export interface XeroConnectionStatus {
   configured: boolean;
   connected: boolean;
+  reporting_access: boolean;
   tenant_name: string | null;
   tenant_id: string | null;
   connected_at: string | null;

@@ -1,5 +1,5 @@
 import { createServiceRoleClient } from "@/lib/supabase/server";
-import { xeroConfigured } from "@/lib/xero/oauth";
+import { XERO_REPORT_SCOPES, xeroConfigured } from "@/lib/xero/oauth";
 import type { XeroConnectionStatus } from "@/types/xero";
 
 export async function getXeroConnectionStatus(): Promise<XeroConnectionStatus> {
@@ -8,6 +8,7 @@ export async function getXeroConnectionStatus(): Promise<XeroConnectionStatus> {
     return {
       configured: false,
       connected: false,
+      reporting_access: false,
       tenant_name: null,
       tenant_id: null,
       connected_at: null,
@@ -21,7 +22,7 @@ export async function getXeroConnectionStatus(): Promise<XeroConnectionStatus> {
   const service = createServiceRoleClient();
   const { data: connection, error } = await service
     .from("xero_connections")
-    .select("id,tenant_id,tenant_name,connected_at,last_sync_completed_at,last_sync_error")
+    .select("id,tenant_id,tenant_name,connected_at,last_sync_completed_at,last_sync_error,scopes")
     .eq("is_active", true)
     .maybeSingle();
   if (error) throw new Error(error.message);
@@ -29,6 +30,7 @@ export async function getXeroConnectionStatus(): Promise<XeroConnectionStatus> {
     return {
       configured: true,
       connected: false,
+      reporting_access: false,
       tenant_name: null,
       tenant_id: null,
       connected_at: null,
@@ -47,6 +49,9 @@ export async function getXeroConnectionStatus(): Promise<XeroConnectionStatus> {
   return {
     configured: true,
     connected: true,
+    reporting_access: XERO_REPORT_SCOPES.every((scope) =>
+      (connection.scopes ?? []).includes(scope)
+    ),
     tenant_name: connection.tenant_name,
     tenant_id: connection.tenant_id,
     connected_at: connection.connected_at,
