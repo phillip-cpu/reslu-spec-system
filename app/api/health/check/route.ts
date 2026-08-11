@@ -190,6 +190,7 @@ export async function GET(request: NextRequest) {
         `${conversationHealth.running_tasks_stuck} stuck tasks`,
         `${conversationHealth.failed_tasks_24h} failed tasks`,
         `${conversationHealth.active_calls_stale} stale calls`,
+        `${conversationHealth.unavailable_capabilities.length} unavailable messaging capabilities`,
         `${conversationHealth.query_errors} health-read errors`,
       ].join(" · "),
       "/health"

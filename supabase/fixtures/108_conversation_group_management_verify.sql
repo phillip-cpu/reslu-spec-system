@@ -70,6 +70,13 @@ begin
      or has_table_privilege('authenticated', 'public.conversation_participants', 'DELETE') then
     raise exception 'FAIL: authenticated clients retain direct shared-group write privileges';
   end if;
+  if not has_function_privilege(
+    'service_role',
+    'public.rename_conversation_group(uuid,text,uuid)',
+    'EXECUTE'
+  ) then
+    raise exception 'FAIL: health cannot probe the group-management capability';
+  end if;
 
   select profile.id into v_admin_id
   from profiles profile
