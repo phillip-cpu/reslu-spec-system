@@ -20,6 +20,7 @@ const CATEGORY_OPTIONS: Array<[FinanceRecurringCategory, string]> = [
   ["superannuation", "Superannuation"],
   ["rent", "Rent"],
   ["marketing", "Marketing"],
+  ["entertainment", "Entertainment"],
   ["software", "Software"],
   ["insurance", "Insurance"],
   ["utilities", "Utilities"],
@@ -29,6 +30,7 @@ const CATEGORY_OPTIONS: Array<[FinanceRecurringCategory, string]> = [
 ];
 
 const FREQUENCY_OPTIONS: Array<[FinanceRecurringFrequency, string]> = [
+  ["once", "One-time"],
   ["weekly", "Weekly"],
   ["fortnightly", "Fortnightly"],
   ["monthly", "Monthly"],
@@ -54,15 +56,19 @@ type FormState = {
   reason: string;
 };
 
-function blankForm(asOfDate: string): FormState {
+function blankForm(
+  asOfDate: string,
+  frequency: FinanceRecurringFrequency = "fortnightly"
+): FormState {
+  const isOneTime = frequency === "once";
   return {
     id: null,
     expectedVersion: null,
     name: "",
-    category: "wages",
+    category: isOneTime ? "marketing" : "wages",
     supplier: "",
     amount: "",
-    frequency: "fortnightly",
+    frequency,
     firstDueDate: asOfDate,
     endDate: "",
     gstTreatment: "inclusive",
@@ -70,7 +76,9 @@ function blankForm(asOfDate: string): FormState {
     confidence: "confirmed",
     status: "active",
     notes: "",
-    reason: "Add recurring company commitment",
+    reason: isOneTime
+      ? "Add one-time expected outgoing"
+      : "Add recurring company commitment",
   };
 }
 
@@ -90,7 +98,9 @@ function formFromCommitment(item: FinanceRecurringCommitment): FormState {
     confidence: item.confidence,
     status: item.status === "archived" ? "paused" : item.status,
     notes: item.notes ?? "",
-    reason: "Update recurring company commitment",
+    reason: item.frequency === "once"
+      ? "Update one-time expected outgoing"
+      : "Update recurring company commitment",
   };
 }
 
@@ -141,7 +151,8 @@ export function FinanceRecurringCommitmentsPanel({
 
   async function save() {
     const amountMinor = dollarsInputToMinor(form.amount);
-    const escalation = Number(form.escalationPercent);
+    const isOneTime = form.frequency === "once";
+    const escalation = isOneTime ? 0 : Number(form.escalationPercent);
     if (!amountMinor || amountMinor <= 0) {
       setError("Enter a cash amount greater than zero.");
       return;
@@ -165,7 +176,7 @@ export function FinanceRecurringCommitmentsPanel({
           amount_minor: amountMinor,
           frequency: form.frequency,
           first_due_date: form.firstDueDate,
-          end_date: form.endDate || null,
+          end_date: isOneTime ? null : form.endDate || null,
           gst_treatment: form.gstTreatment,
           annual_escalation_bps: Math.round(escalation * 100),
           confidence: form.confidence,
@@ -211,22 +222,22 @@ export function FinanceRecurringCommitmentsPanel({
         <div className="flex flex-col gap-4 border-b border-charcoal/20 p-5 md:flex-row md:items-end md:justify-between md:p-7">
           <div>
             <p className="label-caps">Company overheads</p>
-            <h2 className="mt-2 font-display text-section text-nearblack">Recurring commitments</h2>
+            <h2 className="mt-2 font-display text-section text-nearblack">Planned company outgoings</h2>
             <p className="mt-2 max-w-2xl text-body text-charcoal/60">
-              Wages, super, rent, marketing and other repeating cash costs live here. Active items flow directly into the 13-week shadow forecast.
+              Add repeating commitments or one-time expected purchases such as marketing and entertainment. Active items flow directly into the 13-week shadow forecast.
             </p>
           </div>
           {canEdit && (
-            <button
-              type="button"
-              onClick={() => {
-                setForm(blankForm(asOfDate));
-                setShowForm((current) => !current);
-              }}
-              className="shrink-0 bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal"
-            >
-              {showForm ? "Close" : "Add commitment"}
-            </button>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              {showForm ? (
+                <button type="button" onClick={() => setShowForm(false)} className="border border-charcoal/25 px-4 py-2 text-subhead text-nearblack hover:bg-cream">Close</button>
+              ) : (
+                <>
+                  <button type="button" onClick={() => { setForm(blankForm(asOfDate, "once")); setShowForm(true); }} className="bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal">Add one-time outgoing</button>
+                  <button type="button" onClick={() => { setForm(blankForm(asOfDate)); setShowForm(true); }} className="border border-charcoal/25 px-4 py-2 text-subhead text-nearblack hover:bg-cream">Add recurring commitment</button>
+                </>
+              )}
+            </div>
           )}
         </div>
 
@@ -240,15 +251,15 @@ export function FinanceRecurringCommitmentsPanel({
               void save();
             }}
           >
-            <label className="xl:col-span-2"><span className="label-caps">Name</span><input required value={form.name} onChange={(event) => patchForm("name", event.target.value)} placeholder="e.g. Fortnightly wages" className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
+            <label className="xl:col-span-2"><span className="label-caps">Name</span><input required value={form.name} onChange={(event) => patchForm("name", event.target.value)} placeholder={form.frequency === "once" ? "e.g. Marketing campaign" : "e.g. Fortnightly wages"} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
             <label><span className="label-caps">Category</span><select value={form.category} onChange={(event) => patchForm("category", event.target.value as FinanceRecurringCategory)} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body">{CATEGORY_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
             <label><span className="label-caps">Supplier / payee</span><input value={form.supplier} onChange={(event) => patchForm("supplier", event.target.value)} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
-            <label><span className="label-caps">Cash amount each time</span><input required inputMode="decimal" value={form.amount} onChange={(event) => patchForm("amount", event.target.value)} placeholder="0.00" className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
+            <label><span className="label-caps">{form.frequency === "once" ? "Expected cash amount" : "Cash amount each time"}</span><input required inputMode="decimal" value={form.amount} onChange={(event) => patchForm("amount", event.target.value)} placeholder="0.00" className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
             <label><span className="label-caps">Frequency</span><select value={form.frequency} onChange={(event) => patchForm("frequency", event.target.value as FinanceRecurringFrequency)} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body">{FREQUENCY_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-            <label><span className="label-caps">First / anchor due date</span><input required type="date" value={form.firstDueDate} onChange={(event) => patchForm("firstDueDate", event.target.value)} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
-            <label><span className="label-caps">End date (optional)</span><input type="date" value={form.endDate} onChange={(event) => patchForm("endDate", event.target.value)} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
+            <label><span className="label-caps">{form.frequency === "once" ? "Expected payment date" : "First / anchor due date"}</span><input required type="date" value={form.firstDueDate} onChange={(event) => patchForm("firstDueDate", event.target.value)} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
+            {form.frequency !== "once" && <label><span className="label-caps">End date (optional)</span><input type="date" value={form.endDate} onChange={(event) => patchForm("endDate", event.target.value)} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>}
             <label><span className="label-caps">GST treatment</span><select value={form.gstTreatment} onChange={(event) => patchForm("gstTreatment", event.target.value as FinanceGstTreatment)} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body"><option value="inclusive">GST inclusive</option><option value="exclusive">GST exclusive</option><option value="gst_free">GST free</option><option value="not_applicable">Not applicable</option></select></label>
-            <label><span className="label-caps">Annual escalation %</span><input inputMode="decimal" value={form.escalationPercent} onChange={(event) => patchForm("escalationPercent", event.target.value)} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
+            {form.frequency !== "once" && <label><span className="label-caps">Annual escalation %</span><input inputMode="decimal" value={form.escalationPercent} onChange={(event) => patchForm("escalationPercent", event.target.value)} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>}
             <label><span className="label-caps">Status</span><select value={form.status} onChange={(event) => patchForm("status", event.target.value as FormState["status"])} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body"><option value="active">Active</option><option value="draft">Draft</option><option value="paused">Paused</option></select></label>
             <label><span className="label-caps">Confidence</span><select value={form.confidence} onChange={(event) => patchForm("confidence", event.target.value as FinanceConfidence)} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body"><option value="confirmed">Confirmed</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option><option value="unknown">Unknown</option></select></label>
             <label className="md:col-span-2"><span className="label-caps">Notes</span><input value={form.notes} onChange={(event) => patchForm("notes", event.target.value)} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
@@ -268,7 +279,7 @@ export function FinanceRecurringCommitmentsPanel({
 
         <div className="overflow-x-auto">
           <table className="w-full min-w-[900px] border-collapse text-left">
-            <thead className="bg-nearblack text-white"><tr className="text-[7px] uppercase tracking-[0.14em]"><th className="px-5 py-3">Commitment</th><th className="px-5 py-3">Category</th><th className="px-5 py-3 text-right">Cash amount</th><th className="px-5 py-3">Frequency</th><th className="px-5 py-3">Anchor date</th><th className="px-5 py-3">Status</th><th className="px-5 py-3"><span className="sr-only">Actions</span></th></tr></thead>
+            <thead className="bg-nearblack text-white"><tr className="text-[7px] uppercase tracking-[0.14em]"><th className="px-5 py-3">Outgoing</th><th className="px-5 py-3">Category</th><th className="px-5 py-3 text-right">Cash amount</th><th className="px-5 py-3">Schedule</th><th className="px-5 py-3">Due / anchor date</th><th className="px-5 py-3">Status</th><th className="px-5 py-3"><span className="sr-only">Actions</span></th></tr></thead>
             <tbody className="divide-y divide-charcoal/10">
               {(data?.commitments ?? []).map((item) => (
                 <tr key={item.id} className="text-body hover:bg-cream">
@@ -281,7 +292,7 @@ export function FinanceRecurringCommitmentsPanel({
                   <td className="px-5 py-4 text-right">{canEdit && <span className="inline-flex gap-3"><button type="button" onClick={() => { setForm(formFromCommitment(item)); setShowForm(true); window.scrollTo({ top: 0, behavior: "smooth" }); }} className="border-b border-charcoal/30 text-caption">Edit</button><button type="button" onClick={() => void archive(item)} className="border-b border-red-700/30 text-caption text-red-800">Archive</button></span>}</td>
                 </tr>
               ))}
-              {!loading && (data?.commitments.length ?? 0) === 0 && <tr><td colSpan={7} className="px-5 py-12 text-center text-body text-charcoal/50">No recurring commitments yet. Add wages, super, rent or marketing to start the company overhead forecast.</td></tr>}
+              {!loading && (data?.commitments.length ?? 0) === 0 && <tr><td colSpan={7} className="px-5 py-12 text-center text-body text-charcoal/50">No planned company outgoings yet. Add recurring costs or one-time purchases such as marketing and entertainment.</td></tr>}
               {loading && <tr><td colSpan={7} className="px-5 py-12 text-center text-body text-charcoal/50">Loading recurring commitments…</td></tr>}
             </tbody>
           </table>

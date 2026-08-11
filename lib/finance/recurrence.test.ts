@@ -55,6 +55,38 @@ test("past occurrences stay in opening cash and only future occurrences are fore
   );
 });
 
+test("one-time expected outgoings enter the forecast exactly once", () => {
+  const contributions = generateRecurringContributions({
+    commitments: [
+      commitment({
+        name: "Marketing launch",
+        category: "marketing",
+        frequency: "once",
+        first_due_date: "2026-08-20",
+      }),
+    ],
+    asOfDate: "2026-08-06",
+    weeklyPeriods: 13,
+  });
+
+  assert.equal(contributions.length, 1);
+  assert.equal(contributions[0].plannedDate, "2026-08-20");
+  assert.equal(contributions[0].plannedMinor, 550_000);
+  assert.equal(contributions[0].sourceTrace?.frequency, "once");
+});
+
+test("past one-time expected outgoings do not repeat into the forecast", () => {
+  const contributions = generateRecurringContributions({
+    commitments: [
+      commitment({ frequency: "once", first_due_date: "2026-08-05" }),
+    ],
+    asOfDate: "2026-08-06",
+    weeklyPeriods: 13,
+  });
+
+  assert.deepEqual(contributions, []);
+});
+
 test("paused and ended commitments do not leak into the company base", () => {
   const contributions = generateRecurringContributions({
     commitments: [

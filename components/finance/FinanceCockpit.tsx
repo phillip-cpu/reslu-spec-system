@@ -216,7 +216,7 @@ export function FinanceCockpit() {
         <div className="flex overflow-x-auto border-b border-charcoal/20 px-4 md:px-7" role="tablist" aria-label="Finance cockpit views">
           {[
             ["cash", "Cash timeline"],
-            ["commitments", "Recurring commitments"],
+            ["commitments", "Planned outgoings"],
             ["projects", "Projects"],
           ].map(([key, label]) => (
             <button
