@@ -1,5 +1,6 @@
 import importlib.util
 from datetime import datetime, timezone
+import http.client
 import os
 import stat
 import subprocess
@@ -125,6 +126,46 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             request.call_args.kwargs["timeout_seconds"],
             conversation_agent_bridge.CLAIM_REQUEST_TIMEOUT_SECONDS,
         )
+
+    @mock.patch.object(conversation_agent_bridge.http.client, "HTTPSConnection")
+    def test_supabase_rest_reuses_one_tls_connection(self, https_connection):
+        connection = https_connection.return_value
+        connection.sock = None
+        response = mock.Mock(
+            status=200,
+            reason="OK",
+            will_close=False,
+            headers={},
+        )
+        response.read.side_effect = [b"[]", b"[]"]
+        connection.getresponse.return_value = response
+        rest = conversation_agent_bridge.SupabaseRest(
+            "https://example.supabase.co",
+            "secret",
+        )
+
+        self.assertEqual(rest.rows("conversation_messages", {"select": "id"}), [])
+        self.assertEqual(rest.rows("conversation_agents", {"select": "id"}), [])
+
+        https_connection.assert_called_once_with("example.supabase.co", None, timeout=30.0)
+        self.assertEqual(connection.request.call_count, 2)
+        self.assertIs(rest._connection, connection)
+
+    @mock.patch.object(conversation_agent_bridge.http.client, "HTTPSConnection")
+    def test_supabase_rest_discards_a_broken_connection(self, https_connection):
+        connection = https_connection.return_value
+        connection.sock = None
+        connection.request.side_effect = http.client.RemoteDisconnected("closed")
+        rest = conversation_agent_bridge.SupabaseRest(
+            "https://example.supabase.co",
+            "secret",
+        )
+
+        with self.assertRaises(urllib.error.URLError):
+            rest.rows("conversation_messages", {"select": "id"})
+
+        connection.close.assert_called_once()
+        self.assertIsNone(rest._connection)
 
     def test_aria_and_marco_use_independent_serial_workers(self):
         with mock.patch.object(conversation_agent_bridge.threading, "Thread") as thread:
@@ -259,6 +300,9 @@ class ConversationAgentBridgeTests(unittest.TestCase):
                         "kind": "text",
                         "reply_to_id": "target-older",
                         "created_at": "2026-08-10T11:00:00Z",
+                        "profile": {"full_name": "Phillip"},
+                        "agent": None,
+                        "attachments": [],
                     }]
                 if table == "conversation_messages":
                     return [{
@@ -269,14 +313,10 @@ class ConversationAgentBridgeTests(unittest.TestCase):
                         "kind": "text",
                         "reply_to_id": None,
                         "created_at": "2026-08-09T09:00:00Z",
+                        "profile": {"full_name": "Jane"},
+                        "agent": None,
+                        "attachments": [],
                     }]
-                if table == "profiles":
-                    return [
-                        {"id": "profile-phillip", "full_name": "Phillip"},
-                        {"id": "profile-jane", "full_name": "Jane"},
-                    ]
-                if table in ("conversation_agents", "conversation_attachments"):
-                    return []
                 raise AssertionError((table, params))
 
         history = conversation_agent_bridge.conversation_history(FakeRest(), "conversation-1")
@@ -314,6 +354,34 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         self.assertTrue(
             conversation_agent_bridge.is_realtime_voice_message(FakeRest(), "message-1")
         )
+
+    def test_triggering_message_context_combines_voice_and_ready_files(self):
+        class FakeRest:
+            @staticmethod
+            def rows(table, params, **kwargs):
+                assert table == "conversation_messages"
+                assert params["conversation_id"] == "eq.conversation-1"
+                assert kwargs["timeout_seconds"] == conversation_agent_bridge.JOB_STATUS_REQUEST_TIMEOUT_SECONDS
+                return [{
+                    "metadata": {
+                        "source": "voice",
+                        "transport": "openai_realtime_webrtc",
+                    },
+                    "attachments": [
+                        {"id": "later", "status": "ready", "created_at": "2026-08-11T00:00:02Z"},
+                        {"id": "uploading", "status": "uploading", "created_at": "2026-08-11T00:00:01Z"},
+                        {"id": "earlier", "status": "ready", "created_at": "2026-08-11T00:00:00Z"},
+                    ],
+                }]
+
+        voice, attachments = conversation_agent_bridge.triggering_message_context(
+            FakeRest(),
+            "conversation-1",
+            "message-1",
+        )
+
+        self.assertTrue(voice)
+        self.assertEqual([attachment["id"] for attachment in attachments], ["earlier", "later"])
 
     def test_reads_documented_final_reply(self):
         payload = {
@@ -631,8 +699,8 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             return_value="Phillip: Please inspect this.",
         ), mock.patch.object(
             conversation_agent_bridge,
-            "ready_message_attachments",
-            return_value=[attachment],
+            "triggering_message_context",
+            return_value=(False, [attachment]),
         ), mock.patch.object(
             conversation_agent_bridge,
             "job_is_processing",
