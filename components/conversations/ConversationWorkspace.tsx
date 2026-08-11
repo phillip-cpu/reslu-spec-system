@@ -25,6 +25,7 @@ import {
   type PendingConversationCallEnd,
 } from "@/lib/conversation-call-outbox";
 import type { RealtimeVoiceLatencyMetric, RealtimeVoiceOutcome } from "@/lib/realtime-voice-metrics";
+import { postNativeVoiceBridgeEvent } from "@/lib/native-voice-bridge";
 import {
   parseRealtimeConsultArguments,
   parseRealtimeTaskArguments,
@@ -2045,6 +2046,7 @@ export function ConversationWorkspace({
   }, [currentUserId, flushPendingCallEnds]);
 
   const endCall = useCallback(async (options?: { preserveStartIntent?: boolean }) => {
+    postNativeVoiceBridgeEvent({ type: "call.end" });
     callActiveRef.current = false;
     realtimeActiveRef.current = false;
     realtimeConnectionGenerationRef.current += 1;
@@ -2108,6 +2110,19 @@ export function ConversationWorkspace({
     setCallTranscript([]);
     return callRecordSaved;
   }, [cancelActiveRealtimeTurn, persistCallEnd, selectedId]);
+
+  useEffect(() => {
+    const handleNativeVoiceCommand = (event: Event) => {
+      const detail = (event as CustomEvent<{ type?: string; message?: string }>).detail;
+      if (detail?.type === "end-requested" && callActiveRef.current) void endCall();
+      if (detail?.type === "native-audio-error") {
+        setError(`The iPhone call audio session could not start. ${detail.message ?? "Please try again."}`);
+        if (callActiveRef.current) void endCall();
+      }
+    };
+    window.addEventListener("reslu-native-voice", handleNativeVoiceCommand);
+    return () => window.removeEventListener("reslu-native-voice", handleNativeVoiceCommand);
+  }, [endCall]);
 
   const handleVoiceText = useCallback((text: string) => {
     const command = text.trim().toLowerCase().replace(/[.!?]+$/, "");
@@ -2586,6 +2601,7 @@ export function ConversationWorkspace({
     const channel = peer.createDataChannel("oai-events");
     channel.onopen = () => {
       if (generation !== realtimeConnectionGenerationRef.current || !callActiveRef.current) return;
+      postNativeVoiceBridgeEvent({ type: "call.connected" });
       realtimeReconnectAttemptsRef.current = 0;
       realtimeReconnectInFlightRef.current = false;
       setCallOpening(false);
@@ -2744,6 +2760,7 @@ export function ConversationWorkspace({
     const SpeechRecognition = (window as Window & { SpeechRecognition?: SpeechRecognitionConstructor; webkitSpeechRecognition?: SpeechRecognitionConstructor }).SpeechRecognition
       ?? (window as Window & { webkitSpeechRecognition?: SpeechRecognitionConstructor }).webkitSpeechRecognition;
     if (!SpeechRecognition) {
+      postNativeVoiceBridgeEvent({ type: "call.end" });
       setCallOpening(false);
       setCallError("Live speech recognition is unavailable here. Open RESLU directly in Safari, not from a Home Screen icon or another app.");
       return;
@@ -2796,6 +2813,7 @@ export function ConversationWorkspace({
         if (!callActiveRef.current || event.error === "aborted") return;
         if (isFatalSpeechRecognitionError(event.error)) {
           callActiveRef.current = false;
+          postNativeVoiceBridgeEvent({ type: "call.end" });
           setCallOpening(false);
           setCallError(speechRecognitionErrorMessage(event.error));
           recognition.abort();
@@ -2824,8 +2842,10 @@ export function ConversationWorkspace({
       callIdRef.current = activeCallId;
       setCallId(activeCallId);
       setCallOpening(false);
+      postNativeVoiceBridgeEvent({ type: "call.connected" });
     } catch (reason) {
       callActiveRef.current = false;
+      postNativeVoiceBridgeEvent({ type: "call.end" });
       recognitionRef.current?.abort();
       recognitionRef.current = null;
       setCallOpening(false);
@@ -2844,6 +2864,12 @@ export function ConversationWorkspace({
     realtimeReconnectInFlightRef.current = false;
     callConversationIdRef.current ??= selectedId;
     clientCallIdRef.current ??= crypto.randomUUID();
+    postNativeVoiceBridgeEvent({
+      type: "call.start",
+      callId: clientCallIdRef.current,
+      conversationId: selectedId,
+      agent: callAgent.display_name,
+    });
     lastRealtimeSpeechStoppedAtRef.current = null;
     realtimeTurnSequenceRef.current = 0;
     realtimeTurnTimingsRef.current.clear();
@@ -2891,6 +2917,7 @@ export function ConversationWorkspace({
         return;
       }
       callActiveRef.current = false;
+      postNativeVoiceBridgeEvent({ type: "call.end" });
       setCallOpening(false);
       setCallError(error instanceof DOMException ? speechRecognitionErrorMessage(error.name) : error.message || "Could not start call");
     }
