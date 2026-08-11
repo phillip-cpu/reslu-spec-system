@@ -6,6 +6,7 @@ import {
   minutesSince,
   MINI_SILENCE_INCIDENT_MINUTES,
   CHANNEL_SILENCE_INCIDENT_HOURS,
+  channelReportIsSilent,
 } from "@/lib/health";
 
 export const runtime = "nodejs";
@@ -35,13 +36,12 @@ export const runtime = "nodejs";
  *      'openclaw_down' (independent of silence — the mini can be
  *      posting heartbeats fine while its own OpenClaw process is
  *      down).
- *   2. Each health_channels row gone silent (last_inbound_at/
- *      last_outbound_at both older than 24h, or never set) -> kind
- *      `channel_down:{channel}`. Complementary to the explicit-status
- *      push POST /api/health/channel-status already fires on
- *      ingestion — this catches the case where the mini stops
- *      reporting a channel's status AT ALL (e.g. OpenClaw crashed
- *      before it ever got to report 'down' itself).
+ *   2. Each health_channels monitor report gone silent
+ *      (`updated_at` older than 24h) -> kind `channel_down:{channel}`.
+ *      Customer inbound/outbound timestamps are deliberately not used:
+ *      a working channel can have no customer traffic for days. This is
+ *      complementary to the explicit-status incident POST
+ *      /api/health/channel-status fires on ingestion.
  *   3. Derivable cron last-success gone stale (lib/health.ts's own
  *      "where derivable" scope — see that file's header comment) ->
  *      kind `cron_missed:{key}`.
@@ -105,22 +105,17 @@ export async function GET(request: NextRequest) {
   // ---- 2. Channel silence ----
   const { data: channels } = await service
     .from("health_channels")
-    .select("channel,label,last_inbound_at,last_outbound_at");
+    .select("channel,label,updated_at");
 
   for (const ch of channels ?? []) {
-    const lastActivity = [ch.last_inbound_at, ch.last_outbound_at]
-      .filter((v): v is string => !!v)
-      .sort()
-      .pop();
-    const ageHours = lastActivity ? minutesSince(lastActivity) / 60 : Infinity;
     const kind = `channel_down:${ch.channel}`;
-    if (ageHours > CHANNEL_SILENCE_INCIDENT_HOURS) {
+    if (channelReportIsSilent(ch.updated_at ?? null)) {
       const { deduped } = await notifyAdminsOnce(
         kind,
-        `Channel silent — ${ch.label ?? ch.channel}`,
-        lastActivity
-          ? `No inbound/outbound activity reported in over ${CHANNEL_SILENCE_INCIDENT_HOURS}h (last: ${lastActivity}).`
-          : "No inbound/outbound activity has ever been reported for this channel.",
+        `Channel monitor silent — ${ch.label ?? ch.channel}`,
+        ch.updated_at
+          ? `No channel health report in over ${CHANNEL_SILENCE_INCIDENT_HOURS}h (last: ${ch.updated_at}).`
+          : "No channel health report has ever been received.",
         "/health"
       );
       if (!deduped) incidents.push(kind);

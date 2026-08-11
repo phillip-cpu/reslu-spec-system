@@ -207,5 +207,19 @@ export function minutesSince(iso: string | null): number {
 /** BUILD-SPEC.md item 3(c) — "mini silent >15min" is the actual incident threshold (distinct from the Health page pill's earlier 7.5min amber warning — see lib/health-status.ts's heartbeatAgeLevel). */
 export const MINI_SILENCE_INCIDENT_MINUTES = 15;
 
-/** Item 5 — channel silence: a channel that stops reporting inbound/outbound activity entirely (not just an explicit status='down' report) for this long is its own incident, complementary to the explicit-status push the channel-status route already fires on ingestion. */
+/**
+ * Item 5 — channel monitor silence. This measures the age of the mini's
+ * channel-status report (`health_channels.updated_at`), not customer message
+ * traffic. A healthy channel can legitimately receive no inbound or outbound
+ * messages for days; quiet traffic is not an outage.
+ */
 export const CHANNEL_SILENCE_INCIDENT_HOURS = 24;
+
+export function channelReportIsSilent(
+  updatedAt: string | null,
+  nowMs = Date.now()
+): boolean {
+  if (!updatedAt) return true;
+  const ageHours = (nowMs - new Date(updatedAt).getTime()) / (1000 * 60 * 60);
+  return ageHours > CHANNEL_SILENCE_INCIDENT_HOURS;
+}

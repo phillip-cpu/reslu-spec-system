@@ -56,20 +56,22 @@ export async function POST(request: NextRequest) {
 
   const service = createServiceRoleClient();
 
+  // Preserve the last real traffic timestamps when a routine health report
+  // omits them. The former `?? null` upsert erased valid history on every
+  // five-minute status heartbeat.
+  const channelUpdate: Record<string, string | boolean | null> = {
+    channel: body.channel,
+    status: body.status,
+  };
+  if (body.label !== undefined) channelUpdate.label = body.label;
+  if (body.last_inbound_at !== undefined) channelUpdate.last_inbound_at = body.last_inbound_at;
+  if (body.last_outbound_at !== undefined) channelUpdate.last_outbound_at = body.last_outbound_at;
+  if (body.session_valid !== undefined) channelUpdate.session_valid = body.session_valid;
+  if (body.note !== undefined) channelUpdate.note = body.note;
+
   const { data: updated, error } = await service
     .from("health_channels")
-    .upsert(
-      {
-        channel: body.channel,
-        label: body.label ?? null,
-        status: body.status,
-        last_inbound_at: body.last_inbound_at ?? null,
-        last_outbound_at: body.last_outbound_at ?? null,
-        session_valid: typeof body.session_valid === "boolean" ? body.session_valid : null,
-        note: body.note ?? null,
-      },
-      { onConflict: "channel" }
-    )
+    .upsert(channelUpdate, { onConflict: "channel" })
     .select()
     .single();
 
