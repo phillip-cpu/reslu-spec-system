@@ -72,6 +72,17 @@ final class VoiceSessionCoordinator: NSObject, ObservableObject {
         provider.reportOutgoingCall(with: callUUID, connectedAt: Date())
     }
 
+    private func setMutedFromWeb(_ muted: Bool) {
+        guard let callUUID else { return }
+        let action = CXSetMutedCallAction(call: callUUID, muted: muted)
+        callController.request(CXTransaction(action: action)) { [weak self] error in
+            guard let self, let error else { return }
+            Task { @MainActor in
+                self.sendToWeb(type: "mute-sync-error", message: error.localizedDescription)
+            }
+        }
+    }
+
     private func endCallFromWeb() {
         guard let callUUID else {
             deactivateAudioSession()
@@ -96,8 +107,10 @@ final class VoiceSessionCoordinator: NSObject, ObservableObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    private func sendToWeb(type: String, message: String? = nil) {
-        let payload: [String: String] = ["type": type, "message": message].compactMapValues { $0 }
+    private func sendToWeb(type: String, message: String? = nil, muted: Bool? = nil) {
+        var payload: [String: Any] = ["type": type]
+        if let message { payload["message"] = message }
+        if let muted { payload["muted"] = muted }
         guard
             let data = try? JSONSerialization.data(withJSONObject: payload),
             let json = String(data: data, encoding: .utf8)
@@ -117,6 +130,8 @@ extension VoiceSessionCoordinator: WKScriptMessageHandler {
                 beginCall(agent: body["agent"] as? String ?? "RESLU Agent")
             case "call.connected":
                 markConnected()
+            case "call.muted":
+                setMutedFromWeb(body["muted"] as? Bool ?? false)
             case "call.end":
                 endCallFromWeb()
             default:
@@ -134,7 +149,7 @@ extension VoiceSessionCoordinator: CXProviderDelegate {
     nonisolated func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
         Task { @MainActor in
             do {
-                try configureAudioSession(activate: true)
+                try configureAudioSession(activate: false)
                 provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: Date())
                 action.fulfill()
             } catch {
@@ -151,8 +166,24 @@ extension VoiceSessionCoordinator: CXProviderDelegate {
         }
     }
 
+    nonisolated func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
+        Task { @MainActor in
+            guard callUUID == action.callUUID else {
+                action.fail()
+                return
+            }
+            sendToWeb(type: "mute-requested", muted: action.isMuted)
+            action.fulfill()
+        }
+    }
+
     nonisolated func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
-        // WebRTC owns the media stream; CallKit owns when its audio session is active.
+        Task { @MainActor in
+            guard callUUID != nil else { return }
+            // WebRTC owns media; this callback is CallKit's authoritative signal
+            // that iOS is ready for the web layer to open microphone capture.
+            sendToWeb(type: "native-audio-ready")
+        }
     }
 
     nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {

@@ -52,7 +52,7 @@ struct RESLUWebView: UIViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
-            if url.scheme == "about" || url.host == trustedMediaHost {
+            if url.scheme == "about" || (url.scheme == "https" && url.host == trustedMediaHost) {
                 decisionHandler(.allow)
             } else {
                 UIApplication.shared.open(url)
@@ -68,7 +68,11 @@ struct RESLUWebView: UIViewRepresentable {
             type: WKMediaCaptureType,
             decisionHandler: @escaping (WKPermissionDecision) -> Void
         ) {
-            decisionHandler(origin.host == trustedMediaHost ? .grant : .deny)
+            decisionHandler(
+                origin.protocol == "https" && origin.host == trustedMediaHost
+                    ? .grant
+                    : .deny
+            )
         }
     }
 }
