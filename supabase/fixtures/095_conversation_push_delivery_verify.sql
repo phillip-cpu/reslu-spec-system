@@ -88,7 +88,10 @@ from inserted;
 
 do $$
 declare
-  test reslu_push_delivery_test%rowtype;
+  -- Use an untyped record here. Some hosted SQL runners prepare a DO block
+  -- before resolving a temporary table's composite row type, even though the
+  -- table was created earlier in the same transaction.
+  test record;
   unmuted_jobs integer;
   muted_jobs integer;
   private_policy_count integer;

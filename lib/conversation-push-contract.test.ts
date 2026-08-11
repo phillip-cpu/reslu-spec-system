@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path: string) => readFileSync(resolve(root, path), "utf8");
 const migration = read("supabase/migrations/095_conversation_push_delivery.sql");
+const verifier = read("supabase/fixtures/095_conversation_push_delivery_verify.sql");
 const deliveryRoute = read("app/api/conversations/push/deliver/route.ts");
 const exactNotificationRoute = read("app/api/notifications/[id]/route.ts");
 const notificationRoute = read("app/api/notifications/latest-unread/route.ts");
@@ -27,6 +28,13 @@ test("every canonical message gets one durable job per subscribed device of each
   assert.match(migration, /delivery_token = gen_random_uuid\(\)/);
   assert.match(migration, /for update skip locked/);
   assert.match(migration, /revoke all on function enqueue_conversation_push_jobs\(\) from public, anon, authenticated/);
+});
+
+test("the hosted SQL verifier resolves its temporary test row at execution time", () => {
+  assert.match(verifier, /create temporary table reslu_push_delivery_test/);
+  assert.match(verifier, /test record;/);
+  assert.doesNotMatch(verifier, /reslu_push_delivery_test%rowtype/);
+  assert.match(verifier, /begin;[\s\S]*rollback;/);
 });
 
 test("private message previews are no longer team-readable notifications", () => {
