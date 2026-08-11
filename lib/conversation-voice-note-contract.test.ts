@@ -44,6 +44,8 @@ test("iPhone and desktop expose a cancellable five-minute recording flow", () =>
   assert.match(workspace, /Finish/);
   assert.match(workspace, /voiceNoteDurationMs/);
   assert.match(workspace, /aria-label="Record voice note"/);
+  assert.match(workspace, /Finish or cancel the voice note before changing chats/);
+  assert.match(workspace, /disabled=\{voiceNoteRecording\}[\s\S]*startCall/);
 });
 
 test("voice notes use the exact-once outbox and render an authenticated audio player", () => {

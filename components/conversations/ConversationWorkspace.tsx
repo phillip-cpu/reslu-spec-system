@@ -2058,6 +2058,10 @@ export function ConversationWorkspace({
 
   const selectConversation = useCallback((conversationId: string | null) => {
     if (conversationId === selectedId) return;
+    if (voiceNoteRecording) {
+      setError("Finish or cancel the voice note before changing chats.");
+      return;
+    }
     if (sending) {
       setError("Wait for the message to finish sending before changing chats.");
       return;
@@ -2090,7 +2094,7 @@ export function ConversationWorkspace({
     setAgentActivity([]);
     setConversationMenuOpen(false);
     setSelectedId(conversationId);
-  }, [selectedId, sending]);
+  }, [selectedId, sending, voiceNoteRecording]);
 
   const updateConversationPreferences = useCallback(async (
     changes: { notifications_muted?: boolean; archived?: boolean; pinned?: boolean }
@@ -3773,7 +3777,7 @@ export function ConversationWorkspace({
       <aside className={clsx("flex min-h-0 w-full shrink-0 flex-col border-r border-[#d4cbbd] bg-[#ede8de]", drawer ? "md:w-64" : "md:w-80", selectedId && "hidden md:flex")}>
         <div className="flex items-center justify-between border-b border-[#d4cbbd] py-3 pl-20 pr-3 md:p-4">
           <p className="label-caps">Conversations</p>
-          <button onClick={() => setNewOpen(true)} disabled={sending} className="bg-nearblack px-3 py-2 text-caption text-white disabled:opacity-30">New chat</button>
+          <button onClick={() => setNewOpen(true)} disabled={sending || voiceNoteRecording} className="bg-nearblack px-3 py-2 text-caption text-white disabled:opacity-30">New chat</button>
         </div>
         {data.conversations.length === 0 ? (
           <div className="p-6 text-body text-charcoal/60">
@@ -3820,7 +3824,7 @@ export function ConversationWorkspace({
             ) : (
               <div className="min-h-0 overflow-y-auto">
                 {filteredConversations.map((conversation) => (
-                  <button key={conversation.id} onClick={() => selectConversation(conversation.id)} disabled={sending && selectedId !== conversation.id} className={clsx("flex w-full gap-3 border-b border-[#dcd6cc] p-4 text-left disabled:opacity-40", selectedId === conversation.id ? "bg-[#f5f1e8]" : "hover:bg-white/30")}>
+                  <button key={conversation.id} onClick={() => selectConversation(conversation.id)} disabled={(sending || voiceNoteRecording) && selectedId !== conversation.id} className={clsx("flex w-full gap-3 border-b border-[#dcd6cc] p-4 text-left disabled:opacity-40", selectedId === conversation.id ? "bg-[#f5f1e8]" : "hover:bg-white/30")}>
                     <Avatar participant={conversation.participants.find((p) => !p.is_self) ?? conversation.participants[0]} />
                     <span className="min-w-0 flex-1">
                       <span className="flex min-w-0 items-center gap-2">
@@ -3893,14 +3897,14 @@ export function ConversationWorkspace({
         {selectedConversation ? (
           <>
             <header className="sticky top-0 z-10 flex min-h-16 shrink-0 items-center gap-2 border-b border-[#d4cbbd] bg-[#f5f1e8]/95 py-2 pl-16 pr-2 backdrop-blur md:min-h-20 md:gap-3 md:px-4 md:py-3">
-              <button onClick={() => selectConversation(null)} disabled={sending} className="flex h-11 w-8 shrink-0 items-center justify-center text-xl text-charcoal/70 disabled:opacity-30 md:hidden" aria-label="Back to conversations">‹</button>
+              <button onClick={() => selectConversation(null)} disabled={sending || voiceNoteRecording} className="flex h-11 w-8 shrink-0 items-center justify-center text-xl text-charcoal/70 disabled:opacity-30 md:hidden" aria-label="Back to conversations">‹</button>
               {headerParticipant && <Avatar participant={headerParticipant} />}
               <div className="min-w-0 flex-1">
                 <h2 className="truncate font-display text-subhead text-nearblack">{selectedConversation.display_title}</h2>
                 <p className="mt-1 truncate text-caption text-charcoal/50">{participants.map((participant) => participant.display_name).join(", ")}</p>
               </div>
               {callAgent && (
-                <button onClick={() => void startCall()} aria-label={`Call ${callAgent.display_name}`} className="flex h-11 shrink-0 items-center justify-center gap-2 border border-nearblack px-3 text-nearblack hover:bg-nearblack hover:text-white md:px-4">
+                <button disabled={voiceNoteRecording} onClick={() => void startCall()} aria-label={`Call ${callAgent.display_name}`} className="flex h-11 shrink-0 items-center justify-center gap-2 border border-nearblack px-3 text-nearblack hover:bg-nearblack hover:text-white disabled:opacity-35 md:px-4">
                   <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M7.2 3.5 9.5 8l-2.2 1.7a15.4 15.4 0 0 0 7 7l1.7-2.2 4.5 2.3-.7 3.2c-.2.8-.9 1.4-1.8 1.4A15.5 15.5 0 0 1 2.6 6c0-.9.6-1.6 1.4-1.8l3.2-.7Z" />
                   </svg>
