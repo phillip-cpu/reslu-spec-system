@@ -9,6 +9,12 @@ import {
   STAGED_CONVERSATION_ATTACHMENT_MAX_AGE_MS,
 } from "@/lib/conversation-attachments";
 import { ASSET_BUCKET } from "@/lib/storage";
+import {
+  isConversationVoiceNoteDuration,
+  isConversationVoiceNoteMime,
+  MAX_CONVERSATION_VOICE_NOTE_BYTES,
+  voiceNoteMetadata,
+} from "@/lib/conversation-voice-note";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -51,10 +57,21 @@ export async function POST(request: NextRequest, context: Context) {
   const byteSize = body?.byte_size;
   if (!filename) return NextResponse.json({ error: "Choose a file with a valid name" }, { status: 400 });
   if (!isConversationAttachmentMime(mimeType)) {
-    return NextResponse.json({ error: "Choose a JPEG, PNG, WebP or PDF file" }, { status: 400 });
+    return NextResponse.json({ error: "Choose a JPEG, PNG, WebP, PDF or supported voice-note file" }, { status: 400 });
   }
   if (!isConversationAttachmentSize(byteSize)) {
     return NextResponse.json({ error: "Attachments must be between 1 byte and 25 MB" }, { status: 400 });
+  }
+  const voiceNote = isConversationVoiceNoteMime(mimeType);
+  const durationMs = body?.duration_ms;
+  if (voiceNote && (body?.voice_note !== true || !isConversationVoiceNoteDuration(durationMs))) {
+    return NextResponse.json({ error: "Voice-note duration is invalid" }, { status: 400 });
+  }
+  if (voiceNote && byteSize > MAX_CONVERSATION_VOICE_NOTE_BYTES) {
+    return NextResponse.json({ error: "Voice notes must be no larger than 10 MB" }, { status: 400 });
+  }
+  if (!voiceNote && (body?.voice_note != null || body?.duration_ms != null)) {
+    return NextResponse.json({ error: "Voice-note metadata does not match this file" }, { status: 400 });
   }
 
   const attachmentId = randomUUID();
@@ -72,6 +89,7 @@ export async function POST(request: NextRequest, context: Context) {
     filename,
     mime_type: mimeType,
     byte_size: byteSize,
+    metadata: voiceNote ? voiceNoteMetadata(durationMs) : {},
   });
   if (rowError) return NextResponse.json({ error: rowError.message }, { status: 500 });
 

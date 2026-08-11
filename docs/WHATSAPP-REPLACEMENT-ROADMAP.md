@@ -17,6 +17,11 @@ invitation, notification, access-control and offboarding design.
 
 ## Delivery rules
 
+Live evidence and the remaining physical-device checks are tracked in
+[`WHATSAPP-REPLACEMENT-ACCEPTANCE.md`](./WHATSAPP-REPLACEMENT-ACCEPTANCE.md).
+That matrix is authoritative for stage-gate status; implementation notes below
+describe capability, not acceptance by themselves.
+
 - Work through the stages in order unless an earlier-stage production defect
   requires immediate repair.
 - Do not call a stage complete because its code is merged. Complete its live
@@ -106,17 +111,59 @@ to newest, with an explicit return-to-latest action. Older history now pages
 backwards in bounded batches while preserving the reader's scroll position and
 remaining stable across background polling. Richer message actions,
 attachment-content search, full cold-start offline support and long-history
-virtualisation remain. Migration 097 puts full-history substring search behind a
+virtualisation remain. Migration 105 adds author-owned 15-minute message edits
+with multi-device conflict detection, plus a recoverable delete that leaves a
+truthful tombstone, keeps original text private to its author for 30 days and
+immediately blocks deleted attachments. Restore changes history without
+silently re-running Aria, Marco or durable work. Migration 106 adds six bounded
+quick reactions with one current choice per member and up to five shared pinned
+messages that remain reachable above the timeline even when they are older than
+the loaded page. Deleting a message clears its reaction and pin state in the
+same transaction. Migration 097 puts full-history substring search behind a
 member-scoped RPC and a trigram index so response time does not degrade into a
 full table scan as the canonical history grows. Migration 098 makes quoted
 replies part of the exactly-once send contract; reply selection survives the
 offline outbox, replying to Aria or Marco in a group routes back to that existing
 agent, and the bridge gives the agent the referenced message rather than losing
 the quote relationship. Message menus expose Reply and Copy on mobile/desktop.
+Migration 107 adds member-scoped forwarding to up to ten chats with one stable
+client intent id. A retry returns the same target messages and agent jobs. Ready
+private attachments are shared through target-scoped snapshot rows instead of
+duplicating their unique storage record, and forwarding an already-forwarded
+message keeps the file available without exposing its original chat. The Mac
+bridge receives forwarded files through the same private materialisation path.
+Migration 108 replaces broad direct group-row writes with explicit, exactly-once
+human-admin operations. Stable client action IDs make retries safe after lost
+responses. The creator starts as admin; admins can rename a group, add/remove
+people or Aria/Marco, and promote another human. The last admin cannot be
+removed, leaving promotes a successor when necessary, and removing an agent
+cancels only that agent's unfinished work in the group. Every mutation leaves a
+canonical system record. The add-member UI explicitly says that RESLU team
+members receive the existing business history rather than silently applying
+WhatsApp's consumer-history assumptions.
+Migration 109 adds private voice notes without creating a second messaging
+system. iPhone Safari records MP4 audio and supported desktop browsers record
+WebM; the server verifies the actual container bytes, five-minute duration and
+10 MB size before the ordinary exact-once message outbox can bind the file.
+Authenticated range playback, forwarding and the existing private Aria/Marco
+attachment materialisation path all reuse the canonical conversation. Automatic
+third-party transcription is deliberately excluded until Phillip explicitly
+approves the provider, retention and disclosure wording.
+Migration 110 makes private attachments discoverable in the same bounded,
+member-scoped full-history search. Ready uploaded and forwarded filenames are
+trigram indexed; staged files and deleted messages stay hidden. A file match
+returns its canonical message anchor and a filename cue, not a storage path or
+second file index, so opening it preserves the conversation context.
 The same exact-once boundary now covers conversation creation, call start and
 call end: device intent ids recover a lost start response, and an ended call is
 retained locally until the single canonical same-thread call record is
-acknowledged. Ready attachment drafts are restored after navigation or reload,
+acknowledged. A production audit found one browser call left canonically active
+after the iPhone session had disappeared. Migration 104 closes that database
+gap: one person may have only one active call across conversations and devices;
+starting a genuinely new call truthfully drops and records the displaced turn,
+cancels only its unfinished conversational consult output and leaves durable
+background tasks running. Ready attachment drafts are restored after navigation
+or reload,
 interrupted finalisation is retryable, and switching chats cannot silently
 discard or cross-bind a staged file. The release also upgrades Next to 16.3.0,
 which removes the fixable production framework advisories found by the
@@ -132,9 +179,17 @@ Rollout order for this slice:
    `095_conversation_push_delivery.sql`, then
    `096_conversation_preferences.sql`, then
    `097_conversation_message_search.sql`, then
-   `098_conversation_quoted_replies.sql`, to Supabase.
-2. Run the matching rollback-only fixtures for migrations 093 through 098 in the
-   SQL Editor. Every fixture must report PASS and leave no test data.
+   `098_conversation_quoted_replies.sql`, then
+   `104_single_active_conversation_call.sql`, then
+   `105_conversation_message_edit_delete.sql`, then
+   `106_conversation_message_reactions_pins.sql`, then
+   `107_conversation_message_forwarding.sql`, then
+   `108_conversation_group_management.sql`, then
+   `109_conversation_voice_notes.sql`, then
+   `110_conversation_attachment_search.sql`, to Supabase.
+2. Run the matching rollback-only fixtures for migrations 093 through 098 and
+   migrations 104 through 110 in the SQL Editor. Every fixture must report PASS
+   and leave no test data.
 3. Deploy the matching application release, pull it on the Mac and restart the
    conversation bridge so its independent push worker is active.
 4. Refresh every already-open RESLU client so it sends a stable client id.
@@ -155,10 +210,11 @@ Work:
 - Message push notifications, badges and unread counts.
 - Notification tap opens the exact conversation.
 - Pin, archive, mute, search and conversation notification preferences.
-- Reply/quote, copy, edit markers, recoverable delete, forward, reactions and
-  pinned messages.
-- Group naming, participant management and reliable mentions.
-- Voice notes and expanded safe file types after the photo/PDF slice is proven.
+- Reply/quote, copy, edit markers and recoverable delete.
+- Forward text and private attachments exactly once to up to ten chats.
+- Shared group names, human admins, safe participant management and reliable mentions.
+- Private record/cancel/send/play/forward voice notes, with optional automatic
+  transcription held behind a separate informed approval.
 - Pagination, virtualised long history and message/file search.
 
 Stage gate:

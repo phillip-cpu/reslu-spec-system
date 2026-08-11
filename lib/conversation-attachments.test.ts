@@ -11,11 +11,13 @@ import {
   MAX_CONVERSATION_ATTACHMENT_BYTES,
 } from "./conversation-attachments.ts";
 
-test("conversation attachments accept only the first MVP photo and PDF formats", () => {
+test("conversation attachments accept only bounded photo, PDF and voice-note formats", () => {
   assert.equal(isConversationAttachmentMime("image/jpeg"), true);
   assert.equal(isConversationAttachmentMime("image/png"), true);
   assert.equal(isConversationAttachmentMime("image/webp"), true);
   assert.equal(isConversationAttachmentMime("application/pdf"), true);
+  assert.equal(isConversationAttachmentMime("audio/mp4"), true);
+  assert.equal(isConversationAttachmentMime("audio/webm"), true);
   assert.equal(isConversationAttachmentMime("image/svg+xml"), false);
   assert.equal(isConversationAttachmentMime("application/x-sh"), false);
 });
@@ -42,6 +44,7 @@ test("conversation attachment size and kind stay bounded", () => {
   assert.equal(isConversationAttachmentSize(0), false);
   assert.equal(conversationAttachmentKind("image/jpeg"), "image");
   assert.equal(conversationAttachmentKind("application/pdf"), "document");
+  assert.equal(conversationAttachmentKind("audio/mp4"), "audio");
 });
 
 test("conversation attachment access uses a stable authenticated application URL", () => {

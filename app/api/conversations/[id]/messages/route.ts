@@ -2,7 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { messageAuthor } from "@/lib/conversations";
 import { conversationParticipants } from "@/lib/conversation-access";
-import { conversationAttachmentAccessUrl, MAX_CONVERSATION_ATTACHMENTS } from "@/lib/conversation-attachments";
+import {
+  conversationAttachmentAccessUrl,
+  conversationForwardedAttachmentAccessUrl,
+  MAX_CONVERSATION_ATTACHMENTS,
+} from "@/lib/conversation-attachments";
+import {
+  summarizeConversationMessageReactions,
+  type ConversationMessageReactionRow,
+} from "@/lib/conversation-message-engagement";
 import type {
   AgentSlug,
   ConversationAgentActivity,
@@ -25,9 +33,23 @@ type MessageInput = {
   client_message_id?: unknown;
   reply_to_id?: unknown;
 };
-type MessageRow = Omit<ConversationMessage, "attachments" | "author"> & {
+type MessageRow = Omit<ConversationMessage, "attachments" | "author" | "reactions" | "pinned_at" | "pinned_by"> & {
   conversation_attachments?: ConversationAttachment[];
+  forwarded_attachments?: Array<{
+    id: string;
+    conversation_id: string;
+    message_id: string;
+    forwarded_by: string;
+    filename: string;
+    mime_type: ConversationAttachment["mime_type"];
+    byte_size: number;
+    metadata: Record<string, unknown> | null;
+    created_at: string;
+  }>;
+  conversation_message_reactions?: ConversationMessageReactionRow[];
+  conversation_message_pins?: Array<{ pinned_at: string; pinned_by: string }>;
 };
+const MESSAGE_SELECT = "*, conversation_attachments(*), forwarded_attachments:conversation_forwarded_attachments(id,conversation_id,message_id,forwarded_by,filename,mime_type,byte_size,metadata,created_at), conversation_message_reactions(reaction,profile_id), conversation_message_pins(pinned_at,pinned_by)";
 type ActiveAgentJobRow = {
   agent_id: string;
   status: "pending" | "processing";
@@ -42,19 +64,52 @@ function hydrateMessages(
   participants: ConversationParticipant[],
   conversationId: string
 ): ConversationMessage[] {
+  const selfProfileId = participants.find((participant) => participant.is_self)?.id ?? null;
   return rows.map((row) => {
-    const attachments = (row.conversation_attachments ?? [])
+    const uploadedAttachments = (row.deleted_at ? [] : row.conversation_attachments ?? [])
       .filter((attachment) => attachment.status === "ready")
       .map((attachment) => ({
         ...attachment,
         metadata: attachment.metadata ?? {},
         url: conversationAttachmentAccessUrl(conversationId, attachment.id),
       }));
-    const { conversation_attachments: _joinedAttachments, ...messageRow } = row;
+    const forwardedAttachments: ConversationAttachment[] = (row.deleted_at ? [] : row.forwarded_attachments ?? [])
+      .map((attachment) => ({
+        id: attachment.id,
+        conversation_id: attachment.conversation_id,
+        message_id: attachment.message_id,
+        uploaded_by: attachment.forwarded_by,
+        storage_path: "",
+        filename: attachment.filename,
+        mime_type: attachment.mime_type,
+        byte_size: attachment.byte_size,
+        status: "ready",
+        metadata: attachment.metadata ?? {},
+        created_at: attachment.created_at,
+        ready_at: attachment.created_at,
+        url: conversationForwardedAttachmentAccessUrl(conversationId, attachment.id),
+        forwarded: true,
+      }));
+    const attachments = [...uploadedAttachments, ...forwardedAttachments]
+      .sort((left, right) => left.created_at.localeCompare(right.created_at));
+    const pin = row.deleted_at ? null : row.conversation_message_pins?.[0] ?? null;
+    const reactions = row.deleted_at
+      ? []
+      : summarizeConversationMessageReactions(row.conversation_message_reactions ?? [], selfProfileId);
+    const {
+      conversation_attachments: _joinedAttachments,
+      forwarded_attachments: _joinedForwardedAttachments,
+      conversation_message_reactions: _joinedReactions,
+      conversation_message_pins: _joinedPins,
+      ...messageRow
+    } = row;
     return {
       ...messageRow,
       metadata: row.metadata ?? {},
       attachments,
+      reactions,
+      pinned_at: pin?.pinned_at ?? null,
+      pinned_by: pin?.pinned_by ?? null,
       author: messageAuthor(row, participants),
     };
   });
@@ -105,6 +160,38 @@ async function activeAgentActivity(
   return [...activity.values()];
 }
 
+async function pinnedConversationMessages(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  conversationId: string,
+  participants: ConversationParticipant[]
+): Promise<ConversationMessage[]> {
+  const { data: pins, error: pinError } = await supabase
+    .from("conversation_message_pins")
+    .select("message_id,pinned_at")
+    .eq("conversation_id", conversationId)
+    .order("pinned_at", { ascending: false })
+    .limit(5);
+  if (pinError || !pins?.length) {
+    if (pinError) console.error("Could not load pinned conversation messages", { conversationId, error: pinError.message });
+    return [];
+  }
+  const { data: rows, error } = await supabase
+    .from("conversation_messages")
+    .select(MESSAGE_SELECT)
+    .eq("conversation_id", conversationId)
+    .in("id", pins.map((pin) => pin.message_id))
+    .is("deleted_at", null);
+  if (error) {
+    console.error("Could not hydrate pinned conversation messages", { conversationId, error: error.message });
+    return [];
+  }
+  const hydrated = new Map(
+    hydrateMessages((rows ?? []) as unknown as MessageRow[], participants, conversationId)
+      .map((message) => [message.id, message])
+  );
+  return pins.flatMap((pin) => hydrated.get(pin.message_id) ?? []);
+}
+
 export async function GET(request: NextRequest, context: Context) {
   const { id } = await context.params;
   const supabase = await createClient();
@@ -113,7 +200,10 @@ export async function GET(request: NextRequest, context: Context) {
 
   const participantResult = await conversationParticipants(supabase, id, user.id);
   if (participantResult.error) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
-  const agentActivity = await activeAgentActivity(supabase, id, participantResult.participants);
+  const [agentActivity, pinnedMessages] = await Promise.all([
+    activeAgentActivity(supabase, id, participantResult.participants),
+    pinnedConversationMessages(supabase, id, participantResult.participants),
+  ]);
 
   const around = request.nextUrl.searchParams.get("around");
   if (around && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(around)) {
@@ -122,10 +212,9 @@ export async function GET(request: NextRequest, context: Context) {
   if (around) {
     const { data: targetData, error: targetError } = await supabase
       .from("conversation_messages")
-      .select("*, conversation_attachments(*)")
+      .select(MESSAGE_SELECT)
       .eq("conversation_id", id)
       .eq("id", around)
-      .is("deleted_at", null)
       .maybeSingle();
     if (targetError) return NextResponse.json({ error: targetError.message }, { status: 500 });
     if (!targetData) return NextResponse.json({ error: "Message not found" }, { status: 404 });
@@ -133,18 +222,16 @@ export async function GET(request: NextRequest, context: Context) {
     const [olderResult, newerResult] = await Promise.all([
       supabase
         .from("conversation_messages")
-        .select("*, conversation_attachments(*)")
+        .select(MESSAGE_SELECT)
         .eq("conversation_id", id)
-        .is("deleted_at", null)
         .or(`created_at.lt.${targetData.created_at},and(created_at.eq.${targetData.created_at},id.lt.${around})`)
         .order("created_at", { ascending: false })
         .order("id", { ascending: false })
         .limit(50),
       supabase
         .from("conversation_messages")
-        .select("*, conversation_attachments(*)")
+        .select(MESSAGE_SELECT)
         .eq("conversation_id", id)
-        .is("deleted_at", null)
         .or(`created_at.gt.${targetData.created_at},and(created_at.eq.${targetData.created_at},id.gt.${around})`)
         .order("created_at", { ascending: true })
         .order("id", { ascending: true })
@@ -161,6 +248,7 @@ export async function GET(request: NextRequest, context: Context) {
       messages: hydrateMessages(rows, participantResult.participants, id),
       participants: participantResult.participants,
       agent_activity: agentActivity,
+      pinned_messages: pinnedMessages,
       context: { anchor_message_id: around, has_older: (olderResult.data?.length ?? 0) === 50, has_newer: (newerResult.data?.length ?? 0) === 50 },
     });
   }
@@ -178,9 +266,8 @@ export async function GET(request: NextRequest, context: Context) {
   }
   let query = supabase
     .from("conversation_messages")
-    .select("*, conversation_attachments(*)")
+    .select(MESSAGE_SELECT)
     .eq("conversation_id", id)
-    .is("deleted_at", null)
     .order("created_at", { ascending: false })
     .order("id", { ascending: false })
     .limit(100);
@@ -198,6 +285,7 @@ export async function GET(request: NextRequest, context: Context) {
     messages: hydrateMessages(rows, participantResult.participants, id),
     participants: participantResult.participants,
     agent_activity: agentActivity,
+    pinned_messages: pinnedMessages,
     context: { anchor_message_id: null, has_older: (data?.length ?? 0) === 100, has_newer: false },
   });
 }
@@ -221,7 +309,7 @@ export async function POST(request: NextRequest, context: Context) {
   if (body.body != null && typeof body.body !== "string") {
     return NextResponse.json({ error: "Invalid message body" }, { status: 400 });
   }
-  if (body.source != null && body.source !== "text" && body.source !== "voice") {
+  if (body.source != null && body.source !== "text" && body.source !== "voice" && body.source !== "voice_note") {
     return NextResponse.json({ error: "Invalid message source" }, { status: 400 });
   }
   if (body.target_agent_slugs != null && !Array.isArray(body.target_agent_slugs)) {
@@ -318,7 +406,7 @@ export async function POST(request: NextRequest, context: Context) {
   }
 
   const metadata = {
-    source: body.source === "voice" ? "voice" : "text",
+    source: body.source === "voice" ? "voice" : body.source === "voice_note" ? "voice_note" : "text",
     target_agent_slugs: targetAgents.map((agent) => agent.agent_slug),
     ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
   };
@@ -363,7 +451,15 @@ export async function POST(request: NextRequest, context: Context) {
   }
 
   return NextResponse.json({
-    message: { ...message, metadata: message.metadata ?? {}, attachments: [], author: self },
+    message: {
+      ...message,
+      metadata: message.metadata ?? {},
+      attachments: [],
+      reactions: [],
+      pinned_at: null,
+      pinned_by: null,
+      author: self,
+    },
     queued_agents: targetAgents.map((agent) => agent.agent_slug),
     queue_error: queueError,
   }, { status: 201 });

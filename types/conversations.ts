@@ -11,13 +11,14 @@ export interface ConversationAttachment {
   uploaded_by: string;
   storage_path: string;
   filename: string;
-  mime_type: "image/jpeg" | "image/png" | "image/webp" | "application/pdf";
+  mime_type: "image/jpeg" | "image/png" | "image/webp" | "application/pdf" | "audio/mp4" | "audio/webm";
   byte_size: number;
   status: "uploading" | "ready" | "failed";
   metadata: Record<string, unknown>;
   created_at: string;
   ready_at: string | null;
   url: string | null;
+  forwarded?: boolean;
 }
 
 export interface ConversationAgent {
@@ -37,6 +38,13 @@ export interface ConversationParticipant {
   agent_slug?: AgentSlug;
   role_label?: string;
   is_self?: boolean;
+  is_admin?: boolean;
+}
+
+export interface ConversationMessageReaction {
+  reaction: "👍" | "❤️" | "😂" | "😮" | "😢" | "🙏";
+  count: number;
+  self_reacted: boolean;
 }
 
 export interface ConversationMessage {
@@ -51,8 +59,16 @@ export interface ConversationMessage {
   reply_to_id: string | null;
   created_at: string;
   edited_at: string | null;
+  deleted_at: string | null;
+  reactions: ConversationMessageReaction[];
+  pinned_at: string | null;
+  pinned_by: string | null;
   attachments: ConversationAttachment[];
   author: ConversationParticipant;
+  search_match?: {
+    kind: "message" | "attachment" | "both";
+    attachment_filenames: string[];
+  };
 }
 
 export interface ConversationAgentActivity {

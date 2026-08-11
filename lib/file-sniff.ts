@@ -17,7 +17,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  * numbers checked by hand.
  */
 
-export type SniffedKind = "jpeg" | "png" | "webp" | "pdf" | "unknown";
+export type SniffedKind = "jpeg" | "png" | "webp" | "pdf" | "mp4" | "webm" | "unknown";
 
 /**
  * Inspects the leading bytes of a buffer and returns which known format
@@ -70,6 +70,20 @@ export function sniffFileKind(bytes: Buffer | Uint8Array): SniffedKind {
   if (buf.length >= 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) {
     return "pdf";
   }
+
+  // ISO Base Media / MP4 (including M4A): four-byte box length followed by
+  // the `ftyp` box marker. Voice notes use audio/mp4; media track validation
+  // remains bounded to browser-created recordings in the conversation route.
+  if (
+    buf.length >= 12
+    && buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70
+  ) return "mp4";
+
+  // WebM is an EBML container and begins with the fixed EBML header id.
+  if (
+    buf.length >= 4
+    && buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3
+  ) return "webm";
 
   return "unknown";
 }

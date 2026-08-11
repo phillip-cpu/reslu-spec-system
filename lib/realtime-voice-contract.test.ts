@@ -53,7 +53,7 @@ test("VAD speech start interrupts audio without cancelling an unfinished agent c
   const speechStarted = workspace.match(
     /if \(event\.type === "input_audio_buffer\.speech_started"\) \{([\s\S]*?)\n    \}/
   )?.[1] ?? "";
-  assert.match(speechStarted, /interruptRealtimePlayback\(\)/);
+  assert.match(speechStarted, /interruptRealtimePlayback\(performance\.now\(\)\)/);
   assert.doesNotMatch(speechStarted, /cancelActiveRealtime(?:Turn|Consult)\(\)/);
   assert.match(workspace, /if \(activeRealtimeConsultRef\.current\) cancelActiveRealtimeConsult\(\)/);
 });

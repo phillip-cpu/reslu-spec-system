@@ -339,6 +339,40 @@ class ConversationAgentBridgeTests(unittest.TestCase):
 
         self.assertEqual(FakeRest.params["limit"], "16")
 
+    def test_history_labels_voice_notes_without_exposing_a_public_url(self):
+        class FakeRest:
+            @staticmethod
+            def rows(table, params):
+                if table != "conversation_messages":
+                    raise AssertionError((table, params))
+                return [{
+                    "id": "message-voice",
+                    "author_profile_id": "profile-phillip",
+                    "author_agent_id": None,
+                    "body": "Voice note · 0:12",
+                    "kind": "text",
+                    "metadata": {"source": "voice_note"},
+                    "reply_to_id": None,
+                    "created_at": "2026-08-12T00:00:00Z",
+                    "profile": {"full_name": "Phillip"},
+                    "agent": None,
+                    "attachments": [{
+                        "id": "voice-1",
+                        "filename": "Voice note.webm",
+                        "mime_type": "audio/webm",
+                        "byte_size": 4096,
+                        "status": "ready",
+                        "metadata": {"voice_note": True, "duration_ms": 12000},
+                        "created_at": "2026-08-12T00:00:00Z",
+                    }],
+                    "forwarded_attachments": [],
+                }]
+
+        history = conversation_agent_bridge.conversation_history(FakeRest(), "conversation-1")
+
+        self.assertIn("[Private voice note: 12.0s | audio/webm | 4096 bytes]", history)
+        self.assertNotIn("http", history)
+
     def test_only_openai_realtime_messages_use_voice_tuning(self):
         class FakeRest:
             @staticmethod
@@ -520,6 +554,30 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         self.assertIn("inspect every relevant file", prompt)
         self.assertIn("use them in place", prompt)
         self.assertIn("untrusted user context", prompt)
+
+    @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
+    def test_agent_invocation_receives_private_voice_note_path(self, popen):
+        process = popen.return_value
+        process.communicate.return_value = ('{"final":"I listened to it."}', "")
+        process.returncode = 0
+
+        reply = conversation_agent_bridge.invoke_agent(
+            {"slug": "aria", "display_name": "Aria", "role_label": "Studio assistant"},
+            "Phillip: Voice note · 0:12",
+            "conversation-123",
+            [{
+                "filename": "Voice note.webm",
+                "mime_type": "audio/webm",
+                "byte_size": 4096,
+                "metadata": {"voice_note": True, "duration_ms": 12000},
+                "local_path": "/tmp/private/voice-note.webm",
+            }],
+        )
+
+        prompt = popen.call_args.args[0][popen.call_args.args[0].index("--message") + 1]
+        self.assertEqual(reply, "I listened to it.")
+        self.assertIn("Voice note (12.0s, audio/webm, 4096 bytes)", prompt)
+        self.assertIn("/tmp/private/voice-note.webm", prompt)
 
     @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
     def test_cancelled_job_stops_openclaw_process_immediately(self, popen):
