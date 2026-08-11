@@ -15,7 +15,9 @@ import { generateRecurringContributions } from "@/lib/finance/recurrence";
 import { isIsoDate } from "@/lib/finance/readiness";
 import { buildSectionForecastDates } from "@/lib/finance/schedule-cost-timing";
 import { includesConstructionCosts } from "@/lib/finance/construction-cost-eligibility";
-import { createClient } from "@/lib/supabase/server";
+import { applyXeroInvoiceActuals, type CachedXeroInvoice, type CachedXeroPayment } from "@/lib/finance/xero-actuals";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import { hasXeroAccess } from "@/lib/xero/access";
 import type {
   FinanceCockpitProject,
   FinanceConfidence,
@@ -179,15 +181,65 @@ export async function GET(request: NextRequest) {
   const asOfDate = request.nextUrl.searchParams.get("as_of_date") ??
     new Date().toISOString().slice(0, 10);
   const openingRaw = request.nextUrl.searchParams.get("opening_cash_minor");
-  const openingCashMinor = openingRaw === null ? 0 : Number(openingRaw);
+  const requestedOpeningCashMinor = openingRaw === null ? null : Number(openingRaw);
   if (!isIsoDate(asOfDate)) {
     return NextResponse.json({ error: "as_of_date must be an ISO calendar date" }, { status: 400 });
   }
-  if (!Number.isSafeInteger(openingCashMinor)) {
+  if (requestedOpeningCashMinor !== null && !Number.isSafeInteger(requestedOpeningCashMinor)) {
     return NextResponse.json(
       { error: "opening_cash_minor must be a safe integer" },
       { status: 400 }
     );
+  }
+
+  const canUseXero = hasXeroAccess(user);
+  let xeroConnection: {
+    id: string;
+    tenant_name: string;
+    last_sync_completed_at: string | null;
+    last_sync_error: string | null;
+  } | null = null;
+  let xeroCashSnapshot: { cash_balance: number | string; as_of_date: string } | null = null;
+  let xeroInvoices: CachedXeroInvoice[] = [];
+  let xeroPayments: CachedXeroPayment[] = [];
+  if (canUseXero) {
+    const service = createServiceRoleClient();
+    const { data: connection, error: connectionError } = await service
+      .from("xero_connections")
+      .select("id,tenant_name,last_sync_completed_at,last_sync_error")
+      .eq("is_active", true)
+      .maybeSingle();
+    if (connectionError) {
+      return NextResponse.json({ error: connectionError.message }, { status: 500 });
+    }
+    xeroConnection = connection;
+    if (connection) {
+      const [cashResult, invoiceResult, paymentResult] = await Promise.all([
+        service
+          .from("xero_cash_snapshots")
+          .select("cash_balance,as_of_date")
+          .eq("connection_id", connection.id)
+          .lte("as_of_date", asOfDate)
+          .order("as_of_date", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        service
+          .from("xero_invoices")
+          .select("xero_invoice_id,invoice_type,status,invoice_number,contact_name,invoice_date,due_date,total,amount_paid,amount_credited")
+          .eq("connection_id", connection.id),
+        service
+          .from("xero_payments")
+          .select("xero_invoice_id,payment_date,status")
+          .eq("connection_id", connection.id),
+      ]);
+      const xeroReadError = cashResult.error ?? invoiceResult.error ?? paymentResult.error;
+      if (xeroReadError) {
+        return NextResponse.json({ error: xeroReadError.message }, { status: 500 });
+      }
+      xeroCashSnapshot = cashResult.data;
+      xeroInvoices = (invoiceResult.data ?? []) as CachedXeroInvoice[];
+      xeroPayments = (paymentResult.data ?? []) as CachedXeroPayment[];
+    }
   }
 
   const { data: rawProfiles, error: profileError } = await supabase
@@ -400,12 +452,36 @@ export async function GET(request: NextRequest) {
       invoices: clientInvoices,
       projectNames: projectNameById,
     });
-    const clientClaimContributions = clientClaimPortfolio.contributions;
+    const xeroActuals = applyXeroInvoiceActuals({
+      contributions: clientClaimPortfolio.contributions,
+      clientInvoices,
+      xeroInvoices,
+      xeroPayments,
+    });
+    const clientClaimContributions = xeroActuals.contributions;
+    const reconciledClientClaims = clientClaimContributions.filter(
+      (contribution) => contribution.sourceTrace?.source_type === "client_claim"
+    );
+    const reconciledIssuedMinor = reconciledClientClaims.reduce(
+      (sum, contribution) => sum + (contribution.actualAccruedMinor ?? 0),
+      0
+    );
+    const reconciledPaidMinor = reconciledClientClaims.reduce(
+      (sum, contribution) => sum + (contribution.actualPaidMinor ?? 0),
+      0
+    );
     const contributions = [
       ...projectContributions,
       ...clientClaimContributions,
       ...recurringContributions,
     ];
+    const xeroCashMinor = xeroCashSnapshot
+      ? Math.round(Number(xeroCashSnapshot.cash_balance) * 100)
+      : null;
+    if (xeroCashMinor !== null && !Number.isSafeInteger(xeroCashMinor)) {
+      throw new Error("Xero cash balance is outside safe minor-unit range");
+    }
+    const openingCashMinor = requestedOpeningCashMinor ?? xeroCashMinor ?? 0;
     const shadowEnabled = financeShadowProjectionEnabled();
     const projection = shadowEnabled
       ? calculateShadowProjection({
@@ -428,7 +504,26 @@ export async function GET(request: NextRequest) {
     }
     const profileByProjectId = new Map(profiles.map((profile) => [profile.project_id, profile]));
     const claimSummaryByProjectId = new Map(
-      clientClaimPortfolio.projects.map((project) => [project.projectId, project])
+      clientClaimPortfolio.projects.map((project) => {
+        const contributions = reconciledClientClaims.filter(
+          (contribution) => contribution.sourceTrace?.project_id === project.projectId
+        );
+        const issuedMinor = contributions.reduce(
+          (sum, contribution) => sum + (contribution.actualAccruedMinor ?? 0),
+          0
+        );
+        const paidMinor = contributions.reduce(
+          (sum, contribution) => sum + (contribution.actualPaidMinor ?? 0),
+          0
+        );
+        return [project.projectId, {
+          ...project,
+          issuedMinor,
+          paidMinor,
+          outstandingMinor: Math.max(issuedMinor - paidMinor, 0),
+          forecastRemainingMinor: Math.max(project.contractedMinor - issuedMinor, 0),
+        }] as const;
+      })
     );
     const projects: FinanceCockpitProject[] = companyProjectIds.map((projectId) => {
       const profile = profileByProjectId.get(projectId);
@@ -468,8 +563,22 @@ export async function GET(request: NextRequest) {
       can_manage_policy: !policyPermission.error && policyPermission.allowed,
       can_edit_forecast: !editPermission.error && editPermission.allowed,
       source_status: {
-        xero: "not_configured",
-        opening_cash: openingRaw === null ? "not_configured" : "request_preview",
+        xero: !xeroConnection
+          ? "not_configured"
+          : xeroConnection.last_sync_error || !xeroCashSnapshot
+            ? "degraded"
+            : "healthy",
+        opening_cash: requestedOpeningCashMinor !== null
+          ? "request_preview"
+          : xeroCashSnapshot
+            ? "xero_bank_summary"
+            : "not_configured",
+        xero_tenant_name: xeroConnection?.tenant_name ?? null,
+        xero_last_sync_at: xeroConnection?.last_sync_completed_at ?? null,
+        xero_cash_as_of: xeroCashSnapshot?.as_of_date ?? null,
+        xero_invoice_actuals: xeroActuals.includedInvoices,
+        xero_matched_invoices: xeroActuals.matchedClientInvoices,
+        xero_unmatched_invoices: xeroActuals.unmatchedInvoices,
         calculated_at: new Date().toISOString(),
       },
       counts: {
@@ -481,15 +590,18 @@ export async function GET(request: NextRequest) {
           (profile) => profile.finance_state === "design_only"
         ).length,
         active_recurring_commitments: recurringCommitments.length,
-        connected_client_claims: clientClaimContributions.length,
+        connected_client_claims: clientClaimPortfolio.contributions.length,
         connected_projects: clientClaimPortfolio.summary.projectCount,
       },
       client_claims_summary: {
         contracted_minor: clientClaimPortfolio.summary.contractedMinor,
-        issued_minor: clientClaimPortfolio.summary.issuedMinor,
-        paid_minor: clientClaimPortfolio.summary.paidMinor,
-        outstanding_minor: clientClaimPortfolio.summary.outstandingMinor,
-        forecast_remaining_minor: clientClaimPortfolio.summary.forecastRemainingMinor,
+        issued_minor: reconciledIssuedMinor,
+        paid_minor: reconciledPaidMinor,
+        outstanding_minor: Math.max(reconciledIssuedMinor - reconciledPaidMinor, 0),
+        forecast_remaining_minor: Math.max(
+          clientClaimPortfolio.summary.contractedMinor - reconciledIssuedMinor,
+          0
+        ),
       },
       recurring_summary: {
         projected_outflow_minor: recurringContributions.reduce(

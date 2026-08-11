@@ -301,7 +301,7 @@ export interface FinanceShadowProjectionResponse {
     timing_override_count: number;
     client_claim_count: number;
     construction_costs_included?: boolean;
-    opening_cash_source: "not_configured" | "request_preview";
+    opening_cash_source: "not_configured" | "request_preview" | "xero_bank_summary";
   };
   projection: FinanceShadowProjection;
 }
@@ -329,7 +329,13 @@ export interface FinanceCockpitResponse {
   can_edit_forecast: boolean;
   source_status: {
     xero: "not_configured" | "connecting" | "healthy" | "degraded";
-    opening_cash: "request_preview" | "not_configured";
+    opening_cash: "request_preview" | "not_configured" | "xero_bank_summary";
+    xero_tenant_name: string | null;
+    xero_last_sync_at: string | null;
+    xero_cash_as_of: string | null;
+    xero_invoice_actuals: number;
+    xero_matched_invoices: number;
+    xero_unmatched_invoices: number;
     calculated_at: string;
   };
   counts: {

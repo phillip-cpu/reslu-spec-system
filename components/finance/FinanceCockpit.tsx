@@ -107,6 +107,7 @@ export function FinanceCockpit() {
   const [openingCash, setOpeningCash] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [activeTab, setActiveTab] = useState<CockpitTab>("cash");
+  const [syncingXero, setSyncingXero] = useState(false);
 
   const loadCockpit = useCallback(async () => {
     const openingMinor = dollarsInputToMinor(openingCash);
@@ -134,6 +135,21 @@ export function FinanceCockpit() {
       setLoading(false);
     }
   }, [asOfDate, openingCash]);
+
+  const syncXero = useCallback(async () => {
+    setSyncingXero(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/xero/sync", { method: "POST" });
+      const body = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "Could not sync Xero");
+      await loadCockpit();
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : "Could not sync Xero");
+    } finally {
+      setSyncingXero(false);
+    }
+  }, [loadCockpit]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadCockpit(), 0);
@@ -165,8 +181,12 @@ export function FinanceCockpit() {
               <span className="bg-nearblack px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] text-white">
                 Live cashflow
               </span>
-              <span className="border border-[#c9971e] bg-[#c9971e]/10 px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] text-[#76570a]">
-                Xero not connected
+              <span className={`border px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] ${
+                data?.source_status.xero === "healthy"
+                  ? "border-[#304b33] bg-[#304b33]/10 text-[#304b33]"
+                  : "border-[#c9971e] bg-[#c9971e]/10 text-[#76570a]"
+              }`}>
+                {data?.source_status.xero === "healthy" ? "Xero connected" : data?.source_status.xero === "degraded" ? "Xero needs sync" : "Xero not connected"}
               </span>
             </div>
             <h1 className="mt-4 font-display text-[38px] font-light leading-none text-nearblack md:text-[46px]">
@@ -312,7 +332,11 @@ export function FinanceCockpit() {
             <MetricCard
               label="Available cash"
               value={projection ? formatMinorCurrency(projection.openingCashMinor) : "—"}
-              detail={data?.source_status.opening_cash === "request_preview" ? "Manual preview · not persisted" : "Connect approved bank source or enter preview"}
+              detail={data?.source_status.opening_cash === "request_preview"
+                ? "Manual preview · not persisted"
+                : data?.source_status.opening_cash === "xero_bank_summary"
+                  ? `Xero cash accounts · ${data.source_status.xero_cash_as_of ? formatFinanceDate(data.source_status.xero_cash_as_of) : "latest sync"}`
+                  : "Connect approved bank source or enter preview"}
             />
             <MetricCard
               label="Client paid"
@@ -368,8 +392,28 @@ export function FinanceCockpit() {
             </div>
             <div className="border border-charcoal/20 bg-offwhite p-5">
               <p className="label-caps">Xero actuals</p>
-              <p className="mt-3 text-subhead text-nearblack">Not connected</p>
-              <p className="mt-2 text-body text-charcoal/55">Opening cash, posted bills and bank freshness are not represented yet.</p>
+              <p className="mt-3 text-subhead text-nearblack">
+                {data?.source_status.xero === "healthy"
+                  ? `${data.source_status.xero_invoice_actuals} invoice actual${data.source_status.xero_invoice_actuals === 1 ? "" : "s"}`
+                  : data?.source_status.xero === "degraded"
+                    ? "Connected · sync needed"
+                    : "Not connected"}
+              </p>
+              <p className="mt-2 text-body text-charcoal/55">
+                {data?.source_status.xero === "healthy"
+                  ? `${data.source_status.xero_matched_invoices} matched · ${data.source_status.xero_unmatched_invoices} unmatched. Credit-card liabilities are excluded from available cash.`
+                  : "Sync Xero to add bank cash, authorised bills and payments."}
+              </p>
+              {data?.source_status.xero !== "not_configured" && (
+                <button
+                  type="button"
+                  disabled={syncingXero}
+                  onClick={() => void syncXero()}
+                  className="mt-4 border-b border-charcoal/40 text-caption text-nearblack hover:border-nearblack disabled:opacity-40"
+                >
+                  {syncingXero ? "Syncing Xero…" : "Sync Xero now"}
+                </button>
+              )}
             </div>
             <div className="border border-charcoal/20 bg-offwhite p-5">
               <p className="label-caps">Connected cashflow</p>

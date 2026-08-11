@@ -9,11 +9,17 @@ export interface XeroConnectionStatus {
   last_sync_error: string | null;
   invoice_count: number;
   payment_count: number;
+  bank_account_count: number;
+  cash_balance: number | null;
+  cash_balance_as_of: string | null;
 }
 
 export interface XeroSyncResult {
   invoices_checked: number;
   payments_checked: number;
+  bank_accounts_checked: number;
+  cash_balance: number;
+  cash_balance_as_of: string;
   completed_at: string;
 }
 
