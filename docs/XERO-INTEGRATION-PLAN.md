@@ -34,6 +34,9 @@ The application now includes the X1 connection and cache foundation:
   Balance Sheet, Trial Balance, Bank Summary, Budget Summary, Executive
   Summary and published Australian BAS reports, including in-app display and
   CSV download;
+- a second, explicit Xero email allowlist (`XERO_ALLOWED_EMAILS`, defaulting
+  to `phillip@reslu.com.au`) on every Xero route and the Settings UI, so an
+  admin service/agent account such as Aria cannot retrieve Xero data;
 - durable sync-run audit rows and an admin Settings connection/status panel.
 
 Before connecting production, apply `102_xero_readonly.sql`, configure the

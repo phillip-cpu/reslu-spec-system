@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
+import { hasXeroAccess } from "@/lib/xero/access";
 import { encryptXeroSecret } from "@/lib/xero/crypto";
 import { exchangeXeroCode, listXeroTenants } from "@/lib/xero/client";
 import { XERO_STATE_COOKIE } from "@/lib/xero/oauth";
@@ -15,8 +16,8 @@ function settingsRedirect(request: NextRequest, status: string): URL {
 export async function GET(request: NextRequest) {
   const supabase = await createClient();
   const user = await getUserRole(supabase);
-  if (!user || user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
+  if (!hasXeroAccess(user)) {
+    return NextResponse.json({ error: "Xero access required" }, { status: 403 });
   }
   const state = request.nextUrl.searchParams.get("state");
   const code = request.nextUrl.searchParams.get("code");
