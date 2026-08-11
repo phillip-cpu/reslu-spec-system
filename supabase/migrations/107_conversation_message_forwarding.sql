@@ -93,7 +93,7 @@ begin
     or exists (select 1 from unnest(p_destination_conversation_ids) item where item is null)
     or destination_count <> (
       select count(distinct item) from unnest(p_destination_conversation_ids) item
-    ) then
+      ) then
     raise exception 'choose between 1 and 10 unique destination conversations';
   end if;
 
@@ -131,6 +131,19 @@ begin
         )
       ) then
       raise exception 'client forward id was already used for a different request';
+    end if;
+
+    -- Exactly-once retries remain subject to current conversation access. An
+    -- old audit row must never become a capability after membership changes.
+    if not is_conversation_member(p_source_conversation_id) then
+      raise exception 'source message not found';
+    end if;
+    if exists (
+      select 1
+      from unnest(p_destination_conversation_ids) requested(destination_id)
+      where not is_conversation_member(requested.destination_id)
+    ) then
+      raise exception 'destination conversation not found';
     end if;
 
     return query
