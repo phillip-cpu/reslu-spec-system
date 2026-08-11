@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { diffFfeSubstitutions, diffSections, totalSaving } from "@/lib/estimate-versions";
 import type { FfeSubstitutionItemInput } from "@/lib/estimate-versions";
-import { buildLiveSnapshot } from "../route";
+import { buildLiveSnapshot } from "@/lib/estimate-live-snapshot";
 import type { EstimateSnapshot, VersionCompareResponse } from "@/types/phase-12a-a";
 
 /**
