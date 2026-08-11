@@ -5,6 +5,7 @@ export interface RealtimeReconnectState {
   realtimeActive: boolean;
   online: boolean;
   visible: boolean;
+  backgroundCapable: boolean;
   inFlight: boolean;
   attempts: number;
   microphoneReady: boolean;
@@ -17,7 +18,7 @@ export function shouldAttemptRealtimeReconnect(state: RealtimeReconnectState) {
     !state.callActive
     || !state.realtimeActive
     || !state.online
-    || !state.visible
+    || (!state.visible && !state.backgroundCapable)
     || state.inFlight
     || state.attempts >= MAX_REALTIME_RECONNECT_ATTEMPTS
   ) return false;

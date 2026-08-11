@@ -5,7 +5,7 @@ acceptance remain.
 
 ## Decision
 
-The Home Screen web app cannot satisfy the locked-screen call gate. RESLU's web
+The Home Screen web app cannot satisfy the locked-screen call gate. Browser-only
 reconnect intentionally waits until the document is visible, and a web manifest
 cannot configure `AVAudioSession`, iOS background audio or CallKit. More browser
 retry tuning would only make foreground recovery better; it cannot create the
@@ -21,13 +21,21 @@ The first native slice is therefore a thin SwiftUI/WKWebView shell:
   OpenClaw sessions, memory, permissions and persistence remain canonical.
 - Native code owns `AVAudioSession`, CallKit and the background modes that web
   code cannot request.
+- WebRTC microphone capture waits for CallKit's authoritative `didActivate`
+  callback instead of racing the native audio session during call startup.
+- Reconnect remains foreground-only in Safari/PWA, but the trusted native shell
+  may make the same bounded attempts while backgrounded or locked.
+- The system CallKit mute action updates the canonical web microphone track (or
+  legacy recognition fallback), so the lock-screen control and RESLU agree.
 - The bridge carries call lifecycle only: start, connected, end and a native
   end request. It is not a second agent or tool system.
 
 OpenAI recommends WebRTC for client connections including mobile devices. Apple
 requires an appropriate audio session and background capability for audio to
 continue when an app backgrounds or the device locks. CallKit coordinates a
-VoIP call with system call behavior and audio activation.
+VoIP call with system call behavior and signals actual audio activation through
+`CXProviderDelegate.provider(_:didActivate:)`; RESLU waits for that signal with
+a bounded five-second failure path before opening browser media capture.
 
 ## Generate the Xcode project
 
