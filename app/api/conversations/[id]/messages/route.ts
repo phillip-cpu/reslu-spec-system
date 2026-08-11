@@ -33,6 +33,8 @@ type ActiveAgentJobRow = {
   status: "pending" | "processing";
   created_at: string;
   claimed_at: string | null;
+  progress_label: string | null;
+  progress_updated_at: string | null;
 };
 
 function hydrateMessages(
@@ -67,7 +69,7 @@ async function activeAgentActivity(
   if (agentIds.size === 0) return [];
   const { data, error } = await supabase
     .from("agent_conversation_jobs")
-    .select("agent_id,status,created_at,claimed_at")
+    .select("agent_id,status,created_at,claimed_at,progress_label,progress_updated_at")
     .eq("conversation_id", conversationId)
     .in("status", ["pending", "processing"])
     .order("created_at", { ascending: true })
@@ -87,6 +89,8 @@ async function activeAgentActivity(
         pending_turns: 1,
         queued_at: job.created_at,
         claimed_at: job.claimed_at,
+        progress_label: job.progress_label,
+        progress_updated_at: job.progress_updated_at,
       });
       continue;
     }
@@ -94,6 +98,8 @@ async function activeAgentActivity(
     if (job.status === "processing") {
       current.status = "processing";
       current.claimed_at = job.claimed_at;
+      current.progress_label = job.progress_label;
+      current.progress_updated_at = job.progress_updated_at;
     }
   }
   return [...activity.values()];

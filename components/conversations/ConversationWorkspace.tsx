@@ -3172,7 +3172,7 @@ export function ConversationWorkspace() {
                       <div className="max-w-[78%] rounded-2xl rounded-tl-sm border border-[#d4cbbd] bg-[#f5f1e8] px-4 py-3 text-charcoal">
                         <p className="text-caption font-semibold text-nearblack">{agent.display_name}</p>
                         <div className="mt-2 flex items-center gap-2 text-caption text-charcoal/60">
-                          <span>{activity.status === "processing" ? "Working on your request" : "Waiting to start"}</span>
+                          <span>{activity.status === "processing" ? activity.progress_label ?? "Working on your request" : "Waiting to start"}</span>
                           <span className="flex gap-1" aria-hidden>
                             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-charcoal/45" />
                             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-charcoal/45 [animation-delay:150ms]" />

@@ -19,6 +19,100 @@ SPEC.loader.exec_module(conversation_agent_bridge)
 
 
 class ConversationAgentBridgeTests(unittest.TestCase):
+    def test_gateway_event_transport_is_feature_flagged_for_safe_rollout(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(conversation_agent_bridge.openclaw_gateway_events_enabled())
+        with mock.patch.dict(os.environ, {"RESLU_OPENCLAW_GATEWAY_EVENTS_ENABLED": "true"}, clear=True):
+            self.assertTrue(conversation_agent_bridge.openclaw_gateway_events_enabled())
+
+    def test_gateway_events_become_small_truthful_progress_labels(self):
+        self.assertEqual(
+            conversation_agent_bridge.openclaw_progress_label({"type": "accepted"}),
+            "Accepted by the agent",
+        )
+        self.assertEqual(
+            conversation_agent_bridge.openclaw_progress_label({
+                "type": "tool", "phase": "start", "name": "gmail_search",
+            }),
+            "Working with email",
+        )
+        self.assertEqual(
+            conversation_agent_bridge.openclaw_progress_label({"type": "assistant_delta"}),
+            "Drafting the response",
+        )
+        self.assertIsNone(
+            conversation_agent_bridge.openclaw_progress_label({
+                "type": "tool", "phase": "end", "name": "gmail_search",
+            })
+        )
+
+    def test_gateway_progress_persists_run_id_and_deduplicates_labels(self):
+        rest = mock.Mock()
+        reporter = conversation_agent_bridge.gateway_progress_reporter(
+            rest,
+            "agent_conversation_jobs",
+            "job-1",
+        )
+        reporter({"type": "accepted", "run_id": "run-1"})
+        reporter({"type": "accepted", "run_id": "run-1"})
+        reporter({"type": "assistant_delta", "character_count": 12})
+        reporter({"type": "assistant_delta", "character_count": 4})
+
+        self.assertEqual(rest.patch.call_count, 2)
+        first_values = rest.patch.call_args_list[0].args[2]
+        self.assertEqual(first_values["gateway_run_id"], "run-1")
+        self.assertEqual(first_values["progress_label"], "Accepted by the agent")
+        second_values = rest.patch.call_args_list[1].args[2]
+        self.assertEqual(second_values["progress_label"], "Drafting the response")
+
+    @mock.patch.object(conversation_agent_bridge, "invoke_agent_via_gateway")
+    def test_enabled_gateway_keeps_canonical_agent_session_and_job_id(self, invoke_gateway):
+        invoke_gateway.return_value = "Gateway answer"
+        with mock.patch.dict(os.environ, {"RESLU_OPENCLAW_GATEWAY_EVENTS_ENABLED": "true"}):
+            reply = conversation_agent_bridge.invoke_agent(
+                {"slug": "aria", "display_name": "Aria", "role_label": "Studio assistant"},
+                "Phillip: Hello",
+                "conversation-123",
+                idempotency_key="job-123",
+            )
+
+        self.assertEqual(reply, "Gateway answer")
+        self.assertEqual(invoke_gateway.call_args.kwargs["agent_id"], "main")
+        self.assertEqual(
+            invoke_gateway.call_args.kwargs["session_key"],
+            "reslu-conversation-v2-conversation-123",
+        )
+        self.assertEqual(invoke_gateway.call_args.kwargs["idempotency_key"], "job-123")
+
+    @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
+    @mock.patch.object(conversation_agent_bridge, "invoke_agent_via_gateway")
+    def test_gateway_falls_back_only_before_the_run_is_accepted(self, invoke_gateway, popen):
+        invoke_gateway.side_effect = conversation_agent_bridge.GatewayRunError("connect failed", accepted=False)
+        process = popen.return_value
+        process.communicate.return_value = ('{"final":"CLI answer"}', "")
+        process.returncode = 0
+        with mock.patch.dict(os.environ, {"RESLU_OPENCLAW_GATEWAY_EVENTS_ENABLED": "true"}):
+            reply = conversation_agent_bridge.invoke_agent(
+                {"slug": "aria", "display_name": "Aria", "role_label": "Studio assistant"},
+                "Phillip: Hello",
+                "conversation-123",
+                idempotency_key="job-123",
+            )
+        self.assertEqual(reply, "CLI answer")
+        popen.assert_called_once()
+
+        invoke_gateway.side_effect = conversation_agent_bridge.GatewayRunError("stream lost", accepted=True)
+        popen.reset_mock()
+        with mock.patch.dict(os.environ, {"RESLU_OPENCLAW_GATEWAY_EVENTS_ENABLED": "true"}):
+            with self.assertRaises(conversation_agent_bridge.GatewayRunError):
+                conversation_agent_bridge.invoke_agent(
+                    {"slug": "aria", "display_name": "Aria", "role_label": "Studio assistant"},
+                    "Phillip: Hello",
+                    "conversation-123",
+                    idempotency_key="job-123",
+                )
+        popen.assert_not_called()
+
     def test_agent_claim_has_a_short_network_timeout(self):
         rest = conversation_agent_bridge.SupabaseRest(
             "https://example.supabase.co",

@@ -61,6 +61,8 @@ export interface ConversationAgentActivity {
   pending_turns: number;
   queued_at: string;
   claimed_at: string | null;
+  progress_label: string | null;
+  progress_updated_at: string | null;
 }
 
 export interface AgentTaskEvent {
@@ -103,6 +105,9 @@ export interface AgentTask {
   approval_note: string | null;
   result_summary: string | null;
   error: string | null;
+  gateway_run_id: string | null;
+  progress_label: string | null;
+  progress_updated_at: string | null;
   cancellation_requested_at: string | null;
   claimed_at: string | null;
   completed_at: string | null;
