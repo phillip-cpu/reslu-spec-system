@@ -86,6 +86,7 @@ export type HealthPillLevel = "green" | "amber" | "red";
 
 export interface ConversationTransportHealth {
   query_errors: number;
+  unavailable_capabilities: string[];
   pending_jobs: number;
   oldest_pending_job_ms: number | null;
   processing_jobs_stuck: number;

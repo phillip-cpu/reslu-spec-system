@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  conversationCapabilityUnavailable,
   conversationTransportHasIncident,
   conversationTransportLevel,
   summarizeConversationVoiceHealth,
@@ -8,6 +9,7 @@ import {
 
 const healthy = {
   query_errors: 0,
+  unavailable_capabilities: [],
   pending_jobs: 0,
   oldest_pending_job_ms: null,
   processing_jobs_stuck: 0,
@@ -44,4 +46,11 @@ test("operational failures are incidents while latency misses are warnings", () 
   assert.equal(conversationTransportLevel({ ...healthy, slowest_interruption_clear_ms: 251 }), "amber");
   assert.equal(conversationTransportLevel({ ...healthy, processing_jobs_stuck: 1 }), "red");
   assert.equal(conversationTransportHasIncident({ ...healthy, failed_tasks_24h: 1 }), true);
+  assert.equal(conversationTransportHasIncident({ ...healthy, unavailable_capabilities: ["message_forwarding"] }), true);
+});
+
+test("schema capability probes distinguish missing RPCs from their safe argument guard", () => {
+  assert.equal(conversationCapabilityUnavailable({ code: "PGRST202", message: "Could not find the function" }), true);
+  assert.equal(conversationCapabilityUnavailable({ code: "42501", message: "permission denied for function" }), true);
+  assert.equal(conversationCapabilityUnavailable({ code: "P0001", message: "unauthorized" }), false);
 });

@@ -1,6 +1,7 @@
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { cronHealthLevel } from "@/lib/health-status";
 import {
+  conversationCapabilityUnavailable,
   conversationTransportHasIncident,
   conversationTransportLevel,
   summarizeConversationVoiceHealth,
@@ -30,6 +31,24 @@ const STUCK_CONVERSATION_JOB_MINUTES = 15;
 const STUCK_AGENT_TASK_MINUTES = 30;
 const STALE_ACTIVE_CALL_HOURS = 4;
 const VOICE_HEALTH_WINDOW_DAYS = 7;
+
+const REQUIRED_CONVERSATION_CAPABILITIES = [
+  {
+    key: "message_forwarding",
+    rpc: "forward_conversation_message",
+    args: {
+      p_source_conversation_id: null,
+      p_source_message_id: null,
+      p_destination_conversation_ids: null,
+      p_client_forward_id: null,
+    },
+  },
+  {
+    key: "group_management",
+    rpc: "rename_conversation_group",
+    args: { p_conversation_id: null, p_title: null, p_client_action_id: null },
+  },
+] as const;
 
 interface CronDef {
   key: string;
@@ -186,7 +205,7 @@ async function conversationTransportHealth(supabase: ServiceClient) {
   const stuckTaskCutoff = new Date(now - STUCK_AGENT_TASK_MINUTES * 60 * 1000).toISOString();
   const staleCallCutoff = new Date(now - STALE_ACTIVE_CALL_HOURS * 60 * 60 * 1000).toISOString();
   const voiceCutoff = new Date(now - VOICE_HEALTH_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  const results = await Promise.all([
+  const [results, capabilityProbes] = await Promise.all([Promise.all([
     supabase.from("agent_conversation_jobs").select("id", { count: "exact", head: true }).eq("status", "pending"),
     supabase.from("agent_conversation_jobs").select("created_at").eq("status", "pending").order("created_at", { ascending: true }).limit(1).maybeSingle(),
     supabase.from("agent_conversation_jobs").select("id", { count: "exact", head: true }).eq("status", "processing").lt("claimed_at", stuckJobCutoff),
@@ -196,14 +215,26 @@ async function conversationTransportHealth(supabase: ServiceClient) {
     supabase.from("agent_tasks").select("id", { count: "exact", head: true }).eq("status", "failed").gte("completed_at", failureCutoff),
     supabase.from("conversation_calls").select("id", { count: "exact", head: true }).eq("status", "active").lt("started_at", staleCallCutoff),
     supabase.from("conversation_calls").select("realtime_voice_latency:metadata->realtime_voice_latency").gte("started_at", voiceCutoff).order("started_at", { ascending: false }).limit(50),
-  ]);
+  ]), Promise.all(REQUIRED_CONVERSATION_CAPABILITIES.map(async (capability) => {
+    const { error } = await supabase.rpc(capability.rpc, capability.args);
+    if (!error) return { key: capability.key, unavailable: false, queryError: false };
+    if (conversationCapabilityUnavailable(error)) {
+      return { key: capability.key, unavailable: true, queryError: false };
+    }
+    // The deliberately invalid, content-free probe reaches an installed RPC's
+    // own argument/auth guard and normally returns P0001. Any other provider or
+    // transport failure is a health-read error rather than evidence of absence.
+    return { key: capability.key, unavailable: false, queryError: error.code !== "P0001" };
+  }))]);
   const [pending, oldestPending, stuckJobs, failedJobs, queuedTasks, stuckTasks, failedTasks, staleCalls, voiceCalls] = results;
   const oldestCreatedAt = oldestPending.data && typeof oldestPending.data.created_at === "string"
     ? Date.parse(oldestPending.data.created_at)
     : Number.NaN;
   const voice = summarizeConversationVoiceHealth(voiceCalls.data ?? []);
   const core = {
-    query_errors: results.filter((result) => result.error).length,
+    query_errors: results.filter((result) => result.error).length
+      + capabilityProbes.filter((probe) => probe.queryError).length,
+    unavailable_capabilities: capabilityProbes.filter((probe) => probe.unavailable).map((probe) => probe.key),
     pending_jobs: pending.count ?? 0,
     oldest_pending_job_ms: Number.isFinite(oldestCreatedAt) ? Math.max(0, now - oldestCreatedAt) : null,
     processing_jobs_stuck: stuckJobs.count ?? 0,
