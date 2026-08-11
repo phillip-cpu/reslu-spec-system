@@ -6,6 +6,7 @@ test("Xero OAuth requests only granular read-only accounting scopes", () => {
   const scopes: readonly string[] = XERO_SCOPES;
   assert.equal(scopes.includes("accounting.invoices.read"), true);
   assert.equal(scopes.includes("accounting.payments.read"), true);
+  assert.equal(scopes.includes("accounting.settings.read"), true);
   assert.equal(scopes.includes("accounting.reports.profitandloss.read"), true);
   assert.equal(scopes.includes("accounting.reports.balancesheet.read"), true);
   assert.equal(scopes.includes("accounting.reports.trialbalance.read"), true);
