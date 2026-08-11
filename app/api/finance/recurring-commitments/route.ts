@@ -12,6 +12,28 @@ import type {
 
 export const runtime = "nodejs";
 
+const VALID_CATEGORIES = new Set([
+  "wages",
+  "superannuation",
+  "rent",
+  "marketing",
+  "entertainment",
+  "software",
+  "insurance",
+  "utilities",
+  "professional_fees",
+  "vehicles",
+  "other",
+]);
+const VALID_FREQUENCIES = new Set([
+  "once",
+  "weekly",
+  "fortnightly",
+  "monthly",
+  "quarterly",
+  "annually",
+]);
+
 function normalizeCommitment(row: Record<string, unknown>): FinanceRecurringCommitment {
   const amount = Number(row.amount_minor);
   if (!Number.isSafeInteger(amount) || amount <= 0) {
@@ -100,6 +122,9 @@ export async function POST(request: NextRequest) {
   if (!Number.isSafeInteger(body.amount_minor) || body.amount_minor <= 0) {
     return NextResponse.json({ error: "Amount must be a positive minor-unit integer" }, { status: 400 });
   }
+  if (!VALID_CATEGORIES.has(body.category) || !VALID_FREQUENCIES.has(body.frequency)) {
+    return NextResponse.json({ error: "Category or schedule is not supported" }, { status: 400 });
+  }
   if (!isIsoDate(body.first_due_date) || (body.end_date && !isIsoDate(body.end_date))) {
     return NextResponse.json({ error: "Due dates must be ISO calendar dates" }, { status: 400 });
   }
@@ -112,9 +137,10 @@ export async function POST(request: NextRequest) {
     p_amount_minor: body.amount_minor,
     p_frequency: body.frequency,
     p_first_due_date: body.first_due_date,
-    p_end_date: body.end_date || null,
+    p_end_date: body.frequency === "once" ? null : body.end_date || null,
     p_gst_treatment: body.gst_treatment,
-    p_annual_escalation_bps: body.annual_escalation_bps,
+    p_annual_escalation_bps:
+      body.frequency === "once" ? 0 : body.annual_escalation_bps,
     p_confidence: body.confidence,
     p_status: body.status,
     p_notes: body.notes ?? null,

@@ -153,6 +153,7 @@ export type FinanceRecurringCategory =
   | "superannuation"
   | "rent"
   | "marketing"
+  | "entertainment"
   | "software"
   | "insurance"
   | "utilities"
@@ -161,6 +162,7 @@ export type FinanceRecurringCategory =
   | "other";
 
 export type FinanceRecurringFrequency =
+  | "once"
   | "weekly"
   | "fortnightly"
   | "monthly"

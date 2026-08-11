@@ -24,6 +24,8 @@ function occurrenceDate(
   frequency: FinanceRecurringFrequency,
   index: number
 ): string {
+  if (frequency === "once") return firstDueDate;
+
   const first = dateAtUtc(firstDueDate);
   if (frequency === "weekly" || frequency === "fortnightly") {
     const interval = frequency === "weekly" ? 7 : 14;
@@ -74,6 +76,7 @@ export function generateRecurringContributions(input: {
   for (const commitment of input.commitments) {
     if (commitment.status !== "active") continue;
     for (let index = 0; index < 10_000; index += 1) {
+      if (commitment.frequency === "once" && index > 0) break;
       const dueDate = occurrenceDate(commitment.first_due_date, commitment.frequency, index);
       if (commitment.end_date && dueDate > commitment.end_date) break;
       if (dueDate > horizonEnd) break;
