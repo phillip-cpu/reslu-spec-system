@@ -56,14 +56,26 @@ export async function POST(request: NextRequest, context: Context) {
   if ((destinationKind && !destinationId) || (!destinationKind && destinationId)) {
     return NextResponse.json({ error: "Choose a complete meeting destination or leave it unassigned" }, { status: 400 });
   }
+  const requestedClientEventId = body.client_event_id == null
+    ? null
+    : typeof body.client_event_id === "string" && UUID_PATTERN.test(body.client_event_id)
+      ? body.client_event_id
+      : undefined;
+  if (requestedClientEventId === undefined || (destinationKind !== "project" && requestedClientEventId !== null)) {
+    return NextResponse.json({ error: "Choose a valid calendar event for this project" }, { status: 400 });
+  }
 
   let selected = null;
   try {
     const resolved = await meetingModeContext(supabase, id);
     selected = destinationKind && destinationId
-      ? resolved.candidates.find((candidate) => candidate.kind === destinationKind && candidate.id === destinationId) ?? null
+      ? resolved.candidates.find((candidate) => (
+          candidate.kind === destinationKind
+          && candidate.id === destinationId
+          && candidate.client_event_id === requestedClientEventId
+        )) ?? null
       : null;
-    if (destinationKind && !selected) return NextResponse.json({ error: "The selected lead or project is no longer available" }, { status: 409 });
+    if (destinationKind && !selected) return NextResponse.json({ error: "The selected lead, project or calendar event is no longer available" }, { status: 409 });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not validate the meeting destination" }, { status: 500 });
   }
@@ -101,6 +113,7 @@ export async function POST(request: NextRequest, context: Context) {
       id: selected.id,
       label: selected.label,
       client_event_id: selected.client_event_id,
+      source_reference: selected.source_reference,
       confidence: selected.confidence,
       reasons: selected.reasons,
       resolved_at: new Date().toISOString(),
