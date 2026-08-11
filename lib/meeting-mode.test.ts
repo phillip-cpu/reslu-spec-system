@@ -9,6 +9,7 @@ import {
   meetingRecordingStoragePath,
   rankMeetingCandidates,
   transcriptFromMeetingSegments,
+  validMeetingRecordingMimeType,
   validMeetingRecordingStoragePath,
 } from "./meeting-mode.ts";
 import type { MeetingDestinationCandidate } from "../types/meeting-mode.ts";
@@ -54,6 +55,10 @@ test("private recording paths cannot be reassigned across meetings", () => {
   assert.equal(validMeetingRecordingStoragePath(path, "conversation-b", "user-a", "meeting-a"), false);
   assert.equal(validMeetingRecordingStoragePath(path, "conversation-a", "user-b", "meeting-a"), false);
   assert.equal(validMeetingRecordingStoragePath(path, "conversation-a", "user-a", "meeting-b"), false);
+  assert.equal(validMeetingRecordingStoragePath(`${path}toolong`, "conversation-a", "user-a", "meeting-a"), false);
+  assert.equal(validMeetingRecordingMimeType("audio/mp4"), true);
+  assert.equal(validMeetingRecordingMimeType("audio/webm;codecs=opus"), true);
+  assert.equal(validMeetingRecordingMimeType("application/octet-stream"), false);
 });
 
 test("Meeting Mode stays local-Whisper, staged and explicitly filed", () => {
@@ -69,6 +74,9 @@ test("Meeting Mode stays local-Whisper, staged and explicitly filed", () => {
   assert.match(migration, /alter table conversation_meeting_minutes enable row level security/i);
   assert.match(migration, /meeting minutes can only be filed through explicit approval/i);
   assert.match(migration, /meeting capture identity and source are immutable/i);
+  assert.match(migration, /conversation_meeting_recording_consistent/i);
+  assert.match(migration, /meeting recording source is immutable after upload/i);
+  assert.match(migration, /revoke all on table conversation_meeting_minutes from public, anon, authenticated/i);
   assert.match(migration, /old\.created_by <> auth\.uid\(\)[\s\S]*only the recorder can control or discard this meeting capture/i);
   assert.match(migration, /old\.status in \('recording','paused','processing','failed'\)/i);
   assert.match(component, /It is not sent to OpenAI/);
@@ -79,6 +87,9 @@ test("Meeting Mode stays local-Whisper, staged and explicitly filed", () => {
   assert.match(component, /candidates\.find\(\(candidate\) => destinationValue\(candidate\) === selectedDestination\)/);
   assert.match(lifecycle, /transcribe it with local Whisper only/i);
   assert.match(lifecycle, /Only the recorder can control this meeting capture/);
+  assert.match(lifecycle, /inspectStorageObjectHead/);
+  assert.match(lifecycle, /sniffFileKind/);
+  assert.match(lifecycle, /private meeting upload is incomplete or its size changed/i);
   assert.match(lifecycle, /\.eq\("status", "failed"\)[\s\S]*Meeting processing already resumed/);
   assert.match(draft, /Only Aria can prepare this draft/);
   assert.match(draft, /Meeting is no longer processing; late draft ignored/);
