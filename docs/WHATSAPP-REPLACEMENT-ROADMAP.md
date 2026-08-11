@@ -253,6 +253,18 @@ healthy sequential run (and up to the whole 12-second call window during
 failures) to 0.16-0.97 seconds after warm-up. A new iPhone acceptance call is
 required after the repaired bridge is deployed and restarted.
 
+Foreground call-recovery candidate: a dropped WebRTC peer or data channel now
+reconnects to a fresh OpenAI audio session while retaining the existing RESLU
+call id, canonical conversation and any active Aria/Marco consult or durable
+task. Recovery runs only when the page is visible and online, rejects stale
+connection events by generation, reuses a live microphone stream or reacquires
+it when iOS ended the track, and stops after five backed-off attempts with an
+explicit Reconnect control. Returning from the background, regaining focus or
+coming back online triggers the same health-checked path without creating a
+second call record. This improves Safari/PWA foreground recovery; it does not
+claim that iOS will keep a web page executing while the phone is locked. True
+lock-screen and in-car background continuity remains the native Stage 5 gate.
+
 Work:
 
 - Publish and validate the end-to-end timing candidate on an iPhone call.
