@@ -15,6 +15,7 @@ import { BankDetailsSettings } from "@/components/settings/BankDetailsSettings";
 import { CpdDefaultsSettings } from "@/components/settings/CpdDefaultsSettings";
 import { EmailSignaturesSettings } from "@/components/settings/EmailSignaturesSettings";
 import { PushSettings } from "@/components/settings/PushSettings";
+import { SessionSecuritySettings } from "@/components/settings/SessionSecuritySettings";
 import { XeroIntegrationSettings } from "@/components/settings/XeroIntegrationSettings";
 import { SettingsGroup, SettingsJumpNav } from "@/components/settings/SettingsGroup";
 import { getSignaturePeople } from "@/lib/email-signatures";
@@ -402,6 +403,14 @@ export default async function SettingsPage({
             system health alerts. Currently only admins receive pushes; anyone can enable it here.
           </p>
           <PushSettings />
+        </section>
+
+        <section>
+          <h2 className="mb-1 text-subhead text-nearblack">Security &amp; devices</h2>
+          <p className="mb-4 text-body text-charcoal/60">
+            Revoke old RESLU logins if a phone, tablet or browser is no longer under your control.
+          </p>
+          <SessionSecuritySettings />
         </section>
 
         </SettingsGroup>
