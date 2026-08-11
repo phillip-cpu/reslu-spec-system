@@ -1,6 +1,8 @@
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { getActiveXeroConnection, xeroGet } from "@/lib/xero/client";
 import { xeroDate, xeroTimestamp } from "@/lib/xero/normalise";
+import { calculateBankSummaryBalance } from "@/lib/xero/bank-summary";
+import { pullXeroReport } from "@/lib/xero/reports";
 import type { XeroSyncResult } from "@/types/xero";
 
 type XeroRecord = Record<string, unknown>;
@@ -57,6 +59,19 @@ function paymentRow(connectionId: string, payment: XeroRecord) {
   };
 }
 
+function accountRow(connectionId: string, account: XeroRecord) {
+  return {
+    connection_id: connectionId,
+    xero_account_id: String(account.AccountID ?? ""),
+    code: typeof account.Code === "string" ? account.Code : null,
+    name: String(account.Name ?? "Unnamed account"),
+    bank_account_type: typeof account.BankAccountType === "string" ? account.BankAccountType : null,
+    status: typeof account.Status === "string" ? account.Status : null,
+    raw_json: account,
+    synced_at: new Date().toISOString(),
+  };
+}
+
 async function fetchAll(
   connection: NonNullable<Awaited<ReturnType<typeof getActiveXeroConnection>>>,
   endpoint: "Invoices" | "Payments",
@@ -93,9 +108,12 @@ export async function syncXeroReadModel(triggeredBy: string): Promise<XeroSyncRe
     .eq("id", connection.id);
 
   try {
-    const [invoices, payments] = await Promise.all([
+    const today = new Date().toISOString().slice(0, 10);
+    const [invoices, payments, accountBody, bankSummary] = await Promise.all([
       fetchAll(connection, "Invoices", "Invoices"),
       fetchAll(connection, "Payments", "Payments"),
+      xeroGet<{ Accounts?: XeroRecord[] }>(connection, "api.xro/2.0/Accounts"),
+      pullXeroReport({ report: "bank_summary", fromDate: today, toDate: today }),
     ]);
     const invoiceRows = invoices
       .filter((row) => row.InvoiceID && (row.Type === "ACCREC" || row.Type === "ACCPAY"))
@@ -103,6 +121,15 @@ export async function syncXeroReadModel(triggeredBy: string): Promise<XeroSyncRe
     const paymentRows = payments
       .filter((row) => row.PaymentID)
       .map((row) => paymentRow(connection.id, row));
+    const accountRows = (accountBody.Accounts ?? [])
+      .filter((row) => row.AccountID && row.Name)
+      .map((row) => accountRow(connection.id, row));
+    const report = bankSummary.reports[0];
+    if (!report) throw new Error("Xero Bank Summary returned no report");
+    const cash = calculateBankSummaryBalance(
+      report,
+      accountRows.map((row) => ({ name: row.name, bankAccountType: row.bank_account_type }))
+    );
 
     for (let index = 0; index < invoiceRows.length; index += 500) {
       const { error } = await service
@@ -116,6 +143,29 @@ export async function syncXeroReadModel(triggeredBy: string): Promise<XeroSyncRe
         .upsert(paymentRows.slice(index, index + 500), { onConflict: "connection_id,xero_payment_id" });
       if (error) throw new Error(error.message);
     }
+    for (let index = 0; index < accountRows.length; index += 500) {
+      const { error } = await service
+        .from("xero_bank_accounts")
+        .upsert(accountRows.slice(index, index + 500), { onConflict: "connection_id,xero_account_id" });
+      if (error) throw new Error(error.message);
+    }
+    const { error: cashError } = await service.from("xero_cash_snapshots").upsert({
+      connection_id: connection.id,
+      as_of_date: today,
+      cash_balance: cash.cashBalance,
+      credit_balance: cash.creditBalance,
+      report_date: report.ReportDate ?? null,
+      raw_json: {
+        report,
+        classification: {
+          cash_account_count: cash.cashAccountCount,
+          credit_account_count: cash.creditAccountCount,
+          unmatched_account_count: cash.unmatchedAccountCount,
+        },
+      },
+      synced_at: new Date().toISOString(),
+    }, { onConflict: "connection_id,as_of_date" });
+    if (cashError) throw new Error(cashError.message);
 
     const completedAt = new Date().toISOString();
     await Promise.all([
@@ -133,6 +183,9 @@ export async function syncXeroReadModel(triggeredBy: string): Promise<XeroSyncRe
     return {
       invoices_checked: invoiceRows.length,
       payments_checked: paymentRows.length,
+      bank_accounts_checked: accountRows.length,
+      cash_balance: cash.cashBalance,
+      cash_balance_as_of: today,
       completed_at: completedAt,
     };
   } catch (error) {

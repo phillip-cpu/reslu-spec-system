@@ -16,6 +16,9 @@ export async function getXeroConnectionStatus(): Promise<XeroConnectionStatus> {
       last_sync_error: null,
       invoice_count: 0,
       payment_count: 0,
+      bank_account_count: 0,
+      cash_balance: null,
+      cash_balance_as_of: null,
     };
   }
 
@@ -38,12 +41,17 @@ export async function getXeroConnectionStatus(): Promise<XeroConnectionStatus> {
       last_sync_error: null,
       invoice_count: 0,
       payment_count: 0,
+      bank_account_count: 0,
+      cash_balance: null,
+      cash_balance_as_of: null,
     };
   }
 
-  const [invoiceResult, paymentResult] = await Promise.all([
+  const [invoiceResult, paymentResult, accountResult, cashResult] = await Promise.all([
     service.from("xero_invoices").select("id", { count: "exact", head: true }).eq("connection_id", connection.id),
     service.from("xero_payments").select("id", { count: "exact", head: true }).eq("connection_id", connection.id),
+    service.from("xero_bank_accounts").select("id", { count: "exact", head: true }).eq("connection_id", connection.id),
+    service.from("xero_cash_snapshots").select("cash_balance,as_of_date").eq("connection_id", connection.id).order("as_of_date", { ascending: false }).limit(1).maybeSingle(),
   ]);
 
   return {
@@ -59,5 +67,8 @@ export async function getXeroConnectionStatus(): Promise<XeroConnectionStatus> {
     last_sync_error: connection.last_sync_error,
     invoice_count: invoiceResult.count ?? 0,
     payment_count: paymentResult.count ?? 0,
+    bank_account_count: accountResult.count ?? 0,
+    cash_balance: cashResult.data ? Number(cashResult.data.cash_balance) : null,
+    cash_balance_as_of: cashResult.data?.as_of_date ?? null,
   };
 }
