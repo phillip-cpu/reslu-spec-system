@@ -17,6 +17,9 @@ test("failed task recovery is explicit, requester-only and identity preserving",
   assert.match(migration, /task\.requested_by = auth\.uid\(\)/i);
   assert.match(migration, /current_task\.status <> 'failed'/i);
   assert.match(migration, /current_task\.approval_state = 'approved'/i);
+  assert.match(migration, /current_task\.approval_state = 'pending'/i);
+  assert.match(migration, /artifact\.status in \('approved', 'published'\)/i);
+  assert.match(migration, /event\.event_type = 'approved'/i);
   assert.match(migration, /retry_count between 0 and 3/i);
   assert.match(migration, /task\.retry_count \+ 1/i);
   assert.match(migration, /gateway_run_id = null/i);
@@ -35,7 +38,9 @@ test("the authenticated task route exposes only the guarded database action", ()
 test("the task card confirms safe recovery and refuses to replay approved work", () => {
   assert.match(workspace, /Retry this task\?/);
   assert.match(workspace, /No approved external action will be replayed/);
-  assert.match(workspace, /approval_state !== "approved" && canRetry/);
+  assert.match(workspace, /retryBlockedByApproval/);
+  assert.match(workspace, /artifact\.status === "approved" \|\| artifact\.status === "published"/);
+  assert.match(workspace, /still has an unresolved approval/i);
   assert.match(workspace, /Check the relevant email, booking or record before starting new work/);
   assert.match(workspace, /Only the person who started this task can retry it/);
   assert.match(workspace, /task\.retry_count < 3/);
@@ -51,6 +56,8 @@ test("the bridge has no blind failed-task auto-retry loop", () => {
 test("the hosted verifier proves safe replay refusal and rolls back", () => {
   assert.match(verifier, /retry_failed_agent_task/);
   assert.match(verifier, /approved task cannot be retried automatically/);
+  assert.match(verifier, /task with pending approval cannot be retried/);
+  assert.match(verifier, /task with an approved artifact was allowed to retry/i);
   assert.match(verifier, /task retry limit reached/);
   assert.match(verifier, /gateway_run_id is not null/);
   assert.match(verifier, /when sqlstate 'P5099'/);

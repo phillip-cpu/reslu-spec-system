@@ -465,7 +465,12 @@ function AgentTaskCard({
   const [confirmingRetry, setConfirmingRetry] = useState(false);
   const latestEvent = task.events.at(-1);
   const active = task.status === "queued" || task.status === "running";
-  const retryable = task.status === "failed" && task.approval_state !== "approved" && canRetry;
+  const hasApprovedArtifact = task.artifacts.some((artifact) => artifact.status === "approved" || artifact.status === "published");
+  const retryBlockedByApproval = task.approval_state === "approved"
+    || task.approval_state === "pending"
+    || hasApprovedArtifact
+    || task.events.some((event) => event.event_type === "approved");
+  const retryable = task.status === "failed" && !retryBlockedByApproval && canRetry;
   return (
     <article className={clsx(
       "min-w-0 max-w-full overflow-hidden rounded-2xl border p-3",
@@ -549,12 +554,14 @@ function AgentTaskCard({
           </div>
         </div>
       )}
-      {task.status === "failed" && task.approval_state === "approved" && (
+      {task.status === "failed" && retryBlockedByApproval && (
         <p className={clsx("mt-3 rounded-xl border p-3 text-caption leading-relaxed", dark ? "border-amber-300/25 bg-amber-300/10 text-amber-100" : "border-amber-300 bg-amber-50 text-amber-950")}>
-          This task had approval to act. Check the relevant email, booking or record before starting new work; RESLU will not replay it automatically.
+          {task.approval_state === "pending"
+            ? "This task still has an unresolved approval. Review or reject that action before starting new work; RESLU will not retry it automatically."
+            : "This task had approval to act. Check the relevant email, booking or record before starting new work; RESLU will not replay it automatically."}
         </p>
       )}
-      {task.status === "failed" && task.approval_state !== "approved" && !canRetry && (
+      {task.status === "failed" && !retryBlockedByApproval && !canRetry && (
         <p className={clsx("mt-3 text-caption", dark ? "text-white/50" : "text-charcoal/55")}>
           {task.retry_count >= 3 ? "This task reached its safe retry limit. Start a new task after checking the prior attempts." : "Only the person who started this task can retry it."}
         </p>

@@ -9,6 +9,7 @@ declare
   v_task_id uuid := gen_random_uuid();
   v_task agent_tasks;
   v_event_count integer;
+  v_artifact_id uuid;
 begin
   if to_regprocedure('public.retry_failed_agent_task(uuid,uuid)') is null then
     raise exception 'FAIL: migration 111 retry function is missing';
@@ -76,6 +77,18 @@ begin
     end if;
 
     update agent_tasks
+    set status = 'failed', approval_state = 'pending', error = 'Synthetic pending approval failure'
+    where id = v_task_id;
+
+    begin
+      perform retry_failed_agent_task(v_conversation_id, v_task_id);
+      raise exception 'FAIL: task with pending approval was allowed to retry';
+    exception
+      when others then
+        if sqlerrm <> 'task with pending approval cannot be retried' then raise; end if;
+    end;
+
+    update agent_tasks
     set status = 'failed', approval_state = 'approved', error = 'Synthetic approved failure'
     where id = v_task_id;
 
@@ -86,6 +99,28 @@ begin
       when others then
         if sqlerrm <> 'approved task cannot be retried automatically' then raise; end if;
     end;
+
+    update agent_tasks
+    set status = 'failed', approval_state = 'none', error = 'Synthetic approved artifact failure'
+    where id = v_task_id;
+    insert into agent_task_artifacts(task_id, artifact_key, kind, title, content, status)
+    values (
+      v_task_id,
+      'verify-approved-artifact',
+      'record_change',
+      'Synthetic approved artifact',
+      '{}'::jsonb,
+      'approved'
+    ) returning id into v_artifact_id;
+
+    begin
+      perform retry_failed_agent_task(v_conversation_id, v_task_id);
+      raise exception 'FAIL: task with an approved artifact was allowed to retry';
+    exception
+      when others then
+        if sqlerrm <> 'approved task cannot be retried automatically' then raise; end if;
+    end;
+    delete from agent_task_artifacts where id = v_artifact_id;
 
     update agent_tasks
     set status = 'failed', approval_state = 'none', retry_count = 3, error = 'Synthetic retry exhaustion'

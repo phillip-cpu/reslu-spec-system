@@ -38,7 +38,20 @@ begin
   if current_task.status <> 'failed' then
     raise exception 'task is not failed';
   end if;
-  if current_task.approval_state = 'approved' then
+  if current_task.approval_state = 'pending' then
+    raise exception 'task with pending approval cannot be retried';
+  end if;
+  if current_task.approval_state = 'approved' or exists (
+    select 1
+    from agent_task_artifacts artifact
+    where artifact.task_id = current_task.id
+      and artifact.status in ('approved', 'published')
+  ) or exists (
+    select 1
+    from agent_task_events event
+    where event.task_id = current_task.id
+      and event.event_type = 'approved'
+  ) then
     raise exception 'approved task cannot be retried automatically';
   end if;
   if current_task.cancellation_requested_at is not null then
