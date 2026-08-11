@@ -510,11 +510,15 @@ export function ConversationWorkspace({
   presentation = "page",
   active = true,
   onCallActiveChange,
+  callCompact = false,
+  onCallCompactChange,
   onUnreadCountChange,
 }: {
   presentation?: "page" | "drawer";
   active?: boolean;
   onCallActiveChange?: (active: boolean) => void;
+  callCompact?: boolean;
+  onCallCompactChange?: (compact: boolean) => void;
   onUnreadCountChange?: (count: number) => void;
 } = {}) {
   const [data, setData] = useState<ConversationsResponse>({ conversations: [], people: [] });
@@ -3596,7 +3600,10 @@ export function ConversationWorkspace({
       }} />}
 
       {(callOpening || callId || callError) && callAgent && (
-        <div className="visible pointer-events-auto fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[70] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col overflow-hidden bg-nearblack text-white">
+        <div className={clsx(
+          "visible pointer-events-auto fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[70] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col overflow-hidden bg-nearblack text-white",
+          drawer && callCompact && "md:inset-auto md:bottom-5 md:right-5 md:h-auto md:w-[26rem] md:max-w-[calc(100vw-2.5rem)] md:rounded-2xl md:border md:border-white/15 md:shadow-[0_20px_70px_rgba(20,18,15,0.45)]",
+        )}>
           <header className="flex shrink-0 items-center gap-3 border-b border-white/10 px-3 pb-3 pt-[calc(env(safe-area-inset-top)+0.75rem)] md:px-6 md:py-4">
             <div className={clsx("relative", callState === "speaking" && "animate-pulse")}>
               <Avatar participant={callAgent} />
@@ -3607,9 +3614,29 @@ export function ConversationWorkspace({
               <p className={clsx("mt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em]", callError ? "text-[#e28b8b]" : "text-sand")}>{callError ? "Call interrupted" : callState}</p>
             </div>
             <p className="hidden truncate text-caption text-white/40 sm:block">{selectedConversation?.display_title}</p>
-            <button onClick={() => void endCall()} className="rounded-full border border-white/25 px-3 py-2 text-caption">Close</button>
+            {drawer && (
+              <>
+                {callCompact && (
+                  <button
+                    type="button"
+                    onClick={toggleMute}
+                    className="hidden rounded-full border border-white/25 px-3 py-2 text-caption md:block"
+                  >
+                    {muted ? "Unmute" : "Mute"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onCallCompactChange?.(!callCompact)}
+                  className="hidden rounded-full border border-white/25 px-3 py-2 text-caption md:block"
+                >
+                  {callCompact ? "Expand" : "Minimise"}
+                </button>
+              </>
+            )}
+            <button onClick={() => void endCall()} className="rounded-full border border-white/25 px-3 py-2 text-caption">End call</button>
           </header>
-          <main className="flex min-h-0 flex-1 flex-col">
+          <main className={clsx("min-h-0 flex-1 flex-col", drawer && callCompact ? "flex md:hidden" : "flex")}>
             <section className="flex min-h-0 flex-1 flex-col bg-white/[0.025]" aria-label="Background agent work">
               <div className="flex items-end justify-between gap-4 border-b border-white/10 px-4 py-3 md:px-6 md:py-4">
                 <div>
@@ -3689,12 +3716,12 @@ export function ConversationWorkspace({
             </section>
           </main>
           {callError ? (
-            <div className="grid shrink-0 grid-cols-2 border-t border-white/10 pb-[env(safe-area-inset-bottom)]">
+            <div className={clsx("shrink-0 grid-cols-2 border-t border-white/10 pb-[env(safe-area-inset-bottom)]", drawer && callCompact ? "grid md:hidden" : "grid")}>
               <button onClick={() => void endCall()} className="border-r border-white/10 px-3 py-5 text-subhead text-white/75">Back to chat</button>
               <button onClick={() => void retryCall()} className="bg-sand px-3 py-5 text-subhead text-nearblack">Try again</button>
             </div>
           ) : (
-            <div className="grid shrink-0 grid-cols-3 border-t border-white/10 pb-[env(safe-area-inset-bottom)]">
+            <div className={clsx("shrink-0 grid-cols-3 border-t border-white/10 pb-[env(safe-area-inset-bottom)]", drawer && callCompact ? "grid md:hidden" : "grid")}>
               <button onClick={toggleMute} className="border-r border-white/10 px-3 py-4 text-subhead md:py-6"><span className="block text-xl">{muted ? "×" : "●"}</span><span className="mt-2 block text-caption text-white/55">{muted ? "Unmute" : "Mute"}</span></button>
               <button onClick={repeatLastReply} disabled={!lastSpoken} className="border-r border-white/10 px-3 py-4 text-subhead disabled:opacity-30 md:py-6"><span className="block text-xl">↻</span><span className="mt-2 block text-caption text-white/55">Repeat</span></button>
               <button onClick={() => void endCall()} className="bg-[#8e2f2f] px-3 py-4 text-subhead md:py-6"><span className="block text-xl">■</span><span className="mt-2 block text-caption text-white/70">End call</span></button>
