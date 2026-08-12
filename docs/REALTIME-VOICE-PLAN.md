@@ -120,7 +120,7 @@ Mac mini:
 
 - Existing Supabase service-role configuration and OpenClaw agents.
 - A new realtime-consult bridge worker or an extension of the conversation bridge.
-- `RESLU_REALTIME_AGENT_MODEL`: optional lower-latency model for quick live consults only. When unset, the existing Aria/Marco model remains canonical. Before setting `openai/gpt-5.6-terra`, prove that exact override on the Mac with `openclaw agent --agent main --model openai/gpt-5.6-terra --message "Return exactly READY" --json`; do not activate an unverified override.
+- `RESLU_REALTIME_AGENT_MODEL`: optional override for quick live consults only. The default is `openai/gpt-5.6-terra`, verified on this Mac for Aria, Marco and Stuart. Durable task model tiers remain separate.
 - `RESLU_REALTIME_AGENT_THINKING=minimal`: keeps quick spoken questions responsive; durable tasks retain their own model and reasoning tier.
 - No OpenAI credential is needed on the Mac mini when Vercel owns Realtime session creation.
 
@@ -133,7 +133,7 @@ The approved policy is conservative: Realtime remains a modality router with no 
 3. Add `OPENAI_API_KEY` as a server-only variable for Production. Do not use a `NEXT_PUBLIC_` name and do not paste the value into chat.
 4. Add `RESLU_REALTIME_VOICE_ENABLED=true`, `RESLU_REALTIME_VOICE_MODEL=gpt-realtime-2.1-mini`, `RESLU_REALTIME_ARIA_VOICE=marin`, and `RESLU_REALTIME_MARCO_VOICE=cedar`.
 5. Redeploy Production so the new server environment reaches the running functions.
-6. On the Mac mini, first run the exact OpenClaw model-override smoke test above. Set `RESLU_REALTIME_AGENT_MODEL=openai/gpt-5.6-terra` only when it succeeds; otherwise leave it blank so the configured Aria/Marco model remains canonical. Set `RESLU_REALTIME_AGENT_THINKING=minimal`, pull the release, and restart `ai.reslu.conversation-bridge` so stable per-conversation OpenClaw session routing is active.
+6. On the Mac mini, pull the release and restart `ai.reslu.conversation-bridge` so stable per-conversation OpenClaw session routing and the verified low-latency live-consult default are active. Use `RESLU_REALTIME_AGENT_MODEL` only to override that default after an exact model smoke test.
 
 When the feature flag is absent or false, the current browser speech call remains the fallback. If the flag is true but `OPENAI_API_KEY` is missing, session creation fails closed with a configuration error; the standard key is never returned to the browser.
 

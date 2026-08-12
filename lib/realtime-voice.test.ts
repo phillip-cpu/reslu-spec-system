@@ -16,7 +16,7 @@ test("realtime defaults remain agent-specific and configurable", () => {
   assert.equal(aria.transcriptionModel, "gpt-live-transcribe");
   assert.equal(aria.voice, "marin");
   assert.equal(marco.voice, "cedar");
-  assert.equal(realtimeConfig({ RESLU_REALTIME_VOICE_ENABLED: "true" }, "stuart").voice, "cedar");
+  assert.equal(realtimeConfig({ RESLU_REALTIME_VOICE_ENABLED: "true" }, "stuart").voice, "echo");
   assert.equal(realtimeConfig({ RESLU_REALTIME_ARIA_VOICE: "coral" }, "aria").voice, "coral");
   assert.equal(realtimeConfig({ RESLU_REALTIME_STUART_VOICE: "echo" }, "stuart").voice, "echo");
 });
@@ -26,6 +26,7 @@ test("session forces substantive turns through the existing RESLU agent", () => 
   const session = buildRealtimeSession({ slug: "aria", display_name: "Aria" }, config);
   assert.equal(session.tool_choice, "required");
   assert.equal(session.max_output_tokens, 1024);
+  assert.equal(session.reasoning.effort, "low");
   assert.equal(session.audio.input.turn_detection.type, "semantic_vad");
   assert.equal(session.audio.input.turn_detection.eagerness, "high");
   assert.equal(session.audio.input.turn_detection.interrupt_response, true);
@@ -38,6 +39,9 @@ test("session forces substantive turns through the existing RESLU agent", () => 
   assert.match(tools.get("start_reslu_task")?.description ?? "", /continues if speech is interrupted/i);
   assert.match(session.instructions, /do not possess RESLU memory/i);
   assert.match(session.instructions, /Never answer a substantive question yourself/i);
+  assert.match(session.instructions, /immaculate, controlled and exceptionally professional/i);
+  assert.match(session.instructions, /no visible personal side/i);
+  assert.doesNotMatch(session.instructions, /I'm checking that now/);
 });
 
 test("Stuart voice transport carries his understated Australian delivery", () => {
@@ -46,6 +50,19 @@ test("Stuart voice transport carries his understated Australian delivery", () =>
     realtimeConfig({}, "stuart")
   );
   assert.match(session.instructions, /understated Australian professional style/);
+  assert.match(session.instructions, /financially disciplined/);
+  assert.match(session.instructions, /deliberately dry, conservative, terse/i);
+  assert.equal(session.audio.output.voice, "echo");
+});
+
+test("Marco has a separate outgoing marketing delivery and voice", () => {
+  const session = buildRealtimeSession(
+    { slug: "marco", display_name: "Marco" },
+    realtimeConfig({}, "marco")
+  );
+  assert.match(session.instructions, /outgoing, energetic, socially confident and lightly witty/);
+  assert.match(session.instructions, /without forcing jokes/);
+  assert.equal(session.audio.output.voice, "cedar");
 });
 
 test("standard API key is sent only to OpenAI by the server provider call", async () => {

@@ -67,6 +67,7 @@ test("native iOS owns lock-safe WebRTC audio and CallKit without duplicating RES
   assert.match(nativeTransport, /Task\.sleep\(for: \.seconds\(4\)\)/);
   assert.match(nativeTransport, /self\.context\?\.callId == context\.callId, !stopped/);
   assert.match(nativeTransport, /audioTrack\.isEnabled = !muted/);
+  assert.match(nativeTools, /elapsed < 5 \? 250 : elapsed < 15 \? 500 : 1_000/);
   assert.match(nativeContinuity, /transport": "native_webrtc_callkit"/);
   assert.match(nativeContinuity, /peakBufferedWebEvents = min\(80/);
   assert.doesNotMatch(`${voice}\n${webView}\n${nativeTransport}\n${nativeHTTP}\n${nativeTools}`, /OPENAI_API_KEY|api\.openai\.com|openclaw/i);

@@ -8,6 +8,18 @@ export const REALTIME_VOICES = [
 
 export type RealtimeVoice = (typeof REALTIME_VOICES)[number];
 
+const DEFAULT_REALTIME_VOICES: Record<AgentSlug, RealtimeVoice> = {
+  aria: "marin",
+  marco: "cedar",
+  stuart: "echo",
+};
+
+const REALTIME_PERSONALITIES: Record<AgentSlug, string> = {
+  aria: "Speak as Aria: immaculate, controlled and exceptionally professional. Be slick, precise and quietly decisive, with excellent taste and no visible personal side. Never become chatty, confessional, gushy or playful.",
+  marco: "Speak as Marco, RESLU's marketing intelligence: outgoing, energetic, socially confident and lightly witty. Bring a little fun and charm without forcing jokes, becoming flippant or losing commercial focus.",
+  stuart: "Speak as Stuart: deliberately dry, conservative, terse and financially disciplined, in an understated Australian professional style. Lead with the number, evidence, risk and recommendation. No charm offensive, theatrics or unnecessary warmth.",
+};
+
 export interface RealtimeConfig {
   enabled: boolean;
   model: string;
@@ -26,7 +38,7 @@ export interface RealtimeProviderResult {
 type Environment = Record<string, string | undefined>;
 
 export function realtimeConfig(environment: Environment, agentSlug: AgentSlug): RealtimeConfig {
-  const defaultVoice = agentSlug === "aria" ? "marin" : "cedar";
+  const defaultVoice = DEFAULT_REALTIME_VOICES[agentSlug];
   const configuredVoice = environment[`RESLU_REALTIME_${agentSlug.toUpperCase()}_VOICE`]
     ?? environment.RESLU_REALTIME_VOICE_NAME
     ?? defaultVoice;
@@ -54,9 +66,11 @@ export function buildRealtimeSession(agent: { slug: AgentSlug; display_name: str
     model: config.model,
     max_output_tokens: 1024,
     output_modalities: ["audio"],
+    reasoning: { effort: "low" },
     instructions: [
       `You are the realtime voice transport for ${agent.display_name} inside RESLU staff chat.`,
-      ...(agent.slug === "stuart" ? ["For Stuart, speak in a calm, understated Australian professional style: measured, plain-spoken and never theatrical."] : []),
+      REALTIME_PERSONALITIES[agent.slug],
+      "Never use stock waiting phrases such as ‘let me check’, ‘let me look into that’, or ‘I’m checking that now’. Do not narrate routine tool use. If a short wait cue is already playing, do not repeat or paraphrase it.",
       "You handle audio turn-taking only. You do not possess RESLU memory, calendar, project, finance, email or business tools.",
       "For every completed user turn, choose exactly one tool and include a faithful concise transcript of what the user asked.",
       "When the user asks you to create, prepare, research, review, compose, organize, update, or otherwise complete work that can continue independently, call start_reslu_task instead of consult_reslu_agent.",
