@@ -52,16 +52,20 @@ import { createClient } from "@supabase/supabase-js";
 // Environment
 // ------------------------------------------------------------
 const SPEC_URL = process.env.SPEC_URL;
-const ARIA_EMAIL = process.env.ARIA_EMAIL;
-const ARIA_PASSWORD = process.env.ARIA_PASSWORD;
+// Backwards compatible for Aria, while allowing Marco and Stuart to run the
+// same least-privilege MCP package under their own Supabase identities.
+const AGENT_EMAIL = process.env.RESLU_AGENT_EMAIL ?? process.env.ARIA_EMAIL;
+const AGENT_PASSWORD = process.env.RESLU_AGENT_PASSWORD ?? process.env.ARIA_PASSWORD;
+const AGENT_NAME = process.env.RESLU_AGENT_NAME?.trim() || "RESLU agent";
+const AGENT_ROLE = process.env.RESLU_AGENT_ROLE?.trim().toLowerCase() || "aria";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 function checkEnv() {
   const missing = [];
   if (!SPEC_URL) missing.push("SPEC_URL");
-  if (!ARIA_EMAIL) missing.push("ARIA_EMAIL");
-  if (!ARIA_PASSWORD) missing.push("ARIA_PASSWORD");
+  if (!AGENT_EMAIL) missing.push("RESLU_AGENT_EMAIL (or ARIA_EMAIL)");
+  if (!AGENT_PASSWORD) missing.push("RESLU_AGENT_PASSWORD (or ARIA_PASSWORD)");
   if (!SUPABASE_URL) missing.push("NEXT_PUBLIC_SUPABASE_URL");
   if (!SUPABASE_ANON_KEY) missing.push("NEXT_PUBLIC_SUPABASE_ANON_KEY");
   if (missing.length > 0) {
@@ -103,12 +107,12 @@ const TOKEN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 async function signIn() {
   const { data, error } = await supabase.auth.signInWithPassword({
-    email: ARIA_EMAIL,
-    password: ARIA_PASSWORD,
+    email: AGENT_EMAIL,
+    password: AGENT_PASSWORD,
   });
   if (error || !data.session) {
     throw new Error(
-      `Failed to sign in as Aria (${ARIA_EMAIL}): ${error?.message ?? "no session returned"}`
+      `Failed to sign in as ${AGENT_NAME} (${AGENT_EMAIL}): ${error?.message ?? "no session returned"}`
     );
   }
   cachedAccessToken = data.session.access_token;
@@ -1940,9 +1944,36 @@ const TOOLS = [
         body: JSON.stringify({ status, report }),
       }),
   },
+  {
+    name: "get_stuart_finance_brief",
+    description:
+      "Stuart-only read of the current cash snapshot, Xero/Spec exceptions, overdue receivables/payables, unlinked Accounts invoices, cost-change signals and pending coaching for Aria. Returns evidence and confidence. It cannot move money or change any financial record.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    handler: async () => apiFetch("/api/stuart/brief"),
+  },
+  {
+    name: "run_stuart_finance_review",
+    description:
+      "Stuart-only deterministic refresh of the read-only Xero cache and finance exception register. Use when the user explicitly asks for a fresh review. It never writes to Xero, sends email, moves money or approves an accounting action.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    handler: async () => apiFetch("/api/stuart/review", { method: "POST", body: "{}" }),
+  },
 ];
 
 const toolsByName = new Map(TOOLS.map((t) => [t.name, t]));
+
+// Stuart is deliberately incapable of using the general operational write
+// surface. His two purpose-built routes expose read-only finance evidence and
+// a deterministic review trigger; payment, payroll, Xero write and ordinary
+// Spec mutations are absent rather than relying on prompt compliance.
+const STUART_ALLOWED_TOOLS = new Set([
+  "get_stuart_finance_brief",
+  "run_stuart_finance_review",
+]);
+
+function toolAllowedForAgent(name) {
+  return AGENT_ROLE !== "stuart" || STUART_ALLOWED_TOOLS.has(name);
+}
 
 // ------------------------------------------------------------
 // RESLU Second Brain, Step 12 (docs/RESLU-second-brain-build-brief.md)
@@ -1991,7 +2022,7 @@ async function main() {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOLS.map(({ name, description, inputSchema }) => ({
+    tools: TOOLS.filter(({ name }) => toolAllowedForAgent(name)).map(({ name, description, inputSchema }) => ({
       name,
       description,
       inputSchema,
@@ -2002,10 +2033,10 @@ async function main() {
     const { name, arguments: args } = request.params;
     const tool = toolsByName.get(name);
 
-    if (!tool) {
+    if (!tool || !toolAllowedForAgent(name)) {
       return {
         isError: true,
-        content: [{ type: "text", text: `Unknown tool: ${name}` }],
+        content: [{ type: "text", text: `Tool is not available to ${AGENT_NAME}: ${name}` }],
       };
     }
 

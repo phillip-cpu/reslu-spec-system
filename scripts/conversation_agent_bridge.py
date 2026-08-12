@@ -55,7 +55,7 @@ OPENCLAW_THINKING_LEVELS = {
     "adaptive",
     "max",
 }
-AGENT_SLUGS = ("aria", "marco")
+AGENT_SLUGS = ("aria", "marco", "stuart")
 OPENCLAW_CONTROL_VALUES = {
     "completed",
     "end_turn",
@@ -549,6 +549,8 @@ def attachment_staging_parent(slug: str) -> Path | None:
         workspace = Path.home() / ".openclaw" / "workspace"
     elif slug == "marco":
         workspace = Path.home() / ".openclaw" / "workspace-marco"
+    elif slug == "stuart":
+        workspace = Path.home() / ".openclaw" / "workspace-stuart"
     else:
         return None
     if not workspace.is_dir():
@@ -1444,7 +1446,7 @@ def main() -> int:
         ).start()
     else:
         print("[conversation-push] SPEC_APP_URL/NEXT_PUBLIC_APP_URL missing; delivery worker disabled", file=sys.stderr, flush=True)
-    print("[conversation-bridge] listening for conversations and durable Aria/Marco tasks", flush=True)
+    print("[conversation-bridge] listening for conversations and durable Aria/Marco/Stuart tasks", flush=True)
     workers = [*build_agent_workers(base_url, service_key), *build_task_workers(base_url, service_key)]
     for worker in workers:
         worker.start()

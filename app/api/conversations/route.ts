@@ -194,11 +194,11 @@ export async function POST(request: NextRequest) {
   }
   const rawAgentSlugs = (body.agent_slugs ?? []) as unknown[];
   if (
-    rawAgentSlugs.length > 2
-    || rawAgentSlugs.some((value) => value !== "aria" && value !== "marco")
+    rawAgentSlugs.length > 3
+    || rawAgentSlugs.some((value) => value !== "aria" && value !== "marco" && value !== "stuart")
     || rawAgentSlugs.length !== new Set(rawAgentSlugs).size
   ) {
-    return NextResponse.json({ error: "Agent slugs must be unique Aria or Marco values" }, { status: 400 });
+    return NextResponse.json({ error: "Agent slugs must be unique Aria, Marco or Stuart values" }, { status: 400 });
   }
   const agentSlugs = rawAgentSlugs as AgentSlug[];
   if (profileIds.filter((profileId) => profileId !== user.id).length + agentSlugs.length < 1) {

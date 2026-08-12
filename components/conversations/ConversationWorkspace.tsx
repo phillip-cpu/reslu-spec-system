@@ -1474,7 +1474,9 @@ export function ConversationWorkspace({
     recognitionPausedRef.current = true;
     recognitionRef.current?.abort();
     const utterance = new SpeechSynthesisUtterance(body);
-    const preferred = callAgent?.agent_slug === "marco" ? /daniel|male|australia/i : /samantha|female|australia/i;
+    const preferred = callAgent?.agent_slug === "aria"
+      ? /samantha|female|australia/i
+      : /daniel|male|australia/i;
     utterance.voice = window.speechSynthesis.getVoices().find((voice) => preferred.test(`${voice.name} ${voice.lang}`)) ?? null;
     utterance.rate = 1;
     utterance.onstart = () => setCallState("speaking");
@@ -4812,7 +4814,7 @@ export function ConversationWorkspace({
                     }
                   }}
                   rows={1}
-                  placeholder={participants.some((p) => p.type === "agent") && participants.length > 2 ? "Message the group — use @Aria or @Marco" : `Message ${callAgent?.display_name ?? "the conversation"}`}
+                  placeholder={participants.some((p) => p.type === "agent") && participants.length > 2 ? "Message the group — use @Aria, @Marco or @Stuart" : `Message ${callAgent?.display_name ?? "the conversation"}`}
                   className="max-h-36 min-h-12 w-full resize-none rounded-t-2xl bg-transparent px-4 pb-2 pt-3 text-[16px] outline-none disabled:opacity-60 md:text-body"
                 />
                 <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">

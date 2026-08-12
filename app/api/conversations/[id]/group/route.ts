@@ -32,10 +32,10 @@ function validProfileIds(value: unknown): value is string[] {
     && new Set(value).size === value.length;
 }
 
-function validAgentSlugs(value: unknown): value is Array<"aria" | "marco"> {
+function validAgentSlugs(value: unknown): value is Array<"aria" | "marco" | "stuart"> {
   return Array.isArray(value)
     && value.length <= 2
-    && value.every((item) => item === "aria" || item === "marco")
+    && value.every((item) => item === "aria" || item === "marco" || item === "stuart")
     && new Set(value).size === value.length;
 }
 
@@ -100,7 +100,7 @@ export async function PATCH(request: NextRequest, context: Context) {
     const profileId = body.profile_id == null ? null : body.profile_id;
     const agentSlug = body.agent_slug == null ? null : body.agent_slug;
     const validProfile = profileId == null || (typeof profileId === "string" && UUID_PATTERN.test(profileId));
-    const validAgent = agentSlug == null || agentSlug === "aria" || agentSlug === "marco";
+    const validAgent = agentSlug == null || agentSlug === "aria" || agentSlug === "marco" || agentSlug === "stuart";
     if (!validProfile || !validAgent || Number(profileId != null) + Number(agentSlug != null) !== 1) {
       return NextResponse.json({ error: "Choose one valid participant to remove" }, { status: 400 });
     }

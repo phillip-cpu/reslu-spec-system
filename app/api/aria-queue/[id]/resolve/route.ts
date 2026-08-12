@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
@@ -49,6 +49,13 @@ export async function POST(
     return NextResponse.json({ error: "status must be 'done' or 'failed'" }, { status: 400 });
   }
 
+  const { data: queueItem, error: queueReadError } = await supabase
+    .from("aria_queue")
+    .select("kind,payload")
+    .eq("id", id)
+    .maybeSingle();
+  if (queueReadError) return NextResponse.json({ error: queueReadError.message }, { status: 500 });
+
   const { data: updated, error } = await supabase
     .from("aria_queue")
     .update({
@@ -65,6 +72,21 @@ export async function POST(
   }
   if (!updated) {
     return NextResponse.json({ error: "Queue item not found" }, { status: 404 });
+  }
+
+  if (queueItem?.kind === "finance_routing_feedback") {
+    const feedbackId = typeof queueItem.payload === "object" && queueItem.payload !== null
+      ? (queueItem.payload as Record<string, unknown>).stuart_feedback_id
+      : null;
+    if (typeof feedbackId === "string") {
+      const service = createServiceRoleClient();
+      const { error: feedbackError } = await service.from("stuart_aria_feedback").update({
+        status: body.status === "done" ? "accepted" : "dismissed",
+        delivered_at: new Date().toISOString(),
+        resolved_at: new Date().toISOString(),
+      }).eq("id", feedbackId);
+      if (feedbackError) return NextResponse.json({ error: feedbackError.message }, { status: 500 });
+    }
   }
 
   return NextResponse.json({ ok: true });

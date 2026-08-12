@@ -183,7 +183,7 @@ export async function POST(request: NextRequest, context: Context) {
       error: error instanceof Error ? error.message : "unknown enqueue error",
     });
     return NextResponse.json({
-      error: "Your voice turn was saved, but Aria or Marco could not be reached yet. Please try again.",
+      error: "Your voice turn was saved, but the selected RESLU agent could not be reached yet. Please try again.",
       consult_id: message.id,
     }, { status: 503 });
   }
