@@ -25,6 +25,9 @@ export function ChannelsCard({ channels }: { channels: HealthChannel[] }) {
                   in: {ch.last_inbound_at ? new Date(ch.last_inbound_at).toLocaleString("en-AU") : "—"} · out:{" "}
                   {ch.last_outbound_at ? new Date(ch.last_outbound_at).toLocaleString("en-AU") : "—"}
                 </p>
+                <p className="text-caption text-charcoal/50">
+                  Health report: {new Date(ch.updated_at).toLocaleString("en-AU")}
+                </p>
                 {ch.note && <p className="text-caption text-charcoal/50">{ch.note}</p>}
               </div>
               <div className="flex items-center gap-2">

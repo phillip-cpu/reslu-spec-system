@@ -50,6 +50,12 @@ launchctl kickstart -k gui/$(id -u)/ai.reslu.conversation-bridge
 tail -f ~/.openclaw/workspace/vault/agent-openclaw/daily/conversation-bridge.log
 ```
 
+The bridge writes a content-free `reslu_conversation_bridge` row to
+`health_channels` every minute. After a restart, verify the row advances and
+shows all expected workers active. `/api/health/check` treats a report older
+than five minutes—or an explicit `down` report—as one deduplicated incident.
+Do not infer liveness only from an old startup line in the local log.
+
 The bridge polls only the dedicated lightweight agent job table. Each worker reuses one private HTTPS connection to Supabase instead of opening a new TLS handshake for every poll and context lookup. A claimed turn fetches its transport metadata and newest-message files together, then loads recent messages with their author names and ready-file metadata in one joined request. It routes each RESLU conversation through a stable OpenClaw session key, sends the existing runtime the recent canonical thread history, then stores only the final response in that same thread. With migration 100 and its feature flag enabled, the bridge uses the authenticated loopback Gateway event protocol and shows member-scoped progress while keeping the CLI as a pre-acceptance fallback. For a newest message containing uploaded or forwarded attachments, the bridge downloads those private objects into a per-job temporary directory, instructs the existing agent to inspect their local paths, and removes the directory when the synchronous agent turn finishes. A newer spoken turn cancels the exact accepted Gateway run and publication of stale output. Cancellation never claims to reverse an external side effect that already completed.
 
 ## Current release boundary

@@ -5,7 +5,7 @@ import {
   computeSpecHealth,
   minutesSince,
   MINI_SILENCE_INCIDENT_MINUTES,
-  CHANNEL_SILENCE_INCIDENT_HOURS,
+  channelReportSilenceThresholdHours,
   channelReportIsSilent,
 } from "@/lib/health";
 
@@ -36,8 +36,9 @@ export const runtime = "nodejs";
  *      'openclaw_down' (independent of silence — the mini can be
  *      posting heartbeats fine while its own OpenClaw process is
  *      down).
- *   2. Each health_channels monitor report gone silent
- *      (`updated_at` older than 24h) -> kind `channel_down:{channel}`.
+ *   2. Each health_channels monitor reports degraded/down/session-invalid or
+ *      goes silent (24h normally; five minutes for the once-per-minute
+ *      conversation bridge report) -> kind `channel_down:{channel}`.
  *      Customer inbound/outbound timestamps are deliberately not used:
  *      a working channel can have no customer traffic for days. This is
  *      complementary to the explicit-status incident POST
@@ -105,17 +106,24 @@ export async function GET(request: NextRequest) {
   // ---- 2. Channel silence ----
   const { data: channels } = await service
     .from("health_channels")
-    .select("channel,label,updated_at");
+    .select("channel,label,status,session_valid,note,updated_at");
 
   for (const ch of channels ?? []) {
     const kind = `channel_down:${ch.channel}`;
-    if (channelReportIsSilent(ch.updated_at ?? null)) {
+    const silenceThresholdHours = channelReportSilenceThresholdHours(ch.channel);
+    const silent = channelReportIsSilent(ch.updated_at ?? null, Date.now(), silenceThresholdHours);
+    const explicitlyUnhealthy = ch.status !== "ok" || ch.session_valid === false;
+    if (silent || explicitlyUnhealthy) {
       const { deduped } = await notifyAdminsOnce(
         kind,
-        `Channel monitor silent — ${ch.label ?? ch.channel}`,
-        ch.updated_at
-          ? `No channel health report in over ${CHANNEL_SILENCE_INCIDENT_HOURS}h (last: ${ch.updated_at}).`
-          : "No channel health report has ever been received.",
+        silent
+          ? `Channel monitor silent — ${ch.label ?? ch.channel}`
+          : `Channel ${ch.status === "ok" ? "session issue" : ch.status} — ${ch.label ?? ch.channel}`,
+        silent
+          ? ch.updated_at
+            ? `No channel health report in over ${silenceThresholdHours < 1 ? `${Math.round(silenceThresholdHours * 60)}min` : `${silenceThresholdHours}h`} (last: ${ch.updated_at}).`
+            : "No channel health report has ever been received."
+          : ch.note ?? `Reported status=${ch.status}, session_valid=${String(ch.session_valid ?? "n/a")}.`,
         "/health"
       );
       if (!deduped) incidents.push(kind);
