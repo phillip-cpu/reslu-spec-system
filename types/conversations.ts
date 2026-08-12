@@ -39,6 +39,12 @@ export interface ConversationParticipant {
   is_self?: boolean;
 }
 
+export interface ConversationMessageReaction {
+  reaction: "👍" | "❤️" | "😂" | "😮" | "😢" | "🙏";
+  count: number;
+  self_reacted: boolean;
+}
+
 export interface ConversationMessage {
   id: string;
   client_message_id: string | null;
@@ -52,6 +58,9 @@ export interface ConversationMessage {
   created_at: string;
   edited_at: string | null;
   deleted_at: string | null;
+  reactions: ConversationMessageReaction[];
+  pinned_at: string | null;
+  pinned_by: string | null;
   attachments: ConversationAttachment[];
   author: ConversationParticipant;
 }
