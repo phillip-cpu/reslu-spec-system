@@ -17,7 +17,7 @@ export const runtime = "nodejs";
 
 const STATUSES: InvoiceStatus[] = ["unmatched", "proposed", "approved", "rejected", "voided"];
 const MATCH_TYPES: InvoiceMatchType[] = ["cost_line", "item", "item_component"];
-const SOURCES: InvoiceSource[] = ["manual", "aria"];
+const SOURCES: InvoiceSource[] = ["manual", "aria", "stuart"];
 
 /**
  * GET /api/projects/[id]/invoices?status=

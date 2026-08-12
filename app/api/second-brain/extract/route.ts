@@ -51,7 +51,7 @@ export async function GET(request: NextRequest) {
 
   const { data: emails, error } = await supabase
     .from("emails")
-    .select("id,from_addr,subject,clean_text")
+    .select("id,from_addr,subject,clean_text,ingested_mailboxes")
     .eq("status", "triaged")
     .order("received_at", { ascending: true })
     .limit(BATCH_SIZE);
@@ -74,7 +74,10 @@ export async function GET(request: NextRequest) {
 
       const { result, xeroUrl } = await extractEmail(supabase, email, (attachments ?? []) as ExtractionAttachment[]);
 
-      if (isUsableSupplierInvoiceCandidate(result.supplier_invoice)) {
+      const isAccountsInvoice = (email.ingested_mailboxes ?? [])
+        .map((mailbox: string) => mailbox.toLowerCase())
+        .includes("accounts@reslu.com.au");
+      if (isUsableSupplierInvoiceCandidate(result.supplier_invoice) && !isAccountsInvoice) {
         const { error: queueError } = await supabase.from("aria_queue").upsert(
           {
             kind: "invoice_candidate",
