@@ -83,8 +83,8 @@ export async function GET() {
     open_findings: findings.data ?? [],
     aria_feedback: feedback.data ?? [],
     authority: {
-      may: ["observe", "classify", "calculate", "forecast", "reconcile", "flag", "recommend", "prepare handovers"],
-      may_not: ["move money", "pay suppliers", "issue refunds", "run payroll", "change bank details", "submit tax", "post journals", "delete financial records", "approve final prices"],
+      may: ["observe", "classify", "calculate", "forecast", "reconcile", "flag", "recommend", "prepare handovers", "create draft Xero supplier bills from verified invoices"],
+      may_not: ["approve Xero bills", "create a bill from a supplier statement total", "move money", "pay suppliers", "issue refunds", "run payroll", "change bank details", "reconcile bank feeds", "submit tax", "post journals", "delete financial records", "approve final prices"],
     },
   });
 }

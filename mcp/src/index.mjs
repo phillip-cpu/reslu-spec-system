@@ -1958,6 +1958,52 @@ const TOOLS = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     handler: async () => apiFetch("/api/stuart/review", { method: "POST", body: "{}" }),
   },
+  {
+    name: "create_stuart_xero_draft_bill",
+    description:
+      "Create an ACCPAY bill in Xero with status DRAFT from one already-verified Spec supplier invoice and attach its source document. Requires an explicit Xero expense account code. Refuses duplicates, ambiguous suppliers, statements, missing source files and unverified dates. It cannot approve or pay the bill.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        invoice_id: { type: "string", description: "Spec supplier invoices.id; never a statement document" },
+        account_code: { type: "string", description: "Human-confirmed Xero expense account code" },
+      },
+      required: ["invoice_id", "account_code"],
+      additionalProperties: false,
+    },
+    handler: async (body) => apiFetch("/api/stuart/xero-draft-bills", { method: "POST", body: JSON.stringify(body) }),
+  },
+  {
+    name: "reconcile_stuart_supplier_statement",
+    description:
+      "Reconcile an uploaded supplier statement's invoice lines against the read-only Xero cache. Returns matched, missing and total-mismatch items and writes an audit result. Never create a bill from a statement total and never reconcile a bank feed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        supplier: { type: "string" },
+        statement_date: { type: "string", description: "ISO date, YYYY-MM-DD" },
+        source_filename: { type: "string", description: "Optional evidence filename; never file contents" },
+        lines: {
+          type: "array",
+          minItems: 1,
+          maxItems: 500,
+          items: {
+            type: "object",
+            properties: {
+              invoice_number: { type: "string" },
+              invoice_date: { type: "string", description: "Optional ISO date" },
+              total: { type: "number", minimum: 0 },
+            },
+            required: ["invoice_number", "total"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["supplier", "statement_date", "lines"],
+      additionalProperties: false,
+    },
+    handler: async (body) => apiFetch("/api/stuart/supplier-statements", { method: "POST", body: JSON.stringify(body) }),
+  },
 ];
 
 const toolsByName = new Map(TOOLS.map((t) => [t.name, t]));
@@ -1969,6 +2015,8 @@ const toolsByName = new Map(TOOLS.map((t) => [t.name, t]));
 const STUART_ALLOWED_TOOLS = new Set([
   "get_stuart_finance_brief",
   "run_stuart_finance_review",
+  "create_stuart_xero_draft_bill",
+  "reconcile_stuart_supplier_statement",
 ]);
 
 function toolAllowedForAgent(name) {

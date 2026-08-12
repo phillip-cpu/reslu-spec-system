@@ -16,8 +16,10 @@ export const XERO_SCOPES = [
   "email",
   "offline_access",
   "accounting.settings.read",
-  "accounting.invoices.read",
+  "accounting.invoices",
   "accounting.payments.read",
+  "accounting.contacts.read",
+  "accounting.attachments",
   ...XERO_REPORT_SCOPES,
 ] as const;
 
