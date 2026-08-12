@@ -62,15 +62,18 @@ begin
   select human.profile_id, human.conversation_id, agent_member.agent_id
   into v_profile_id, v_conversation_id, v_agent_id
   from conversation_participants human
+  join conversation_participants agent_member
+    on agent_member.conversation_id = human.conversation_id
+   and agent_member.agent_id is not null
   where human.profile_id is not null
     and (
       select count(*) from conversation_participants member
       where member.conversation_id = human.conversation_id
     ) = 2
     and (
-      select count(*) from conversation_participants agent_member
-      where agent_member.conversation_id = human.conversation_id
-        and agent_member.agent_id is not null
+      select count(*) from conversation_participants agent_count
+      where agent_count.conversation_id = human.conversation_id
+        and agent_count.agent_id is not null
     ) = 1
   limit 1;
   if v_profile_id is null then

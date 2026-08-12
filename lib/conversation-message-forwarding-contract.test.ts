@@ -37,6 +37,10 @@ test("a retry returns the same target message and cannot duplicate the agent job
   assert.match(migration, /'target_agent_slugs', '\[\]'::jsonb/i);
   assert.match(verifier, /retry created duplicate forward audit rows/i);
   assert.match(verifier, /direct-agent destination was not enqueued exactly once/i);
+  assert.match(
+    verifier,
+    /join conversation_participants agent_member[\s\S]*agent_member\.agent_id is not null/i,
+  );
 });
 
 test("private files are target-scoped snapshots without duplicating their unique storage row", () => {
