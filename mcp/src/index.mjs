@@ -1959,6 +1959,21 @@ const TOOLS = [
     handler: async () => apiFetch("/api/stuart/review", { method: "POST", body: "{}" }),
   },
   {
+    name: "attach_stuart_source_invoice",
+    description:
+      "Attach one already-ingested original supplier-invoice PDF to its traceable Spec invoice. Use only after the human approves the exact attachment artifact. Verifies email ownership, PDF storage, fingerprint and readable evidence. It does not change amounts, create a Xero bill, approve or pay anything.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        invoice_id: { type: "string", description: "Spec supplier invoices.id" },
+        email_attachment_id: { type: "string", description: "email_attachments.id from the invoice's source email" },
+      },
+      required: ["invoice_id", "email_attachment_id"],
+      additionalProperties: false,
+    },
+    handler: async (body) => apiFetch("/api/stuart/source-invoice-attachment", { method: "POST", body: JSON.stringify(body) }),
+  },
+  {
     name: "create_stuart_xero_draft_bill",
     description:
       "Create an ACCPAY bill in Xero with status DRAFT from one already-verified Spec supplier invoice and attach its source document. Requires an explicit Xero expense account code. Refuses duplicates, ambiguous suppliers, statements, missing source files and unverified dates. It cannot approve or pay the bill.",
@@ -2015,6 +2030,7 @@ const toolsByName = new Map(TOOLS.map((t) => [t.name, t]));
 const STUART_ALLOWED_TOOLS = new Set([
   "get_stuart_finance_brief",
   "run_stuart_finance_review",
+  "attach_stuart_source_invoice",
   "create_stuart_xero_draft_bill",
   "reconcile_stuart_supplier_statement",
 ]);

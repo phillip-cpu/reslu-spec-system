@@ -20,6 +20,12 @@ function exactContactMatches(contacts: XeroRecord[], supplier: string): XeroReco
   return contacts.filter((contact) => String(contact.Name ?? "").trim().toLocaleLowerCase("en-AU") === wanted);
 }
 
+function evidenceContainsAmount(text: string, amount: number): boolean {
+  const fixed = amount.toFixed(2);
+  const grouped = amount.toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return text.includes(fixed) || text.includes(grouped);
+}
+
 export async function createStuartXeroDraftBill(input: DraftBillInput) {
   const connection = await getActiveXeroConnection();
   if (!connection) throw new Error("Xero is not connected");
@@ -37,6 +43,16 @@ export async function createStuartXeroDraftBill(input: DraftBillInput) {
   if (!invoice.invoice_date) throw new Error("Invoice date must be verified before creating a Xero draft");
   if (!invoice.storage_path) throw new Error("The original supplier invoice must be attached before creating a Xero draft");
   if (!/^\d{3,10}$/.test(input.accountCode.trim())) throw new Error("A valid Xero expense account code is required");
+
+  const { data: sourceEvidence, error: sourceEvidenceError } = await service
+    .from("email_attachments")
+    .select("extracted_text")
+    .eq("storage_ref", invoice.storage_path)
+    .single();
+  if (sourceEvidenceError || !sourceEvidence?.extracted_text) throw new Error("The attached original has no readable verification evidence");
+  if (!evidenceContainsAmount(sourceEvidence.extracted_text, Number(invoice.total))) {
+    throw new Error("The Spec invoice total does not match the attached original; correct the record before creating a Xero draft");
+  }
 
   const { data: prior } = await service.from("stuart_xero_draft_bills")
     .select("id,status,xero_invoice_id").eq("invoice_id", invoice.id).maybeSingle();
