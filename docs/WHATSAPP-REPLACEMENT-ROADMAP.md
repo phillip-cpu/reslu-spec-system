@@ -495,9 +495,9 @@ Stage gate:
 
 ## Stage 7 - RESLU team intelligence
 
-Status: bounded owner/specialist consultation candidate implemented and
-migration 116 production-verified; app/bridge rollout and live cross-domain
-acceptance pending.
+Status: bounded owner/specialist consultation is deployed through production
+commit `45bc2ff`; migration 116 is production-verified and the Mac bridge is
+running the matching release. Live cross-domain acceptance remains pending.
 
 The first collaboration slice does not create a new agent layer. During a live
 Aria or Marco call, Realtime may choose one dedicated specialist-consult tool.
@@ -570,9 +570,14 @@ Final product gate:
 ## Current next action
 
 The production database and deployment gates are complete through migration
-115 and production commit `c6258c9`. The Mac bridge checkout is at that commit
-and its launchd service has been restarted. Repeat the iPhone voice acceptance
-call. Require a Gateway run id
+116 and production commit `45bc2ff`. The exact production deployment reached
+READY, the Mac bridge checkout is at that commit, and its launchd service was
+restarted on 12 August 2026. Run the Stage 7 live cross-agent checks: ask Aria
+for Marco's commercial view, then ask Marco for Aria's operational view. Each
+turn must retain one visible owner, one attributed specialist consultation, one
+canonical answer and no duplicate action.
+
+Repeat the iPhone voice acceptance call. Require a Gateway run id
 and visible safe progress before waiting for Aria's answer; interrupt one answer,
 start one durable task, end the call, and confirm that the durable task keeps
 working. Require saved content-free timing metadata for the call. Do not close
