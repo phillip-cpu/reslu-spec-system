@@ -36,11 +36,12 @@ This is implementation evidence only; it does not promote any live stage gate.
   previews were still settling at the time of this audit.
 - The complete changed-surface suite passes 119 TypeScript contracts and 50 Mac
   conversation-bridge tests. TypeScript and the 100-route production build pass.
-- Production exposes the migration 105 recoverable-delete RPC and rejects a
-  content-free unauthenticated probe safely. Its first rollback verification
-  correctly exposed a same-transaction edit-version collision caused by
-  transaction-stable `now()`. Corrective migration 112 must be applied and the
-  migration 105 fixture must report PASS before migration 106 is applied.
+- Production migration 105 passes after corrective migration 112. Migrations
+  106 and 107 also pass their rollback verifiers. Migration 108's first live
+  verifier found that sole-admin demotion could short-circuit as a no-op;
+  corrective migrations 113 and 114 now enforce the invariant at both the RPC
+  and database-trigger layers, and the strengthened migration 108 verifier
+  passes with all test state rolled back.
 - Pre-production review made migration 106 table grants explicitly read-only,
   required current membership again on migration 107 forwarding retries,
   blocked migration 108 from treating an Aria/Marco auth profile as a human,

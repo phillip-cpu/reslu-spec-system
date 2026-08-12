@@ -142,7 +142,9 @@ removed, leaving promotes a successor when necessary, and removing an agent
 cancels only that agent's unfinished work in the group. Every mutation leaves a
 canonical system record. The add-member UI explicitly says that RESLU team
 members receive the existing business history rather than silently applying
-WhatsApp's consumer-history assumptions.
+WhatsApp's consumer-history assumptions. Corrective migrations 113 and 114
+enforce the last-human-admin rule at both the database-trigger and explicit RPC
+state-transition layers.
 Migration 109 adds private voice notes without creating a second messaging
 system. iPhone Safari records MP4 audio and supported desktop browsers record
 WebM; the server verifies the actual container bytes, five-minute duration and
@@ -188,6 +190,8 @@ Rollout order for this slice:
    `106_conversation_message_reactions_pins.sql`, then
    `107_conversation_message_forwarding.sql`, then
    `108_conversation_group_management.sql`, then
+   `113_conversation_group_human_admin_guard.sql`, then
+   `114_conversation_group_admin_transition.sql`, then
    `109_conversation_voice_notes.sql`, then
    `110_conversation_attachment_search.sql`, to Supabase.
 2. Run the matching rollback-only fixtures for migrations 093 through 098 and
@@ -552,11 +556,11 @@ Final product gate:
 
 ## Current next action
 
-Finish the production database gate first. Migration 105 is present, and its
-rollback verifier exposed the transaction-stable timestamp defect. Apply
-corrective migration 112 and rerun the migration 105 fixture; require PASS.
-Then apply and verify the reviewed versions of 106, 107, 108, 109, 110, 103 and
-111 in that order. Only after those
+Finish the production database gate first. Migrations 105 (after corrective
+112), 106 and 107 now pass. Migration 108 also passes after corrective
+migrations 113 and 114 proved both its RPC and database-level last-admin guards.
+Next apply and verify the reviewed versions of 109, 110, 103 and 111 in that
+order. Only after those
 fixtures pass should the stacked PRs be merged in order and the exact production
 deployment verified. Pull that release to the Mac bridge/MCP checkout, restart
 it, and repeat the same iPhone voice acceptance call. Require a Gateway run id

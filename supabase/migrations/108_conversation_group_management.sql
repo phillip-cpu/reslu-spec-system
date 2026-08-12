@@ -426,21 +426,23 @@ begin
     and participant.profile_id = p_profile_id
   for update of participant;
   if not found then raise exception 'group participant not found'; end if;
-  if (current_role = 'admin') = p_admin then
-    perform record_conversation_group_action(
-      p_conversation_id, p_client_action_id, 'role', action_request,
-      jsonb_build_object('admin', p_admin)
-    );
-    return p_admin;
-  end if;
 
-  if not p_admin then
+  if p_admin = false and current_role = 'admin' then
     select count(*) into admin_count
     from conversation_participants participant
     where participant.conversation_id = p_conversation_id
       and participant.profile_id is not null
       and participant.participant_role = 'admin';
     if admin_count <= 1 then raise exception 'a group must keep at least one admin'; end if;
+  end if;
+
+  if (p_admin = true and current_role = 'admin')
+     or (p_admin = false and current_role = 'member') then
+    perform record_conversation_group_action(
+      p_conversation_id, p_client_action_id, 'role', action_request,
+      jsonb_build_object('admin', p_admin)
+    );
+    return p_admin;
   end if;
 
   update conversation_participants participant
@@ -468,6 +470,46 @@ begin
   return p_admin;
 end;
 $$;
+
+-- Defence in depth: no RPC, service-role path or future code change may leave
+-- a live group without a human administrator. The normal RPC checks remain so
+-- callers still receive an early, specific error before this invariant fires.
+create or replace function enforce_conversation_group_human_admin()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  affected_conversation_id uuid;
+  affected_conversation_ids uuid[] := case
+    when tg_op = 'UPDATE' then array[old.conversation_id, new.conversation_id]
+    else array[old.conversation_id]
+  end;
+begin
+  foreach affected_conversation_id in array affected_conversation_ids loop
+    if exists (
+      select 1 from conversations conversation
+      where conversation.id = affected_conversation_id
+        and conversation.kind = 'group'
+    ) and not exists (
+      select 1 from conversation_participants participant
+      where participant.conversation_id = affected_conversation_id
+        and participant.profile_id is not null
+        and participant.participant_role = 'admin'
+    ) then
+      raise exception 'a group must keep at least one admin';
+    end if;
+  end loop;
+  return null;
+end;
+$$;
+
+drop trigger if exists trg_require_group_human_admin on conversation_participants;
+create trigger trg_require_group_human_admin
+  after update of participant_role, profile_id, conversation_id or delete
+  on conversation_participants
+  for each row execute function enforce_conversation_group_human_admin();
 
 create or replace function remove_conversation_group_participant(
   p_conversation_id uuid,
@@ -719,6 +761,7 @@ revoke all on function append_conversation_group_system_message(uuid, text, json
 revoke all on function rename_conversation_group(uuid, text, uuid) from public, anon;
 revoke all on function add_conversation_group_participants(uuid, uuid[], text[], uuid) from public, anon;
 revoke all on function set_conversation_group_admin(uuid, uuid, boolean, uuid) from public, anon;
+revoke all on function enforce_conversation_group_human_admin() from public, anon, authenticated;
 revoke all on function remove_conversation_group_participant(uuid, uuid, text, uuid) from public, anon;
 revoke all on function leave_conversation_group(uuid, uuid) from public, anon;
 grant execute on function rename_conversation_group(uuid, text, uuid) to authenticated;
@@ -730,6 +773,8 @@ grant execute on function leave_conversation_group(uuid, uuid) to authenticated;
 
 comment on column conversation_participants.participant_role is
   'Shared group role. Only human admins may change group name, participants or other admins.';
+comment on function enforce_conversation_group_human_admin() is
+  'Rejects any participant mutation that would leave a live group without a human admin.';
 comment on function leave_conversation_group(uuid, uuid) is
   'Leaves a group atomically, promotes a successor when needed and retires unfinished private push delivery.';
 
