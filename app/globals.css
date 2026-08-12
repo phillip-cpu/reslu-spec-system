@@ -43,6 +43,28 @@ body {
   color: #a08c72;
 }
 
+/* Messaging is a daily working surface, not a print layout. Keep the compact
+   RESLU scale elsewhere, but give conversations a legible phone-first floor. */
+.conversation-accessible .text-body {
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.conversation-accessible .text-caption {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.conversation-accessible .text-subhead {
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.conversation-accessible .label-caps {
+  font-size: 10px;
+  line-height: 1.2;
+}
+
 /* ============================================================
    Proposal delivery skin (r25) — components/proposal/ProposalReveal.tsx
    Techniques copied (verbatim-adapted) from reslu-site's own

@@ -31,6 +31,16 @@ type ConversationInboxRow = {
   last_message_id: string | null;
 };
 
+type ConversationContextRow = {
+  conversation_id: string;
+  scope_kind: "project" | "lead";
+  project_id: string | null;
+  lead_id: string | null;
+  purpose_key: string;
+  scope_label_snapshot: string;
+  summary_updated_at: string | null;
+};
+
 function participantFromLink(link: ParticipantLink, userId: string): ConversationParticipant | null {
   if (link.profile) {
     return {
@@ -96,7 +106,7 @@ export async function GET() {
   ];
   if (conversationIds.length === 0) return NextResponse.json({ conversations: [], people });
 
-  const [{ data: conversations, error: conversationError }, { data: links }, { data: messages }] = await Promise.all([
+  const [{ data: conversations, error: conversationError }, { data: links }, { data: messages }, { data: contexts, error: contextError }] = await Promise.all([
     supabase.from("conversations").select("*").in("id", conversationIds).is("archived_at", null),
     supabase
       .from("conversation_participants")
@@ -109,8 +119,17 @@ export async function GET() {
         .in("id", lastMessageIds)
         .is("deleted_at", null)
       : Promise.resolve({ data: [] as ConversationMessage[] }),
+    supabase
+      .from("conversation_contexts")
+      .select("conversation_id,scope_kind,project_id,lead_id,purpose_key,scope_label_snapshot,summary_updated_at")
+      .in("conversation_id", conversationIds),
   ]);
   if (conversationError) return NextResponse.json({ error: conversationError.message }, { status: 500 });
+  if (contextError) return NextResponse.json({ error: contextError.message }, { status: 500 });
+
+  const contextByConversation = new Map(
+    ((contexts ?? []) as ConversationContextRow[]).map((context) => [context.conversation_id, context])
+  );
 
   const participantsByConversation = new Map<string, ConversationParticipant[]>();
   for (const rawLink of links ?? []) {
@@ -135,6 +154,7 @@ export async function GET() {
 
   const result: ConversationSummary[] = (conversations ?? []).map((conversation) => {
     const participants = participantsByConversation.get(conversation.id) ?? [];
+    const context = contextByConversation.get(conversation.id) ?? null;
     return {
       ...conversation,
       unread_count: Number(inbox.get(conversation.id)?.unread_count ?? 0),
@@ -144,6 +164,13 @@ export async function GET() {
       participants,
       display_title: conversationDisplayTitle(conversation.title, participants, user.id),
       last_message: lastMessageByConversation.get(conversation.id) ?? null,
+      context: context ? {
+        scope_kind: context.scope_kind,
+        scope_id: context.project_id ?? context.lead_id!,
+        purpose_key: context.purpose_key,
+        scope_label: context.scope_label_snapshot,
+        summary_updated_at: context.summary_updated_at,
+      } : null,
     } as ConversationSummary;
   });
 

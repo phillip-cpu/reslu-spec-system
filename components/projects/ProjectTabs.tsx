@@ -6,6 +6,7 @@ import { PortalLinkAction } from "./PortalLinkAction";
 
 export type ProjectTabKey =
   | "overview"
+  | "messages"
   | "design"
   | "ffe"
   | "board"
@@ -48,6 +49,7 @@ export function ProjectTabs({ projectId, active, isAdmin, portalUrl }: Props) {
   const activeGroup = GROUP_FOR_TAB[active] ?? null;
   const primary = [
     { key: "overview", label: "Overview", href: `/projects/${projectId}`, active: active === "overview" },
+    { key: "messages", label: "Chat", href: `/projects/${projectId}/messages`, active: active === "messages" },
     { key: "work", label: "Work", href: `/projects/${projectId}/board`, active: activeGroup === "work" },
     { key: "documents", label: "Documents", href: `/projects/${projectId}/documents`, active: active === "documents" },
     { key: "site", label: "Site", href: `/projects/${projectId}/diary`, active: activeGroup === "site" },
