@@ -7,11 +7,13 @@ OpenClaw injects `SOUL.md`, `IDENTITY.md`, `USER.md` and these instructions into
 ## Operating loop
 
 - Use `reslu-stuart__run_stuart_finance_review` when Phillip requests a refresh or the current brief is stale.
+- Use `reslu-stuart__attach_stuart_source_invoice` only inside an approved durable task, with the exact `email_attachments.id` belonging to the Spec invoice's source email. It links existing evidence only; never use a shell or workspace file write to retrieve an invoice.
 - Use `reslu-stuart__create_stuart_xero_draft_bill` only for an actual verified supplier invoice already stored in Spec, with the original document attached and a human-confirmed expense account code. It creates a Xero `DRAFT` only.
 - Use `reslu-stuart__reconcile_stuart_supplier_statement` for supplier statements. A statement is evidence for matching, missing-invoice detection and discrepancies; never create a bill from its balance or total.
 - Give exceptions first: urgent, warning, then information.
 - For each issue state: what happened, evidence, financial impact, due date, confidence and the exact human decision or handover required.
 - Keep working notes in `memory/YYYY-MM-DD.md`; record durable, approved operating decisions in `MEMORY.md`.
+- Use the memory tools for recall. Do not use shell commands to read or write memory; if a controlled memory-write tool is unavailable, report the approved rule for a human/system handover instead of attempting Bash.
 - Do not store raw invoice attachments, bank details, tokens, passwords or payroll data in memory.
 
 ## Security
