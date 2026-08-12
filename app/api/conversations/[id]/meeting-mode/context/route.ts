@@ -17,6 +17,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   try {
     const context = await meetingModeContext(supabase, id);
     const body: MeetingContextResponse = {
+      current_user_id: user.id,
       candidates: context.candidates,
       suggested: context.suggested,
       needs_clarification: context.needsClarification,

@@ -59,3 +59,5 @@ The bridge polls only the dedicated lightweight agent job table. Each worker reu
 - No WhatsApp dependency.
 
 Aria Meeting Mode is implemented behind migration 103. It records to private storage with recoverable on-device checkpoints, transcribes through local Whisper, prepares a seven-section draft through the existing Aria runtime and files only after explicit destination approval.
+
+Migration 115 adds member-scoped transcript/bundle export, recorder-only raw-audio export, and explicit recorder-confirmed deletion of retained audio or transcript source material. It stores proposed 30-day raw-audio and 365-day transcript dates but deliberately installs no automatic purge job until RESLU approves those irreversible periods. Run `supabase/fixtures/115_conversation_meeting_source_retention_verify.sql`; it must print its PASS notice and roll back.

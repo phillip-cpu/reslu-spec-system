@@ -39,7 +39,10 @@ async function authenticatedMeeting(context: Context) {
 export async function GET(_request: NextRequest, context: Context) {
   const result = await authenticatedMeeting(context);
   if ("response" in result) return result.response;
-  return NextResponse.json({ meeting: result.meeting }, { headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json(
+    { meeting: result.meeting, can_manage_source: result.meeting.created_by === result.user.id },
+    { headers: { "Cache-Control": "no-store" } },
+  );
 }
 
 async function validatedDestination(

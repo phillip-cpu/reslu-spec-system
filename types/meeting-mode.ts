@@ -46,8 +46,14 @@ export interface ConversationMeetingMinutes {
   recording_filename: string | null;
   recording_mime_type: string | null;
   recording_byte_size: number | null;
+  recording_retain_until: string | null;
+  recording_deleted_at: string | null;
+  recording_deleted_by: string | null;
   transcript: string | null;
   transcript_segments: MeetingTranscriptSegment[];
+  transcript_retain_until: string | null;
+  transcript_deleted_at: string | null;
+  transcript_deleted_by: string | null;
   summary: string | null;
   decisions: string[];
   client_requests: string[];
@@ -66,6 +72,7 @@ export interface ConversationMeetingMinutes {
 }
 
 export interface MeetingContextResponse {
+  current_user_id: string;
   candidates: MeetingDestinationCandidate[];
   suggested: MeetingDestinationCandidate | null;
   needs_clarification: boolean;
