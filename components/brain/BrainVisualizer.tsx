@@ -31,7 +31,8 @@ type BrainData = { clusters: BrainCluster[]; routines: string[]; totalDots: numb
 // colour and sector added so durable learnings are no longer hidden.
 const CLUSTER_VISUALS: Record<string, { c: string; a0: number; a1: number; bx: number; by: number }> = {
   email: { c: "#b9aee6", a0: -1.25, a1: 0.72, bx: 0.68, by: 0.3 },
-  marketing: { c: "#d97955", a0: 0.76, a1: 1.35, bx: 0.82, by: 0.58 },
+  marco: { c: "#d97955", a0: 0.35, a1: 0.85, bx: 0.82, by: 0.58 },
+  stuart: { c: "#7fb69d", a0: 0.95, a1: 1.35, bx: 0.76, by: 0.72 },
   memory: { c: "#e0a96d", a0: 1.42, a1: 1.82, bx: 0.64, by: 0.76 },
   item: { c: "#c47fd3", a0: 2.0, a1: 3.0, bx: 0.32, by: 0.7 },
   project: { c: "#8fd0c9", a0: 3.6, a1: 4.25, bx: 0.3, by: 0.26 },

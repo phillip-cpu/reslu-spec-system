@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { embedTexts } from "@/lib/second-brain/embeddings";
 import { ContentEntityType } from "@/lib/second-brain/content-for";
+import { getUserRole } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -18,17 +19,13 @@ const SNIPPET_LENGTH = 140;
  * negotiable per the brief) then calls hybrid_search() (migration
  * 036) for the actual reciprocal-rank-fusion ranking.
  *
- * Team-authenticated only, not admin-gated — a general search utility
- * over workspace_index, not procurement/financial data on its own
- * (individual result content may be, but that's no different from
- * any other list endpoint a team member can already read).
+ * Team-authenticated general search. Stuart-owned finance memory is
+ * excluded for non-admin accounts here and by database RLS.
  */
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
+  const userInfo = await getUserRole(supabase);
+  if (!userInfo) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -60,9 +57,26 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const results = (
-    data as { id: string; entity_type: ContentEntityType; entity_id: string; title: string; content: string; score: number }[]
-  ).map((row) =>
+  let visibleRows = data as { id: string; entity_type: ContentEntityType; entity_id: string; title: string; content: string; score: number }[];
+  if (userInfo.role !== "admin") {
+    const memoryIds = visibleRows.filter((row) => row.entity_type === "memory").map((row) => row.entity_id);
+    if (memoryIds.length > 0) {
+      // Use the server-only client only to classify IDs already returned by
+      // search. This remains a defence-in-depth filter even before/without
+      // the matching workspace_index RLS migration; no restricted content is
+      // returned from this lookup.
+      const { data: stuartNotes, error: visibilityError } = await createServiceRoleClient()
+        .from("brain_notes")
+        .select("id")
+        .in("id", memoryIds)
+        .eq("source", "stuart");
+      if (visibilityError) return NextResponse.json({ error: visibilityError.message }, { status: 500 });
+      const restrictedIds = new Set((stuartNotes ?? []).map((note) => note.id));
+      visibleRows = visibleRows.filter((row) => row.entity_type !== "memory" || !restrictedIds.has(row.entity_id));
+    }
+  }
+
+  const results = visibleRows.map((row) =>
     responseFormat === "detailed"
       ? row
       : {
