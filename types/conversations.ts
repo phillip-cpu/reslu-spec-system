@@ -38,6 +38,7 @@ export interface ConversationParticipant {
   agent_slug?: AgentSlug;
   role_label?: string;
   is_self?: boolean;
+  is_admin?: boolean;
 }
 
 export interface ConversationMessageReaction {

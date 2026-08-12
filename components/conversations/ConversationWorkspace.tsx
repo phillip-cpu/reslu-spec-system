@@ -636,6 +636,255 @@ function ForwardMessageDialog({
   );
 }
 
+function GroupDetailsDialog({
+  conversation,
+  participants,
+  people,
+  onClose,
+  onChanged,
+  onLeft,
+}: {
+  conversation: ConversationSummary;
+  participants: ConversationParticipant[];
+  people: ConversationParticipant[];
+  onClose: () => void;
+  onChanged: () => Promise<void>;
+  onLeft: () => Promise<void>;
+}) {
+  const [title, setTitle] = useState(conversation.display_title);
+  const [selectedToAdd, setSelectedToAdd] = useState<string[]>([]);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const actionIntentRef = useRef<{ signature: string; id: string } | null>(null);
+  const self = participants.find((participant) => participant.type === "human" && participant.is_self);
+  const canManage = Boolean(self?.is_admin);
+  const participantKeys = new Set(participants.map((participant) => (
+    participant.type === "agent" ? `agent:${participant.agent_slug}` : `human:${participant.id}`
+  )));
+  const candidates = people.filter((person) => {
+    if (person.is_self) return false;
+    const key = person.type === "agent" ? `agent:${person.agent_slug}` : `human:${person.id}`;
+    return !participantKeys.has(key);
+  });
+
+  async function mutate(action: string, payload: Record<string, unknown>) {
+    const signature = JSON.stringify(payload, Object.keys(payload).sort());
+    if (actionIntentRef.current?.signature !== signature) {
+      actionIntentRef.current = { signature, id: crypto.randomUUID() };
+    }
+    setBusyAction(action);
+    setError(null);
+    let applied = false;
+    try {
+      const response = await fetch(`/api/conversations/${conversation.id}/group`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, client_action_id: actionIntentRef.current.id }),
+      });
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "Could not update this group");
+      applied = true;
+      actionIntentRef.current = null;
+      await onChanged();
+      return true;
+    } catch (reason) {
+      if (applied) {
+        setError("The group was updated, but this view could not refresh. Close and reopen the chat to see it.");
+        return true;
+      }
+      setError(reason instanceof Error ? reason.message : "Could not update this group");
+      return false;
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function renameGroup(event: FormEvent) {
+    event.preventDefault();
+    const normalized = title.trim();
+    if (!normalized) return;
+    await mutate("rename", { action: "rename", title: normalized });
+  }
+
+  async function addParticipants() {
+    const profileIds = selectedToAdd.filter((key) => key.startsWith("human:")).map((key) => key.slice(6));
+    const agentSlugs = selectedToAdd.filter((key) => key.startsWith("agent:")).map((key) => key.slice(6));
+    if (await mutate("add", { action: "add", profile_ids: profileIds, agent_slugs: agentSlugs })) {
+      setSelectedToAdd([]);
+    }
+  }
+
+  async function removeParticipant(participant: ConversationParticipant) {
+    if (!window.confirm(`Remove ${participant.display_name} from this group? Their access ends immediately.`)) return;
+    await mutate(`remove:${participant.id}`, {
+      action: "remove",
+      ...(participant.type === "agent"
+        ? { agent_slug: participant.agent_slug }
+        : { profile_id: participant.id }),
+    });
+  }
+
+  async function changeAdmin(participant: ConversationParticipant) {
+    await mutate(`role:${participant.id}`, {
+      action: "role",
+      profile_id: participant.id,
+      admin: !participant.is_admin,
+    });
+  }
+
+  async function leaveGroup() {
+    if (!window.confirm("Leave this group? You will immediately lose access to its messages and files.")) return;
+    const payload = { action: "leave" };
+    const signature = JSON.stringify(payload);
+    if (actionIntentRef.current?.signature !== signature) {
+      actionIntentRef.current = { signature, id: crypto.randomUUID() };
+    }
+    setBusyAction("leave");
+    setError(null);
+    let applied = false;
+    try {
+      const response = await fetch(`/api/conversations/${conversation.id}/group`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, client_action_id: actionIntentRef.current.id }),
+      });
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "Could not leave this group");
+      applied = true;
+      actionIntentRef.current = null;
+      await onLeft();
+    } catch (reason) {
+      if (applied) {
+        setError("You left the group, but this view could not refresh. Close and reopen Messages.");
+        return;
+      }
+      setError(reason instanceof Error ? reason.message : "Could not leave this group");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  return (
+    <div className="absolute inset-0 z-30 flex items-center justify-center overflow-y-auto bg-nearblack/60 p-3 md:p-4">
+      <div role="dialog" aria-modal="true" aria-label="Group details" className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-[#d4cbbd] bg-[#f5f1e8] shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-[#d4cbbd] p-4 md:p-5">
+          <div>
+            <p className="label-caps">Group details</p>
+            <h2 className="mt-2 font-display text-section text-nearblack">{conversation.display_title}</h2>
+            <p className="mt-1 text-caption text-charcoal/50">{participants.length} participant{participants.length === 1 ? "" : "s"}</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close group details" className="shrink-0 text-charcoal/50 hover:text-charcoal">✕</button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-5">
+          {canManage && (
+            <form onSubmit={renameGroup} className="border-b border-[#d4cbbd] pb-5">
+              <label className="label-caps" htmlFor="conversation-group-name">Group name</label>
+              <div className="mt-2 flex gap-2">
+                <input
+                  id="conversation-group-name"
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  maxLength={200}
+                  className="min-h-11 min-w-0 flex-1 rounded-xl border border-[#d4cbbd] bg-white px-3 text-[16px] text-nearblack outline-none focus:border-nearblack"
+                />
+                <button disabled={Boolean(busyAction) || !title.trim()} className="rounded-xl bg-nearblack px-4 text-body font-semibold text-white disabled:opacity-30">
+                  Save
+                </button>
+              </div>
+            </form>
+          )}
+
+          <section className={clsx(canManage && "pt-5")} aria-label="Group participants">
+            <p className="label-caps">Participants</p>
+            <div className="mt-3 space-y-2">
+              {participants.map((participant) => (
+                <div key={`${participant.type}:${participant.id}`} className="flex items-center gap-3 rounded-xl border border-[#ded7cc] bg-white/55 p-3">
+                  <Avatar participant={participant} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-body font-medium text-nearblack">{participant.display_name}{participant.is_self ? " · You" : ""}</p>
+                    <p className="mt-0.5 text-caption text-charcoal/50">{participant.type === "agent" ? "RESLU agent" : participant.is_admin ? "Group admin" : "Member"}</p>
+                  </div>
+                  {canManage && !participant.is_self && participant.type === "human" && (
+                    <button
+                      type="button"
+                      disabled={Boolean(busyAction)}
+                      onClick={() => void changeAdmin(participant)}
+                      className="shrink-0 rounded-full border border-[#d4cbbd] px-3 py-2 text-caption text-charcoal disabled:opacity-30"
+                    >
+                      {participant.is_admin ? "Remove admin" : "Make admin"}
+                    </button>
+                  )}
+                  {canManage && !participant.is_self && (
+                    <button
+                      type="button"
+                      disabled={Boolean(busyAction)}
+                      onClick={() => void removeParticipant(participant)}
+                      aria-label={`Remove ${participant.display_name}`}
+                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-red-700 hover:bg-red-50 disabled:opacity-30"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {canManage && candidates.length > 0 && (
+            <section className="mt-6 border-t border-[#d4cbbd] pt-5" aria-label="Add group participants">
+              <div className="flex items-end justify-between gap-3">
+                <div>
+                  <p className="label-caps">Add people or agents</p>
+                  <p className="mt-1 text-caption text-charcoal/50">New members can read the existing RESLU group history.</p>
+                </div>
+                <button
+                  type="button"
+                  disabled={Boolean(busyAction) || selectedToAdd.length === 0}
+                  onClick={() => void addParticipants()}
+                  className="rounded-xl bg-nearblack px-4 py-2.5 text-caption font-semibold text-white disabled:opacity-30"
+                >
+                  Add {selectedToAdd.length || ""}
+                </button>
+              </div>
+              <div className="mt-3 max-h-56 space-y-1 overflow-y-auto">
+                {candidates.map((person) => {
+                  const key = person.type === "agent" ? `agent:${person.agent_slug}` : `human:${person.id}`;
+                  const checked = selectedToAdd.includes(key);
+                  return (
+                    <label key={key} className={clsx("flex cursor-pointer items-center gap-3 rounded-xl p-3", checked ? "bg-white" : "hover:bg-white/50") }>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => setSelectedToAdd((current) => checked ? current.filter((item) => item !== key) : [...current, key])}
+                        className="h-4 w-4 accent-[#1a1a1a]"
+                      />
+                      <Avatar participant={person} />
+                      <span className="min-w-0 flex-1 truncate text-body text-nearblack">{person.display_name}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          <section className="mt-6 border-t border-[#d4cbbd] pt-5">
+            <button
+              type="button"
+              disabled={Boolean(busyAction)}
+              onClick={() => void leaveGroup()}
+              className="min-h-11 w-full rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-body font-semibold text-red-800 disabled:opacity-30"
+            >
+              Leave group
+            </button>
+          </section>
+          {error && <p className="mt-4 text-caption text-red-700">{error}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ConversationWorkspace({
   presentation = "page",
   active = true,
@@ -667,6 +916,7 @@ export function ConversationWorkspace({
   const [showArchived, setShowArchived] = useState(false);
   const [conversationFilter, setConversationFilter] = useState("");
   const [conversationMenuOpen, setConversationMenuOpen] = useState(false);
+  const [groupDetailsOpen, setGroupDetailsOpen] = useState(false);
   const [preferenceSaving, setPreferenceSaving] = useState(false);
   const [messageSearchOpen, setMessageSearchOpen] = useState(false);
   const [messageSearch, setMessageSearch] = useState<MessageSearchState>({
@@ -3481,6 +3731,20 @@ export function ConversationWorkspace({
                       <span>Search messages</span>
                       <span aria-hidden className="text-charcoal/40">⌕</span>
                     </button>
+                    {selectedConversation.kind === "group" && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setConversationMenuOpen(false);
+                          setGroupDetailsOpen(true);
+                        }}
+                        className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left hover:bg-[#f5f1e8]"
+                      >
+                        <span>Group details</span>
+                        <span aria-hidden className="text-charcoal/40">◎</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       role="menuitem"
@@ -3655,7 +3919,7 @@ export function ConversationWorkspace({
               <div className="mx-auto max-w-3xl space-y-4">
                 {timelineItems.map(({ message, pending }) => {
                   const own = message.author.is_self;
-                  const record = message.kind === "call_record" || message.kind === "meeting_record";
+                  const record = message.kind === "call_record" || message.kind === "meeting_record" || message.kind === "system";
                   const repliedMessage = message.reply_to_id ? timelineMessageById.get(message.reply_to_id) ?? null : null;
                   const canEdit = own
                     && !pending
@@ -3664,7 +3928,7 @@ export function ConversationWorkspace({
                     && Date.now() - new Date(message.created_at).getTime() <= 15 * 60 * 1000;
                   if (record) return (
                     <div key={message.id} className="border-y border-[#d4cbbd] py-3 text-center">
-                      <p className="label-caps">{message.kind === "call_record" ? "Call completed" : "Meeting completed"}</p>
+                      <p className="label-caps">{message.kind === "call_record" ? "Call completed" : message.kind === "meeting_record" ? "Meeting completed" : "Group update"}</p>
                       <p className="mt-2 text-caption text-charcoal/60">{message.body}</p>
                     </div>
                   );
@@ -4095,6 +4359,25 @@ export function ConversationWorkspace({
             if (selectedConversationId && destinationIds.includes(selectedConversationId)) {
               void loadMessages(selectedConversationId, { latest: true });
             }
+          }}
+        />
+      )}
+
+      {groupDetailsOpen && selectedConversation?.kind === "group" && (
+        <GroupDetailsDialog
+          conversation={selectedConversation}
+          participants={participants}
+          people={data.people}
+          onClose={() => setGroupDetailsOpen(false)}
+          onChanged={async () => {
+            const conversationId = selectedIdRef.current;
+            await loadConversations({ preserveError: true });
+            if (conversationId) await loadMessages(conversationId, { latest: true });
+          }}
+          onLeft={async () => {
+            setGroupDetailsOpen(false);
+            selectConversation(null);
+            await loadConversations({ preserveError: true });
           }}
         />
       )}
