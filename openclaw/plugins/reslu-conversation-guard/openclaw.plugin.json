@@ -1,0 +1,23 @@
+{
+  "id": "reslu-conversation-guard",
+  "name": "RESLU Conversation Guard",
+  "description": "Enforces the trusted tool boundary for untrusted RESLU conversation content.",
+  "contracts": {
+    "tools": [
+      "reslu_calendar_events_list",
+      "reslu_gmail_messages_search",
+      "reslu_gmail_message_read",
+      "reslu_attachment_pdf_text_read"
+    ],
+    "trustedToolPolicies": [
+      "reslu-session-boundary"
+    ]
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}
