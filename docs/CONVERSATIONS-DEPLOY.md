@@ -39,7 +39,7 @@ Conversation history, forwarded messages, attachment filenames/content and exist
 ## Mac mini bridge
 
 1. Pull the deployed app repository on the mini.
-2. Confirm `.env.local` contains `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `RESLU_REALTIME_AGENT_THINKING=minimal`. `RESLU_REALTIME_AGENT_MODEL` is optional and affects only quick live-call consults; leave it blank unless the exact model override has passed an `openclaw agent --agent main --model … --message "Return exactly READY" --json` smoke test on this Mac. Durable task model tiers remain separate.
+2. Confirm `.env.local` contains `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. Quick live-call consults default to the separately verified `openai/gpt-5.6-terra` model with minimal thinking; `RESLU_REALTIME_AGENT_MODEL` and `RESLU_REALTIME_AGENT_THINKING` may override those defaults. Durable task model tiers remain separate.
 3. Confirm `openclaw agent --agent main` reaches Aria and `openclaw agent --agent marco` reaches Marco. Override either mapping with `RESLU_ARIA_AGENT_ID` or `RESLU_MARCO_AGENT_ID`.
 4. Copy `scripts/ai.reslu.conversation-bridge.plist` to `~/Library/LaunchAgents/`, adjusting `/Users/vale/reslu-spec-system` if the checkout lives elsewhere.
 5. Bootstrap and inspect it:

@@ -146,6 +146,7 @@ final class NativeRealtimeToolRouter {
                     method: "POST",
                     body: body
                 )
+                let pollingStartedAt = Date()
                 while !Task.isCancelled {
                     let ownerKey = specialist ? "owner_agent_slug" : "agent_slug"
                     let encodedTool = toolCallId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? toolCallId
@@ -169,7 +170,9 @@ final class NativeRealtimeToolRouter {
                         throw NativeRealtimeHTTPError.rejected(503, status["error"] as? String ?? "The RESLU agent could not answer.")
                     }
                     if status["status"] as? String == "cancelled" { return }
-                    try await Task.sleep(for: .milliseconds(550))
+                    let elapsed = Date().timeIntervalSince(pollingStartedAt)
+                    let pollDelay = elapsed < 5 ? 250 : elapsed < 15 ? 500 : 1_000
+                    try await Task.sleep(for: .milliseconds(pollDelay))
                 }
             } catch is CancellationError {
                 return

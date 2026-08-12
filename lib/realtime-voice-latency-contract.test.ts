@@ -24,14 +24,16 @@ test("realtime calls measure actual WebRTC output audio instead of transcript ti
   assert.match(workspace, /interruption_to_buffer_cleared_ms/);
 });
 
-test("speech stop immediately requests one out-of-band truthful progress cue", () => {
+test("speech stop schedules one delayed, agent-specific progress cue", () => {
   assert.match(workspace, /startRealtimeProgressCue\(speechStoppedAt\)/);
-  assert.match(workspace, /sendRealtimeEvent\(buildRealtimeProgressResponse\(cueId\)\)/);
+  assert.match(workspace, /window\.setTimeout/);
+  assert.match(workspace, /REALTIME_PROGRESS_DELAY_MS/);
+  assert.match(workspace, /buildRealtimeProgressResponse\(cueId, callAgent\?\.agent_slug \?\? "aria", turn\)/);
   assert.match(progress, /conversation: "none"/);
-  assert.match(progress, /Say exactly: \"I’m checking that now\.\"/);
+  assert.match(progress, /PROGRESS_LINES/);
+  assert.doesNotMatch(progress, /I’m checking that now/);
   assert.match(progress, /tool_choice: "none"/);
   assert.match(workspace, /activeRealtimeConsultRef\.current \? "thinking" : "listening"/);
-  assert.doesNotMatch(workspace, /scheduleRealtimeProgressCue/);
 });
 
 test("progress audio is independently cancellable and excluded from the transcript", () => {

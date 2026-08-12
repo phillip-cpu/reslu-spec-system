@@ -270,7 +270,10 @@ class ConversationAgentBridgeTests(unittest.TestCase):
 
     def test_realtime_consults_use_a_bounded_latency_oriented_model(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertIsNone(conversation_agent_bridge.realtime_voice_agent_model())
+            self.assertEqual(
+                conversation_agent_bridge.realtime_voice_agent_model(),
+                "openai/gpt-5.6-terra",
+            )
         with mock.patch.dict(os.environ, {"RESLU_REALTIME_AGENT_MODEL": "openai/gpt-5.6-luna"}):
             self.assertEqual(
                 conversation_agent_bridge.realtime_voice_agent_model(),
@@ -278,6 +281,32 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             )
         with mock.patch.dict(os.environ, {"RESLU_REALTIME_AGENT_MODEL": "invalid model"}):
             self.assertIsNone(conversation_agent_bridge.realtime_voice_agent_model())
+
+    def test_realtime_voice_personalities_are_distinct(self):
+        aria = conversation_agent_bridge.realtime_voice_personality("aria")
+        marco = conversation_agent_bridge.realtime_voice_personality("marco")
+        stuart = conversation_agent_bridge.realtime_voice_personality("stuart")
+        self.assertIn("immaculate, controlled", aria)
+        self.assertIn("lightly witty", marco)
+        self.assertIn("dry, conservative, terse", stuart)
+        self.assertEqual(len({aria, marco, stuart}), 3)
+
+    @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
+    def test_realtime_voice_prompt_rejects_stock_waiting_narration(self, popen):
+        process = popen.return_value
+        process.communicate.return_value = ('{"final":"Useful answer"}', "")
+        process.returncode = 0
+        with mock.patch.dict(os.environ, {"RESLU_OPENCLAW_GATEWAY_EVENTS_ENABLED": "false"}):
+            conversation_agent_bridge.invoke_agent(
+                {"slug": "stuart", "display_name": "Stuart", "role_label": "Finance agent"},
+                "Phillip: Check the cash position",
+                "conversation-123",
+                newest_message="Check the cash position",
+                realtime_voice=True,
+            )
+        prompt = popen.call_args.args[0][popen.call_args.args[0].index("--message") + 1]
+        self.assertIn("financially disciplined", prompt)
+        self.assertIn("Do not begin with placeholder narration", prompt)
 
     def test_task_result_keeps_a_reviewable_email_draft(self):
         result = conversation_agent_bridge.parse_task_result(json.dumps({
@@ -974,7 +1003,8 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             conversation_agent_bridge.REALTIME_VOICE_HISTORY_LIMIT,
         )
         self.assertEqual(invoke.call_args.kwargs["thinking_level"], "minimal")
-        self.assertIsNone(invoke.call_args.kwargs["model"])
+        self.assertEqual(invoke.call_args.kwargs["model"], "openai/gpt-5.6-terra")
+        self.assertTrue(invoke.call_args.kwargs["realtime_voice"])
 
     def test_specialist_consultation_is_advisory_and_completes_as_owner(self):
         rest = mock.Mock()
