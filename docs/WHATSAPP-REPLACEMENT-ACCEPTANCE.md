@@ -26,7 +26,7 @@ build or plausible production row is not by itself a passed product gate.
 | 5. iPhone background and in-car continuity | **PENDING** | Native shell candidate exists as draft PR #47. Browser foreground recovery is already delivered. The native candidate now waits for CallKit's actual audio activation before WebRTC capture, fails closed after five seconds, permits bounded background reconnect only inside the trusted shell and keeps system mute synchronized with the web microphone. | Install/activate Xcode, compile the native target and pass a physical-device call across screen lock, mute, audio-route change and Wi-Fi/mobile handoff. |
 | 6. Meeting Mode and intelligent filing | **PENDING** | Staged Meeting Mode implementation is committed locally with migration 103, silent capture, checkpointing, shared draft review, recorder-only capture/discard control, event-specific ambiguity detection, destination revalidation, explicit filing and audit safeguards; automated checks pass. | Publish and review the PR, apply migration 103 and its verifier, update/restart the Mac MCP runtime, then pass one lead consultation, one active-project meeting and one ambiguous-destination meeting (including two nearby events for the same project). |
 | 7. RESLU team intelligence | **PENDING** | Canonical Aria/Marco identities and one-agent consultation boundary already exist. | Pass one real cross-domain collaboration scenario with correct lanes, one owner, no duplicate action and an auditable record. |
-| 8. Hardening and no-WhatsApp pilot | **PENDING** | Production has RLS verifiers, bounded voice/Gateway metadata and several reliability diagnostics. The unified chat/call/Meeting candidate now has visible keyboard focus, reduced-motion behavior, 44 px high-frequency touch targets, modal semantics and polite live-state announcements under automated contract. | Complete the live keyboard, VoiceOver, Reduce Motion, dynamic text, contrast and physical touch-target matrix; complete security, retention, poor-network and long-history matrices; then complete a two-week agreed-workflow pilot without opening WhatsApp and without an unresolved critical defect. |
+| 8. Hardening and no-WhatsApp pilot | **PENDING** | Production has RLS verifiers, bounded voice/Gateway metadata and several reliability diagnostics. The unified chat/call/Meeting candidate now has visible keyboard focus, reduced-motion behavior, 44 px high-frequency touch targets, modal semantics, polite live-state announcements, trapped modal focus and focus restoration under automated contract. | Complete the live keyboard, VoiceOver, Reduce Motion, dynamic text, contrast and physical touch-target matrix; complete security, retention, poor-network and long-history matrices; then complete a two-week agreed-workflow pilot without opening WhatsApp and without an unresolved critical defect. |
 
 ## Stage 1 evidence: 11 August 2026 production trace
 
@@ -81,6 +81,9 @@ Automated code contracts now protect the complete stacked conversation surface:
 - high-frequency iPhone icon controls use a minimum 44 px touch target;
 - active call, message search, new-chat and Meeting Mode layers expose dialog
   semantics, and changing call/meeting status is announced politely;
+- new-chat, forwarding, group details, search, photo viewing and Meeting Mode
+  contain keyboard focus, restore the launching control and close safely with
+  Escape (except while Meeting Mode is recording or committing work);
 - user-requested Reduce Motion removes non-essential chat, call and Meeting
   animation while preserving status text;
 - critical call state and caption speaker labels no longer use 9-10 px text.

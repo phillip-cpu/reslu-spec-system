@@ -12,7 +12,8 @@ const globals = read("app/globals.css");
 const acceptance = read("docs/WHATSAPP-REPLACEMENT-ACCEPTANCE.md");
 
 test("chat, call, search and Meeting Mode expose modal semantics", () => {
-  assert.match(workspace, /role="dialog" aria-modal="true" aria-labelledby="active-call-agent"/);
+  assert.match(workspace, /role=\{callModal \? "dialog" : "region"\}/);
+  assert.match(workspace, /aria-modal=\{callModal \? true : undefined\}/);
   assert.match(workspace, /role="dialog" aria-modal="true" aria-label="Search messages and files"/);
   assert.match(workspace, /role="dialog" aria-modal="true" aria-labelledby="new-conversation-title"/);
   assert.match(meetingMode, /role="dialog"[\s\S]*aria-modal="true"[\s\S]*aria-labelledby="meeting-mode-title"/);
@@ -38,7 +39,8 @@ test("keyboard focus and reduced-motion behavior are global conversation contrac
   assert.match(globals, /@media \(prefers-reduced-motion: reduce\)/);
   assert.match(globals, /\.conversation-accessible \*/);
   assert.match(globals, /\.meeting-mode-dialog \*/);
-  assert.match(meetingMode, /event\.key !== "Escape"/);
+  assert.match(meetingMode, /useDialogFocusBoundary\(\{/);
+  assert.match(meetingMode, /escapeDisabled: recording \|\| paused \|\| busy/);
 });
 
 test("live acceptance still requires keyboard, screen reader, reduced-motion and physical touch evidence", () => {

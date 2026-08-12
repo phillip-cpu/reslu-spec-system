@@ -46,5 +46,5 @@ test("private conversation photos open inside a full-screen accessible viewer", 
   assert.match(workspace, /aria-labelledby="conversation-media-viewer-title"/);
   assert.match(workspace, /aria-label="Close photo viewer"/);
   assert.match(workspace, /Open original/);
-  assert.match(workspace, /if \(event\.key !== "Escape"\) return/);
+  assert.match(workspace, /active: Boolean\(mediaViewer\),[\s\S]*containerRef: mediaViewerDialogRef/);
 });
