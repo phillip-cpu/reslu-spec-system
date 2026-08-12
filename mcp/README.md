@@ -84,6 +84,8 @@ Every tool is a thin wrapper over an existing REST route — see `docs/API.md` f
 | `complete_followup_send` | `POST /api/aria-followups/[id]/complete` | Records sent/failed only after an explicit Office approval created the approved queue item. |
 | `get_lead_meeting_recording` | `GET /api/lead-meetings/[id]/transcription` | Fetches one private lead-meeting audio file and marks transcription processing. Local Whisper only. |
 | `complete_lead_meeting_transcription` | `PATCH /api/lead-meetings/[id]/transcription` | Saves transcript, summary, actions and decisions—or a failure note. Never writes lead notes or sends messages. |
+| `get_conversation_meeting_source` | `GET /api/meeting-minutes/[id]/draft` | Fetches one private Meeting Mode recording plus its visible destination snapshot for local-Whisper transcription. |
+| `complete_conversation_meeting_draft` | `PATCH /api/meeting-minutes/[id]/draft` | Saves the seven-section draft for human review. It cannot file or change the destination. |
 | `post_client_update` | `POST /api/projects/[id]/client-updates/posts` | Creates a **draft** — does not publish to the client portal. |
 | `draft_diary_entry` | `GET`/`POST /api/projects/[id]/client-updates/posts/[postId]/aria-draft` | Two modes: call without `title`/`body_richtext` to FETCH a draft's rough notes + photo captions; call WITH both to SUBMIT polished copy (sets `status: 'pending_approval'`). Never publishes — see `docs/ARIA.md`'s "Diary workflow" section. |
 | `list_site_photos` | `GET /api/projects/[id]/site-photos` | The project's internal gallery (published + unpublished), for referencing captions/photos when drafting a diary entry. Read-only. |

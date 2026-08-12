@@ -1,9 +1,14 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
+import { MeetingMode } from "@/components/conversations/MeetingMode";
 import Image from "next/image";
 import { initials } from "@/lib/conversations";
+import {
+  agentTaskArtifactText,
+  normalizeAgentTaskArtifactContent,
+} from "@/lib/agent-task-artifact";
 import {
   CONVERSATION_DIRECT_UPLOAD_MAX_BYTES,
   conversationAttachmentKind,
@@ -26,9 +31,15 @@ import {
 } from "@/lib/conversation-call-outbox";
 import type { RealtimeVoiceLatencyMetric, RealtimeVoiceOutcome } from "@/lib/realtime-voice-metrics";
 import {
+  nativeVoiceBridgeAvailable,
+  postNativeVoiceBridgeEvent,
+  prepareNativeVoiceSession,
+} from "@/lib/native-voice-bridge";
+import {
   parseRealtimeConsultArguments,
   parseRealtimeTaskArguments,
 } from "@/lib/realtime-tool-arguments";
+import { realtimeConsultPollDelay } from "@/lib/realtime-consult-poll";
 import {
   MAX_REALTIME_RECONNECT_ATTEMPTS,
   mediaStreamCanResume,
@@ -36,6 +47,21 @@ import {
   shouldAttemptRealtimeReconnect,
 } from "@/lib/realtime-call-recovery";
 import { buildRealtimeProgressResponse, realtimeProgressCueId } from "@/lib/realtime-progress";
+import {
+  CONVERSATION_MESSAGE_REACTIONS,
+  type ConversationMessageReactionValue,
+} from "@/lib/conversation-message-engagement";
+import {
+  CONVERSATION_MESSAGE_LONG_PRESS_MS,
+  conversationDayKey,
+  conversationDayLabel,
+  conversationLongPressMoved,
+} from "@/lib/conversation-timeline";
+import {
+  canStartConversationSwipeBack,
+  conversationSwipeBackProgress,
+} from "@/lib/conversation-swipe-back";
+import { useDialogFocusBoundary } from "@/lib/use-dialog-focus-boundary";
 import {
   listConversationDrafts,
   listPendingConversationMessages,
@@ -49,6 +75,14 @@ import {
 } from "@/lib/conversation-outbox";
 import { ASSET_BUCKET } from "@/lib/storage";
 import { createClient as createBrowserClient } from "@/lib/supabase/client";
+import {
+  isConversationVoiceNoteDuration,
+  isConversationVoiceNoteMime,
+  isVoiceNoteMetadata,
+  MAX_CONVERSATION_VOICE_NOTE_DURATION_MS,
+  voiceNoteDurationLabel,
+  voiceNoteExtension,
+} from "@/lib/conversation-voice-note";
 import type {
   AgentSlug,
   AgentTask,
@@ -56,6 +90,7 @@ import type {
   ConversationAttachment,
   ConversationMessage,
   ConversationParticipant,
+  ConversationSummary,
   ConversationsResponse,
 } from "@/types/conversations";
 
@@ -210,6 +245,7 @@ interface DraftAttachment {
   stagedAttachmentId: string | null;
   attachment: ConversationAttachment | null;
   error: string | null;
+  voiceNoteDurationMs: number | null;
 }
 
 interface ConversationTimelineItem {
@@ -249,6 +285,157 @@ function fileSizeLabel(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function VoiceNoteRecorder({
+  conversationId,
+  disabled,
+  onRecorded,
+  onError,
+  onRecordingChange,
+}: {
+  conversationId: string;
+  disabled: boolean;
+  onRecorded: (conversationId: string, file: File, durationMs: number) => void;
+  onError: (message: string) => void;
+  onRecordingChange: (recording: boolean) => void;
+}) {
+  const [recording, setRecording] = useState(false);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const startedAtRef = useRef(0);
+  const conversationIdRef = useRef(conversationId);
+  const keepRecordingRef = useRef(false);
+  const durationRef = useRef(0);
+
+  const release = useCallback(() => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    recorderRef.current = null;
+    setRecording(false);
+    setElapsedMs(0);
+    onRecordingChange(false);
+  }, [onRecordingChange]);
+
+  const stop = useCallback((keep: boolean) => {
+    const recorder = recorderRef.current;
+    if (!recorder || recorder.state === "inactive") return;
+    keepRecordingRef.current = keep;
+    durationRef.current = Math.min(
+      MAX_CONVERSATION_VOICE_NOTE_DURATION_MS,
+      Math.max(0, Date.now() - startedAtRef.current)
+    );
+    recorder.stop();
+  }, []);
+
+  useEffect(() => {
+    if (!recording) return;
+    const timer = window.setInterval(() => {
+      const next = Math.min(MAX_CONVERSATION_VOICE_NOTE_DURATION_MS, Date.now() - startedAtRef.current);
+      setElapsedMs(next);
+      if (next >= MAX_CONVERSATION_VOICE_NOTE_DURATION_MS) stop(true);
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [recording, stop]);
+
+  useEffect(() => () => {
+    keepRecordingRef.current = false;
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+  }, []);
+
+  async function start() {
+    if (disabled || recording) return;
+    if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      onError("Voice-note recording is not supported in this browser.");
+      return;
+    }
+    const mimeType = ([
+      "audio/mp4;codecs=mp4a.40.2",
+      "audio/mp4",
+      "audio/webm;codecs=opus",
+      "audio/webm",
+    ] as const).find((candidate) => MediaRecorder.isTypeSupported(candidate));
+    if (!mimeType) {
+      onError("This browser cannot create a supported voice-note format.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, { mimeType });
+      chunksRef.current = [];
+      keepRecordingRef.current = false;
+      conversationIdRef.current = conversationId;
+      streamRef.current = stream;
+      recorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data);
+      };
+      recorder.onerror = () => {
+        onError("Voice-note recording failed. Please try again.");
+        release();
+      };
+      recorder.onstop = () => {
+        const keep = keepRecordingRef.current;
+        const durationMs = durationRef.current;
+        const normalizedMime = recorder.mimeType.split(";", 1)[0];
+        const chunks = chunksRef.current;
+        chunksRef.current = [];
+        release();
+        if (!keep) return;
+        if (!isConversationVoiceNoteDuration(durationMs)) {
+          onError("Voice notes must be at least a quarter of a second long.");
+          return;
+        }
+        if (!isConversationVoiceNoteMime(normalizedMime)) {
+          onError("This browser produced an unsupported voice-note format.");
+          return;
+        }
+        const extension = voiceNoteExtension(normalizedMime);
+        const filename = `Voice note ${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`;
+        const file = new File(chunks, filename, { type: normalizedMime, lastModified: Date.now() });
+        if (file.size < 1) {
+          onError("The voice note was empty. Please record it again.");
+          return;
+        }
+        onRecorded(conversationIdRef.current, file, durationMs);
+      };
+      startedAtRef.current = Date.now();
+      durationRef.current = 0;
+      setElapsedMs(0);
+      setRecording(true);
+      onRecordingChange(true);
+      recorder.start(250);
+    } catch {
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      onError("Microphone access is required to record a voice note.");
+    }
+  }
+
+  if (!recording) return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => void start()}
+      aria-label="Record voice note"
+      className="flex h-11 w-11 items-center justify-center rounded-full border border-[#d7d0c5] text-lg text-nearblack hover:bg-[#f1ece3] disabled:opacity-40"
+    >
+      <span aria-hidden>●</span>
+    </button>
+  );
+
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl bg-red-50 px-3 py-2 text-red-800" role="status" aria-live="polite">
+      <span className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-red-600" aria-hidden />
+      <span className="min-w-0 flex-1 text-caption font-semibold">Recording · {voiceNoteDurationLabel(elapsedMs)}</span>
+      <button type="button" onClick={() => stop(false)} className="min-h-11 rounded-lg px-3 py-2 text-caption hover:bg-red-100">Cancel</button>
+      <button type="button" onClick={() => stop(true)} className="min-h-11 rounded-lg bg-red-700 px-3 py-2 text-caption font-semibold text-white">Finish</button>
+    </div>
+  );
+}
+
 function taskStatusLabel(task: AgentTask) {
   if (task.cancellation_requested_at && task.status === "running") return "Stopping";
   return {
@@ -261,52 +448,29 @@ function taskStatusLabel(task: AgentTask) {
   }[task.status];
 }
 
-function artifactContent(content: Record<string, unknown>, depth = 0): Record<string, unknown> {
-  if (depth > 3) return content;
-  const embedded = typeof content.text === "string" ? content.text.trim() : null;
-  if (embedded?.startsWith("{")) {
-    try {
-      const parsed = JSON.parse(embedded) as unknown;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        return artifactContent(parsed as Record<string, unknown>, depth + 1);
-      }
-    } catch {
-      // A normal text artifact may start with a brace; show it unchanged.
-    }
-  }
-  const artifact = content.artifact;
-  if (artifact && typeof artifact === "object" && !Array.isArray(artifact)) {
-    const nested = (artifact as Record<string, unknown>).content;
-    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
-      return artifactContent(nested as Record<string, unknown>, depth + 1);
-    }
-  }
-  return content;
-}
-
-function artifactText(content: Record<string, unknown>) {
-  const normalized = artifactContent(content);
-  const body = typeof normalized.body === "string" ? normalized.body : null;
-  const text = typeof normalized.text === "string" ? normalized.text : null;
-  const message = typeof normalized.message === "string" ? normalized.message : null;
-  const summary = typeof normalized.summary === "string" ? normalized.summary : null;
-  return body ?? text ?? message ?? summary ?? "Draft details are not available yet.";
-}
-
 function AgentTaskCard({
   task,
   compact = false,
   dark = false,
+  canRetry = false,
   onAction,
 }: {
   task: AgentTask;
   compact?: boolean;
   dark?: boolean;
-  onAction: (taskId: string, action: "cancel" | "approve" | "reject", artifactId?: string) => void;
+  canRetry?: boolean;
+  onAction: (taskId: string, action: "cancel" | "approve" | "reject" | "retry", artifactId?: string) => void;
 }) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [confirmingRetry, setConfirmingRetry] = useState(false);
   const latestEvent = task.events.at(-1);
   const active = task.status === "queued" || task.status === "running";
+  const hasApprovedArtifact = task.artifacts.some((artifact) => artifact.status === "approved" || artifact.status === "published");
+  const retryBlockedByApproval = task.approval_state === "approved"
+    || task.approval_state === "pending"
+    || hasApprovedArtifact
+    || task.events.some((event) => event.event_type === "approved");
+  const retryable = task.status === "failed" && !retryBlockedByApproval && canRetry;
   return (
     <article className={clsx(
       "min-w-0 max-w-full overflow-hidden rounded-2xl border p-3",
@@ -360,6 +524,48 @@ function AgentTaskCard({
           {task.error ?? latestEvent?.label ?? task.result_summary}
         </p>
       )}
+      {retryable && !confirmingRetry && (
+        <button
+          type="button"
+          onClick={() => setConfirmingRetry(true)}
+          className={clsx("mt-3 min-h-11 rounded-lg px-4 py-2 text-body font-semibold", dark ? "bg-white/10 text-white" : "bg-[#eee8de] text-nearblack")}
+        >
+          Try task again
+        </button>
+      )}
+      {retryable && confirmingRetry && (
+        <div className={clsx("mt-3 rounded-xl border p-3", dark ? "border-white/15 bg-black/20" : "border-[#d8d0c4] bg-[#f8f5ef]")} role="group" aria-label={`Confirm retrying ${task.title}`}>
+          <p className="text-[15px] font-semibold">Retry this task?</p>
+          <p className={clsx("mt-1 text-caption leading-relaxed", dark ? "text-white/60" : "text-charcoal/60")}>
+            RESLU will reuse the same task and drafts. No approved external action will be replayed.
+          </p>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button type="button" onClick={() => setConfirmingRetry(false)} className={clsx("min-h-11 rounded-lg border px-3 py-2 text-body", dark ? "border-white/20" : "border-[#cfc6b8]")}>Not now</button>
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmingRetry(false);
+                onAction(task.id, "retry");
+              }}
+              className={clsx("min-h-11 rounded-lg px-3 py-2 text-body font-semibold", dark ? "bg-sand text-nearblack" : "bg-nearblack text-white")}
+            >
+              Retry task
+            </button>
+          </div>
+        </div>
+      )}
+      {task.status === "failed" && retryBlockedByApproval && (
+        <p className={clsx("mt-3 rounded-xl border p-3 text-caption leading-relaxed", dark ? "border-amber-300/25 bg-amber-300/10 text-amber-100" : "border-amber-300 bg-amber-50 text-amber-950")}>
+          {task.approval_state === "pending"
+            ? "This task still has an unresolved approval. Review or reject that action before starting new work; RESLU will not retry it automatically."
+            : "This task had approval to act. Check the relevant email, booking or record before starting new work; RESLU will not replay it automatically."}
+        </p>
+      )}
+      {task.status === "failed" && !retryBlockedByApproval && !canRetry && (
+        <p className={clsx("mt-3 text-caption", dark ? "text-white/50" : "text-charcoal/55")}>
+          {task.retry_count >= 3 ? "This task reached its safe retry limit. Start a new task after checking the prior attempts." : "Only the person who started this task can retry it."}
+        </p>
+      )}
       {active && task.artifacts.length === 0 && !compact && (
         <div className={clsx("mt-4 rounded-xl border border-dashed p-4", dark ? "border-white/15 bg-black/15" : "border-[#d8d0c4] bg-[#f8f5ef]") }>
           <p className="text-[15px] font-medium">Preparing the first reviewable version…</p>
@@ -367,18 +573,18 @@ function AgentTaskCard({
         </div>
       )}
       {task.artifacts.map((artifact) => {
-        const content = artifactContent(artifact.content);
+        const content = normalizeAgentTaskArtifactContent(artifact.content);
         const recipient = typeof content.to === "string" ? content.to : null;
         const subject = typeof content.subject === "string" ? content.subject : null;
         return (
           <div key={artifact.id} className={clsx("mt-4 rounded-xl border p-4", dark ? "border-white/10 bg-black/20" : "border-[#ded7cd] bg-[#f8f5ef]") }>
-            <p className="text-[17px] font-semibold leading-snug">{artifact.title}</p>
+            <p className="text-[18px] font-semibold leading-snug md:text-[19px]">{artifact.title}</p>
             {(recipient || subject) && (
-              <p className={clsx("mt-1 text-[11px]", dark ? "text-white/50" : "text-charcoal/50") }>
+              <p className={clsx("mt-1 text-[13px] leading-relaxed", dark ? "text-white/55" : "text-charcoal/55") }>
                 {[recipient && `To: ${recipient}`, subject && `Subject: ${subject}`].filter(Boolean).join(" · ")}
               </p>
             )}
-            <div className={clsx("mt-3 max-h-80 max-w-full overflow-y-auto whitespace-pre-wrap break-words font-sans text-[15px] leading-relaxed md:text-[16px]", dark ? "text-white/80" : "text-charcoal/80") }>{artifactText(content)}</div>
+            <div className={clsx("mt-3 max-h-80 max-w-full overflow-y-auto whitespace-pre-wrap break-words font-sans text-[16px] leading-[1.55] md:text-[17px]", dark ? "text-white/85" : "text-charcoal/85") }>{agentTaskArtifactText(content)}</div>
             {task.status === "awaiting_approval" && artifact.status === "draft" && (
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button type="button" onClick={() => onAction(task.id, "reject", artifact.id)} className={clsx("min-h-11 rounded-lg border px-3 py-2 text-body", dark ? "border-white/20" : "border-[#cfc6b8]")}>Reject</button>
@@ -436,6 +642,8 @@ function NewConversation({ people, onCreated, onClose }: {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const createIntentRef = useRef<{ signature: string; id: string } | null>(null);
+  const newConversationDialogRef = useRef<HTMLFormElement>(null);
+  useDialogFocusBoundary({ active: true, containerRef: newConversationDialogRef, onEscape: onClose });
   const candidates = people.filter((person) => !person.is_self);
 
   async function createConversation(event: FormEvent) {
@@ -472,13 +680,13 @@ function NewConversation({ people, onCreated, onClose }: {
 
   return (
     <div className="absolute inset-0 z-20 flex items-center justify-center overflow-y-auto bg-nearblack/60 p-3 md:p-4">
-      <form onSubmit={createConversation} className="max-h-full w-full max-w-lg overflow-y-auto border border-[#d4cbbd] bg-[#f5f1e8] p-4 shadow-2xl md:p-6">
+      <form ref={newConversationDialogRef} tabIndex={-1} onSubmit={createConversation} role="dialog" aria-modal="true" aria-labelledby="new-conversation-title" className="max-h-full w-full max-w-lg overflow-y-auto border border-[#d4cbbd] bg-[#f5f1e8] p-4 shadow-2xl md:p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="label-caps">New conversation</p>
-            <h2 className="mt-2 font-display text-section text-nearblack">Who’s in this chat?</h2>
+            <h2 id="new-conversation-title" className="mt-2 font-display text-section text-nearblack">Who’s in this chat?</h2>
           </div>
-          <button type="button" onClick={onClose} aria-label="Close" className="text-charcoal/50 hover:text-charcoal">✕</button>
+          <button type="button" onClick={onClose} aria-label="Close" className="flex h-11 w-11 items-center justify-center text-charcoal/50 hover:text-charcoal">✕</button>
         </div>
         <div className="mt-5 max-h-72 space-y-2 overflow-y-auto">
           {candidates.map((person) => {
@@ -516,6 +724,374 @@ function NewConversation({ people, onCreated, onClose }: {
   );
 }
 
+function ForwardMessageDialog({
+  message,
+  conversations,
+  onClose,
+  onForwarded,
+}: {
+  message: ConversationMessage;
+  conversations: ConversationSummary[];
+  onClose: () => void;
+  onForwarded: (destinationIds: string[]) => void;
+}) {
+  const [selected, setSelected] = useState<string[]>([]);
+  const [filter, setFilter] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const intentRef = useRef<{ signature: string; id: string } | null>(null);
+  const forwardDialogRef = useRef<HTMLFormElement>(null);
+  useDialogFocusBoundary({ active: true, containerRef: forwardDialogRef, onEscape: onClose });
+  const visible = useMemo(() => {
+    const term = filter.trim().toLowerCase();
+    if (!term) return conversations;
+    return conversations.filter((conversation) => [
+      conversation.display_title,
+      ...conversation.participants.map((participant) => participant.display_name),
+    ].some((value) => value.toLowerCase().includes(term)));
+  }, [conversations, filter]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (selected.length === 0 || saving) return;
+    const destinationIds = [...selected].sort();
+    const signature = JSON.stringify(destinationIds);
+    if (intentRef.current?.signature !== signature) {
+      intentRef.current = { signature, id: crypto.randomUUID() };
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `/api/conversations/${message.conversation_id}/messages/${message.id}/forward`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            destination_conversation_ids: destinationIds,
+            client_forward_id: intentRef.current.id,
+          }),
+        }
+      );
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "Could not forward this message");
+      onForwarded(destinationIds);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not forward this message");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="absolute inset-0 z-30 flex items-center justify-center overflow-y-auto bg-nearblack/60 p-3 md:p-4">
+      <form ref={forwardDialogRef} tabIndex={-1} onSubmit={submit} role="dialog" aria-modal="true" aria-label="Forward message" className="flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-[#d4cbbd] bg-[#f5f1e8] shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-[#d4cbbd] p-4 md:p-5">
+          <div className="min-w-0">
+            <p className="label-caps">Forward message</p>
+            <p className="mt-2 line-clamp-2 text-body leading-relaxed text-charcoal/65">{message.body}</p>
+            {message.attachments.length > 0 && <p className="mt-1 text-caption text-charcoal/45">Includes {message.attachments.length} private attachment{message.attachments.length === 1 ? "" : "s"}</p>}
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close forwarding" className="flex h-11 w-11 shrink-0 items-center justify-center text-charcoal/50 hover:text-charcoal">✕</button>
+        </div>
+        <div className="border-b border-[#d4cbbd] p-3 md:p-4">
+          <label className="flex items-center gap-2 rounded-xl border border-[#d4cbbd] bg-white px-3 py-2 focus-within:border-nearblack">
+            <span aria-hidden className="text-charcoal/40">⌕</span>
+            <span className="sr-only">Search conversations to forward to</span>
+            <input
+              type="search"
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+              placeholder="Search chats"
+              autoFocus
+              className="min-w-0 flex-1 bg-transparent text-[16px] text-nearblack outline-none placeholder:text-charcoal/40"
+            />
+          </label>
+        </div>
+        <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2 md:p-3">
+          {visible.length === 0 && <p className="p-6 text-center text-body text-charcoal/50">No matching chats.</p>}
+          {visible.map((conversation) => {
+            const checked = selected.includes(conversation.id);
+            const participant = conversation.participants.find((item) => !item.is_self) ?? conversation.participants[0];
+            return (
+              <label key={conversation.id} className={clsx("flex cursor-pointer items-center gap-3 rounded-xl border p-3", checked ? "border-nearblack bg-white" : "border-transparent hover:bg-white/50") }>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={!checked && selected.length >= 10}
+                  onChange={() => setSelected((current) => checked
+                    ? current.filter((id) => id !== conversation.id)
+                    : [...current, conversation.id])}
+                  className="h-4 w-4 shrink-0 accent-[#1a1a1a]"
+                />
+                {participant && <Avatar participant={participant} />}
+                <span className="min-w-0 flex-1 truncate text-body font-medium text-nearblack">{conversation.display_title}</span>
+              </label>
+            );
+          })}
+        </div>
+        <div className="border-t border-[#d4cbbd] p-3 md:p-4">
+          {error && <p className="mb-3 text-caption text-red-700">{error}</p>}
+          <button disabled={saving || selected.length === 0} className="min-h-12 w-full rounded-xl bg-nearblack px-4 py-3 text-subhead text-white disabled:opacity-30">
+            {saving ? "Forwarding…" : selected.length === 0 ? "Choose chats" : `Forward to ${selected.length} chat${selected.length === 1 ? "" : "s"}`}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function GroupDetailsDialog({
+  conversation,
+  participants,
+  people,
+  onClose,
+  onChanged,
+  onLeft,
+}: {
+  conversation: ConversationSummary;
+  participants: ConversationParticipant[];
+  people: ConversationParticipant[];
+  onClose: () => void;
+  onChanged: () => Promise<void>;
+  onLeft: () => Promise<void>;
+}) {
+  const [title, setTitle] = useState(conversation.display_title);
+  const [selectedToAdd, setSelectedToAdd] = useState<string[]>([]);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const actionIntentRef = useRef<{ signature: string; id: string } | null>(null);
+  const groupDialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusBoundary({ active: true, containerRef: groupDialogRef, onEscape: onClose, escapeDisabled: Boolean(busyAction) });
+  const self = participants.find((participant) => participant.type === "human" && participant.is_self);
+  const canManage = Boolean(self?.is_admin);
+  const participantKeys = new Set(participants.map((participant) => (
+    participant.type === "agent" ? `agent:${participant.agent_slug}` : `human:${participant.id}`
+  )));
+  const candidates = people.filter((person) => {
+    if (person.is_self) return false;
+    const key = person.type === "agent" ? `agent:${person.agent_slug}` : `human:${person.id}`;
+    return !participantKeys.has(key);
+  });
+
+  async function mutate(action: string, payload: Record<string, unknown>) {
+    const signature = JSON.stringify(payload, Object.keys(payload).sort());
+    if (actionIntentRef.current?.signature !== signature) {
+      actionIntentRef.current = { signature, id: crypto.randomUUID() };
+    }
+    setBusyAction(action);
+    setError(null);
+    let applied = false;
+    try {
+      const response = await fetch(`/api/conversations/${conversation.id}/group`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, client_action_id: actionIntentRef.current.id }),
+      });
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "Could not update this group");
+      applied = true;
+      actionIntentRef.current = null;
+      await onChanged();
+      return true;
+    } catch (reason) {
+      if (applied) {
+        setError("The group was updated, but this view could not refresh. Close and reopen the chat to see it.");
+        return true;
+      }
+      setError(reason instanceof Error ? reason.message : "Could not update this group");
+      return false;
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function renameGroup(event: FormEvent) {
+    event.preventDefault();
+    const normalized = title.trim();
+    if (!normalized) return;
+    await mutate("rename", { action: "rename", title: normalized });
+  }
+
+  async function addParticipants() {
+    const profileIds = selectedToAdd.filter((key) => key.startsWith("human:")).map((key) => key.slice(6));
+    const agentSlugs = selectedToAdd.filter((key) => key.startsWith("agent:")).map((key) => key.slice(6));
+    if (await mutate("add", { action: "add", profile_ids: profileIds, agent_slugs: agentSlugs })) {
+      setSelectedToAdd([]);
+    }
+  }
+
+  async function removeParticipant(participant: ConversationParticipant) {
+    if (!window.confirm(`Remove ${participant.display_name} from this group? Their access ends immediately.`)) return;
+    await mutate(`remove:${participant.id}`, {
+      action: "remove",
+      ...(participant.type === "agent"
+        ? { agent_slug: participant.agent_slug }
+        : { profile_id: participant.id }),
+    });
+  }
+
+  async function changeAdmin(participant: ConversationParticipant) {
+    await mutate(`role:${participant.id}`, {
+      action: "role",
+      profile_id: participant.id,
+      admin: !participant.is_admin,
+    });
+  }
+
+  async function leaveGroup() {
+    if (!window.confirm("Leave this group? You will immediately lose access to its messages and files.")) return;
+    const payload = { action: "leave" };
+    const signature = JSON.stringify(payload);
+    if (actionIntentRef.current?.signature !== signature) {
+      actionIntentRef.current = { signature, id: crypto.randomUUID() };
+    }
+    setBusyAction("leave");
+    setError(null);
+    let applied = false;
+    try {
+      const response = await fetch(`/api/conversations/${conversation.id}/group`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, client_action_id: actionIntentRef.current.id }),
+      });
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "Could not leave this group");
+      applied = true;
+      actionIntentRef.current = null;
+      await onLeft();
+    } catch (reason) {
+      if (applied) {
+        setError("You left the group, but this view could not refresh. Close and reopen Messages.");
+        return;
+      }
+      setError(reason instanceof Error ? reason.message : "Could not leave this group");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  return (
+    <div className="absolute inset-0 z-30 flex items-center justify-center overflow-y-auto bg-nearblack/60 p-3 md:p-4">
+      <div ref={groupDialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Group details" className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-[#d4cbbd] bg-[#f5f1e8] shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-[#d4cbbd] p-4 md:p-5">
+          <div>
+            <p className="label-caps">Group details</p>
+            <h2 className="mt-2 font-display text-section text-nearblack">{conversation.display_title}</h2>
+            <p className="mt-1 text-caption text-charcoal/50">{participants.length} participant{participants.length === 1 ? "" : "s"}</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close group details" className="flex h-11 w-11 shrink-0 items-center justify-center text-charcoal/50 hover:text-charcoal">✕</button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-5">
+          {canManage && (
+            <form onSubmit={renameGroup} className="border-b border-[#d4cbbd] pb-5">
+              <label className="label-caps" htmlFor="conversation-group-name">Group name</label>
+              <div className="mt-2 flex gap-2">
+                <input
+                  id="conversation-group-name"
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  maxLength={200}
+                  className="min-h-11 min-w-0 flex-1 rounded-xl border border-[#d4cbbd] bg-white px-3 text-[16px] text-nearblack outline-none focus:border-nearblack"
+                />
+                <button disabled={Boolean(busyAction) || !title.trim()} className="rounded-xl bg-nearblack px-4 text-body font-semibold text-white disabled:opacity-30">
+                  Save
+                </button>
+              </div>
+            </form>
+          )}
+
+          <section className={clsx(canManage && "pt-5")} aria-label="Group participants">
+            <p className="label-caps">Participants</p>
+            <div className="mt-3 space-y-2">
+              {participants.map((participant) => (
+                <div key={`${participant.type}:${participant.id}`} className="flex items-center gap-3 rounded-xl border border-[#ded7cc] bg-white/55 p-3">
+                  <Avatar participant={participant} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-body font-medium text-nearblack">{participant.display_name}{participant.is_self ? " · You" : ""}</p>
+                    <p className="mt-0.5 text-caption text-charcoal/50">{participant.type === "agent" ? "RESLU agent" : participant.is_admin ? "Group admin" : "Member"}</p>
+                  </div>
+                  {canManage && !participant.is_self && participant.type === "human" && (
+                    <button
+                      type="button"
+                      disabled={Boolean(busyAction)}
+                      onClick={() => void changeAdmin(participant)}
+                      className="shrink-0 rounded-full border border-[#d4cbbd] px-3 py-2 text-caption text-charcoal disabled:opacity-30"
+                    >
+                      {participant.is_admin ? "Remove admin" : "Make admin"}
+                    </button>
+                  )}
+                  {canManage && !participant.is_self && (
+                    <button
+                      type="button"
+                      disabled={Boolean(busyAction)}
+                      onClick={() => void removeParticipant(participant)}
+                      aria-label={`Remove ${participant.display_name}`}
+                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-red-700 hover:bg-red-50 disabled:opacity-30"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {canManage && candidates.length > 0 && (
+            <section className="mt-6 border-t border-[#d4cbbd] pt-5" aria-label="Add group participants">
+              <div className="flex items-end justify-between gap-3">
+                <div>
+                  <p className="label-caps">Add people or agents</p>
+                  <p className="mt-1 text-caption text-charcoal/50">New members can read the existing RESLU group history.</p>
+                </div>
+                <button
+                  type="button"
+                  disabled={Boolean(busyAction) || selectedToAdd.length === 0}
+                  onClick={() => void addParticipants()}
+                  className="rounded-xl bg-nearblack px-4 py-2.5 text-caption font-semibold text-white disabled:opacity-30"
+                >
+                  Add {selectedToAdd.length || ""}
+                </button>
+              </div>
+              <div className="mt-3 max-h-56 space-y-1 overflow-y-auto">
+                {candidates.map((person) => {
+                  const key = person.type === "agent" ? `agent:${person.agent_slug}` : `human:${person.id}`;
+                  const checked = selectedToAdd.includes(key);
+                  return (
+                    <label key={key} className={clsx("flex cursor-pointer items-center gap-3 rounded-xl p-3", checked ? "bg-white" : "hover:bg-white/50") }>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => setSelectedToAdd((current) => checked ? current.filter((item) => item !== key) : [...current, key])}
+                        className="h-4 w-4 accent-[#1a1a1a]"
+                      />
+                      <Avatar participant={person} />
+                      <span className="min-w-0 flex-1 truncate text-body text-nearblack">{person.display_name}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          <section className="mt-6 border-t border-[#d4cbbd] pt-5">
+            <button
+              type="button"
+              disabled={Boolean(busyAction)}
+              onClick={() => void leaveGroup()}
+              className="min-h-11 w-full rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-body font-semibold text-red-800 disabled:opacity-30"
+            >
+              Leave group
+            </button>
+          </section>
+          {error && <p className="mt-4 text-caption text-red-700">{error}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ConversationWorkspace({
   presentation = "page",
   active = true,
@@ -535,6 +1111,7 @@ export function ConversationWorkspace({
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [pinnedMessages, setPinnedMessages] = useState<ConversationMessage[]>([]);
   const [participants, setParticipants] = useState<ConversationParticipant[]>([]);
   const [agentActivity, setAgentActivity] = useState<ConversationAgentActivity[]>([]);
   const [draftsByConversation, setDraftsByConversation] = useState<Record<string, string>>({});
@@ -546,6 +1123,7 @@ export function ConversationWorkspace({
   const [showArchived, setShowArchived] = useState(false);
   const [conversationFilter, setConversationFilter] = useState("");
   const [conversationMenuOpen, setConversationMenuOpen] = useState(false);
+  const [groupDetailsOpen, setGroupDetailsOpen] = useState(false);
   const [preferenceSaving, setPreferenceSaving] = useState(false);
   const [messageSearchOpen, setMessageSearchOpen] = useState(false);
   const [messageSearch, setMessageSearch] = useState<MessageSearchState>({
@@ -560,13 +1138,19 @@ export function ConversationWorkspace({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [replyingTo, setReplyingTo] = useState<ConversationMessage | null>(null);
   const [messageMenuId, setMessageMenuId] = useState<string | null>(null);
+  const [mediaViewer, setMediaViewer] = useState<{ url: string; filename: string; author: string } | null>(null);
+  const [swipeBackOffset, setSwipeBackOffset] = useState(0);
+  const [swipeBackDragging, setSwipeBackDragging] = useState(false);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageBody, setEditingMessageBody] = useState("");
   const [messageMutationId, setMessageMutationId] = useState<string | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<ConversationMessage | null>(null);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [draftAttachments, setDraftAttachments] = useState<DraftAttachment[]>([]);
+  const [voiceNoteRecording, setVoiceNoteRecording] = useState(false);
   const [attachmentDropActive, setAttachmentDropActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [callId, setCallId] = useState<string | null>(null);
   const [callOpening, setCallOpening] = useState(false);
   const [callState, setCallState] = useState<CallState>("connecting");
@@ -578,7 +1162,12 @@ export function ConversationWorkspace({
   const [callTranscriptExpanded, setCallTranscriptExpanded] = useState(false);
   const [agentTasks, setAgentTasks] = useState<AgentTask[]>([]);
   const [agentWorkExpanded, setAgentWorkExpanded] = useState(false);
+  const [meetingModeOpen, setMeetingModeOpen] = useState(false);
+  const [meetingSourceCallId, setMeetingSourceCallId] = useState<string | null>(null);
+  const [meetingMinutesId, setMeetingMinutesId] = useState<string | null>(null);
+  const [desktopViewport, setDesktopViewport] = useState(false);
   const drawer = presentation === "drawer";
+  const callModal = Boolean(callOpening || callId || callError) && !(drawer && callCompact && desktopViewport);
   const unreadCount = useMemo(
     () => data.conversations.reduce((total, conversation) => total + conversation.unread_count, 0),
     [data.conversations],
@@ -588,6 +1177,9 @@ export function ConversationWorkspace({
   const messagesScrollerRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
   const workspaceRef = useRef<HTMLDivElement>(null);
+  const messageSearchDialogRef = useRef<HTMLDivElement>(null);
+  const mediaViewerDialogRef = useRef<HTMLDivElement>(null);
+  const callDialogRef = useRef<HTMLDivElement>(null);
   const draftAttachmentsRef = useRef<DraftAttachment[]>([]);
   const draftAttachmentsByConversationRef = useRef(new Map<string, DraftAttachment[]>());
   const draftAttachmentLoadSequenceRef = useRef(new Map<string, number>());
@@ -649,6 +1241,48 @@ export function ConversationWorkspace({
   const conversationListRequestRef = useRef(0);
   const messageRequestSequenceRef = useRef(0);
   const activeMessageRequestRef = useRef(new Map<string, number>());
+  const messageLongPressRef = useRef<{ timer: number; messageId: string; x: number; y: number } | null>(null);
+  const swipeBackRef = useRef<{ pointerId: number; x: number; y: number; latestX: number; latestY: number } | null>(null);
+
+  useDialogFocusBoundary({
+    active: messageSearchOpen,
+    containerRef: messageSearchDialogRef,
+    onEscape: () => setMessageSearchOpen(false),
+  });
+  useDialogFocusBoundary({
+    active: Boolean(mediaViewer),
+    containerRef: mediaViewerDialogRef,
+    onEscape: () => setMediaViewer(null),
+  });
+  useDialogFocusBoundary({
+    active: callModal,
+    containerRef: callDialogRef,
+  });
+
+  const cancelMessageLongPress = useCallback(() => {
+    if (messageLongPressRef.current) window.clearTimeout(messageLongPressRef.current.timer);
+    messageLongPressRef.current = null;
+  }, []);
+
+  const startMessageLongPress = useCallback((messageId: string, event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "mouse" || event.button !== 0) return;
+    if ((event.target as HTMLElement).closest("button, a, input, textarea, audio, select")) return;
+    cancelMessageLongPress();
+    const timer = window.setTimeout(() => {
+      messageLongPressRef.current = null;
+      setMessageMenuId(messageId);
+      navigator.vibrate?.(10);
+    }, CONVERSATION_MESSAGE_LONG_PRESS_MS);
+    messageLongPressRef.current = { timer, messageId, x: event.clientX, y: event.clientY };
+  }, [cancelMessageLongPress]);
+
+  const moveMessageLongPress = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const activePress = messageLongPressRef.current;
+    if (!activePress) return;
+    if (conversationLongPressMoved(activePress.x, activePress.y, event.clientX, event.clientY)) cancelMessageLongPress();
+  }, [cancelMessageLongPress]);
+
+  useEffect(() => cancelMessageLongPress, [cancelMessageLongPress]);
 
   const commitDraftAttachments = useCallback((
     update: (current: DraftAttachment[]) => DraftAttachment[],
@@ -691,7 +1325,7 @@ export function ConversationWorkspace({
 
   const updateAgentTask = useCallback(async (
     taskId: string,
-    action: "cancel" | "approve" | "reject",
+    action: "cancel" | "approve" | "reject" | "retry",
     artifactId?: string
   ) => {
     const conversationId = selectedIdRef.current;
@@ -734,7 +1368,7 @@ export function ConversationWorkspace({
     item.status === "preparing" || item.status === "uploading"
   ));
   const attachmentUploadFailed = draftAttachments.some((item) => item.status === "error");
-  const composerBusy = sending || attachmentUploadInProgress;
+  const composerBusy = sending || attachmentUploadInProgress || voiceNoteRecording;
   const callAgent = participants.find((participant) => participant.type === "agent") ?? null;
   const visibleAgentTasks = useMemo(() => {
     const active = agentTasks.filter((task) => ["queued", "running", "awaiting_approval"].includes(task.status));
@@ -742,7 +1376,7 @@ export function ConversationWorkspace({
     return [...active, ...recent].slice(0, 6);
   }, [agentTasks]);
   const latestCallTranscript = callTranscript.at(-1);
-  const handleTaskAction = useCallback((taskId: string, action: "cancel" | "approve" | "reject", artifactId?: string) => {
+  const handleTaskAction = useCallback((taskId: string, action: "cancel" | "approve" | "reject" | "retry", artifactId?: string) => {
     void updateAgentTask(taskId, action, artifactId).catch((reason) => {
       setError(reason instanceof Error ? reason.message : "Could not update background task");
     });
@@ -775,6 +1409,9 @@ export function ConversationWorkspace({
           created_at: entry.createdAt,
           edited_at: null,
           deleted_at: null,
+          reactions: [],
+          pinned_at: null,
+          pinned_by: null,
           attachments: entry.attachments,
           author: selfParticipant,
         },
@@ -919,6 +1556,7 @@ export function ConversationWorkspace({
       }
       setParticipants(body.participants);
       setAgentActivity(Array.isArray(body.agent_activity) ? body.agent_activity as ConversationAgentActivity[] : []);
+      setPinnedMessages(Array.isArray(body.pinned_messages) ? body.pinned_messages as ConversationMessage[] : []);
       const requestedMessage = requestedMessageIdRef.current
         ? incoming.find((message) => message.id === requestedMessageIdRef.current)
         : null;
@@ -1159,6 +1797,9 @@ export function ConversationWorkspace({
 
   const applyMessageMutation = useCallback((message: ConversationMessage) => {
     setMessages((current) => current.map((candidate) => candidate.id === message.id ? message : candidate));
+    setPinnedMessages((current) => message.pinned_at
+      ? current.map((candidate) => candidate.id === message.id ? message : candidate)
+      : current.filter((candidate) => candidate.id !== message.id));
     if (message.deleted_at) {
       setReplyingTo((current) => current?.id === message.id ? null : current);
       setEditingMessageId((current) => current === message.id ? null : current);
@@ -1247,6 +1888,63 @@ export function ConversationWorkspace({
       setMessageMutationId(null);
     }
   }, [applyMessageMutation, messageMutationId]);
+
+  const toggleMessageReaction = useCallback(async (
+    message: ConversationMessage,
+    reaction: ConversationMessageReactionValue
+  ) => {
+    const conversationId = selectedIdRef.current;
+    if (!conversationId || messageMutationId) return;
+    setMessageMenuId(null);
+    setMessageMutationId(message.id);
+    setError(null);
+    try {
+      const response = await fetch(`/api/conversations/${conversationId}/messages/${message.id}/reaction`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reaction }),
+      });
+      const result = await response.json().catch(() => ({})) as { reactions?: ConversationMessage["reactions"]; error?: string };
+      if (!response.ok || !result.reactions) throw new Error(result.error ?? "Could not update reaction");
+      setMessages((current) => current.map((candidate) => candidate.id === message.id
+        ? { ...candidate, reactions: result.reactions! }
+        : candidate));
+      setPinnedMessages((current) => current.map((candidate) => candidate.id === message.id
+        ? { ...candidate, reactions: result.reactions! }
+        : candidate));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not update reaction");
+    } finally {
+      setMessageMutationId(null);
+    }
+  }, [messageMutationId]);
+
+  const toggleMessagePin = useCallback(async (message: ConversationMessage) => {
+    const conversationId = selectedIdRef.current;
+    if (!conversationId || messageMutationId) return;
+    const nextPinned = !message.pinned_at;
+    setMessageMenuId(null);
+    setMessageMutationId(message.id);
+    setError(null);
+    try {
+      const response = await fetch(`/api/conversations/${conversationId}/messages/${message.id}/pin`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pinned: nextPinned }),
+      });
+      const result = await response.json().catch(() => ({})) as { pinned_at?: string | null; pinned_by?: string | null; error?: string };
+      if (!response.ok || !("pinned_at" in result)) throw new Error(result.error ?? "Could not update pinned message");
+      const updated = { ...message, pinned_at: result.pinned_at ?? null, pinned_by: result.pinned_by ?? null };
+      setMessages((current) => current.map((candidate) => candidate.id === message.id ? updated : candidate));
+      setPinnedMessages((current) => result.pinned_at
+        ? [updated, ...current.filter((candidate) => candidate.id !== message.id)].slice(0, 5)
+        : current.filter((candidate) => candidate.id !== message.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not update pinned message");
+    } finally {
+      setMessageMutationId(null);
+    }
+  }, [messageMutationId]);
 
   const discardFailedOutboxEntry = useCallback((entry: PendingConversationMessage) => {
     if (!window.confirm("Discard this unsent message from this device?")) return;
@@ -1438,6 +2136,14 @@ export function ConversationWorkspace({
     };
   }, []);
 
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 768px)");
+    const update = () => setDesktopViewport(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
   const removeDraftAttachment = useCallback((localId: string) => {
     const draft = draftAttachmentsRef.current.find((item) => item.localId === localId);
     if (!draft) return;
@@ -1460,6 +2166,10 @@ export function ConversationWorkspace({
 
   const selectConversation = useCallback((conversationId: string | null) => {
     if (conversationId === selectedId) return;
+    if (voiceNoteRecording) {
+      setError("Finish or cancel the voice note before changing chats.");
+      return;
+    }
     if (sending) {
       setError("Wait for the message to finish sending before changing chats.");
       return;
@@ -1487,11 +2197,60 @@ export function ConversationWorkspace({
     setMessageSearch({ query: "", results: [], loading: false, error: null, hasSearched: false });
     selectedIdRef.current = conversationId;
     setMessages([]);
+    setPinnedMessages([]);
     setParticipants([]);
     setAgentActivity([]);
     setConversationMenuOpen(false);
     setSelectedId(conversationId);
-  }, [selectedId, sending]);
+  }, [selectedId, sending, voiceNoteRecording]);
+
+  const resetConversationSwipeBack = useCallback(() => {
+    swipeBackRef.current = null;
+    setSwipeBackDragging(false);
+    setSwipeBackOffset(0);
+  }, []);
+
+  const startConversationSwipeBack = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const enabled = Boolean(
+      selectedId
+      && !sending
+      && !voiceNoteRecording
+      && !callOpening
+      && !callId
+      && !callError
+      && !meetingModeOpen
+      && !mediaViewer
+    );
+    if (!canStartConversationSwipeBack(event.clientX, event.pointerType, enabled)) return;
+    if ((event.target as HTMLElement).closest("button, a, input, textarea, audio, select")) return;
+    swipeBackRef.current = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      latestX: event.clientX,
+      latestY: event.clientY,
+    };
+    setSwipeBackDragging(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, [callError, callId, callOpening, mediaViewer, meetingModeOpen, selectedId, sending, voiceNoteRecording]);
+
+  const moveConversationSwipeBack = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const gesture = swipeBackRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    gesture.latestX = event.clientX;
+    gesture.latestY = event.clientY;
+    const progress = conversationSwipeBackProgress(gesture.x, gesture.y, event.clientX, event.clientY);
+    setSwipeBackOffset(progress.offset);
+    if (progress.cancelled) resetConversationSwipeBack();
+  }, [resetConversationSwipeBack]);
+
+  const finishConversationSwipeBack = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const gesture = swipeBackRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    const progress = conversationSwipeBackProgress(gesture.x, gesture.y, gesture.latestX, gesture.latestY);
+    resetConversationSwipeBack();
+    if (progress.committed) selectConversation(null);
+  }, [resetConversationSwipeBack, selectConversation]);
 
   const updateConversationPreferences = useCallback(async (
     changes: { notifications_muted?: boolean; archived?: boolean; pinned?: boolean }
@@ -1639,7 +2398,7 @@ export function ConversationWorkspace({
       if (await discardIfCancelled()) return;
       if (!file) throw new Error("Choose this file again to retry the upload.");
       if (!isConversationAttachmentMime(draft.mimeType)) {
-        throw new Error("Choose a JPEG, PNG, WebP or PDF file.");
+        throw new Error("Choose a JPEG, PNG, WebP, PDF or supported voice-note file.");
       }
       if (file.size <= 0 || file.size > MAX_CONVERSATION_ATTACHMENT_BYTES) {
         throw new Error("Attachments must be no larger than 25 MB.");
@@ -1654,6 +2413,10 @@ export function ConversationWorkspace({
         const form = new FormData();
         form.set("attachment_id", activeAttachmentId);
         form.set("file", file, file.name);
+        if (draft.voiceNoteDurationMs != null) {
+          form.set("voice_note", "true");
+          form.set("duration_ms", String(draft.voiceNoteDurationMs));
+        }
         let completedAttachment: ConversationAttachment | null = null;
         const upload = fetch(`/api/conversations/${conversationId}/attachments`, {
           method: "POST",
@@ -1697,6 +2460,10 @@ export function ConversationWorkspace({
           filename: file.name,
           mime_type: draft.mimeType,
           byte_size: file.size,
+          ...(draft.voiceNoteDurationMs != null ? {
+            voice_note: true,
+            duration_ms: draft.voiceNoteDurationMs,
+          } : {}),
         }),
       });
       const urlBody = await urlResponse.json();
@@ -1841,6 +2608,9 @@ export function ConversationWorkspace({
           stagedAttachmentId: attachment.status === "ready" ? null : attachment.id,
           attachment: attachment.status === "ready" ? attachment : null,
           error: null,
+          voiceNoteDurationMs: isVoiceNoteMetadata(attachment.metadata)
+            ? attachment.metadata.duration_ms
+            : null,
         }];
       });
       if (restored.length === 0) return;
@@ -1891,6 +2661,7 @@ export function ConversationWorkspace({
         stagedAttachmentId: null,
         attachment: null,
         error: null,
+        voiceNoteDurationMs: null,
       };
     });
     commitDraftAttachments((current) => [...current, ...drafts], conversationId);
@@ -1912,6 +2683,30 @@ export function ConversationWorkspace({
     }
     await Promise.all(uploads);
   }, [commitDraftAttachments, selectedId, uploadDraftAttachment]);
+
+  const addRecordedVoiceNote = useCallback((conversationId: string, file: File, durationMs: number) => {
+    if ((draftAttachmentsByConversationRef.current.get(conversationId)?.length ?? 0) >= MAX_CONVERSATION_ATTACHMENTS) {
+      setError(`Attach no more than ${MAX_CONVERSATION_ATTACHMENTS} files to one message.`);
+      return;
+    }
+    const draftAttachment: DraftAttachment = {
+      localId: `voice-note:${crypto.randomUUID()}`,
+      conversationId,
+      file,
+      filename: file.name,
+      mimeType: file.type,
+      byteSize: file.size,
+      previewUrl: null,
+      status: "uploading",
+      stagedAttachmentId: null,
+      attachment: null,
+      error: null,
+      voiceNoteDurationMs: durationMs,
+    };
+    setError(null);
+    commitDraftAttachments((current) => [...current, draftAttachment], conversationId);
+    void uploadDraftAttachment(draftAttachment);
+  }, [commitDraftAttachments, uploadDraftAttachment]);
 
   const sendMessage = useCallback(async (
     body: string,
@@ -1982,7 +2777,12 @@ export function ConversationWorkspace({
       setError("Message is too long.");
       return;
     }
-    const messageBody = body.trim() || `Shared ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}`;
+    const voiceNote = attachments.length === 1 && isVoiceNoteMetadata(attachments[0].metadata)
+      ? attachments[0]
+      : null;
+    const messageBody = body.trim() || (voiceNote
+      ? `Voice note · ${voiceNoteDurationLabel(voiceNote.metadata.duration_ms as number)}`
+      : `Shared ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}`);
     const createdAtMs = Math.max(Date.now(), lastOutboxCreatedAtMsRef.current + 1);
     lastOutboxCreatedAtMsRef.current = createdAtMs;
     const entry: PendingConversationMessage = {
@@ -1990,7 +2790,7 @@ export function ConversationWorkspace({
       ownerProfileId,
       conversationId,
       body: messageBody,
-      source: "text",
+      source: voiceNote ? "voice_note" : "text",
       replyToId: replyTarget?.id ?? null,
       attachmentIds: attachments.map((attachment) => attachment.id),
       attachments,
@@ -2181,6 +2981,7 @@ export function ConversationWorkspace({
   }, [currentUserId, flushPendingCallEnds]);
 
   const endCall = useCallback(async (options?: { preserveStartIntent?: boolean }) => {
+    postNativeVoiceBridgeEvent({ type: "call.end" });
     callActiveRef.current = false;
     realtimeActiveRef.current = false;
     realtimeConnectionGenerationRef.current += 1;
@@ -2247,6 +3048,35 @@ export function ConversationWorkspace({
     setCallTranscript([]);
     return callRecordSaved;
   }, [cancelActiveRealtimeTurn, persistCallEnd, selectedId]);
+
+  useEffect(() => {
+    const handleNativeVoiceCommand = (event: Event) => {
+      const detail = (event as CustomEvent<{ type?: string; message?: string; muted?: boolean }>).detail;
+      if (detail?.type === "end-requested" && callActiveRef.current && callIdRef.current) void endCall();
+      if (detail?.type === "native-audio-error" && callIdRef.current) {
+        setError(`The iPhone call audio session could not start. ${detail.message ?? "Please try again."}`);
+        if (callActiveRef.current) void endCall();
+      }
+      if (detail?.type === "mute-requested" && typeof detail.muted === "boolean" && callActiveRef.current) {
+        mutedRef.current = detail.muted;
+        setMuted(detail.muted);
+        microphoneStreamRef.current?.getAudioTracks().forEach((track) => {
+          track.enabled = !detail.muted;
+        });
+        if (!realtimeActiveRef.current) {
+          if (detail.muted) recognitionRef.current?.stop();
+          else {
+            try { recognitionRef.current?.start(); } catch { /* already active */ }
+          }
+        }
+      }
+      if (detail?.type === "mute-sync-error") {
+        setNotice(`The iPhone lock-screen mute control could not update. ${detail.message ?? "The in-app microphone control is still active."}`);
+      }
+    };
+    window.addEventListener("reslu-native-voice", handleNativeVoiceCommand);
+    return () => window.removeEventListener("reslu-native-voice", handleNativeVoiceCommand);
+  }, [endCall]);
 
   const handleVoiceText = useCallback((text: string) => {
     const command = text.trim().toLowerCase().replace(/[.!?]+$/, "");
@@ -2414,7 +3244,8 @@ export function ConversationWorkspace({
         }
         if (statusBody.status === "failed") throw new Error(statusBody.error ?? "The RESLU agent could not answer");
         await new Promise<void>((resolve, reject) => {
-          const timer = window.setTimeout(resolve, 650);
+          const elapsedMs = timing.consultStartedAt === null ? 0 : performance.now() - timing.consultStartedAt;
+          const timer = window.setTimeout(resolve, realtimeConsultPollDelay(elapsedMs));
           abortController.signal.addEventListener("abort", () => {
             window.clearTimeout(timer);
             reject(new DOMException("Aborted", "AbortError"));
@@ -2509,6 +3340,21 @@ export function ConversationWorkspace({
       setCallState("listening");
     }
   }, [beginRealtimeTurnTiming, callAgent, cancelActiveRealtimeConsult, loadAgentTasks, loadMessages, selectedId, sendRealtimeEvent, stopRealtimeProgressCue, upsertCallTranscript]);
+
+  const runRealtimeMeetingMode = useCallback((toolCallId: string) => {
+    if (!selectedId || callAgent?.agent_slug !== "aria" || handledToolCallIdsRef.current.has(toolCallId)) return;
+    handledToolCallIdsRef.current.add(toolCallId);
+    const sourceCallId = callIdRef.current;
+    upsertCallTranscript({
+      id: `system-meeting-${toolCallId}`,
+      speaker: "system",
+      text: "Switching to silent Meeting Mode",
+      final: true,
+    });
+    setMeetingSourceCallId(sourceCallId);
+    setMeetingMinutesId(null);
+    void endCall().then(() => setMeetingModeOpen(true));
+  }, [callAgent, endCall, selectedId, upsertCallTranscript]);
 
   const startRealtimeProgressCue = useCallback((speechStoppedAt: number) => {
     const previous = activeRealtimeProgressCueRef.current;
@@ -2670,6 +3516,10 @@ export function ConversationWorkspace({
       void runRealtimeTask(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}", true);
       return;
     }
+    if (event.type === "response.function_call_arguments.done" && event.call_id && event.name === "start_meeting_mode") {
+      runRealtimeMeetingMode(event.call_id);
+      return;
+    }
     if (event.type === "response.done" && event.response) {
       const progressCueId = realtimeProgressCueId(event.response);
       if (progressCueId) {
@@ -2687,6 +3537,9 @@ export function ConversationWorkspace({
         if (output.type === "function_call" && output.name === "start_reslu_task" && output.call_id) {
           void runRealtimeTask(output.call_id, responseId ?? null, output.arguments ?? "{}");
         }
+        if (output.type === "function_call" && output.name === "start_meeting_mode" && output.call_id) {
+          runRealtimeMeetingMode(output.call_id);
+        }
       }
       if (event.response.status === "completed" && !(event.response.output ?? []).some((item) => item.type === "function_call")) {
         setCallState(activeRealtimeConsultRef.current ? "thinking" : "listening");
@@ -2697,7 +3550,7 @@ export function ConversationWorkspace({
       setCallError("The realtime call hit an error. Please try again.");
       setCallState("reconnecting");
     }
-  }, [interruptRealtimePlayback, runRealtimeConsult, runRealtimeTask, sendRealtimeEvent, startRealtimeProgressCue, upsertCallTranscript]);
+  }, [interruptRealtimePlayback, runRealtimeConsult, runRealtimeMeetingMode, runRealtimeTask, sendRealtimeEvent, startRealtimeProgressCue, upsertCallTranscript]);
 
   const createCallRecord = useCallback(async () => {
     const conversationId = callConversationIdRef.current ?? selectedId;
@@ -2729,6 +3582,7 @@ export function ConversationWorkspace({
       realtimeActive: realtimeActiveRef.current,
       online: navigator.onLine,
       visible: document.visibilityState === "visible",
+      backgroundCapable: nativeVoiceBridgeAvailable(),
       inFlight: realtimeReconnectInFlightRef.current,
       attempts: realtimeReconnectAttemptsRef.current,
       microphoneReady: mediaStreamCanResume(microphoneStreamRef.current),
@@ -2755,6 +3609,7 @@ export function ConversationWorkspace({
     const channel = peer.createDataChannel("oai-events");
     channel.onopen = () => {
       if (generation !== realtimeConnectionGenerationRef.current || !callActiveRef.current) return;
+      postNativeVoiceBridgeEvent({ type: "call.connected" });
       realtimeReconnectAttemptsRef.current = 0;
       realtimeReconnectInFlightRef.current = false;
       setCallOpening(false);
@@ -2837,6 +3692,7 @@ export function ConversationWorkspace({
       realtimeActive: realtimeActiveRef.current,
       online: navigator.onLine,
       visible: document.visibilityState === "visible",
+      backgroundCapable: nativeVoiceBridgeAvailable(),
       inFlight: realtimeReconnectInFlightRef.current,
       attempts: realtimeReconnectAttemptsRef.current,
       microphoneReady: mediaStreamCanResume(microphoneStreamRef.current),
@@ -2916,6 +3772,7 @@ export function ConversationWorkspace({
     const SpeechRecognition = (window as Window & { SpeechRecognition?: SpeechRecognitionConstructor; webkitSpeechRecognition?: SpeechRecognitionConstructor }).SpeechRecognition
       ?? (window as Window & { webkitSpeechRecognition?: SpeechRecognitionConstructor }).webkitSpeechRecognition;
     if (!SpeechRecognition) {
+      postNativeVoiceBridgeEvent({ type: "call.end" });
       setCallOpening(false);
       setCallError("Live speech recognition is unavailable here. Open RESLU directly in Safari, not from a Home Screen icon or another app.");
       return;
@@ -2968,6 +3825,7 @@ export function ConversationWorkspace({
         if (!callActiveRef.current || event.error === "aborted") return;
         if (isFatalSpeechRecognitionError(event.error)) {
           callActiveRef.current = false;
+          postNativeVoiceBridgeEvent({ type: "call.end" });
           setCallOpening(false);
           setCallError(speechRecognitionErrorMessage(event.error));
           recognition.abort();
@@ -2980,7 +3838,7 @@ export function ConversationWorkspace({
         try { recognition.start(); } catch { /* already restarting */ }
       };
       recognitionRef.current = recognition;
-      recognition.start();
+      if (!mutedRef.current) recognition.start();
       setCallState("listening");
 
       const activeCallId = existingCallId ?? await createCallRecord();
@@ -2996,8 +3854,10 @@ export function ConversationWorkspace({
       callIdRef.current = activeCallId;
       setCallId(activeCallId);
       setCallOpening(false);
+      postNativeVoiceBridgeEvent({ type: "call.connected" });
     } catch (reason) {
       callActiveRef.current = false;
+      postNativeVoiceBridgeEvent({ type: "call.end" });
       recognitionRef.current?.abort();
       recognitionRef.current = null;
       setCallOpening(false);
@@ -3016,6 +3876,12 @@ export function ConversationWorkspace({
     realtimeReconnectInFlightRef.current = false;
     callConversationIdRef.current ??= selectedId;
     clientCallIdRef.current ??= crypto.randomUUID();
+    const nativeStartEvent = {
+      type: "call.start",
+      callId: clientCallIdRef.current,
+      conversationId: selectedId,
+      agent: callAgent.display_name,
+    } as const;
     lastRealtimeSpeechStoppedAtRef.current = null;
     activeResponseIdRef.current = null;
     activeOutputAudioResponseIdRef.current = null;
@@ -3038,12 +3904,14 @@ export function ConversationWorkspace({
     callActiveRef.current = true;
     messages.forEach((message) => spokenIdsRef.current.add(message.id));
 
-    if (!("RTCPeerConnection" in window) || !navigator.mediaDevices?.getUserMedia) {
-      await startLegacyCall();
-      return;
-    }
     try {
+      await prepareNativeVoiceSession(nativeStartEvent);
+      if (!("RTCPeerConnection" in window) || !navigator.mediaDevices?.getUserMedia) {
+        await startLegacyCall();
+        return;
+      }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getAudioTracks().forEach((track) => { track.enabled = !mutedRef.current; });
       microphoneStreamRef.current = stream;
       const activeCallId = await createCallRecord();
       if (!callActiveRef.current) {
@@ -3067,6 +3935,7 @@ export function ConversationWorkspace({
         return;
       }
       callActiveRef.current = false;
+      postNativeVoiceBridgeEvent({ type: "call.end" });
       setCallOpening(false);
       setCallError(error instanceof DOMException ? speechRecognitionErrorMessage(error.name) : error.message || "Could not start call");
     }
@@ -3080,14 +3949,14 @@ export function ConversationWorkspace({
   }
 
   function toggleMute() {
-    setMuted((value) => {
-      const next = !value;
-      if (realtimeActiveRef.current) {
-        microphoneStreamRef.current?.getAudioTracks().forEach((track) => { track.enabled = !next; });
-      } else if (next) recognitionRef.current?.stop();
-      else if (callActiveRef.current) { try { recognitionRef.current?.start(); } catch { /* already active */ } }
-      return next;
-    });
+    const next = !mutedRef.current;
+    mutedRef.current = next;
+    setMuted(next);
+    if (realtimeActiveRef.current) {
+      microphoneStreamRef.current?.getAudioTracks().forEach((track) => { track.enabled = !next; });
+    } else if (next) recognitionRef.current?.stop();
+    else if (callActiveRef.current) { try { recognitionRef.current?.start(); } catch { /* already active */ } }
+    postNativeVoiceBridgeEvent({ type: "call.muted", muted: next });
   }
 
   function repeatLastReply() {
@@ -3124,7 +3993,7 @@ export function ConversationWorkspace({
     <div
       ref={workspaceRef}
       className={clsx(
-        "flex min-h-0 min-w-0 overflow-hidden border border-[#d4cbbd] bg-[#f5f1e8]",
+        "conversation-accessible flex min-h-0 min-w-0 overflow-hidden border border-[#d4cbbd] bg-[#f5f1e8]",
         drawer
           ? "relative h-full w-full border-0"
           : "fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-20 h-[var(--conversation-vh,100dvh)] md:relative md:inset-auto md:z-auto md:h-[calc(100vh-7.5rem)] md:min-h-[560px]",
@@ -3133,7 +4002,7 @@ export function ConversationWorkspace({
       <aside className={clsx("flex min-h-0 w-full shrink-0 flex-col border-r border-[#d4cbbd] bg-[#ede8de]", drawer ? "md:w-64" : "md:w-80", selectedId && "hidden md:flex")}>
         <div className="flex items-center justify-between border-b border-[#d4cbbd] py-3 pl-20 pr-3 md:p-4">
           <p className="label-caps">Conversations</p>
-          <button onClick={() => setNewOpen(true)} disabled={sending} className="bg-nearblack px-3 py-2 text-caption text-white disabled:opacity-30">New chat</button>
+          <button onClick={() => setNewOpen(true)} disabled={sending || voiceNoteRecording} className="bg-nearblack px-3 py-2 text-caption text-white disabled:opacity-30">New chat</button>
         </div>
         {data.conversations.length === 0 ? (
           <div className="p-6 text-body text-charcoal/60">
@@ -3180,7 +4049,7 @@ export function ConversationWorkspace({
             ) : (
               <div className="min-h-0 overflow-y-auto">
                 {filteredConversations.map((conversation) => (
-                  <button key={conversation.id} onClick={() => selectConversation(conversation.id)} disabled={sending && selectedId !== conversation.id} className={clsx("flex w-full gap-3 border-b border-[#dcd6cc] p-4 text-left disabled:opacity-40", selectedId === conversation.id ? "bg-[#f5f1e8]" : "hover:bg-white/30")}>
+                  <button key={conversation.id} onClick={() => selectConversation(conversation.id)} disabled={(sending || voiceNoteRecording) && selectedId !== conversation.id} className={clsx("flex w-full gap-3 border-b border-[#dcd6cc] p-4 text-left disabled:opacity-40", selectedId === conversation.id ? "bg-[#f5f1e8]" : "hover:bg-white/30")}>
                     <Avatar participant={conversation.participants.find((p) => !p.is_self) ?? conversation.participants[0]} />
                     <span className="min-w-0 flex-1">
                       <span className="flex min-w-0 items-center gap-2">
@@ -3217,6 +4086,15 @@ export function ConversationWorkspace({
 
       <section
         className={clsx("relative min-w-0 max-w-full flex-1 flex-col overflow-x-hidden", selectedId ? "flex" : "hidden md:flex")}
+        onPointerDown={startConversationSwipeBack}
+        onPointerMove={moveConversationSwipeBack}
+        onPointerUp={finishConversationSwipeBack}
+        onPointerCancel={resetConversationSwipeBack}
+        style={{
+          touchAction: "pan-y",
+          transform: swipeBackOffset > 0 ? `translateX(${swipeBackOffset}px)` : undefined,
+          transition: swipeBackDragging ? "none" : "transform 140ms ease-out",
+        }}
         onDragEnter={(event) => {
           if (!selectedId || !event.dataTransfer.types.includes("Files")) return;
           event.preventDefault();
@@ -3253,18 +4131,33 @@ export function ConversationWorkspace({
         {selectedConversation ? (
           <>
             <header className="sticky top-0 z-10 flex min-h-16 shrink-0 items-center gap-2 border-b border-[#d4cbbd] bg-[#f5f1e8]/95 py-2 pl-16 pr-2 backdrop-blur md:min-h-20 md:gap-3 md:px-4 md:py-3">
-              <button onClick={() => selectConversation(null)} disabled={sending} className="flex h-11 w-8 shrink-0 items-center justify-center text-xl text-charcoal/70 disabled:opacity-30 md:hidden" aria-label="Back to conversations">‹</button>
+              <button onClick={() => selectConversation(null)} disabled={sending || voiceNoteRecording} className="flex h-11 w-8 shrink-0 items-center justify-center text-xl text-charcoal/70 disabled:opacity-30 md:hidden" aria-label="Back to conversations">‹</button>
               {headerParticipant && <Avatar participant={headerParticipant} />}
               <div className="min-w-0 flex-1">
                 <h2 className="truncate font-display text-subhead text-nearblack">{selectedConversation.display_title}</h2>
                 <p className="mt-1 truncate text-caption text-charcoal/50">{participants.map((participant) => participant.display_name).join(", ")}</p>
               </div>
               {callAgent && (
-                <button onClick={() => void startCall()} aria-label={`Call ${callAgent.display_name}`} className="flex h-11 shrink-0 items-center justify-center gap-2 border border-nearblack px-3 text-nearblack hover:bg-nearblack hover:text-white md:px-4">
+                <button disabled={voiceNoteRecording} onClick={() => void startCall()} aria-label={`Call ${callAgent.display_name}`} className="flex h-11 shrink-0 items-center justify-center gap-2 border border-nearblack px-3 text-nearblack hover:bg-nearblack hover:text-white disabled:opacity-35 md:px-4">
                   <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M7.2 3.5 9.5 8l-2.2 1.7a15.4 15.4 0 0 0 7 7l1.7-2.2 4.5 2.3-.7 3.2c-.2.8-.9 1.4-1.8 1.4A15.5 15.5 0 0 1 2.6 6c0-.9.6-1.6 1.4-1.8l3.2-.7Z" />
                   </svg>
                   <span className="hidden text-subhead sm:inline">Call {callAgent.display_name}</span>
+                </button>
+              )}
+              {callAgent?.agent_slug === "aria" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMeetingSourceCallId(null);
+                    setMeetingMinutesId(null);
+                    setMeetingModeOpen(true);
+                  }}
+                  aria-label="Ask Aria to take meeting minutes"
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-[#c9b998] text-caption font-semibold text-nearblack hover:bg-[#e9e2d6] sm:w-auto sm:px-3"
+                >
+                  <span aria-hidden className="text-lg sm:hidden">≣</span>
+                  <span className="hidden sm:inline">Take minutes</span>
                 </button>
               )}
               <div className="relative shrink-0">
@@ -3293,6 +4186,20 @@ export function ConversationWorkspace({
                       <span>Search messages</span>
                       <span aria-hidden className="text-charcoal/40">⌕</span>
                     </button>
+                    {selectedConversation.kind === "group" && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setConversationMenuOpen(false);
+                          setGroupDetailsOpen(true);
+                        }}
+                        className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left hover:bg-[#f5f1e8]"
+                      >
+                        <span>Group details</span>
+                        <span aria-hidden className="text-charcoal/40">◎</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       role="menuitem"
@@ -3342,7 +4249,7 @@ export function ConversationWorkspace({
                 <div className="grid max-h-[46vh] min-w-0 max-w-full grid-cols-1 gap-3 overflow-y-auto pb-1 md:flex md:max-h-52 md:snap-x md:overflow-x-auto md:overflow-y-hidden">
                   {visibleAgentTasks.map((task, index) => (
                     <div key={task.id} className={clsx("min-w-0 max-w-full", index > 0 && !agentWorkExpanded && "hidden md:block", "md:w-80 md:shrink-0 md:snap-start") }>
-                      <AgentTaskCard task={task} compact onAction={handleTaskAction} />
+                      <AgentTaskCard task={task} compact canRetry={task.requested_by === selfParticipant?.id && task.retry_count < 3} onAction={handleTaskAction} />
                     </div>
                   ))}
                 </div>
@@ -3350,16 +4257,16 @@ export function ConversationWorkspace({
             )}
 
             {messageSearchOpen && (
-              <div className="absolute inset-0 z-40 flex min-h-0 flex-col bg-[#f5f1e8]">
+              <div ref={messageSearchDialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Search messages and files" className="absolute inset-0 z-40 flex min-h-0 flex-col bg-[#f5f1e8]">
                 <div className="flex min-h-16 shrink-0 items-center justify-between gap-4 border-b border-[#d4cbbd] py-3 pl-16 pr-3 md:min-h-20 md:px-5">
                   <div className="min-w-0">
-                    <p className="label-caps">Search messages</p>
+                    <p className="label-caps">Search messages and files</p>
                     <p className="mt-1 truncate text-caption text-charcoal/50">{selectedConversation.display_title}</p>
                   </div>
                   <button
                     type="button"
                     onClick={() => setMessageSearchOpen(false)}
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-lg text-charcoal/65 hover:bg-[#e9e2d6]"
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-lg text-charcoal/65 hover:bg-[#e9e2d6]"
                     aria-label="Close message search"
                   >
                     ×
@@ -3373,7 +4280,7 @@ export function ConversationWorkspace({
                       value={messageSearch.query}
                       maxLength={100}
                       onChange={(event) => setMessageSearch((current) => ({ ...current, query: event.target.value, error: null }))}
-                      placeholder="Search this conversation"
+                      placeholder="Search messages and file names"
                       className="min-w-0 flex-1 rounded-xl border border-[#cfc6b8] bg-white px-4 py-3 text-body text-nearblack outline-none focus:border-nearblack"
                     />
                     <button
@@ -3387,10 +4294,10 @@ export function ConversationWorkspace({
                 </form>
                 <div className="min-h-0 flex-1 overflow-y-auto">
                   {messageSearch.hasSearched && !messageSearch.loading && messageSearch.results.length === 0 && !messageSearch.error && (
-                    <p className="p-8 text-center text-body text-charcoal/50">No matching messages.</p>
+                    <p className="p-8 text-center text-body text-charcoal/50">No matching messages or files.</p>
                   )}
                   {!messageSearch.hasSearched && (
-                    <p className="p-8 text-center text-body text-charcoal/50">Search the full conversation history, not just the messages currently on screen.</p>
+                    <p className="p-8 text-center text-body text-charcoal/50">Search the full conversation history and private file names, not just what is currently on screen.</p>
                   )}
                   {messageSearch.results.map((message) => (
                     <button
@@ -3405,6 +4312,15 @@ export function ConversationWorkspace({
                           <span className="shrink-0 text-[10px] text-charcoal/40">{timeLabel(message.created_at)}</span>
                         </span>
                         <span className="mt-1.5 block max-h-12 overflow-hidden text-body leading-6 text-charcoal/70">{message.body}</span>
+                        {(message.search_match?.attachment_filenames.length ?? 0) > 0 && (
+                          <span className="mt-2 flex flex-wrap gap-1.5">
+                            {message.search_match?.attachment_filenames.map((filename, index) => (
+                              <span key={`${message.id}:${index}:${filename}`} className="max-w-full truncate rounded-full bg-[#e8e1d5] px-2.5 py-1 text-[10px] font-medium text-charcoal/70">
+                                File · {filename}
+                              </span>
+                            ))}
+                          </span>
+                        )}
                       </span>
                     </button>
                   ))}
@@ -3418,6 +4334,24 @@ export function ConversationWorkspace({
                 <button type="button" onClick={() => void returnToLatestMessages()} className="shrink-0 font-semibold text-nearblack underline underline-offset-2">
                   Back to latest
                 </button>
+              </div>
+            )}
+
+            {pinnedMessages.length > 0 && (
+              <div className="shrink-0 border-b border-[#d4cbbd] bg-[#f5f1e8] px-3 py-2 md:px-5" aria-label="Pinned messages">
+                <div className="mx-auto flex max-w-3xl items-center gap-2 overflow-x-auto">
+                  <span className="shrink-0 text-[10px] font-semibold uppercase tracking-widest text-charcoal/45">Pinned</span>
+                  {pinnedMessages.map((message) => (
+                    <button
+                      key={message.id}
+                      type="button"
+                      onClick={() => jumpToReferencedMessage(message.id)}
+                      className="max-w-64 shrink-0 truncate rounded-full border border-[#d4cbbd] bg-white/70 px-3 py-1.5 text-left text-caption text-charcoal/70 hover:border-charcoal/40 hover:text-nearblack"
+                    >
+                      <span aria-hidden>📌 </span>{message.body}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -3447,25 +4381,71 @@ export function ConversationWorkspace({
               )}
               {messages.length === 0 && <p className="mx-auto mt-20 max-w-sm text-center text-body text-charcoal/50">This is the beginning of the conversation. Its history will stay here for everyone in the chat.</p>}
               <div className="mx-auto max-w-3xl space-y-4">
-                {timelineItems.map(({ message, pending }) => {
+                {timelineItems.map(({ message, pending }, index) => {
                   const own = message.author.is_self;
-                  const record = message.kind === "call_record" || message.kind === "meeting_record";
+                  const previousMessage = timelineItems[index - 1]?.message;
+                  const showDaySeparator = !previousMessage || conversationDayKey(previousMessage.created_at) !== conversationDayKey(message.created_at);
+                  const daySeparator = showDaySeparator ? (
+                    <div className="sticky top-2 z-[5] flex justify-center py-1" role="separator" aria-label={conversationDayLabel(message.created_at)}>
+                      <span className="rounded-full border border-[#d4cbbd] bg-[#f5f1e8]/95 px-3 py-1 text-[11px] font-semibold text-charcoal/60 shadow-sm backdrop-blur">
+                        {conversationDayLabel(message.created_at)}
+                      </span>
+                    </div>
+                  ) : null;
+                  const record = message.kind === "call_record" || message.kind === "meeting_record" || message.kind === "system";
+                  const voiceNoteAttachment = message.attachments.find((attachment) => (
+                    conversationAttachmentKind(attachment.mime_type) === "audio"
+                    && isVoiceNoteMetadata(attachment.metadata)
+                  )) ?? null;
                   const repliedMessage = message.reply_to_id ? timelineMessageById.get(message.reply_to_id) ?? null : null;
                   const canEdit = own
                     && !pending
                     && !message.deleted_at
+                    && !voiceNoteAttachment
                     && message.kind === "text"
                     && Date.now() - new Date(message.created_at).getTime() <= 15 * 60 * 1000;
                   if (record) return (
-                    <div key={message.id} className="border-y border-[#d4cbbd] py-3 text-center">
-                      <p className="label-caps">{message.kind === "call_record" ? "Call completed" : "Meeting completed"}</p>
-                      <p className="mt-2 text-caption text-charcoal/60">{message.body}</p>
-                    </div>
+                    <Fragment key={message.id}>
+                      {daySeparator}
+                      <div id={`conversation-message-${message.id}`} className="conversation-timeline-item border-y border-[#d4cbbd] py-3 text-center">
+                        <p className="label-caps">{message.kind === "call_record" ? "Call completed" : message.kind === "meeting_record" ? "Meeting completed" : "Group update"}</p>
+                        <p className="mt-2 text-caption text-charcoal/60">{message.body}</p>
+                        {message.kind === "meeting_record" && typeof message.metadata.meeting_minutes_id === "string" && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMeetingSourceCallId(null);
+                              setMeetingMinutesId(message.metadata.meeting_minutes_id as string);
+                              setMeetingModeOpen(true);
+                            }}
+                            className="mt-3 rounded-full border border-nearblack px-4 py-2 text-caption font-semibold text-nearblack hover:bg-nearblack hover:text-white"
+                          >
+                            Open filed minutes
+                          </button>
+                        )}
+                      </div>
+                    </Fragment>
                   );
                   return (
-                    <div id={`conversation-message-${message.id}`} key={message.id} className={clsx("flex gap-3", own && "flex-row-reverse")}>
+                    <Fragment key={message.id}>
+                    {daySeparator}
+                    <div
+                      id={`conversation-message-${message.id}`}
+                      className={clsx(
+                        "conversation-timeline-item flex gap-3",
+                        own && "flex-row-reverse",
+                        (messageMenuId === message.id || editingMessageId === message.id) && "conversation-timeline-item-active"
+                      )}
+                    >
                       <Avatar participant={message.author} />
-                      <div className={clsx("group relative min-w-0 max-w-[78%] border px-3 py-3 md:px-4", own ? "border-nearblack bg-nearblack text-white" : "border-[#d4cbbd] bg-[#f5f1e8] text-charcoal")}>
+                      <div
+                        data-message-long-press={message.id}
+                        onPointerDown={(event) => startMessageLongPress(message.id, event)}
+                        onPointerMove={moveMessageLongPress}
+                        onPointerUp={cancelMessageLongPress}
+                        onPointerCancel={cancelMessageLongPress}
+                        className={clsx("group relative min-w-0 max-w-[78%] border px-3 py-3 md:px-4", own ? "border-nearblack bg-nearblack text-white" : "border-[#d4cbbd] bg-[#f5f1e8] text-charcoal")}
+                      >
                         <div className="flex items-baseline gap-2">
                           <span className={clsx("text-caption font-semibold", own ? "text-white" : "text-nearblack")}>{message.author.display_name}</span>
                           <span className={clsx("text-[10px]", own ? "text-white/45" : "text-charcoal/40")}>{timeLabel(message.created_at)}</span>
@@ -3475,16 +4455,45 @@ export function ConversationWorkspace({
                             aria-label={`Actions for message from ${message.author.display_name}`}
                             aria-haspopup="menu"
                             aria-expanded={messageMenuId === message.id}
-                            className={clsx("ml-auto -mr-1 flex h-7 w-7 items-center justify-center rounded-full text-[11px] tracking-widest transition-opacity focus:opacity-100 md:opacity-0 md:group-hover:opacity-100", own ? "text-white/65 hover:bg-white/10" : "text-charcoal/55 hover:bg-black/5")}
+                            className={clsx("ml-auto -my-2 -mr-2 flex h-11 w-11 items-center justify-center rounded-full text-[11px] tracking-widest transition-opacity focus:opacity-100 md:opacity-0 md:group-hover:opacity-100", own ? "text-white/65 hover:bg-white/10" : "text-charcoal/55 hover:bg-black/5")}
                           >
                             <span aria-hidden>•••</span>
                           </button>
                         </div>
                         {messageMenuId === message.id && (
-                          <div role="menu" className="absolute right-2 top-10 z-20 w-36 overflow-hidden rounded-xl border border-[#d4cbbd] bg-white py-1 text-caption text-nearblack shadow-2xl">
+                          <div role="menu" className="absolute right-2 top-10 z-20 w-48 overflow-hidden rounded-xl border border-[#d4cbbd] bg-white py-1 text-caption text-nearblack shadow-2xl">
+                            {!pending && !message.deleted_at && (
+                              <div className="flex items-center justify-between border-b border-[#eee8de] px-2 py-2" aria-label="React to message">
+                                {CONVERSATION_MESSAGE_REACTIONS.map((reaction) => (
+                                  <button
+                                    key={reaction}
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => void toggleMessageReaction(message, reaction)}
+                                    aria-label={`React ${reaction}`}
+                                    className="flex h-11 w-11 items-center justify-center rounded-full text-base hover:bg-[#f5f1e8]"
+                                  >
+                                    {reaction}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                             {!pending && !message.deleted_at && (
                               <button type="button" role="menuitem" onClick={() => beginReply(message)} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f1e8]">
                                 Reply
+                              </button>
+                            )}
+                            {!pending && !message.deleted_at && message.kind === "text" && (
+                              <button
+                                type="button"
+                                role="menuitem"
+                                onClick={() => {
+                                  setMessageMenuId(null);
+                                  setForwardingMessage(message);
+                                }}
+                                className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f1e8]"
+                              >
+                                Forward
                               </button>
                             )}
                             {!message.deleted_at && (
@@ -3495,6 +4504,11 @@ export function ConversationWorkspace({
                             {canEdit && (
                               <button type="button" role="menuitem" onClick={() => beginMessageEdit(message)} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f1e8]">
                                 Edit
+                              </button>
+                            )}
+                            {!pending && !message.deleted_at && (
+                              <button type="button" role="menuitem" onClick={() => void toggleMessagePin(message)} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f1e8]">
+                                {message.pinned_at ? "Unpin" : "Pin message"}
                               </button>
                             )}
                             {own && !pending && !message.deleted_at && message.kind === "text" && (
@@ -3535,15 +4549,22 @@ export function ConversationWorkspace({
                             </div>
                             <p className="mt-2 text-[9px] uppercase tracking-widest text-white/40">Editing changes the message history; it does not resend the request.</p>
                           </div>
-                        ) : (
+                        ) : !voiceNoteAttachment ? (
                           <p className={clsx("mt-2 whitespace-pre-wrap text-body leading-relaxed", message.deleted_at && "italic opacity-60")}>{message.body}</p>
-                        )}
+                        ) : null}
                         {!message.deleted_at && (message.attachments ?? []).length > 0 && (
                           <div className={clsx("mt-3 grid gap-2", message.attachments.length > 1 && "grid-cols-2")}>
                             {message.attachments.map((attachment) => {
-                              const imageAttachment = conversationAttachmentKind(attachment.mime_type) === "image";
+                              const attachmentKind = conversationAttachmentKind(attachment.mime_type);
+                              const imageAttachment = attachmentKind === "image";
                               if (imageAttachment && attachment.url) return (
-                                <a key={attachment.id} href={attachment.url} target="_blank" rel="noreferrer" className={clsx("block overflow-hidden border", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/50")}>
+                                <button
+                                  key={attachment.id}
+                                  type="button"
+                                  onClick={() => setMediaViewer({ url: attachment.url!, filename: attachment.filename, author: message.author.display_name })}
+                                  aria-label={`View ${attachment.filename} full screen`}
+                                  className={clsx("block w-full overflow-hidden border text-left", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/50")}
+                                >
                                   <Image
                                     src={attachment.url}
                                     alt={attachment.filename}
@@ -3553,11 +4574,20 @@ export function ConversationWorkspace({
                                     className="h-36 w-full object-cover md:h-48"
                                   />
                                   <span className="block truncate px-2 py-2 text-[10px] opacity-65">{attachment.filename}</span>
-                                </a>
+                                </button>
+                              );
+                              if (attachmentKind === "audio" && attachment.url && isVoiceNoteMetadata(attachment.metadata)) return (
+                                <div key={attachment.id} className={clsx("min-w-[240px] rounded-xl border p-3", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/55") }>
+                                  <div className="mb-2 flex items-center justify-between gap-3 text-[10px] uppercase tracking-widest opacity-60">
+                                    <span>Voice note</span>
+                                    <span>{voiceNoteDurationLabel(attachment.metadata.duration_ms)}</span>
+                                  </div>
+                                  <audio controls playsInline preload="metadata" src={attachment.url} className="h-10 w-full" aria-label={`Voice note from ${message.author.display_name}`} />
+                                </div>
                               );
                               return (
                                 <a key={attachment.id} href={attachment.url ?? undefined} target="_blank" rel="noreferrer" className={clsx("flex min-w-0 items-center gap-3 border px-3 py-3", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/50", !attachment.url && "pointer-events-none opacity-50")}>
-                                  <span aria-hidden className="flex h-10 w-10 shrink-0 items-center justify-center border border-current text-[10px] font-semibold">{imageAttachment ? "IMG" : "PDF"}</span>
+                                  <span aria-hidden className="flex h-10 w-10 shrink-0 items-center justify-center border border-current text-[10px] font-semibold">{imageAttachment ? "IMG" : attachmentKind === "audio" ? "AUDIO" : "PDF"}</span>
                                   <span className="min-w-0">
                                     <span className="block truncate text-caption font-semibold">{attachment.filename}</span>
                                     <span className="mt-1 block text-[10px] opacity-55">{fileSizeLabel(attachment.byte_size)}</span>
@@ -3567,6 +4597,30 @@ export function ConversationWorkspace({
                             })}
                           </div>
                         )}
+                        {!message.deleted_at && (message.reactions ?? []).length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5" aria-label="Message reactions">
+                            {(message.reactions ?? []).map((reaction) => (
+                              <button
+                                key={reaction.reaction}
+                                type="button"
+                                onClick={() => void toggleMessageReaction(message, reaction.reaction)}
+                                disabled={messageMutationId === message.id}
+                                aria-label={`${reaction.reaction}, ${reaction.count}${reaction.self_reacted ? ", reacted by you" : ""}`}
+                                className={clsx(
+                                  "rounded-full border px-2 py-1 text-caption disabled:opacity-40",
+                                  reaction.self_reacted
+                                    ? own ? "border-white/55 bg-white/20 text-white" : "border-charcoal/45 bg-white text-nearblack"
+                                    : own ? "border-white/20 bg-white/10 text-white/75" : "border-[#d4cbbd] bg-white/60 text-charcoal/65"
+                                )}
+                              >
+                                {reaction.reaction} {reaction.count}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {!message.deleted_at && message.pinned_at && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Pinned</p>}
+                        {!message.deleted_at && message.metadata.source === "forward" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Forwarded</p>}
+                        {!message.deleted_at && message.metadata.source === "voice_note" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Voice note</p>}
                         {!message.deleted_at && message.metadata.source === "voice" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Voice transcript</p>}
                         {!message.deleted_at && message.edited_at && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Edited</p>}
                         {own && (pending || message.client_message_id) && (
@@ -3618,6 +4672,7 @@ export function ConversationWorkspace({
                         )}
                       </div>
                     </div>
+                    </Fragment>
                   );
                 })}
                 {!historyAnchorMessageId && agentActivity.map((activity) => {
@@ -3681,7 +4736,7 @@ export function ConversationWorkspace({
                       <p className="text-[10px] font-semibold text-nearblack">Replying to {replyingTo.author.display_name}</p>
                       <p className="mt-1 truncate text-caption text-charcoal/55">{replyingTo.body}</p>
                     </div>
-                    <button type="button" onClick={() => setReplyingTo(null)} aria-label="Cancel reply" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-lg text-charcoal/50 hover:bg-[#f1ece3]">
+                    <button type="button" onClick={() => setReplyingTo(null)} aria-label="Cancel reply" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-lg text-charcoal/50 hover:bg-[#f1ece3]">
                       ×
                     </button>
                   </div>
@@ -3694,7 +4749,7 @@ export function ConversationWorkspace({
                           <Image src={item.previewUrl} alt="" width={48} height={48} unoptimized className="h-12 w-12 shrink-0 rounded-lg object-cover" />
                         ) : (
                           <span aria-hidden className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-[#e9e2d6] text-[10px] font-semibold text-charcoal">
-                            {item.mimeType.startsWith("image/") ? "IMG" : "PDF"}
+                            {item.mimeType.startsWith("image/") ? "IMG" : item.voiceNoteDurationMs != null ? "VOICE" : "PDF"}
                           </span>
                         )}
                         <div className="min-w-0 flex-1 pr-4">
@@ -3703,10 +4758,12 @@ export function ConversationWorkspace({
                             {item.status === "preparing"
                               ? "Preparing…"
                               : item.status === "uploading"
-                                ? "Uploading…"
+                                ? item.voiceNoteDurationMs != null ? "Uploading voice note…" : "Uploading…"
                                 : item.status === "error"
                                   ? item.error
-                                  : fileSizeLabel(item.byteSize)}
+                                  : item.voiceNoteDurationMs != null
+                                    ? `${voiceNoteDurationLabel(item.voiceNoteDurationMs)} · ${fileSizeLabel(item.byteSize)}`
+                                    : fileSizeLabel(item.byteSize)}
                           </span>
                           {item.status === "error" && (item.file || item.stagedAttachmentId) && (
                             <button
@@ -3724,7 +4781,7 @@ export function ConversationWorkspace({
                           aria-label={item.status === "preparing" || item.status === "uploading"
                             ? `Cancel upload of ${item.filename}`
                             : `Remove ${item.filename}`}
-                          className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-nearblack text-[11px] text-white"
+                          className="absolute right-0 top-0 flex h-11 w-11 items-center justify-center rounded-full bg-nearblack text-[14px] text-white"
                         >
                           ×
                         </button>
@@ -3740,7 +4797,7 @@ export function ConversationWorkspace({
                 <textarea
                   ref={composerInputRef}
                   value={draft}
-                  disabled={sending}
+                  disabled={sending || voiceNoteRecording}
                   onChange={(event) => selectedId && updateDraft(selectedId, event.target.value)}
                   onPaste={(event) => {
                     if (!event.clipboardData.files.length) return;
@@ -3758,15 +4815,15 @@ export function ConversationWorkspace({
                   placeholder={participants.some((p) => p.type === "agent") && participants.length > 2 ? "Message the group — use @Aria or @Marco" : `Message ${callAgent?.display_name ?? "the conversation"}`}
                   className="max-h-36 min-h-12 w-full resize-none rounded-t-2xl bg-transparent px-4 pb-2 pt-3 text-[16px] outline-none disabled:opacity-60 md:text-body"
                 />
-                <div className="flex items-center justify-between gap-3 px-2.5 pb-2.5">
-                  <div className="relative">
+                <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
+                  <div className={clsx("relative", voiceNoteRecording && "hidden")}>
                     <button
                       type="button"
                       disabled={sending}
                       onClick={() => setAttachmentMenuOpen((open) => !open)}
                       aria-label="Add photos or files"
                       aria-expanded={attachmentMenuOpen}
-                      className="flex h-10 w-10 items-center justify-center rounded-full border border-[#d7d0c5] text-xl text-nearblack hover:bg-[#f1ece3] disabled:opacity-40"
+                      className="flex h-11 w-11 items-center justify-center rounded-full border border-[#d7d0c5] text-xl text-nearblack hover:bg-[#f1ece3] disabled:opacity-40"
                     >
                       +
                     </button>
@@ -3781,23 +4838,60 @@ export function ConversationWorkspace({
                       </div>
                     )}
                   </div>
-                  <span className="hidden text-[10px] text-charcoal/40 sm:block">Up to 6 files · 25 MB each</span>
-                  <button
-                    disabled={composerBusy || attachmentUploadFailed || (!draft.trim() && !draftAttachments.some((item) => item.status === "ready"))}
-                    aria-label="Send message"
-                    className="flex h-10 min-w-10 shrink-0 items-center justify-center rounded-full bg-nearblack px-3 text-subhead text-white disabled:opacity-30"
-                  >
-                    <span aria-hidden>↑</span><span className="sr-only">Send</span>
-                  </button>
+                  <VoiceNoteRecorder
+                    conversationId={selectedConversation.id}
+                    disabled={sending || attachmentUploadInProgress || draftAttachments.length >= MAX_CONVERSATION_ATTACHMENTS}
+                    onRecorded={addRecordedVoiceNote}
+                    onError={setError}
+                    onRecordingChange={setVoiceNoteRecording}
+                  />
+                  {!voiceNoteRecording && <span className="hidden flex-1 text-center text-[10px] text-charcoal/40 sm:block">Up to 6 files · voice notes up to 5 min</span>}
+                  {!voiceNoteRecording && (
+                    <button
+                      disabled={composerBusy || attachmentUploadFailed || (!draft.trim() && !draftAttachments.some((item) => item.status === "ready"))}
+                      aria-label="Send message"
+                      className="flex h-11 min-w-11 shrink-0 items-center justify-center rounded-full bg-nearblack px-3 text-subhead text-white disabled:opacity-30"
+                    >
+                      <span aria-hidden>↑</span><span className="sr-only">Send</span>
+                    </button>
+                  )}
                 </div>
               </div>
               {error && <p className="mx-auto mt-2 max-w-3xl text-caption text-red-700">{error}</p>}
+              {notice && <p className="mx-auto mt-2 max-w-3xl text-caption text-green-800">{notice}</p>}
             </form>
           </>
         ) : (
           <div className="flex flex-1 items-center justify-center text-body text-charcoal/45">Choose a conversation or start a new one.</div>
         )}
       </section>
+
+      {mediaViewer && (
+        <div
+          ref={mediaViewerDialogRef}
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="conversation-media-viewer-title"
+          className="fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[85] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col bg-black text-white"
+        >
+          <header className="flex min-h-16 shrink-0 items-center gap-3 border-b border-white/15 px-3 pb-3 pt-[calc(env(safe-area-inset-top)+0.75rem)] md:px-5 md:py-4">
+            <div className="min-w-0 flex-1">
+              <h2 id="conversation-media-viewer-title" className="truncate text-body font-semibold">{mediaViewer.filename}</h2>
+              <p className="mt-1 truncate text-caption text-white/55">Shared by {mediaViewer.author}</p>
+            </div>
+            <a href={mediaViewer.url} target="_blank" rel="noreferrer" className="flex min-h-11 items-center rounded-full border border-white/25 px-4 text-caption font-semibold text-white">
+              Open original
+            </a>
+            <button autoFocus type="button" onClick={() => setMediaViewer(null)} aria-label="Close photo viewer" className="flex h-11 w-11 items-center justify-center rounded-full border border-white/25 text-xl text-white">
+              ×
+            </button>
+          </header>
+          <div className="relative min-h-0 flex-1 overflow-hidden p-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] md:p-6">
+            <Image src={mediaViewer.url} alt={mediaViewer.filename} fill sizes="100vw" unoptimized className="object-contain" />
+          </div>
+        </div>
+      )}
 
       {newOpen && <NewConversation people={data.people} onClose={() => setNewOpen(false)} onCreated={(id) => {
         draftAttachmentsRef.current = draftAttachmentsByConversationRef.current.get(id) ?? [];
@@ -3816,8 +4910,46 @@ export function ConversationWorkspace({
         void loadConversations();
       }} />}
 
+      {forwardingMessage && (
+        <ForwardMessageDialog
+          message={forwardingMessage}
+          conversations={activeConversations}
+          onClose={() => setForwardingMessage(null)}
+          onForwarded={(destinationIds) => {
+            setForwardingMessage(null);
+            setError(null);
+            setNotice(`Message forwarded to ${destinationIds.length} chat${destinationIds.length === 1 ? "" : "s"}.`);
+            window.setTimeout(() => setNotice(null), 3500);
+            void loadConversations({ preserveError: true });
+            const selectedConversationId = selectedIdRef.current;
+            if (selectedConversationId && destinationIds.includes(selectedConversationId)) {
+              void loadMessages(selectedConversationId, { latest: true });
+            }
+          }}
+        />
+      )}
+
+      {groupDetailsOpen && selectedConversation?.kind === "group" && (
+        <GroupDetailsDialog
+          conversation={selectedConversation}
+          participants={participants}
+          people={data.people}
+          onClose={() => setGroupDetailsOpen(false)}
+          onChanged={async () => {
+            const conversationId = selectedIdRef.current;
+            await loadConversations({ preserveError: true });
+            if (conversationId) await loadMessages(conversationId, { latest: true });
+          }}
+          onLeft={async () => {
+            setGroupDetailsOpen(false);
+            selectConversation(null);
+            await loadConversations({ preserveError: true });
+          }}
+        />
+      )}
+
       {(callOpening || callId || callError) && callAgent && (
-        <div className={clsx(
+        <div ref={callDialogRef} tabIndex={-1} role={callModal ? "dialog" : "region"} aria-modal={callModal ? true : undefined} aria-labelledby="active-call-agent" className={clsx(
           "visible pointer-events-auto fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[70] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col overflow-hidden bg-nearblack text-white",
           drawer && callCompact && "md:inset-auto md:bottom-5 md:right-5 md:h-auto md:w-[26rem] md:max-w-[calc(100vw-2.5rem)] md:rounded-2xl md:border md:border-white/15 md:shadow-[0_20px_70px_rgba(20,18,15,0.45)]",
         )}>
@@ -3827,8 +4959,8 @@ export function ConversationWorkspace({
               <span className={clsx("absolute -bottom-1 -right-1 h-3.5 w-3.5 rounded-full border-2 border-nearblack", callState === "reconnecting" ? "bg-[#C9971E]" : "bg-[#66a466]")} />
             </div>
             <div className="min-w-0 flex-1">
-              <h2 className="truncate text-body font-semibold">{callAgent.display_name}</h2>
-              <p className={clsx("mt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em]", callError ? "text-[#e28b8b]" : "text-sand")}>{callError ? "Call interrupted" : callState}</p>
+              <h2 id="active-call-agent" className="truncate text-body font-semibold">{callAgent.display_name}</h2>
+              <p className={clsx("mt-0.5 text-[12px] font-semibold uppercase tracking-[0.14em]", callError ? "text-[#e28b8b]" : "text-sand")} role="status" aria-live="polite" aria-atomic="true">{callError ? "Call interrupted" : callState}</p>
             </div>
             <p className="hidden truncate text-caption text-white/40 sm:block">{selectedConversation?.display_title}</p>
             {drawer && (
@@ -3851,7 +4983,7 @@ export function ConversationWorkspace({
                 </button>
               </>
             )}
-            <button onClick={() => void endCall()} className="rounded-full border border-white/25 px-3 py-2 text-caption">End call</button>
+            <button onClick={() => void endCall()} className="min-h-11 rounded-full border border-white/25 px-4 py-2 text-caption">End call</button>
           </header>
           <main className={clsx("min-h-0 flex-1 flex-col", drawer && callCompact ? "flex md:hidden" : "flex")}>
             <section className="flex min-h-0 flex-1 flex-col bg-white/[0.025]" aria-label="Background agent work">
@@ -3885,7 +5017,7 @@ export function ConversationWorkspace({
                     </div>
                   </div>
                 ) : visibleAgentTasks.map((task) => (
-                  <AgentTaskCard key={task.id} task={task} dark onAction={handleTaskAction} />
+                  <AgentTaskCard key={task.id} task={task} dark canRetry={task.requested_by === selfParticipant?.id && task.retry_count < 3} onAction={handleTaskAction} />
                 ))}
               </div>
             </section>
@@ -3896,7 +5028,7 @@ export function ConversationWorkspace({
                 aria-expanded={callTranscriptExpanded}
                 className="flex min-h-12 w-full items-center gap-3 px-4 py-2 text-left md:px-6"
               >
-                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.14em] text-sand">Captions</span>
+                <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.14em] text-sand">Captions</span>
                 <span className="min-w-0 flex-1 truncate text-caption text-white/45">
                   {interim || latestCallTranscript?.text || (callState === "connecting" ? "Connecting…" : "Optional live transcript")}
                 </span>
@@ -3918,7 +5050,7 @@ export function ConversationWorkspace({
                         entry.speaker === "user" ? "bg-white text-nearblack" : entry.speaker === "system" ? "border border-sand/30 bg-sand/10 text-white" : "bg-white/10 text-white",
                         !entry.final && "opacity-65",
                       )}>
-                        <p className={clsx("text-[9px] font-semibold uppercase tracking-[0.12em]", entry.speaker === "user" ? "text-charcoal/45" : "text-sand") }>
+                        <p className={clsx("text-[11px] font-semibold uppercase tracking-[0.12em]", entry.speaker === "user" ? "text-charcoal/45" : "text-sand") }>
                           {entry.speaker === "user" ? "You" : entry.speaker === "agent" ? callAgent.display_name : "Agent work"}
                         </p>
                         <p className="mt-0.5 whitespace-pre-wrap text-caption leading-relaxed">{entry.text}</p>
@@ -3945,6 +5077,22 @@ export function ConversationWorkspace({
             </div>
           )}
         </div>
+      )}
+      {meetingModeOpen && selectedId && callAgent?.agent_slug === "aria" && (
+        <MeetingMode
+          conversationId={selectedId}
+          initialMeetingId={meetingMinutesId}
+          sourceCallId={meetingSourceCallId}
+          onClose={() => {
+            setMeetingModeOpen(false);
+            setMeetingSourceCallId(null);
+            setMeetingMinutesId(null);
+          }}
+          onFiled={() => {
+            void loadMessages(selectedId);
+            void loadConversations({ preserveError: true });
+          }}
+        />
       )}
     </div>
   );

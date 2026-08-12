@@ -27,10 +27,10 @@ test("call controls account for notches, browser chrome and the home indicator",
   assert.match(workspace, /safe-area-inset-bottom/);
 });
 
-test("mobile composer and dialogs are allowed to shrink and scroll", () => {
+test("mobile composer and dialogs shrink, scroll and retain accessible touch targets", () => {
   assert.match(workspace, /max-h-full w-full max-w-lg overflow-y-auto/);
   assert.match(workspace, /max-h-36 min-h-12 w-full resize-none/);
-  assert.match(workspace, /min-w-10 shrink-0/);
+  assert.match(workspace, /min-w-11 shrink-0/);
   assert.match(workspace, /rounded-full bg-nearblack/);
 });
 

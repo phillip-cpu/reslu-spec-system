@@ -33,7 +33,7 @@ export function realtimeConfig(environment: Environment, agentSlug: AgentSlug): 
     : agentSlug === "aria" ? "marin" : "cedar";
   return {
     enabled: environment.RESLU_REALTIME_VOICE_ENABLED === "true",
-    model: environment.RESLU_REALTIME_VOICE_MODEL?.trim() || "gpt-realtime-2.1",
+    model: environment.RESLU_REALTIME_VOICE_MODEL?.trim() || "gpt-realtime-2.1-mini",
     voice,
     transcriptionModel: environment.RESLU_REALTIME_TRANSCRIPTION_MODEL?.trim() || "gpt-live-transcribe",
     apiKey: environment.OPENAI_API_KEY?.trim() || null,
@@ -48,6 +48,7 @@ export function buildRealtimeSession(agent: { slug: AgentSlug; display_name: str
   return {
     type: "realtime",
     model: config.model,
+    max_output_tokens: 1024,
     output_modalities: ["audio"],
     instructions: [
       `You are the realtime voice transport for ${agent.display_name} inside RESLU staff chat.`,
@@ -118,6 +119,17 @@ export function buildRealtimeSession(agent: { slug: AgentSlug; display_name: str
           required: ["title", "objective", "model_tier"],
         },
       },
+      ...(agent.slug === "aria" ? [{
+        type: "function",
+        name: "start_meeting_mode",
+        description: "Switch this Aria call into silent Meeting Mode when the user asks to take, record or capture meeting minutes. Do not use for ordinary notes or call summaries.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {},
+          required: [] as string[],
+        },
+      }] : []),
     ],
     tool_choice: "required",
   };

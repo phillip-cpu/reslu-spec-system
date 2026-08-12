@@ -16,6 +16,7 @@ type ParticipantLink = {
   conversation_id: string;
   profile_id: string | null;
   agent_id: string | null;
+  participant_role: "member" | "admin";
   profile: { id: string; full_name: string; avatar_url: string | null } | null;
   agent: { id: string; slug: AgentSlug; display_name: string; role_label: string; avatar_url: string | null } | null;
 };
@@ -38,6 +39,7 @@ function participantFromLink(link: ParticipantLink, userId: string): Conversatio
       display_name: link.profile.full_name,
       avatar_url: link.profile.avatar_url,
       is_self: link.profile.id === userId,
+      is_admin: link.participant_role === "admin",
     };
   }
   if (link.agent) {
@@ -98,7 +100,7 @@ export async function GET() {
     supabase.from("conversations").select("*").in("id", conversationIds).is("archived_at", null),
     supabase
       .from("conversation_participants")
-      .select("conversation_id,profile_id,agent_id,profile:profiles(id,full_name,avatar_url),agent:conversation_agents(id,slug,display_name,role_label,avatar_url)")
+      .select("conversation_id,profile_id,agent_id,participant_role,profile:profiles(id,full_name,avatar_url),agent:conversation_agents(id,slug,display_name,role_label,avatar_url)")
       .in("conversation_id", conversationIds),
     lastMessageIds.length > 0
       ? supabase

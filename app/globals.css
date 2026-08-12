@@ -28,6 +28,13 @@ body {
   font-weight: 300;
 }
 
+/* Keyboard focus must remain visible throughout the app, including the
+   full-screen conversation, call and Meeting Mode layers. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 3px solid #2f6feb;
+  outline-offset: 3px;
+}
+
 .label-caps {
   font-size: 7px;
   font-weight: 700;
@@ -483,6 +490,18 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .conversation-accessible *,
+  .conversation-accessible *::before,
+  .conversation-accessible *::after,
+  .meeting-mode-dialog *,
+  .meeting-mode-dialog *::before,
+  .meeting-mode-dialog *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+
   .pr-packet,
   .pr-strip-static,
   .pr-cap,
@@ -494,4 +513,23 @@ body {
     opacity: 1;
     transform: none;
   }
+}
+
+/*
+ * Keep a loaded canonical history searchable and accessible while allowing the
+ * browser to skip layout and paint for message rows far outside the viewport.
+ * `auto` retains the measured block size after first render, so paging older
+ * history does not make the reader's scroll position jump. Browsers without
+ * content-visibility support simply render the complete timeline as before.
+ */
+.conversation-timeline-item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 112px;
+}
+
+/* Active menus and editors may paint outside their row, so lift containment
+ * while one is open instead of clipping the action surface. */
+.conversation-timeline-item-active {
+  content-visibility: visible;
+  contain-intrinsic-size: none;
 }

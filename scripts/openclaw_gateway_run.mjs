@@ -9,6 +9,7 @@ const DEFAULT_GATEWAY_URL = "ws://127.0.0.1:18789";
 const CONNECT_TIMEOUT_MS = 10_000;
 const FINAL_EVENT_GRACE_MS = 5_000;
 const MAX_MESSAGE_CHARS = 200_000;
+const MODEL_PATTERN = /^[A-Za-z0-9._:-]{1,80}\/[A-Za-z0-9._:-]{1,120}$/;
 
 export function validateGatewayUrl(raw) {
   const url = new URL(raw || DEFAULT_GATEWAY_URL);
@@ -37,6 +38,7 @@ export function validateRunInput(value) {
   }
   const thinking = typeof value.thinking === "string" && value.thinking ? value.thinking : undefined;
   const model = typeof value.model === "string" && value.model.trim() ? value.model.trim() : undefined;
+  if (model && !MODEL_PATTERN.test(model)) throw new Error("Invalid model override");
   return { message, agentId, sessionKey, idempotencyKey, timeoutSeconds, thinking, model };
 }
 

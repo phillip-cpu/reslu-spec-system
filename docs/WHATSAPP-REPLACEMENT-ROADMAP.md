@@ -115,13 +115,49 @@ virtualisation remain. Migration 105 adds author-owned 15-minute message edits
 with multi-device conflict detection, plus a recoverable delete that leaves a
 truthful tombstone, keeps original text private to its author for 30 days and
 immediately blocks deleted attachments. Restore changes history without
-silently re-running Aria, Marco or durable work. Migration 097 puts full-history substring search behind a
+silently re-running Aria, Marco or durable work. Corrective migration 112 makes
+the optimistic version advance by at least one microsecond even when an insert
+and edit share one PostgreSQL transaction. Migration 106 adds six bounded
+quick reactions with one current choice per member and up to five shared pinned
+messages that remain reachable above the timeline even when they are older than
+the loaded page. Deleting a message clears its reaction and pin state in the
+same transaction. Migration 097 puts full-history substring search behind a
 member-scoped RPC and a trigram index so response time does not degrade into a
 full table scan as the canonical history grows. Migration 098 makes quoted
 replies part of the exactly-once send contract; reply selection survives the
 offline outbox, replying to Aria or Marco in a group routes back to that existing
 agent, and the bridge gives the agent the referenced message rather than losing
 the quote relationship. Message menus expose Reply and Copy on mobile/desktop.
+Migration 107 adds member-scoped forwarding to up to ten chats with one stable
+client intent id. A retry returns the same target messages and agent jobs. Ready
+private attachments are shared through target-scoped snapshot rows instead of
+duplicating their unique storage record, and forwarding an already-forwarded
+message keeps the file available without exposing its original chat. The Mac
+bridge receives forwarded files through the same private materialisation path.
+Migration 108 replaces broad direct group-row writes with explicit, exactly-once
+human-admin operations. Stable client action IDs make retries safe after lost
+responses. The creator starts as admin; admins can rename a group, add/remove
+people or Aria/Marco, and promote another human. The last admin cannot be
+removed, leaving promotes a successor when necessary, and removing an agent
+cancels only that agent's unfinished work in the group. Every mutation leaves a
+canonical system record. The add-member UI explicitly says that RESLU team
+members receive the existing business history rather than silently applying
+WhatsApp's consumer-history assumptions. Corrective migrations 113 and 114
+enforce the last-human-admin rule at both the database-trigger and explicit RPC
+state-transition layers.
+Migration 109 adds private voice notes without creating a second messaging
+system. iPhone Safari records MP4 audio and supported desktop browsers record
+WebM; the server verifies the actual container bytes, five-minute duration and
+10 MB size before the ordinary exact-once message outbox can bind the file.
+Authenticated range playback, forwarding and the existing private Aria/Marco
+attachment materialisation path all reuse the canonical conversation. Automatic
+third-party transcription is deliberately excluded until Phillip explicitly
+approves the provider, retention and disclosure wording.
+Migration 110 makes private attachments discoverable in the same bounded,
+member-scoped full-history search. Ready uploaded and forwarded filenames are
+trigram indexed; staged files and deleted messages stay hidden. A file match
+returns its canonical message anchor and a filename cue, not a storage path or
+second file index, so opening it preserves the conversation context.
 The same exact-once boundary now covers conversation creation, call start and
 call end: device intent ids recover a lost start response, and an ended call is
 retained locally until the single canonical same-thread call record is
@@ -148,10 +184,20 @@ Rollout order for this slice:
    `096_conversation_preferences.sql`, then
    `097_conversation_message_search.sql`, then
    `098_conversation_quoted_replies.sql`, then
-   `104_single_active_conversation_call.sql`, to Supabase.
+   `104_single_active_conversation_call.sql`, then
+   `105_conversation_message_edit_delete.sql`, then
+   `112_conversation_message_edit_version.sql`, then
+   `106_conversation_message_reactions_pins.sql`, then
+   `107_conversation_message_forwarding.sql`, then
+   `108_conversation_group_management.sql`, then
+   `113_conversation_group_human_admin_guard.sql`, then
+   `114_conversation_group_admin_transition.sql`, then
+   `109_conversation_voice_notes.sql`, then
+   `110_conversation_attachment_search.sql`, to Supabase.
 2. Run the matching rollback-only fixtures for migrations 093 through 098 and
-   migration 104 in the SQL Editor. Every fixture must report PASS and leave no
-   test data.
+   migrations 104 through 110 in the SQL Editor. Migration 112 is proved by
+   rerunning the migration 105 fixture immediately after the corrective patch.
+   Every fixture must report PASS and leave no test data.
 3. Deploy the matching application release, pull it on the Mac and restart the
    conversation bridge so its independent push worker is active.
 4. Refresh every already-open RESLU client so it sends a stable client id.
@@ -173,9 +219,10 @@ Work:
 - Notification tap opens the exact conversation.
 - Pin, archive, mute, search and conversation notification preferences.
 - Reply/quote, copy, edit markers and recoverable delete.
-- Forward, reactions and pinned messages.
-- Group naming, participant management and reliable mentions.
-- Voice notes and expanded safe file types after the photo/PDF slice is proven.
+- Forward text and private attachments exactly once to up to ten chats.
+- Shared group names, human admins, safe participant management and reliable mentions.
+- Private record/cancel/send/play/forward voice notes, with optional automatic
+  transcription held behind a separate informed approval.
 - Pagination, virtualised long history and message/file search.
 
 Stage gate:
@@ -368,7 +415,18 @@ Stage gate:
 
 ## Stage 5 - iPhone background and in-car continuity
 
-Status: pending.
+Status: native foundation implemented; signing and physical-device acceptance
+pending.
+
+The PWA limit is now proven rather than assumed: foreground recovery is guarded
+by document visibility, and a web manifest cannot opt into the iOS audio session,
+background modes or CallKit needed for a locked-screen VoIP experience. The
+Stage 5 foundation adds a thin SwiftUI/WKWebView shell with native
+`AVAudioSession` and CallKit ownership. It loads the canonical production RESLU
+application and sends call lifecycle only across a small bridge; Supabase auth,
+OpenAI key ownership, Realtime session creation, conversation IDs, call records,
+Aria/Marco logic, OpenClaw memory/tools and durable tasks remain in the existing
+web/server system. See `docs/IOS-NATIVE-SHELL.md` for build and acceptance.
 
 Work:
 
@@ -387,7 +445,32 @@ Stage gate:
 
 ## Stage 6 - Meeting Mode and intelligent filing
 
-Status: behaviour and safeguards defined; implementation pending.
+Status: core implementation complete on the Meeting Mode branch; migration,
+Mac-mini MCP update and real client-meeting acceptance are pending.
+
+Implemented in the core slice:
+
+- One-tap entry from an Aria thread and a `start_meeting_mode` transition from
+  an active Aria voice call.
+- Calendar/lead/project candidate ranking with visible confidence reasons,
+  an unassigned fallback and no fuzzy-name auto-filing.
+- Explicit participant-consent gate, silent capture, pause/resume/finish,
+  30-second private on-device audio/session checkpoints and recoverable upload.
+- Private Supabase source audio and local-Whisper transcription on the Mac mini;
+  full client meetings are not sent to OpenAI.
+- Durable strong-model Aria drafting that continues after the capture screen
+  closes, with seven editable minutes sections and the source transcript.
+- Optimistic draft versioning, destination revalidation, duplicate-event
+  confirmation, one transactional canonical record/timeline link and an audit
+  trail for capture, destination, draft and filing state changes.
+
+Still required before the stage gate can pass:
+
+- Apply and verify migration 103, update the Mac-mini MCP checkout, then test
+  the complete local-Whisper task on production data.
+- Add speaker labels only if a locally approved diarization path proves reliable;
+  the current source is a verbatim meeting-level transcript.
+- Prove lead, active-project and ambiguous-destination scenarios in real meetings.
 
 Work:
 
@@ -395,7 +478,8 @@ Work:
 - Resolve calendar event, meeting type and candidate lead/project.
 - Remain silent unless directly addressed.
 - Display a persistent recording/listening and consent indicator.
-- Checkpoint transcript, speaker information and session health.
+- Checkpoint source audio and session health; retain transcript provenance and
+  add speaker information only where a reliable local model can supply it.
 - Produce an editable structured draft: summary, decisions, client requests,
   RESLU actions, client actions, open questions and important notes.
 - Show the proposed destination and confidence reasons.
@@ -445,7 +529,19 @@ Work:
 - Performance budgets, thumbnail/lazy loading and cached recent conversations.
 - VoiceOver, large text, contrast, captions and reduced-motion support.
 - A real iPhone/car/desktop test matrix under poor networks and long histories.
-- Keep Next.js on a currently patched stable release. The Stage 2 dependency
+
+The bridge process already uses launchd `RunAtLoad`, `KeepAlive` and a bounded
+restart throttle. Push delivery has a six-attempt exponential retry budget.
+Durable Aria/Marco work deliberately enters `failed` instead of blindly
+replaying an uncertain run. Migration 111 adds a requester-only recovery action
+for failed work with no unresolved or completed approval boundary: it reuses the
+exact task and agent session, assigns a distinct bounded attempt idempotency key,
+and records a recovery event. A pending approval, an approved/published artifact,
+an approved event or an approved failed task remains a visible dead letter until
+the relevant email, booking or record is inspected; RESLU never claims an
+uncertain external action was undone and never retries it automatically.
+
+Keep Next.js on a currently patched stable release. The Stage 2 dependency
   audit moved the app from vulnerable 16.0.10 to stable 16.3.0 and cleared the
   framework/proxy advisories. Track the remaining no-fix advisories inherited
   by `@huggingface/transformers`; the current embedding wrapper is text-only
@@ -460,9 +556,13 @@ Final product gate:
 
 ## Current next action
 
-Deploy the persistent Supabase transport repair to the Mac bridge, restart it,
-and repeat the same iPhone voice acceptance call. Require a Gateway run id and
-visible safe progress before waiting for Aria's answer; interrupt one answer,
+The production database gate is complete: migrations 105 (after corrective
+112), 106, 107, 108 (after corrective 113 and 114), 109, 110, 103 and 111 all
+pass their rollback-safe production verifiers. Merge the stacked PRs in order
+and verify the exact production deployment. Pull that release to the Mac
+bridge/MCP checkout, restart
+it, and repeat the same iPhone voice acceptance call. Require a Gateway run id
+and visible safe progress before waiting for Aria's answer; interrupt one answer,
 start one durable task, end the call, and confirm that the durable task keeps
 working. Require saved content-free timing metadata for the call. Do not close
 Stage 3 until acknowledgement is below one second, interruption is under 250 ms,
