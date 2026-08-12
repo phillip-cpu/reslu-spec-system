@@ -59,7 +59,14 @@ async function accessibleReadyAttachment(
     .maybeSingle();
   const attachment = data as ConversationAttachment | null;
   if (!attachment) return null;
-  return attachment.message_id || attachment.uploaded_by === userId ? attachment : null;
+  if (!attachment.message_id) return attachment.uploaded_by === userId ? attachment : null;
+  const { data: message } = await supabase
+    .from("conversation_messages")
+    .select("deleted_at")
+    .eq("id", attachment.message_id)
+    .eq("conversation_id", conversationId)
+    .maybeSingle();
+  return message && !message.deleted_at ? attachment : null;
 }
 
 function attachmentResponse(conversationId: string, attachment: ConversationAttachment) {

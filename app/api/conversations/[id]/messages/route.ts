@@ -43,7 +43,7 @@ function hydrateMessages(
   conversationId: string
 ): ConversationMessage[] {
   return rows.map((row) => {
-    const attachments = (row.conversation_attachments ?? [])
+    const attachments = (row.deleted_at ? [] : row.conversation_attachments ?? [])
       .filter((attachment) => attachment.status === "ready")
       .map((attachment) => ({
         ...attachment,
@@ -125,7 +125,6 @@ export async function GET(request: NextRequest, context: Context) {
       .select("*, conversation_attachments(*)")
       .eq("conversation_id", id)
       .eq("id", around)
-      .is("deleted_at", null)
       .maybeSingle();
     if (targetError) return NextResponse.json({ error: targetError.message }, { status: 500 });
     if (!targetData) return NextResponse.json({ error: "Message not found" }, { status: 404 });
@@ -135,7 +134,6 @@ export async function GET(request: NextRequest, context: Context) {
         .from("conversation_messages")
         .select("*, conversation_attachments(*)")
         .eq("conversation_id", id)
-        .is("deleted_at", null)
         .or(`created_at.lt.${targetData.created_at},and(created_at.eq.${targetData.created_at},id.lt.${around})`)
         .order("created_at", { ascending: false })
         .order("id", { ascending: false })
@@ -144,7 +142,6 @@ export async function GET(request: NextRequest, context: Context) {
         .from("conversation_messages")
         .select("*, conversation_attachments(*)")
         .eq("conversation_id", id)
-        .is("deleted_at", null)
         .or(`created_at.gt.${targetData.created_at},and(created_at.eq.${targetData.created_at},id.gt.${around})`)
         .order("created_at", { ascending: true })
         .order("id", { ascending: true })
@@ -180,7 +177,6 @@ export async function GET(request: NextRequest, context: Context) {
     .from("conversation_messages")
     .select("*, conversation_attachments(*)")
     .eq("conversation_id", id)
-    .is("deleted_at", null)
     .order("created_at", { ascending: false })
     .order("id", { ascending: false })
     .limit(100);
