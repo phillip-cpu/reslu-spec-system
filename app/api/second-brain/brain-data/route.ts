@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import { getUserRole } from "@/lib/auth";
 import {
   brainNodeKey,
   buildVisibleBrainLinks,
   type BrainLinkCandidate,
 } from "@/lib/second-brain/brain-graph";
-import { isMarcoBrainNote } from "@/lib/second-brain/brain-notes";
+import { isMarcoBrainNote, isStuartBrainNote } from "@/lib/second-brain/brain-notes";
 import vercelConfig from "../../../../vercel.json";
 
 export const runtime = "nodejs";
@@ -51,14 +52,13 @@ function describeCron(schedule: string): string {
  */
 export async function GET() {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
+  const userInfo = await getUserRole(supabase);
+  if (!userInfo) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  const isAdmin = userInfo.role === "admin";
 
-  const [{ count: itemCount }, { count: projectCount }, { count: leadCount }, { count: diaryCount }, { count: sowCount }, { count: emailCount }, { count: memoryCount }, { count: marketingCount }] =
+  const [{ count: itemCount }, { count: projectCount }, { count: leadCount }, { count: diaryCount }, { count: sowCount }, { count: emailCount }, { count: memoryCount }, { count: marcoCount }, { count: stuartNoteCount }] =
     await Promise.all([
       supabase.from("items").select("id", { count: "exact", head: true }).is("deleted_at", null),
       supabase.from("projects").select("id", { count: "exact", head: true }).is("deleted_at", null),
@@ -66,9 +66,27 @@ export async function GET() {
       supabase.from("portal_updates").select("id", { count: "exact", head: true }).is("deleted_at", null),
       supabase.from("sow_documents").select("id", { count: "exact", head: true }).is("deleted_at", null),
       supabase.from("emails").select("id", { count: "exact", head: true }),
-      supabase.from("brain_notes").select("id", { count: "exact", head: true }).neq("source", "marco"),
+      supabase.from("brain_notes").select("id", { count: "exact", head: true }).not("source", "in", "(marco,stuart)"),
       supabase.from("brain_notes").select("id", { count: "exact", head: true }).eq("source", "marco"),
+      isAdmin
+        ? supabase.from("brain_notes").select("id", { count: "exact", head: true }).eq("source", "stuart")
+        : Promise.resolve({ count: 0 }),
     ]);
+
+  // Stuart's finance exceptions are service-role-only in Postgres. Create a
+  // privileged client only after the signed-in profile has passed the admin
+  // check, so non-admin responses cannot reveal even a finding count/title.
+  const stuartFinance = isAdmin
+    ? await createServiceRoleClient()
+        .from("stuart_finance_findings")
+        .select("id,title,severity,last_seen_at", { count: "exact" })
+        .eq("status", "open")
+        .order("last_seen_at", { ascending: false })
+        .limit(500)
+    : { data: [], count: 0, error: null };
+  if (stuartFinance.error) {
+    return NextResponse.json({ error: stuartFinance.error.message }, { status: 500 });
+  }
 
   const { data: openProposals } = await supabase.from("change_proposals").select("entity_id").eq("status", "pending");
   const flaggedItemIds = new Set((openProposals ?? []).map((p) => p.entity_id));
@@ -89,7 +107,9 @@ export async function GET() {
     supabase.from("portal_updates").select("id,title,project_id,created_at").is("deleted_at", null),
     supabase.from("sow_documents").select("id,revision_label,project_id,created_at").is("deleted_at", null),
     supabase.from("emails").select("id,subject,received_at,status,matched_project_id").order("received_at", { ascending: false }).limit(500),
-    supabase.from("brain_notes").select("id,title,source,created_at,updated_at").order("updated_at", { ascending: false }).limit(500),
+    isAdmin
+      ? supabase.from("brain_notes").select("id,title,source,created_at,updated_at").order("updated_at", { ascending: false }).limit(500)
+      : supabase.from("brain_notes").select("id,title,source,created_at,updated_at").neq("source", "stuart").order("updated_at", { ascending: false }).limit(500),
     supabase
       .from("email_entity_matches")
       .select("email_id,entity_type,entity_id,status")
@@ -154,12 +174,29 @@ export async function GET() {
     recordUrl: `/brain/notes/${note.id}`,
   });
   const recentNotes = (memoryNotes ?? []).filter((note) => isRecent(note.updated_at ?? note.created_at));
-  const marketingRecords: BrainRecord[] = recentNotes.filter(isMarcoBrainNote).map(noteRecord);
-  const memoryRecords: BrainRecord[] = recentNotes.filter((note) => !isMarcoBrainNote(note)).map(noteRecord);
+  const marcoRecords: BrainRecord[] = recentNotes.filter(isMarcoBrainNote).map(noteRecord);
+  const stuartRecords: BrainRecord[] = isAdmin
+    ? [
+        ...recentNotes.filter(isStuartBrainNote).map(noteRecord),
+        ...(stuartFinance.data ?? []).map((finding) => ({
+          id: `finding-${finding.id}`,
+          name: finding.title,
+          flagged: finding.severity === "urgent",
+          recentAt: finding.last_seen_at,
+          recordUrl: null,
+        })),
+      ]
+    : [];
+  const memoryRecords: BrainRecord[] = recentNotes
+    .filter((note) => !isMarcoBrainNote(note) && !isStuartBrainNote(note))
+    .map(noteRecord);
 
   const rawClusters: BrainCluster[] = [
     { entityType: "email", label: "EMAILS", totalCount: emailCount ?? 0, records: emailRecords },
-    { entityType: "marketing", label: "MARKETING", totalCount: marketingCount ?? 0, records: marketingRecords },
+    { entityType: "marco", label: "MARCO / MARKETING", totalCount: marcoCount ?? 0, records: marcoRecords },
+    ...(isAdmin
+      ? [{ entityType: "stuart", label: "STUART / FINANCE", totalCount: (stuartNoteCount ?? 0) + (stuartFinance.count ?? 0), records: stuartRecords }]
+      : []),
     { entityType: "memory", label: "MEMORY", totalCount: memoryCount ?? 0, records: memoryRecords },
     { entityType: "item", label: "ITEMS", totalCount: itemCount ?? 0, records: itemRecords },
     { entityType: "project", label: "JOBS", totalCount: projectCount ?? 0, records: projectRecords },

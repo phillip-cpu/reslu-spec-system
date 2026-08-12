@@ -1,14 +1,14 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { getUserRole } from "@/lib/auth";
+import { isStuartBrainNote } from "@/lib/second-brain/brain-notes";
 
 export default async function BrainNotePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
+  const userInfo = await getUserRole(supabase);
+  if (!userInfo) redirect("/login");
 
   const { data: note } = await supabase
     .from("brain_notes")
@@ -16,6 +16,7 @@ export default async function BrainNotePage({ params }: { params: Promise<{ id: 
     .eq("id", id)
     .maybeSingle();
   if (!note) notFound();
+  if (isStuartBrainNote(note) && userInfo.role !== "admin") notFound();
 
   return (
     <main className="min-h-screen bg-nearblack px-6 py-10 text-white sm:px-10 lg:px-16">
@@ -23,7 +24,9 @@ export default async function BrainNotePage({ params }: { params: Promise<{ id: 
         <Link href="/brain" className="label-caps text-sand hover:text-white">
           ← Second Brain
         </Link>
-        <p className="label-caps mt-12 text-sand">{note.source === "marco" ? "Marco / Marketing" : "Durable memory"}</p>
+        <p className="label-caps mt-12 text-sand">
+          {note.source === "marco" ? "Marco / Marketing" : note.source === "stuart" ? "Stuart / Finance" : "Durable memory"}
+        </p>
         <h1 className="mt-4 max-w-3xl font-display text-5xl font-light leading-tight text-white">{note.title}</h1>
         <div className="mt-6 flex flex-wrap gap-2">
           {(note.tags ?? []).map((tag: string) => (

@@ -12,3 +12,7 @@ export function isMarcoBrainNote(note: BrainNoteClassification): boolean {
   return note.source?.trim().toLowerCase() === "marco";
 }
 
+/** Stuart-owned publications are finance knowledge and remain admin-visible. */
+export function isStuartBrainNote(note: BrainNoteClassification): boolean {
+  return note.source?.trim().toLowerCase() === "stuart";
+}

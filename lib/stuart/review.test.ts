@@ -41,3 +41,21 @@ test("keeps likely invoice email as a finance exception, not Aria coaching", () 
   assert.equal(result.feedback.length, 0);
   assert.equal(result.findings[0]?.kind, "unmatched_accounts_email");
 });
+
+test("reviews Accounts mail from current and future staff without a sender allowlist", () => {
+  const result = reviewAccountsEmails([
+    {
+      id: "e3", from_addr: "tenille@reslu.com.au", subject: "Supplier invoice INV-3001",
+      clean_text: "Invoice INV-3001 total $825.00", received_at: now, triage_label: null,
+      ingested_mailboxes: ["accounts@reslu.com.au"], email_attachments: [],
+    },
+    {
+      id: "e4", from_addr: "future.staff@reslu.com.au", subject: "Supplier invoice INV-3002",
+      clean_text: "Invoice INV-3002 total $440.00", received_at: now, triage_label: null,
+      ingested_mailboxes: ["accounts@reslu.com.au"], email_attachments: [],
+    },
+  ], new Set(), now);
+
+  assert.deepEqual(result.findings.map((finding) => finding.source_id), ["e3", "e4"]);
+  assert.equal(result.feedback.length, 0);
+});

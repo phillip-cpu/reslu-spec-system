@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { getUserRole } from "@/lib/auth";
 import { normalizeBrainNoteSource } from "@/lib/second-brain/brain-notes";
 
 export const runtime = "nodejs";
@@ -11,10 +12,8 @@ const MAX_TAGS = 20;
 /** POST - add a source-attributed durable learning to Second Brain. */
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const userInfo = await getUserRole(supabase);
+  if (!userInfo) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   let body: {
     title?: string;
@@ -46,6 +45,9 @@ export async function POST(request: NextRequest) {
     .slice(0, MAX_TAGS)
     .map((tag) => tag.slice(0, 60));
   const source = normalizeBrainNoteSource(body.source);
+  if (source === "stuart" && userInfo.role !== "admin") {
+    return NextResponse.json({ error: "Stuart finance memory is restricted to administrators" }, { status: 403 });
+  }
   const sourceRef = body.source_ref?.trim().slice(0, 500) || null;
   const noteValues = {
     title,
@@ -86,7 +88,7 @@ export async function POST(request: NextRequest) {
     .from("brain_notes")
     .insert({
       ...noteValues,
-      created_by: user.id,
+      created_by: userInfo.userId,
     })
     .select("id,title,tags,source,source_ref,confidence,created_at,updated_at")
     .single();

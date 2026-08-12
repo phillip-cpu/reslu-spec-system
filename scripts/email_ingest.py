@@ -1050,9 +1050,9 @@ def run_selftest() -> int:
             == "mailing list",
         "Gmail direction keeps archived mail inbound": gmail_direction(set()) == "inbound",
         "Gmail direction recognises Sent": gmail_direction({"SENT"}) == "sent",
-        "all three RESLU mailboxes are configured":
+        "all four RESLU mailboxes are configured":
             {address for address, _, _ in EXPECTED_MAILBOXES}
-            == {"aria@reslu.com.au", "phillip@reslu.com.au", "tenille@reslu.com.au"},
+            == {"aria@reslu.com.au", "phillip@reslu.com.au", "tenille@reslu.com.au", "accounts@reslu.com.au"},
         "cross-mailbox duplicate records both sources":
             merged_source["ingested_mailboxes"]
             == ["aria@reslu.com.au", "phillip@reslu.com.au"],
