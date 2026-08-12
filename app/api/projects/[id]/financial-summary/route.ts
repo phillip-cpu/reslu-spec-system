@@ -47,6 +47,7 @@ export async function GET(
     { data: clientInvoices, error: clientError },
     { data: billingProfile, error: billingError },
     { data: variations, error: variationsError },
+    { data: contractVariations, error: contractVariationsError },
     { data: sections, error: sectionsError },
     { data: items, error: itemsError },
     { data: measurements, error: measurementsError },
@@ -73,6 +74,12 @@ export async function GET(
       .eq("status", "approved")
       .is("deleted_at", null),
     supabase
+      .from("client_contract_variations")
+      .select("amount_inc_gst")
+      .eq("project_id", projectId)
+      .eq("status", "active")
+      .is("deleted_at", null),
+    supabase
       .from("cost_sections")
       .select(
         "cost_lines(qty,rate_ex_gst,cost_ex_gst,measurement_id,wastage_pct,quoted_to_client_ex_gst,actual_paid_ex_gst,deleted_at)"
@@ -97,6 +104,7 @@ export async function GET(
     clientError ??
     billingError ??
     variationsError ??
+    contractVariationsError ??
     sectionsError ??
     itemsError ??
     measurementsError;
@@ -114,8 +122,12 @@ export async function GET(
     (section) => (section.cost_lines ?? []).filter((line) => !line.deleted_at)
   );
   const tradeCostPlan = sectionRollup(allLines, measurementsById).costExGst;
-  const approvedVariationsExGst = (variations ?? []).reduce(
+  const estimateVariationCostExGst = (variations ?? []).reduce(
     (sum, variation) => sum + Number(variation.cost_ex_gst ?? 0),
+    0
+  );
+  const approvedVariationsExGst = (contractVariations ?? []).reduce(
+    (sum, variation) => sum + Number(variation.amount_inc_gst ?? 0) / 1.1,
     0
   );
   const ffeCostPlan = ffeRollup(
@@ -138,7 +150,7 @@ export async function GET(
       ? Number(billingProfile.contract_amount_inc_gst)
       : null,
     approvedVariationsExGst,
-    plannedCostExGst: tradeCostPlan + approvedVariationsExGst + ffeCostPlan,
+    plannedCostExGst: tradeCostPlan + estimateVariationCostExGst + ffeCostPlan,
   };
 
   return NextResponse.json({

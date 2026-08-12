@@ -68,6 +68,21 @@ export interface ClientInvoicesListResponse {
   payment_schedule: ClientPaymentScheduleItem[];
   schedule_phases: ClientSchedulePhase[];
   approved_variations: ClientApprovedVariation[];
+  contract_variations: ClientContractVariation[];
+}
+
+export interface ClientContractVariation {
+  id: string;
+  project_id: string;
+  label: string;
+  amount_inc_gst: number;
+  due_days: number;
+  reference: string | null;
+  approved_at: string | null;
+  status: "active" | "void";
+  created_at?: string;
+  updated_at?: string;
+  deleted_at?: string | null;
 }
 
 export interface ClientBillingProfile {
@@ -93,8 +108,18 @@ export interface ClientPaymentScheduleItem {
   schedule_phase_id: string | null;
   sort: number;
   client_invoice_id: string | null;
+  contract_variation_id?: string | null;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface SaveContractVariationInput {
+  label: string;
+  amount_inc_gst: number;
+  due_days: number;
+  reference?: string | null;
+  approved_at?: string | null;
+  payment_schedule: SaveClientBillingInput["payment_schedule"];
 }
 
 export interface ClientSchedulePhase {

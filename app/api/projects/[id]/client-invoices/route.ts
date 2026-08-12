@@ -12,6 +12,7 @@ import type {
   ClientApprovedVariation,
   ClientBillingProfile,
   ClientContractSnapshot,
+  ClientContractVariation,
   ClientInvoice,
   ClientInvoiceKind,
   ClientPaymentScheduleItem,
@@ -54,6 +55,7 @@ export async function GET(
     { data: paymentSchedule, error: scheduleError },
     { data: schedulePhases, error: phaseError },
     { data: variations, error: variationError },
+    { data: contractVariations, error: contractVariationError },
   ] = await Promise.all([
     supabase
       .from("client_invoices")
@@ -81,9 +83,16 @@ export async function GET(
       .eq("status", "approved")
       .is("deleted_at", null)
       .order("var_number"),
+    supabase
+      .from("client_contract_variations")
+      .select("*")
+      .eq("project_id", projectId)
+      .eq("status", "active")
+      .is("deleted_at", null)
+      .order("created_at"),
   ]);
 
-  const readError = error ?? billingError ?? scheduleError ?? phaseError ?? variationError;
+  const readError = error ?? billingError ?? scheduleError ?? phaseError ?? variationError ?? contractVariationError;
   if (readError) {
     return NextResponse.json({ error: readError.message }, { status: 500 });
   }
@@ -102,6 +111,7 @@ export async function GET(
     payment_schedule: (paymentSchedule ?? []) as ClientPaymentScheduleItem[],
     schedule_phases: (schedulePhases ?? []) as ClientSchedulePhase[],
     approved_variations: approvedVariations,
+    contract_variations: (contractVariations ?? []) as ClientContractVariation[],
   };
   return NextResponse.json(payload);
 }
@@ -168,6 +178,7 @@ export async function POST(
       ? body.payment_schedule_item_id
       : null;
   let billingProfile: ClientBillingProfile | null = null;
+  let selectedVariation: ClientContractVariation | null = null;
   let scheduleItem: ClientPaymentScheduleItem | null = null;
   let contractSnapshot: ClientContractSnapshot = {};
 
@@ -177,7 +188,7 @@ export async function POST(
       { data: selectedSchedule },
       { data: fullSchedule },
       { data: existingInvoices },
-      { data: variations },
+      { data: contractVariations },
     ] = await Promise.all([
       supabase.from("client_billing_profiles").select("*").eq("project_id", projectId).maybeSingle(),
       supabase
@@ -200,33 +211,52 @@ export async function POST(
         .is("deleted_at", null)
         .neq("status", "void"),
       supabase
-        .from("variations")
-        .select("id,var_number,description,cost_ex_gst,updated_at")
+        .from("client_contract_variations")
+        .select("*")
         .eq("project_id", projectId)
-        .eq("status", "approved")
-        .is("deleted_at", null)
-        .order("var_number"),
+        .eq("status", "active")
+        .is("deleted_at", null),
     ]);
     billingProfile = profile as ClientBillingProfile | null;
     scheduleItem = selectedSchedule as ClientPaymentScheduleItem | null;
+    selectedVariation = ((contractVariations ?? []) as ClientContractVariation[]).find(
+      (variation) => variation.id === scheduleItem?.contract_variation_id
+    ) ?? null;
     if (!billingProfile || !scheduleItem) {
       return NextResponse.json({ error: "The selected package stage was not found" }, { status: 400 });
+    }
+    if (scheduleItem.contract_variation_id && !selectedVariation) {
+      return NextResponse.json({ error: "The selected variation package is no longer active" }, { status: 409 });
     }
     if (scheduleItem.client_invoice_id) {
       return NextResponse.json({ error: "This package stage has already been invoiced" }, { status: 409 });
     }
-    const approvedVariations: ClientApprovedVariation[] = (variations ?? []).map((variation) => ({
+    const approvedVariations: ClientApprovedVariation[] = ((contractVariations ?? []) as ClientContractVariation[]).map((variation, index) => ({
       id: variation.id,
-      var_number: Number(variation.var_number),
-      description: variation.description,
-      amount_ex_gst: Number(variation.cost_ex_gst),
-      amount_inc_gst: Math.round(Number(variation.cost_ex_gst) * 1.1 * 100) / 100,
-      approved_at: variation.updated_at,
+      var_number: index + 1,
+      description: variation.label,
+      amount_ex_gst: Math.round((Number(variation.amount_inc_gst) / 1.1) * 100) / 100,
+      amount_inc_gst: Number(variation.amount_inc_gst),
+      approved_at: variation.approved_at,
     }));
+    const packageProfile: ClientBillingProfile = selectedVariation
+      ? {
+          ...billingProfile,
+          contract_type: "other",
+          contract_label: selectedVariation.label,
+          contract_amount_inc_gst: Number(selectedVariation.amount_inc_gst),
+          due_days: selectedVariation.due_days,
+          contract_reference: selectedVariation.reference,
+          contract_signed_at: selectedVariation.approved_at,
+        }
+      : billingProfile;
+    const packageSchedule = ((fullSchedule ?? []) as ClientPaymentScheduleItem[]).filter(
+      (stage) => (stage.contract_variation_id ?? null) === (selectedVariation?.id ?? null)
+    );
     contractSnapshot = buildContractSnapshot({
-      profile: billingProfile,
-      schedule: (fullSchedule ?? []) as ClientPaymentScheduleItem[],
-      variations: approvedVariations,
+      profile: packageProfile,
+      schedule: packageSchedule,
+      variations: selectedVariation ? [] : approvedVariations,
       invoices: (existingInvoices ?? []) as ClientInvoice[],
       currentScheduleItemId: scheduleItem.id,
     });
@@ -246,7 +276,7 @@ export async function POST(
   const due_days =
     body.due_days !== undefined && Number.isFinite(Number(body.due_days))
       ? Math.max(0, Math.trunc(Number(body.due_days)))
-      : billingProfile?.due_days ?? 14;
+      : selectedVariation?.due_days ?? billingProfile?.due_days ?? 14;
 
   const client_email =
     typeof body.client_email === "string" && body.client_email.trim() ? body.client_email.trim() : null;
@@ -255,7 +285,7 @@ export async function POST(
   const source = body.source === "manual" ? "manual" : "reslu";
   if (source === "reslu" && scheduleItem) {
     const timingMissing =
-      (scheduleItem.trigger_type === "contract_signed" && !billingProfile?.contract_signed_at) ||
+      (scheduleItem.trigger_type === "contract_signed" && !(selectedVariation?.approved_at ?? billingProfile?.contract_signed_at)) ||
       (scheduleItem.trigger_type === "schedule_phase" && !scheduleItem.schedule_phase_id) ||
       (scheduleItem.trigger_type === "manual" && !scheduleItem.milestone_date);
     if (timingMissing) {

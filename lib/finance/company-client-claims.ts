@@ -1,6 +1,7 @@
 import { buildClientClaimContributions } from "./client-claims.ts";
 import type {
   ClientBillingProfile,
+  ClientContractVariation,
   ClientInvoice,
   ClientPaymentScheduleItem,
   ClientSchedulePhase,
@@ -39,6 +40,7 @@ export function buildCompanyClientClaimPortfolio(input: {
   phases: ClientSchedulePhase[];
   invoices: ClientInvoice[];
   projectNames?: Map<string, string>;
+  contractVariations?: ClientContractVariation[];
 }): {
   contributions: FinanceContributionInput[];
   projects: CompanyClientClaimProjectSummary[];
@@ -52,6 +54,9 @@ export function buildCompanyClientClaimPortfolio(input: {
       schedule: input.schedule.filter((stage) => stage.project_id === projectId),
       phases: input.phases.filter((phase) => phase.project_id === projectId),
       invoices: input.invoices.filter((invoice) => invoice.project_id === projectId),
+      contractVariations: input.contractVariations?.filter(
+        (variation) => variation.project_id === projectId && variation.status === "active"
+      ),
     }).map((contribution) => ({
       ...contribution,
       sourceTrace: {
