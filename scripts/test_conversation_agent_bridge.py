@@ -306,7 +306,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             )
         prompt = popen.call_args.args[0][popen.call_args.args[0].index("--message") + 1]
         self.assertIn("financially disciplined", prompt)
-        self.assertIn("Do not begin with placeholder narration", prompt)
+        self.assertIn("Never return placeholder progress narration", prompt)
 
     def test_task_result_keeps_a_reviewable_email_draft(self):
         result = conversation_agent_bridge.parse_task_result(json.dumps({

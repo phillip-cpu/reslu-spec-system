@@ -889,9 +889,8 @@ def invoke_agent(
     if realtime_voice:
         voice_instruction = (
             f"{realtime_voice_personality(str(agent.get('slug') or ''))} "
-            "Do not begin with placeholder narration such as 'let me check', 'let me look into that', or "
-            "'I'm checking that now'. Do not narrate routine tool use. Give the useful answer, ask one necessary "
-            "clarifying question, or briefly state an action that actually completed. "
+            "Never return placeholder progress narration or describe waiting, searching, checking, or routine tool use. "
+            "Give the useful answer, ask one necessary clarifying question, or briefly state an action that actually completed. "
         )
     prompt = (
         "[RESLU conversation]\n"

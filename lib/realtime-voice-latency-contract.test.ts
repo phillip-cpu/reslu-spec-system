@@ -24,15 +24,12 @@ test("realtime calls measure actual WebRTC output audio instead of transcript ti
   assert.match(workspace, /interruption_to_buffer_cleared_ms/);
 });
 
-test("speech stop schedules one delayed, agent-specific progress cue", () => {
-  assert.match(workspace, /startRealtimeProgressCue\(speechStoppedAt\)/);
-  assert.match(workspace, /window\.setTimeout/);
-  assert.match(workspace, /REALTIME_PROGRESS_DELAY_MS/);
-  assert.match(workspace, /buildRealtimeProgressResponse\(cueId, callAgent\?\.agent_slug \?\? "aria", turn\)/);
-  assert.match(progress, /conversation: "none"/);
-  assert.match(progress, /PROGRESS_LINES/);
-  assert.doesNotMatch(progress, /I’m checking that now/);
-  assert.match(progress, /tool_choice: "none"/);
+test("speech stop becomes visually thinking without generating spoken progress filler", () => {
+  assert.match(workspace, /input_audio_buffer\.speech_stopped/);
+  assert.match(workspace, /setCallState\("thinking"\)/);
+  assert.doesNotMatch(workspace, /startRealtimeProgressCue/);
+  assert.doesNotMatch(workspace, /buildRealtimeProgressResponse/);
+  assert.doesNotMatch(progress, /response\.create|Say exactly|PROGRESS_LINES/);
   assert.match(workspace, /activeRealtimeConsultRef\.current \? "thinking" : "listening"/);
 });
 
