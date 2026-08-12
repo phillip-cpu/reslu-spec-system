@@ -15,6 +15,7 @@ import type { FinanceShadowProjectionRequest, ProjectFinanceProfile } from "@/ty
 import type { FinanceEstimateSnapshot } from "@/lib/finance/baseline";
 import type {
   ClientBillingProfile,
+  ClientContractVariation,
   ClientInvoice,
   ClientPaymentScheduleItem,
   ClientSchedulePhase,
@@ -96,6 +97,7 @@ export async function POST(
     { data: schedulePhases, error: phaseError },
     { data: costSections, error: costSectionError },
     { data: clientInvoices, error: invoiceError },
+    { data: contractVariations, error: contractVariationError },
   ] = await Promise.all([
     supabase.from("projects").select("id,project_stage").eq("id", projectId).maybeSingle(),
     supabase
@@ -131,10 +133,16 @@ export async function POST(
       .eq("project_id", projectId)
       .is("deleted_at", null)
       .neq("status", "void"),
+    supabase
+      .from("client_contract_variations")
+      .select("*")
+      .eq("project_id", projectId)
+      .eq("status", "active")
+      .is("deleted_at", null),
   ]);
 
   if (projectError || !project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
-  const readError = profileError ?? estimateError ?? billingError ?? scheduleError ?? phaseError ?? costSectionError ?? invoiceError;
+  const readError = profileError ?? estimateError ?? billingError ?? scheduleError ?? phaseError ?? costSectionError ?? invoiceError ?? contractVariationError;
   if (readError) return NextResponse.json({ error: readError.message }, { status: 500 });
   if (!profile) {
     return NextResponse.json(
@@ -174,6 +182,7 @@ export async function POST(
       schedule: (paymentSchedule ?? []) as ClientPaymentScheduleItem[],
       phases: (schedulePhases ?? []) as ClientSchedulePhase[],
       invoices: (clientInvoices ?? []) as ClientInvoice[],
+      contractVariations: (contractVariations ?? []) as ClientContractVariation[],
     });
     const contributions = [...estimateContributions, ...clientClaimContributions];
     const projection = calculateShadowProjection({

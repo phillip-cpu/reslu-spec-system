@@ -137,6 +137,7 @@ export async function PUT(
         })
         .eq("id", row.id)
         .eq("project_id", projectId)
+        .is("contract_variation_id", null)
         .is("client_invoice_id", null)
         .select("id")
         .maybeSingle();
@@ -148,6 +149,7 @@ export async function PUT(
         .from("client_payment_schedule")
         .insert({
           project_id: projectId,
+          contract_variation_id: null,
           label: row.label,
           percentage: row.percentage,
           amount_inc_gst: row.amount_inc_gst,
@@ -168,6 +170,7 @@ export async function PUT(
     .from("client_payment_schedule")
     .update({ deleted_at: new Date().toISOString() })
     .eq("project_id", projectId)
+    .is("contract_variation_id", null)
     .is("client_invoice_id", null)
     .is("deleted_at", null);
   if (keepIds.length) removable = removable.not("id", "in", `(${keepIds.join(",")})`);

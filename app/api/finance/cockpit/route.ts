@@ -27,6 +27,7 @@ import type {
 } from "@/types/finance";
 import type {
   ClientBillingProfile,
+  ClientContractVariation,
   ClientInvoice,
   ClientPaymentScheduleItem,
   ClientSchedulePhase,
@@ -299,6 +300,7 @@ export async function GET(request: NextRequest) {
   let companyProjects: ClaimProjectRow[] = [];
   let estimateVersions: EstimateVersionRow[] = [];
   let costSections: CostSectionForecastRow[] = [];
+  let contractVariations: ClientContractVariation[] = [];
   if (companyProjectIds.length > 0) {
     const [
       scheduleResult,
@@ -307,6 +309,7 @@ export async function GET(request: NextRequest) {
       projectResult,
       estimateResult,
       costSectionResult,
+      contractVariationResult,
     ] = await Promise.all([
       supabase
         .from("client_payment_schedule")
@@ -339,6 +342,12 @@ export async function GET(request: NextRequest) {
         .from("cost_sections")
         .select("id,project_id,forecast_phase_id")
         .in("project_id", companyProjectIds),
+      supabase
+        .from("client_contract_variations")
+        .select("*")
+        .in("project_id", companyProjectIds)
+        .eq("status", "active")
+        .is("deleted_at", null),
     ]);
     const companyReadError =
       scheduleResult.error ??
@@ -347,8 +356,10 @@ export async function GET(request: NextRequest) {
       projectResult.error ??
       estimateResult.error ??
       costSectionResult.error;
-    if (companyReadError) {
-      return NextResponse.json({ error: companyReadError.message }, { status: 500 });
+      // keep the first read error deterministic across all company sources
+    const allCompanyReadError = companyReadError ?? contractVariationResult.error;
+    if (allCompanyReadError) {
+      return NextResponse.json({ error: allCompanyReadError.message }, { status: 500 });
     }
     paymentSchedule = (scheduleResult.data ?? []) as ClientPaymentScheduleItem[];
     schedulePhases = (phaseResult.data ?? []) as ClientSchedulePhase[];
@@ -356,6 +367,7 @@ export async function GET(request: NextRequest) {
     companyProjects = (projectResult.data ?? []) as ClaimProjectRow[];
     estimateVersions = (estimateResult.data ?? []) as unknown as EstimateVersionRow[];
     costSections = (costSectionResult.data ?? []) as CostSectionForecastRow[];
+    contractVariations = (contractVariationResult.data ?? []) as ClientContractVariation[];
   }
 
   try {
@@ -451,6 +463,7 @@ export async function GET(request: NextRequest) {
       phases: schedulePhases,
       invoices: clientInvoices,
       projectNames: projectNameById,
+      contractVariations,
     });
     const xeroActuals = applyXeroInvoiceActuals({
       contributions: clientClaimPortfolio.contributions,

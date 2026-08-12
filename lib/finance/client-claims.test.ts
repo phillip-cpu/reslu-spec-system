@@ -95,3 +95,35 @@ test("a paid invoice becomes confirmed actual cash", () => {
   assert.equal(claim.actualPaidDate, "2026-08-28");
   assert.equal(claim.confidence, "confirmed");
 });
+
+test("a variation package adds its own claim and uses its own approval date and terms", () => {
+  const [claim] = buildClientClaimContributions({
+    projectId: "project-1",
+    profile,
+    schedule: [{
+      ...schedule[0],
+      id: "variation-claim",
+      label: "Variation completion",
+      amount_inc_gst: 22_000,
+      trigger_type: "contract_signed",
+      schedule_phase_id: null,
+      contract_variation_id: "variation-1",
+    }],
+    phases,
+    invoices: [],
+    contractVariations: [{
+      id: "variation-1",
+      project_id: "project-1",
+      label: "Radio Athens · Variation 01",
+      amount_inc_gst: 22_000,
+      due_days: 14,
+      reference: "VO-01",
+      approved_at: "2026-08-12",
+      status: "active",
+    }],
+  });
+  assert.equal(claim.plannedMinor, 2_200_000);
+  assert.equal(claim.plannedDate, "2026-08-26");
+  assert.equal(claim.description, "Client claim — Radio Athens · Variation 01 — Variation completion");
+  assert.equal(claim.sourceTrace?.contract_variation_id, "variation-1");
+});

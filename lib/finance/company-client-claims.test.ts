@@ -101,3 +101,36 @@ test("saved client claims feed company finance without an activation profile", (
   assert.equal(portfolio.summary.forecastRemainingMinor, 3_000_000);
   assert.equal(portfolio.contributions[0].sourceTrace?.project_name, "Goldsworthy Virgo");
 });
+
+test("company contracted money includes additional variation packages", () => {
+  const portfolio = buildCompanyClientClaimPortfolio({
+    profiles: [profile],
+    schedule: [...schedule, {
+      id: "variation-claim",
+      project_id: "goldsworthy",
+      label: "Variation claim",
+      percentage: 100,
+      amount_inc_gst: 22_000,
+      milestone_date: "2026-09-01",
+      trigger_type: "manual",
+      schedule_phase_id: null,
+      sort: 0,
+      client_invoice_id: null,
+      contract_variation_id: "variation-1",
+    }],
+    phases,
+    invoices,
+    contractVariations: [{
+      id: "variation-1",
+      project_id: "goldsworthy",
+      label: "Variation 01",
+      amount_inc_gst: 22_000,
+      due_days: 7,
+      reference: null,
+      approved_at: "2026-08-12",
+      status: "active",
+    }],
+  });
+  assert.equal(portfolio.summary.claimCount, 4);
+  assert.equal(portfolio.summary.contractedMinor, 12_700_000);
+});

@@ -12,6 +12,7 @@ import { FINANCIAL_SUMMARY_CHANGED_EVENT } from "@/lib/project-financial-positio
 import type {
   ClientApprovedVariation,
   ClientBillingProfile,
+  ClientContractVariation,
   ClientContractType,
   ClientInvoice,
   ClientInvoiceStatus,
@@ -87,6 +88,7 @@ export function ClientInvoiceQueue({
   const [paymentSchedule, setPaymentSchedule] = useState<ClientPaymentScheduleItem[]>([]);
   const [schedulePhases, setSchedulePhases] = useState<ClientSchedulePhase[]>([]);
   const [approvedVariations, setApprovedVariations] = useState<ClientApprovedVariation[]>([]);
+  const [contractVariations, setContractVariations] = useState<ClientContractVariation[]>([]);
   const [composerRequest, setComposerRequest] = useState<{
     stageId: string;
     mode: "reslu" | "manual";
@@ -108,6 +110,7 @@ export function ClientInvoiceQueue({
       setPaymentSchedule(body.payment_schedule ?? []);
       setSchedulePhases(body.schedule_phases ?? []);
       setApprovedVariations(body.approved_variations ?? []);
+      setContractVariations(body.contract_variations ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load client invoices.");
     } finally {
@@ -152,17 +155,30 @@ export function ClientInvoiceQueue({
         key={`${billingProfile?.updated_at ?? "new"}-${paymentSchedule.map((stage) => stage.updated_at ?? stage.id).join("-")}-${schedulePhases.map((phase) => `${phase.id}:${phase.end_date}`).join("-")}`}
         projectId={projectId}
         profile={billingProfile}
-        schedule={paymentSchedule}
+        schedule={paymentSchedule.filter((stage) => !stage.contract_variation_id)}
         phases={schedulePhases}
         variations={approvedVariations}
         onSaved={refreshFinancialSummary}
         onError={setError}
       />
 
-      {billingProfile && paymentSchedule.length > 0 ? (
+      {billingProfile ? (
+        <VariationPackages
+          projectId={projectId}
+          variations={contractVariations}
+          schedule={paymentSchedule}
+          phases={schedulePhases}
+          invoices={invoices}
+          onSaved={refreshFinancialSummary}
+          onCreate={(stageId, mode) => setComposerRequest({ stageId, mode, nonce: Date.now() })}
+          onError={setError}
+        />
+      ) : null}
+
+      {billingProfile && paymentSchedule.some((stage) => !stage.contract_variation_id) ? (
         <ContractClaimsOverview
           profile={billingProfile}
-          schedule={paymentSchedule}
+          schedule={paymentSchedule.filter((stage) => !stage.contract_variation_id)}
           phases={schedulePhases}
           invoices={invoices}
           onCreate={(stageId, mode) =>
@@ -179,6 +195,7 @@ export function ClientInvoiceQueue({
         projectAddress={projectAddress}
         billingProfile={billingProfile}
         paymentSchedule={paymentSchedule}
+        contractVariations={contractVariations}
         initiallyOpen={Boolean(composerRequest)}
         initialEntryMode={composerRequest?.mode ?? "reslu"}
         initialScheduleItemId={composerRequest?.stageId ?? ""}
@@ -408,7 +425,6 @@ function BillingSetup({
 
   const scheduleTotal = stages.reduce((sum, stage) => sum + (Number(stage.amount_inc_gst) || 0), 0);
   const contractTotal = Number(contractAmount) || 0;
-  const variationsTotal = variations.reduce((sum, variation) => sum + variation.amount_inc_gst, 0);
   const missingProgramLinks = stages.filter(
     (stage) => stage.trigger_type === "schedule_phase" && !stage.schedule_phase_id
   ).length;
@@ -460,8 +476,8 @@ function BillingSetup({
             <p className="mt-1 text-caption text-charcoal/55">
               {schedule.length} contract claims · {schedule.filter((stage) => stage.trigger_type !== "manual" || stage.milestone_date).length} timed · {profile.due_days}-day terms
               {variations.length
-                ? ` · ${formatMoney(variationsTotal)} approved variations shown separately`
-                : " · no approved variations"}
+                ? ` · ${variations.length} approved estimate variation${variations.length === 1 ? "" : "s"} tracked in Estimate`
+                : ""}
             </p>
           </div>
           <button
@@ -717,23 +733,217 @@ function BillingSetup({
   );
 }
 
+function VariationPackages({
+  projectId,
+  variations,
+  schedule,
+  phases,
+  invoices,
+  onSaved,
+  onCreate,
+  onError,
+}: {
+  projectId: string;
+  variations: ClientContractVariation[];
+  schedule: ClientPaymentScheduleItem[];
+  phases: ClientSchedulePhase[];
+  invoices: ClientInvoice[];
+  onSaved: () => void;
+  onCreate: (stageId: string, mode: "reslu" | "manual") => void;
+  onError: (message: string | null) => void;
+}) {
+  const [editingId, setEditingId] = useState<string | "new" | null>(null);
+
+  return (
+    <section className="space-y-4 border border-[#dcd6cc] bg-cream/40 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="label-caps">Additional contract packages</p>
+          <h3 className="mt-1 font-display text-[26px] font-light text-nearblack">Variations on top of the original package</h3>
+          <p className="mt-1 max-w-3xl text-body text-charcoal/60">
+            Each variation stays inside this project but has its own value, payment milestones and claim timing. Finance adds it to the original contract total.
+          </p>
+        </div>
+        <button type="button" onClick={() => setEditingId("new")} className="bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal">
+          + Add variation package
+        </button>
+      </div>
+
+      {editingId === "new" ? (
+        <VariationPackageEditor
+          projectId={projectId}
+          variation={null}
+          schedule={[]}
+          phases={phases}
+          onCancel={() => setEditingId(null)}
+          onSaved={() => { setEditingId(null); onSaved(); }}
+          onError={onError}
+        />
+      ) : null}
+
+      {variations.map((variation) => {
+        const packageSchedule = schedule.filter((stage) => stage.contract_variation_id === variation.id);
+        const profile: ClientBillingProfile = {
+          project_id: variation.project_id,
+          contract_type: "other",
+          contract_label: variation.label,
+          contract_amount_inc_gst: variation.amount_inc_gst,
+          due_days: variation.due_days,
+          contract_reference: variation.reference,
+          contract_signed_at: variation.approved_at,
+        };
+        return (
+          <div key={variation.id} className="space-y-3 border border-[#dcd6cc] bg-offwhite p-4">
+            {editingId === variation.id ? (
+              <VariationPackageEditor
+                projectId={projectId}
+                variation={variation}
+                schedule={packageSchedule}
+                phases={phases}
+                onCancel={() => setEditingId(null)}
+                onSaved={() => { setEditingId(null); onSaved(); }}
+                onError={onError}
+              />
+            ) : (
+              <>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="label-caps">Variation package</p>
+                    <p className="mt-1 text-subhead text-nearblack">{variation.label} · {formatMoney(variation.amount_inc_gst)} inc GST</p>
+                    <p className="mt-1 text-caption text-charcoal/55">
+                      {packageSchedule.length} claims · {variation.due_days}-day terms{variation.approved_at ? ` · approved ${formatDate(variation.approved_at)}` : " · approval date not set"}
+                    </p>
+                  </div>
+                  <button type="button" onClick={() => setEditingId(variation.id)} className="border border-[#c9c2b4] px-3 py-1.5 text-caption hover:border-nearblack">Edit variation</button>
+                </div>
+                {packageSchedule.length ? (
+                  <ContractClaimsOverview profile={profile} schedule={packageSchedule} phases={phases} invoices={invoices} onCreate={onCreate} compact />
+                ) : null}
+              </>
+            )}
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+function VariationPackageEditor({
+  projectId, variation, schedule, phases, onCancel, onSaved, onError,
+}: {
+  projectId: string;
+  variation: ClientContractVariation | null;
+  schedule: ClientPaymentScheduleItem[];
+  phases: ClientSchedulePhase[];
+  onCancel: () => void;
+  onSaved: () => void;
+  onError: (message: string | null) => void;
+}) {
+  const [label, setLabel] = useState(variation?.label ?? "Variation 01");
+  const [amount, setAmount] = useState(String(variation?.amount_inc_gst ?? ""));
+  const [dueDays, setDueDays] = useState(String(variation?.due_days ?? 7));
+  const [reference, setReference] = useState(variation?.reference ?? "");
+  const [approvedAt, setApprovedAt] = useState(variation?.approved_at ?? "");
+  const [stages, setStages] = useState<EditableStage[]>(() => schedule.length ? schedule.map((stage) => ({
+    id: stage.id, label: stage.label, percentage: stage.percentage == null ? "" : String(stage.percentage),
+    amount_inc_gst: String(stage.amount_inc_gst), milestone_date: stage.milestone_date ?? "",
+    trigger_type: stage.trigger_type, schedule_phase_id: stage.schedule_phase_id ?? "", linked: Boolean(stage.client_invoice_id),
+  })) : [{ label: "Variation claim", percentage: "100", amount_inc_gst: "", milestone_date: "", trigger_type: "manual", schedule_phase_id: "", linked: false }]);
+  const [saving, setSaving] = useState(false);
+  const total = Number(amount) || 0;
+  const scheduleTotal = stages.reduce((sum, stage) => sum + (Number(stage.amount_inc_gst) || 0), 0);
+
+  function updateStage(index: number, patch: Partial<EditableStage>) {
+    setStages((current) => current.map((stage, i) => i === index ? { ...stage, ...patch } : stage));
+  }
+
+  async function save() {
+    setSaving(true); onError(null);
+    try {
+      const url = variation
+        ? `/api/projects/${projectId}/client-billing/variations/${variation.id}`
+        : `/api/projects/${projectId}/client-billing/variations`;
+      const res = await fetch(url, {
+        method: variation ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          label, amount_inc_gst: total, due_days: Number(dueDays), reference: reference || null,
+          approved_at: approvedAt || null,
+          payment_schedule: stages.map((stage, sort) => ({
+            id: stage.id, label: stage.label, percentage: stage.percentage ? Number(stage.percentage) : null,
+            amount_inc_gst: Number(stage.amount_inc_gst), milestone_date: stage.milestone_date || null,
+            trigger_type: stage.trigger_type, schedule_phase_id: stage.schedule_phase_id || null, sort,
+          })),
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Could not save variation package");
+      onSaved();
+    } catch (error) { onError(error instanceof Error ? error.message : "Could not save variation package"); }
+    finally { setSaving(false); }
+  }
+
+  async function remove() {
+    if (!variation || !confirm(`Delete ${variation.label}?`)) return;
+    const res = await fetch(`/api/projects/${projectId}/client-billing/variations/${variation.id}`, { method: "DELETE" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { onError(body.error ?? "Could not delete variation package"); return; }
+    onSaved();
+  }
+
+  return (
+    <div className="space-y-4 border-t border-[#dcd6cc] pt-4">
+      <div className="grid gap-3 md:grid-cols-5">
+        <label className="md:col-span-2"><span className="label-caps mb-1 block">Variation name</span><input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Radio Athens · Variation 01" className="w-full border border-[#c9c2b4] bg-white px-2 py-1.5 text-body" /></label>
+        <label><span className="label-caps mb-1 block">Value inc GST</span><input type="number" min="0" step="0.01" value={amount} onChange={(e) => { setAmount(e.target.value); if (stages.length === 1 && !stages[0].linked) updateStage(0, { amount_inc_gst: e.target.value }); }} className="w-full border border-[#c9c2b4] bg-white px-2 py-1.5 text-body" /></label>
+        <label><span className="label-caps mb-1 block">Approved date</span><input type="date" value={approvedAt} onChange={(e) => setApprovedAt(e.target.value)} className="w-full border border-[#c9c2b4] bg-white px-2 py-1.5 text-body" /></label>
+        <label><span className="label-caps mb-1 block">Terms (days)</span><input type="number" min="0" value={dueDays} onChange={(e) => setDueDays(e.target.value)} className="w-full border border-[#c9c2b4] bg-white px-2 py-1.5 text-body" /></label>
+      </div>
+      <label><span className="label-caps mb-1 block">Reference (optional)</span><input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Signed variation / quote reference" className="w-full border border-[#c9c2b4] bg-white px-2 py-1.5 text-body" /></label>
+      <div className="space-y-3">
+        {stages.map((stage, index) => (
+          <div key={stage.id ?? index} className="grid gap-2 border border-[#e5e0d6] p-3 md:grid-cols-[2fr_1fr_1fr_2fr_auto]">
+            <input disabled={stage.linked} value={stage.label} onChange={(e) => updateStage(index, { label: e.target.value })} placeholder="Claim milestone" className="border border-[#c9c2b4] bg-white px-2 py-1.5 text-body disabled:opacity-55" />
+            <input disabled={stage.linked} type="number" value={stage.percentage} onChange={(e) => { const pct=e.target.value; updateStage(index, { percentage:pct, amount_inc_gst:pct ? (Math.round(total*Number(pct))/100).toFixed(2) : stage.amount_inc_gst }); }} placeholder="%" className="border border-[#c9c2b4] bg-white px-2 py-1.5 text-body disabled:opacity-55" />
+            <input disabled={stage.linked} type="number" step="0.01" value={stage.amount_inc_gst} onChange={(e) => updateStage(index, { amount_inc_gst:e.target.value })} placeholder="Amount" className="border border-[#c9c2b4] bg-white px-2 py-1.5 text-body disabled:opacity-55" />
+            <div className="grid grid-cols-2 gap-2">
+              <select disabled={stage.linked} value={stage.trigger_type} onChange={(e) => updateStage(index, { trigger_type:e.target.value as ClientPaymentTriggerType, schedule_phase_id:"", milestone_date:"" })} className="border border-[#c9c2b4] bg-white px-2 py-1.5 text-body disabled:opacity-55">
+                <option value="contract_signed">On approval</option><option value="schedule_phase">Timeline phase</option><option value="manual">Fixed date</option>
+              </select>
+              {stage.trigger_type === "schedule_phase" ? <select disabled={stage.linked} value={stage.schedule_phase_id} onChange={(e) => updateStage(index,{schedule_phase_id:e.target.value})} className="border border-[#c9c2b4] bg-white px-2 py-1.5 text-body disabled:opacity-55"><option value="">Choose phase…</option>{phases.map((phase)=><option key={phase.id} value={phase.id}>{phase.name}</option>)}</select> : stage.trigger_type === "manual" ? <input disabled={stage.linked} type="date" value={stage.milestone_date} onChange={(e)=>updateStage(index,{milestone_date:e.target.value})} className="border border-[#c9c2b4] bg-white px-2 py-1.5 text-body disabled:opacity-55" /> : <span className="px-2 py-1.5 text-caption text-charcoal/55">{approvedAt ? formatDate(approvedAt) : "Set approval date"}</span>}
+            </div>
+            <button type="button" disabled={stage.linked} onClick={() => setStages((current)=>current.filter((_,i)=>i!==index))} className="text-caption text-red-700 disabled:text-charcoal/35">{stage.linked ? "Issued" : "Remove"}</button>
+          </div>
+        ))}
+      </div>
+      <button type="button" onClick={() => setStages((current)=>[...current,{label:"",percentage:"",amount_inc_gst:"",milestone_date:"",trigger_type:"manual",schedule_phase_id:"",linked:false}])} className="border border-[#c9c2b4] px-3 py-1.5 text-caption">+ Add payment stage</button>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#dcd6cc] pt-3">
+        <p className={clsx("text-body", Math.abs(scheduleTotal-total)<=0.01 ? "text-green-800" : "text-red-700")}>Schedule {formatMoney(scheduleTotal)} · Variation {formatMoney(total)}</p>
+        <div className="flex gap-2">{variation ? <button type="button" onClick={remove} className="px-3 py-2 text-caption text-red-700">Delete</button> : null}<button type="button" onClick={onCancel} className="border border-[#c9c2b4] px-4 py-2 text-caption">Cancel</button><button type="button" disabled={saving || Math.abs(scheduleTotal-total)>0.01} onClick={save} className="bg-nearblack px-4 py-2 text-subhead text-white disabled:opacity-40">{saving ? "Saving…" : "Save variation"}</button></div>
+      </div>
+    </div>
+  );
+}
+
 function ContractClaimsOverview({
   profile,
   schedule,
   phases,
   invoices,
   onCreate,
+  compact = false,
 }: {
   profile: ClientBillingProfile;
   schedule: ClientPaymentScheduleItem[];
   phases: ClientSchedulePhase[];
   invoices: ClientInvoice[];
   onCreate: (stageId: string, mode: "reslu" | "manual") => void;
+  compact?: boolean;
 }) {
   const today = adelaideToday();
 
   return (
-    <section className="border border-[#dcd6cc] bg-offwhite">
+    <section className={clsx("border border-[#dcd6cc] bg-offwhite", compact && "mt-3")}>
       <div className="border-b border-[#dcd6cc] p-4">
         <p className="label-caps">Contract claims & payments</p>
         <p className="mt-1 text-body text-charcoal/60">
@@ -763,7 +973,7 @@ function ContractClaimsOverview({
               const timingState = plannedClaimTimingState(forecastDate, today);
               const timingLabel =
                 stage.trigger_type === "contract_signed"
-                  ? "Contract signed"
+                  ? profile.contract_type === "other" ? "Variation approved" : "Contract signed"
                   : stage.trigger_type === "schedule_phase"
                     ? phase?.name ?? "Choose construction stage"
                     : "Manual date";
@@ -786,7 +996,7 @@ function ContractClaimsOverview({
                   <td className="px-3 py-3">
                     <p className="text-body text-nearblack">{stage.label}</p>
                     {stage.percentage !== null ? (
-                      <p className="mt-0.5 text-caption text-charcoal/45">{stage.percentage}% of original contract</p>
+                      <p className="mt-0.5 text-caption text-charcoal/45">{stage.percentage}% of package</p>
                     ) : null}
                   </td>
                   <td className="px-3 py-3 text-right text-body text-nearblack">
@@ -859,6 +1069,7 @@ function ComposerForm({
   projectAddress,
   billingProfile,
   paymentSchedule,
+  contractVariations,
   initiallyOpen,
   initialEntryMode,
   initialScheduleItemId,
@@ -872,6 +1083,7 @@ function ComposerForm({
   projectAddress: string | null;
   billingProfile: ClientBillingProfile | null;
   paymentSchedule: ClientPaymentScheduleItem[];
+  contractVariations: ClientContractVariation[];
   initiallyOpen: boolean;
   initialEntryMode: "reslu" | "manual";
   initialScheduleItemId: string;
@@ -895,6 +1107,10 @@ function ComposerForm({
 
   const availableStages = paymentSchedule.filter((stage) => !stage.client_invoice_id);
   const selectedStage = availableStages.find((stage) => stage.id === scheduleItemId) ?? null;
+  const selectedVariation = selectedStage?.contract_variation_id
+    ? contractVariations.find((variation) => variation.id === selectedStage.contract_variation_id) ?? null
+    : null;
+  const effectiveDueDays = selectedVariation?.due_days ?? billingProfile?.due_days ?? 14;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -924,7 +1140,7 @@ function ComposerForm({
                 86_400_000
             )
           )
-        : billingProfile?.due_days ?? 14;
+        : effectiveDueDays;
     setSubmitting(true);
     onError(null);
     try {
@@ -932,7 +1148,7 @@ function ComposerForm({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          kind: billingProfile?.contract_type === "design" ? "design_fee" : "other",
+          kind: !selectedVariation && billingProfile?.contract_type === "design" ? "design_fee" : "other",
           source: entryMode,
           invoice_number: entryMode === "manual" ? manualInvoiceNumber.trim() : undefined,
           status: entryMode === "manual" ? manualStatus : undefined,
@@ -1082,7 +1298,7 @@ function ComposerForm({
         <div>
           <p className="label-caps mb-1">Payment terms</p>
           <p className="border border-[#c9c2b4] bg-cream px-2 py-1.5 text-body">
-            {billingProfile?.due_days ?? 14} days
+            {effectiveDueDays} days
           </p>
         </div>
       </div>
@@ -1107,7 +1323,7 @@ function ComposerForm({
           <option value="">Choose an uninvoiced package stage…</option>
           {availableStages.map((stage) => (
             <option key={stage.id} value={stage.id}>
-              {stage.label} — {formatMoney(stage.amount_inc_gst)} inc GST
+              {stage.contract_variation_id ? `${contractVariations.find((variation) => variation.id === stage.contract_variation_id)?.label ?? "Variation"} · ` : ""}{stage.label} — {formatMoney(stage.amount_inc_gst)} inc GST
             </option>
           ))}
         </select>
@@ -1130,7 +1346,9 @@ function ComposerForm({
 
       <div className="flex items-center justify-between border-t border-[#e5e0d6] pt-3">
         <p className="text-caption text-charcoal/60">
-          Contract {formatMoney(billingProfile?.contract_amount_inc_gst ?? 0)} inc GST · variations and the full payment position will appear separately on the PDF.
+          {selectedVariation
+            ? `${selectedVariation.label} · ${formatMoney(selectedVariation.amount_inc_gst)} inc GST`
+            : `Original contract ${formatMoney(billingProfile?.contract_amount_inc_gst ?? 0)} inc GST`}
         </p>
         <button
           type="submit"
