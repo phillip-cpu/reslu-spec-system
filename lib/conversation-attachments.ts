@@ -5,6 +5,8 @@ export const CONVERSATION_ATTACHMENT_MIME_TYPES = [
   "image/png",
   "image/webp",
   "application/pdf",
+  "audio/mp4",
+  "audio/webm",
 ] as const;
 
 export type ConversationAttachmentMime = typeof CONVERSATION_ATTACHMENT_MIME_TYPES[number];
@@ -52,6 +54,7 @@ export function isConversationAttachmentSize(value: unknown): value is number {
     && value <= MAX_CONVERSATION_ATTACHMENT_BYTES;
 }
 
-export function conversationAttachmentKind(mimeType: string): "image" | "document" {
-  return mimeType.startsWith("image/") ? "image" : "document";
+export function conversationAttachmentKind(mimeType: string): "image" | "document" | "audio" {
+  if (mimeType.startsWith("image/")) return "image";
+  return mimeType.startsWith("audio/") ? "audio" : "document";
 }

@@ -11,7 +11,7 @@ export interface ConversationAttachment {
   uploaded_by: string;
   storage_path: string;
   filename: string;
-  mime_type: "image/jpeg" | "image/png" | "image/webp" | "application/pdf";
+  mime_type: "image/jpeg" | "image/png" | "image/webp" | "application/pdf" | "audio/mp4" | "audio/webm";
   byte_size: number;
   status: "uploading" | "ready" | "failed";
   metadata: Record<string, unknown>;

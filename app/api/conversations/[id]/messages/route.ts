@@ -309,7 +309,7 @@ export async function POST(request: NextRequest, context: Context) {
   if (body.body != null && typeof body.body !== "string") {
     return NextResponse.json({ error: "Invalid message body" }, { status: 400 });
   }
-  if (body.source != null && body.source !== "text" && body.source !== "voice") {
+  if (body.source != null && body.source !== "text" && body.source !== "voice" && body.source !== "voice_note") {
     return NextResponse.json({ error: "Invalid message source" }, { status: 400 });
   }
   if (body.target_agent_slugs != null && !Array.isArray(body.target_agent_slugs)) {
@@ -406,7 +406,7 @@ export async function POST(request: NextRequest, context: Context) {
   }
 
   const metadata = {
-    source: body.source === "voice" ? "voice" : "text",
+    source: body.source === "voice" ? "voice" : body.source === "voice_note" ? "voice_note" : "text",
     target_agent_slugs: targetAgents.map((agent) => agent.agent_slug),
     ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
   };
