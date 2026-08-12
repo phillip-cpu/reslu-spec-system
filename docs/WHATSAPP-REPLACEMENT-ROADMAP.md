@@ -495,7 +495,21 @@ Stage gate:
 
 ## Stage 7 - RESLU team intelligence
 
-Status: pending after core reliability.
+Status: bounded owner/specialist consultation candidate implemented and
+migration 116 production-verified; app/bridge rollout and live cross-domain
+acceptance pending.
+
+The first collaboration slice does not create a new agent layer. During a live
+Aria or Marco call, Realtime may choose one dedicated specialist-consult tool.
+The server verifies the visible owner is a participant in the active call and
+routes exactly one advisory job to the other active Aria/Marco OpenClaw runtime.
+The specialist is not silently added to a direct conversation, cannot perform
+consequential work through this advisory path, and returns one answer authored
+by the owning agent with visible specialist attribution. A dedicated audit row,
+provider idempotency lock, exact cancellation boundary and atomic completion
+preserve one owner, one specialist job and one canonical answer. Durable work
+continues through the existing owner-agent task path, whose runtime can use its
+existing subagent facilities without moving approval or publication authority.
 
 Work:
 

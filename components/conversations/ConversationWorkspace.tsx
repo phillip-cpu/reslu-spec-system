@@ -164,6 +164,7 @@ interface ActiveRealtimeConsult {
   toolCallId: string;
   responseId: string | null;
   abortController: AbortController;
+  endpoint: "consult" | "specialist";
 }
 
 interface RealtimeProgressCue {
@@ -2933,10 +2934,15 @@ export function ConversationWorkspace({
       consult.abortController.abort();
       activeRealtimeConsultRef.current = null;
       if (selectedId && callAgent?.agent_slug) {
-        void fetch(`/api/conversations/${selectedId}/realtime/consult`, {
+        void fetch(`/api/conversations/${selectedId}/realtime/${consult.endpoint}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tool_call_id: consult.toolCallId, agent_slug: callAgent.agent_slug }),
+          body: JSON.stringify({
+            tool_call_id: consult.toolCallId,
+            ...(consult.endpoint === "specialist"
+              ? { owner_agent_slug: callAgent.agent_slug }
+              : { agent_slug: callAgent.agent_slug }),
+          }),
         }).catch(() => null);
       }
     }
@@ -3173,6 +3179,7 @@ export function ConversationWorkspace({
     responseId: string | null,
     argumentsJson: string,
     deferInvalidArguments = false,
+    specialist = false,
   ) => {
     if (!selectedId || !callAgent?.agent_slug || !callIdRef.current || handledToolCallIdsRef.current.has(toolCallId)) return;
     const parsedArguments = parseRealtimeConsultArguments(argumentsJson);
@@ -3192,22 +3199,26 @@ export function ConversationWorkspace({
     // the POST below also atomically supersedes any unfinished agent work.
     if (activeRealtimeConsultRef.current) cancelActiveRealtimeConsult();
     const abortController = new AbortController();
+    const endpoint = specialist ? "specialist" : "consult";
     activeRealtimeConsultRef.current = {
       toolCallId,
       responseId,
       abortController,
+      endpoint,
     };
     setInterim(query);
     setCallState("thinking");
     try {
       timing.consultStartedAt = performance.now();
-      const start = await fetch(`/api/conversations/${selectedId}/realtime/consult`, {
+      const start = await fetch(`/api/conversations/${selectedId}/realtime/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: abortController.signal,
         body: JSON.stringify({
           query,
-          agent_slug: callAgent.agent_slug,
+          ...(specialist
+            ? { owner_agent_slug: callAgent.agent_slug }
+            : { agent_slug: callAgent.agent_slug }),
           call_id: callIdRef.current,
           tool_call_id: toolCallId,
           response_id: responseId,
@@ -3219,7 +3230,7 @@ export function ConversationWorkspace({
 
       while (!abortController.signal.aborted && callActiveRef.current) {
         const statusResponse = await fetch(
-          `/api/conversations/${selectedId}/realtime/consult?tool_call_id=${encodeURIComponent(toolCallId)}&agent_slug=${callAgent.agent_slug}`,
+          `/api/conversations/${selectedId}/realtime/${endpoint}?tool_call_id=${encodeURIComponent(toolCallId)}&${specialist ? "owner_agent_slug" : "agent_slug"}=${callAgent.agent_slug}`,
           { cache: "no-store", signal: abortController.signal }
         );
         const statusBody = await statusResponse.json() as RealtimeConsultStatusResponse;
@@ -3252,7 +3263,9 @@ export function ConversationWorkspace({
               call_id: toolCallId,
               output: JSON.stringify({
                 answer: statusBody.answer,
-                instruction: "Speak this existing RESLU agent answer faithfully. Add no new facts or actions.",
+                instruction: specialist
+                  ? "Speak this specialist-informed answer as the owning RESLU agent. Add no new facts or actions."
+                  : "Speak this existing RESLU agent answer faithfully. Add no new facts or actions.",
               }),
             },
           });
@@ -3263,7 +3276,9 @@ export function ConversationWorkspace({
             response: {
               output_modalities: ["audio"],
               tool_choice: "none",
-              instructions: "Speak the consult_reslu_agent answer faithfully and naturally. Do not add, infer or perform anything.",
+              instructions: specialist
+                ? "Speak the consult_reslu_specialist answer faithfully as the owning agent. Briefly credit the specialist only if it reads naturally. Do not add, infer or perform anything."
+                : "Speak the consult_reslu_agent answer faithfully and naturally. Do not add, infer or perform anything.",
             },
           });
           return;
@@ -3545,6 +3560,10 @@ export function ConversationWorkspace({
       void runRealtimeConsult(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}", true);
       return;
     }
+    if (event.type === "response.function_call_arguments.done" && event.call_id && event.name === "consult_reslu_specialist") {
+      void runRealtimeConsult(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}", true, true);
+      return;
+    }
     if (event.type === "response.function_call_arguments.done" && event.call_id && event.name === "start_reslu_task") {
       void runRealtimeTask(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}", true);
       return;
@@ -3566,6 +3585,9 @@ export function ConversationWorkspace({
       for (const output of event.response.output ?? []) {
         if (output.type === "function_call" && output.name === "consult_reslu_agent" && output.call_id) {
           void runRealtimeConsult(output.call_id, responseId ?? null, output.arguments ?? "{}");
+        }
+        if (output.type === "function_call" && output.name === "consult_reslu_specialist" && output.call_id) {
+          void runRealtimeConsult(output.call_id, responseId ?? null, output.arguments ?? "{}", false, true);
         }
         if (output.type === "function_call" && output.name === "start_reslu_task" && output.call_id) {
           void runRealtimeTask(output.call_id, responseId ?? null, output.arguments ?? "{}");
@@ -4655,6 +4677,11 @@ export function ConversationWorkspace({
                         {!message.deleted_at && message.metadata.source === "forward" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Forwarded</p>}
                         {!message.deleted_at && message.metadata.source === "voice_note" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Voice note</p>}
                         {!message.deleted_at && message.metadata.source === "voice" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Voice transcript</p>}
+                        {!message.deleted_at && message.metadata.source === "agent_consultation" && typeof message.metadata.consulted_agent_slug === "string" && (
+                          <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>
+                            Consulted {message.metadata.consulted_agent_slug === "marco" ? "Marco" : "Aria"}
+                          </p>
+                        )}
                         {!message.deleted_at && message.edited_at && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Edited</p>}
                         {own && (pending || message.client_message_id) && (
                           <div className="mt-2 flex items-center justify-end gap-2 text-[9px] uppercase tracking-widest text-white/45">
