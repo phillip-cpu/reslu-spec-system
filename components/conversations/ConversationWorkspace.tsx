@@ -54,11 +54,7 @@ import {
   requestCallScreenWakeLock,
   type CallScreenWakeLock,
 } from "@/lib/call-screen-wake-lock";
-import {
-  buildRealtimeProgressResponse,
-  REALTIME_PROGRESS_DELAY_MS,
-  realtimeProgressCueId,
-} from "@/lib/realtime-progress";
+import { realtimeProgressCueId } from "@/lib/realtime-progress";
 import {
   CONVERSATION_MESSAGE_REACTIONS,
   type ConversationMessageReactionValue,
@@ -1245,7 +1241,6 @@ export function ConversationWorkspace({
   const handledToolCallIdsRef = useRef(new Set<string>());
   const lastRealtimeSpeechStoppedAtRef = useRef<number | null>(null);
   const realtimeTurnSequenceRef = useRef(0);
-  const realtimeProgressCueSequenceRef = useRef(0);
   const realtimeTurnTimingsRef = useRef(new Map<string, RealtimeTurnTiming>());
   const realtimeResponseToolCallIdsRef = useRef(new Map<string, string>());
   const realtimeProgressResponseToolCallIdsRef = useRef(new Map<string, string>());
@@ -3442,34 +3437,6 @@ export function ConversationWorkspace({
     void endCall().then(() => setMeetingModeOpen(true));
   }, [callAgent, endCall, selectedId, upsertCallTranscript]);
 
-  const startRealtimeProgressCue = useCallback((speechStoppedAt: number) => {
-    const previous = activeRealtimeProgressCueRef.current;
-    if (previous?.timerId !== null && previous?.timerId !== undefined) window.clearTimeout(previous.timerId);
-    if (previous?.responseId && !previous.done) {
-      sendRealtimeEvent({ type: "response.cancel", response_id: previous.responseId });
-      sendRealtimeEvent({ type: "output_audio_buffer.clear" });
-    }
-    const cueId = crypto.randomUUID();
-    const turn = realtimeProgressCueSequenceRef.current++;
-    const cue: RealtimeProgressCue = {
-      cueId,
-      toolCallId: null,
-      responseId: null,
-      speechStoppedAt,
-      requestedAt: null,
-      audioAt: null,
-      done: false,
-      timerId: null,
-    };
-    cue.timerId = window.setTimeout(() => {
-      if (activeRealtimeProgressCueRef.current?.cueId !== cueId) return;
-      cue.timerId = null;
-      cue.requestedAt = performance.now();
-      sendRealtimeEvent(buildRealtimeProgressResponse(cueId, callAgent?.agent_slug ?? "aria", turn));
-    }, REALTIME_PROGRESS_DELAY_MS);
-    activeRealtimeProgressCueRef.current = cue;
-  }, [callAgent?.agent_slug, sendRealtimeEvent]);
-
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.type === "input_audio_buffer.speech_started") {
       interruptRealtimePlayback(performance.now(), event.native_handled === true);
@@ -3479,7 +3446,6 @@ export function ConversationWorkspace({
     if (event.type === "input_audio_buffer.speech_stopped") {
       const speechStoppedAt = performance.now();
       lastRealtimeSpeechStoppedAtRef.current = speechStoppedAt;
-      startRealtimeProgressCue(speechStoppedAt);
       setCallState("thinking");
       return;
     }
@@ -3652,7 +3618,7 @@ export function ConversationWorkspace({
       setCallError("The realtime call hit an error. Please try again.");
       setCallState("reconnecting");
     }
-  }, [interruptRealtimePlayback, runRealtimeConsult, runRealtimeMeetingMode, runRealtimeTask, sendRealtimeEvent, startRealtimeProgressCue, upsertCallTranscript]);
+  }, [interruptRealtimePlayback, runRealtimeConsult, runRealtimeMeetingMode, runRealtimeTask, sendRealtimeEvent, upsertCallTranscript]);
 
   nativeRealtimeEventHandlerRef.current = handleRealtimeEvent;
 
