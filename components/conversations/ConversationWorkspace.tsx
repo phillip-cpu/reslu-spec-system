@@ -4011,7 +4011,7 @@ export function ConversationWorkspace({
               <div className="absolute inset-0 z-40 flex min-h-0 flex-col bg-[#f5f1e8]">
                 <div className="flex min-h-16 shrink-0 items-center justify-between gap-4 border-b border-[#d4cbbd] py-3 pl-16 pr-3 md:min-h-20 md:px-5">
                   <div className="min-w-0">
-                    <p className="label-caps">Search messages</p>
+                    <p className="label-caps">Search messages and files</p>
                     <p className="mt-1 truncate text-caption text-charcoal/50">{selectedConversation.display_title}</p>
                   </div>
                   <button
@@ -4031,7 +4031,7 @@ export function ConversationWorkspace({
                       value={messageSearch.query}
                       maxLength={100}
                       onChange={(event) => setMessageSearch((current) => ({ ...current, query: event.target.value, error: null }))}
-                      placeholder="Search this conversation"
+                      placeholder="Search messages and file names"
                       className="min-w-0 flex-1 rounded-xl border border-[#cfc6b8] bg-white px-4 py-3 text-body text-nearblack outline-none focus:border-nearblack"
                     />
                     <button
@@ -4045,10 +4045,10 @@ export function ConversationWorkspace({
                 </form>
                 <div className="min-h-0 flex-1 overflow-y-auto">
                   {messageSearch.hasSearched && !messageSearch.loading && messageSearch.results.length === 0 && !messageSearch.error && (
-                    <p className="p-8 text-center text-body text-charcoal/50">No matching messages.</p>
+                    <p className="p-8 text-center text-body text-charcoal/50">No matching messages or files.</p>
                   )}
                   {!messageSearch.hasSearched && (
-                    <p className="p-8 text-center text-body text-charcoal/50">Search the full conversation history, not just the messages currently on screen.</p>
+                    <p className="p-8 text-center text-body text-charcoal/50">Search the full conversation history and private file names, not just what is currently on screen.</p>
                   )}
                   {messageSearch.results.map((message) => (
                     <button
@@ -4063,6 +4063,15 @@ export function ConversationWorkspace({
                           <span className="shrink-0 text-[10px] text-charcoal/40">{timeLabel(message.created_at)}</span>
                         </span>
                         <span className="mt-1.5 block max-h-12 overflow-hidden text-body leading-6 text-charcoal/70">{message.body}</span>
+                        {(message.search_match?.attachment_filenames.length ?? 0) > 0 && (
+                          <span className="mt-2 flex flex-wrap gap-1.5">
+                            {message.search_match?.attachment_filenames.map((filename, index) => (
+                              <span key={`${message.id}:${index}:${filename}`} className="max-w-full truncate rounded-full bg-[#e8e1d5] px-2.5 py-1 text-[10px] font-medium text-charcoal/70">
+                                File · {filename}
+                              </span>
+                            ))}
+                          </span>
+                        )}
                       </span>
                     </button>
                   ))}

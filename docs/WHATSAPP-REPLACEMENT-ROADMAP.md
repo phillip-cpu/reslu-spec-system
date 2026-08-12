@@ -149,6 +149,11 @@ Authenticated range playback, forwarding and the existing private Aria/Marco
 attachment materialisation path all reuse the canonical conversation. Automatic
 third-party transcription is deliberately excluded until Phillip explicitly
 approves the provider, retention and disclosure wording.
+Migration 110 makes private attachments discoverable in the same bounded,
+member-scoped full-history search. Ready uploaded and forwarded filenames are
+trigram indexed; staged files and deleted messages stay hidden. A file match
+returns its canonical message anchor and a filename cue, not a storage path or
+second file index, so opening it preserves the conversation context.
 The same exact-once boundary now covers conversation creation, call start and
 call end: device intent ids recover a lost start response, and an ended call is
 retained locally until the single canonical same-thread call record is
@@ -180,9 +185,10 @@ Rollout order for this slice:
    `106_conversation_message_reactions_pins.sql`, then
    `107_conversation_message_forwarding.sql`, then
    `108_conversation_group_management.sql`, then
-   `109_conversation_voice_notes.sql`, to Supabase.
+   `109_conversation_voice_notes.sql`, then
+   `110_conversation_attachment_search.sql`, to Supabase.
 2. Run the matching rollback-only fixtures for migrations 093 through 098 and
-   migrations 104 through 109 in the SQL Editor. Every fixture must report PASS
+   migrations 104 through 110 in the SQL Editor. Every fixture must report PASS
    and leave no test data.
 3. Deploy the matching application release, pull it on the Mac and restart the
    conversation bridge so its independent push worker is active.
