@@ -38,13 +38,16 @@ export async function createStuartXeroDraftBill(input: DraftBillInput) {
   if (!invoice.storage_path) throw new Error("The original supplier invoice must be attached before creating a Xero draft");
   if (!/^\d{3,10}$/.test(input.accountCode.trim())) throw new Error("A valid Xero expense account code is required");
 
-  const { data: reserved, error: reserveError } = await service
-    .from("stuart_xero_draft_bills")
-    .insert({ invoice_id: invoice.id, status: "creating", account_code: input.accountCode.trim() })
-    .select("id")
-    .single();
+  const { data: prior } = await service.from("stuart_xero_draft_bills")
+    .select("id,status,xero_invoice_id").eq("invoice_id", invoice.id).maybeSingle();
+  if (prior && prior.status !== "failed") {
+    throw new Error("This Spec invoice already has a Stuart Xero draft attempt; inspect the audit record before retrying");
+  }
+  const reservation = prior
+    ? service.from("stuart_xero_draft_bills").update({ status: "creating", account_code: input.accountCode.trim(), safe_error: null, updated_at: new Date().toISOString() }).eq("id", prior.id).select("id").single()
+    : service.from("stuart_xero_draft_bills").insert({ invoice_id: invoice.id, status: "creating", account_code: input.accountCode.trim() }).select("id").single();
+  const { data: reserved, error: reserveError } = await reservation;
   if (reserveError || !reserved) {
-    if (reserveError?.code === "23505") throw new Error("This Spec invoice already has a Stuart Xero draft attempt; inspect the audit record before retrying");
     throw new Error(reserveError?.message ?? "Could not reserve the Xero draft operation");
   }
 

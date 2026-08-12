@@ -16,7 +16,7 @@
 
 import type { Invoice, InvoiceMatchType } from "@/types";
 
-export type InvoiceSource = "manual" | "aria";
+export type InvoiceSource = "manual" | "aria" | "stuart";
 
 /**
  * Aria's raw extraction payload (invoices.extracted, migration 052) —

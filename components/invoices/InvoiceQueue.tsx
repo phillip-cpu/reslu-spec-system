@@ -320,7 +320,7 @@ function InvoiceRow({
   // terminal state (migration 052's own comment on invoices.source is
   // the single source of truth for this derivation — kept in sync with
   // it here rather than adding a server-computed flag for one pill).
-  const needsAriaApproval = invoice.source === "aria" && editable;
+  const needsAriaApproval = (invoice.source === "aria" || invoice.source === "stuart") && editable;
 
   function saveFieldEdits() {
     const amountNum = Number(fieldDrafts.amount_ex_gst);
@@ -437,7 +437,7 @@ function InvoiceRow({
                   invoice_date/amount_ex_gst, editable just below) are
                   what Approve actually applies; this is "what she read
                   off the PDF", useful for spotting an extraction miss. */}
-              {invoice.source === "aria" && invoice.extracted && (
+              {(invoice.source === "aria" || invoice.source === "stuart") && invoice.extracted && (
                 <div className="space-y-1 border border-amber-700/30 bg-amber-50/60 px-3 py-2">
                   <p className="label-caps !text-amber-800">Aria&apos;s extraction</p>
                   <dl className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-caption text-charcoal/70 sm:grid-cols-4">
