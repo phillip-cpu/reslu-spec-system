@@ -445,8 +445,8 @@ Stage gate:
 
 ## Stage 6 - Meeting Mode and intelligent filing
 
-Status: core implementation complete on the Meeting Mode branch; migration,
-Mac-mini MCP update and real client-meeting acceptance are pending.
+Status: implementation, migrations, production deployment and Mac-mini runtime
+update are complete; real client-meeting acceptance is pending.
 
 Implemented in the core slice:
 
@@ -466,8 +466,7 @@ Implemented in the core slice:
 
 Still required before the stage gate can pass:
 
-- Apply and verify migration 103, update the Mac-mini MCP checkout, then test
-  the complete local-Whisper task on production data.
+- Test the complete local-Whisper task on real production meeting data.
 - Add speaker labels only if a locally approved diarization path proves reliable;
   the current source is a verbatim meeting-level transcript.
 - Prove lead, active-project and ambiguous-destination scenarios in real meetings.
@@ -556,12 +555,10 @@ Final product gate:
 
 ## Current next action
 
-The production database gate is complete: migrations 105 (after corrective
-112), 106, 107, 108 (after corrective 113 and 114), 109, 110, 103 and 111 all
-pass their rollback-safe production verifiers. Merge the stacked PRs in order
-and verify the exact production deployment. Pull that release to the Mac
-bridge/MCP checkout, restart
-it, and repeat the same iPhone voice acceptance call. Require a Gateway run id
+The production database and deployment gates are complete through migration
+115 and production commit `c6258c9`. The Mac bridge checkout is at that commit
+and its launchd service has been restarted. Repeat the iPhone voice acceptance
+call. Require a Gateway run id
 and visible safe progress before waiting for Aria's answer; interrupt one answer,
 start one durable task, end the call, and confirm that the durable task keeps
 working. Require saved content-free timing metadata for the call. Do not close
