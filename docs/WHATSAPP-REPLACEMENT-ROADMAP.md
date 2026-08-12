@@ -545,6 +545,12 @@ Work:
 
 The bridge process already uses launchd `RunAtLoad`, `KeepAlive` and a bounded
 restart throttle. Push delivery has a six-attempt exponential retry budget.
+The bridge now also emits one content-free health report per minute for its
+Aria turn, Marco turn, Aria task, Marco task and push workers. A stopped worker
+reports `down`; a process or network failure that prevents reporting becomes a
+deduplicated incident after five minutes rather than remaining indistinguishable
+from an idle queue. The report contains only worker names/counts and liveness,
+never conversation text, identifiers, filenames or task content.
 Durable Aria/Marco work deliberately enters `failed` instead of blindly
 replaying an uncertain run. Migration 111 adds a requester-only recovery action
 for failed work with no unresolved or completed approval boundary: it reuses the

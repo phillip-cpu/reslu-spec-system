@@ -21,6 +21,43 @@ SPEC.loader.exec_module(conversation_agent_bridge)
 
 
 class ConversationAgentBridgeTests(unittest.TestCase):
+    def test_bridge_health_snapshot_reports_only_worker_liveness(self):
+        workers = [mock.Mock(name="worker") for _ in range(2)]
+        workers[0].name = "reslu-conversation-aria"
+        workers[0].is_alive.return_value = True
+        workers[1].name = "reslu-task-marco"
+        workers[1].is_alive.return_value = False
+
+        status, note = conversation_agent_bridge.bridge_health_snapshot(
+            workers,
+            ("reslu-conversation-aria", "reslu-task-marco"),
+        )
+
+        self.assertEqual(status, "down")
+        self.assertEqual(note, "Stopped workers: reslu-task-marco")
+        self.assertNotIn("conversation_id", note)
+        self.assertNotIn("message", note)
+
+    def test_bridge_health_requires_push_worker_even_when_not_started(self):
+        workers = []
+        status, note = conversation_agent_bridge.bridge_health_snapshot(workers)
+        self.assertEqual(status, "down")
+        self.assertIn("reslu-conversation-push", note)
+
+    def test_bridge_health_upsert_is_bounded_and_service_owned(self):
+        rest = object.__new__(conversation_agent_bridge.SupabaseRest)
+        rest.request = mock.Mock()
+
+        rest.report_bridge_health("ok", "x" * 800)
+
+        args = rest.request.call_args.args
+        self.assertEqual(args[0], "POST")
+        self.assertEqual(args[1], "health_channels?on_conflict=channel")
+        self.assertEqual(args[2]["channel"], "reslu_conversation_bridge")
+        self.assertEqual(args[2]["status"], "ok")
+        self.assertEqual(len(args[2]["note"]), 500)
+        self.assertEqual(args[3], "resolution=merge-duplicates,return=minimal")
+
     def test_untrusted_json_envelope_stays_valid_and_bounded(self):
         encoded = conversation_agent_bridge.bounded_json_data(
             {"content": "\\\"" * 10000},

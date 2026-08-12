@@ -299,12 +299,20 @@ export const MINI_SILENCE_INCIDENT_MINUTES = 15;
  * messages for days; quiet traffic is not an outage.
  */
 export const CHANNEL_SILENCE_INCIDENT_HOURS = 24;
+export const CONVERSATION_BRIDGE_SILENCE_INCIDENT_MINUTES = 5;
+
+export function channelReportSilenceThresholdHours(channel: string): number {
+  return channel === "reslu_conversation_bridge"
+    ? CONVERSATION_BRIDGE_SILENCE_INCIDENT_MINUTES / 60
+    : CHANNEL_SILENCE_INCIDENT_HOURS;
+}
 
 export function channelReportIsSilent(
   updatedAt: string | null,
-  nowMs = Date.now()
+  nowMs = Date.now(),
+  thresholdHours = CHANNEL_SILENCE_INCIDENT_HOURS
 ): boolean {
   if (!updatedAt) return true;
   const ageHours = (nowMs - new Date(updatedAt).getTime()) / (1000 * 60 * 60);
-  return ageHours > CHANNEL_SILENCE_INCIDENT_HOURS;
+  return ageHours > thresholdHours;
 }

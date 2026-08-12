@@ -34,6 +34,15 @@ CLAIM_REQUEST_TIMEOUT_SECONDS = 5.0
 JOB_STATUS_REQUEST_TIMEOUT_SECONDS = 3.0
 PUSH_POLL_SECONDS = 1.0
 PUSH_REQUEST_TIMEOUT_SECONDS = 15.0
+BRIDGE_HEALTH_INTERVAL_SECONDS = 60.0
+BRIDGE_HEALTH_CHANNEL = "reslu_conversation_bridge"
+BRIDGE_WORKER_NAMES = (
+    "reslu-conversation-aria",
+    "reslu-conversation-marco",
+    "reslu-task-aria",
+    "reslu-task-marco",
+    "reslu-conversation-push",
+)
 AGENT_STATUS_CHECK_SECONDS = 0.5
 AGENT_TERMINATE_GRACE_SECONDS = 2.0
 AGENT_PROCESS_TIMEOUT_SECONDS = 210.0
@@ -240,6 +249,22 @@ class SupabaseRest:
         if not isinstance(result, list) or not result:
             raise RuntimeError(f"{table} insert returned no row")
         return result[0]
+
+    def report_bridge_health(self, status: str, note: str) -> None:
+        """Publish bounded process metadata; never conversation or task content."""
+        self.request(
+            "POST",
+            "health_channels?on_conflict=channel",
+            {
+                "channel": BRIDGE_HEALTH_CHANNEL,
+                "label": "RESLU conversation bridge",
+                "status": status,
+                "session_valid": True,
+                "note": note[:500],
+            },
+            "resolution=merge-duplicates,return=minimal",
+            timeout_seconds=CLAIM_REQUEST_TIMEOUT_SECONDS,
+        )
 
     def download_storage(self, bucket: str, path: str) -> bytes:
         encoded_path = urllib.parse.quote(path, safe="/")
@@ -1416,6 +1441,34 @@ def build_task_workers(base_url: str, service_key: str) -> list[threading.Thread
     ]
 
 
+def bridge_health_snapshot(
+    workers: list[threading.Thread],
+    required_names: tuple[str, ...] = BRIDGE_WORKER_NAMES,
+) -> tuple[str, str]:
+    """Summarize only worker names/liveness, never user or business data."""
+    live_names = {worker.name for worker in workers if worker.is_alive()}
+    stopped = sorted(set(required_names) - live_names)
+    if stopped:
+        return "down", f"Stopped workers: {', '.join(stopped)}"
+    return "ok", f"{len(required_names)} conversation, task and push workers active"
+
+
+def bridge_health_loop(
+    base_url: str,
+    service_key: str,
+    workers: list[threading.Thread],
+) -> None:
+    """Report outbound liveness so an idle bridge cannot fail silently."""
+    rest = SupabaseRest(base_url, service_key)
+    while True:
+        status, note = bridge_health_snapshot(workers)
+        try:
+            rest.report_bridge_health(status, note)
+        except Exception as exc:  # noqa: BLE001 - monitoring cannot stop work
+            print(f"[conversation-health] could not report liveness: {exc}", file=sys.stderr, flush=True)
+        time.sleep(BRIDGE_HEALTH_INTERVAL_SECONDS)
+
+
 def process_job(rest: SupabaseRest, job: dict) -> str:
     (
         is_realtime_voice,
@@ -1498,19 +1551,28 @@ def main() -> int:
         print("Missing SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY", file=sys.stderr)
         return 2
     app_url = os.environ.get("SPEC_APP_URL") or os.environ.get("NEXT_PUBLIC_APP_URL")
+    push_worker = None
     if app_url:
-        threading.Thread(
+        push_worker = threading.Thread(
             target=push_delivery_loop,
             args=(base_url, service_key, app_url),
             name="reslu-conversation-push",
             daemon=True,
-        ).start()
+        )
+        push_worker.start()
     else:
         print("[conversation-push] SPEC_APP_URL/NEXT_PUBLIC_APP_URL missing; delivery worker disabled", file=sys.stderr, flush=True)
     print("[conversation-bridge] listening for conversations and durable Aria/Marco tasks", flush=True)
     workers = [*build_agent_workers(base_url, service_key), *build_task_workers(base_url, service_key)]
     for worker in workers:
         worker.start()
+    monitored_workers = [*workers, *([push_worker] if push_worker else [])]
+    threading.Thread(
+        target=bridge_health_loop,
+        args=(base_url, service_key, monitored_workers),
+        name="reslu-conversation-health",
+        daemon=True,
+    ).start()
     for worker in workers:
         worker.join()
     return 0
