@@ -9,6 +9,7 @@ import {
   agentTaskArtifactText,
   normalizeAgentTaskArtifactContent,
 } from "@/lib/agent-task-artifact";
+import { visibleAgentWorkTasks } from "@/lib/agent-work-visibility";
 import {
   CONVERSATION_DIRECT_UPLOAD_MAX_BYTES,
   conversationAttachmentKind,
@@ -31,8 +32,10 @@ import {
 } from "@/lib/conversation-call-outbox";
 import type { RealtimeVoiceLatencyMetric, RealtimeVoiceOutcome } from "@/lib/realtime-voice-metrics";
 import {
+  nativeRealtimeTransportAvailable,
   nativeVoiceBridgeAvailable,
   postNativeVoiceBridgeEvent,
+  prepareNativeRealtimeSession,
   prepareNativeVoiceSession,
 } from "@/lib/native-voice-bridge";
 import {
@@ -132,6 +135,7 @@ type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 
 interface RealtimeEvent {
   type: string;
+  native_handled?: boolean;
   response_id?: string;
   call_id?: string;
   name?: string;
@@ -1226,6 +1230,8 @@ export function ConversationWorkspace({
   const realtimeReconnectInFlightRef = useRef(false);
   const realtimeReconnectTimerRef = useRef<number | null>(null);
   const realtimeReconnectRunnerRef = useRef<() => Promise<void>>(async () => undefined);
+  const nativeRealtimeEventHandlerRef = useRef<(event: RealtimeEvent) => void>(() => undefined);
+  const nativeRealtimeActiveRef = useRef(false);
   const activeResponseIdRef = useRef<string | null>(null);
   const activeOutputAudioResponseIdRef = useRef<string | null>(null);
   const activeRealtimeConsultRef = useRef<ActiveRealtimeConsult | null>(null);
@@ -1378,9 +1384,7 @@ export function ConversationWorkspace({
   const composerBusy = sending || attachmentUploadInProgress || voiceNoteRecording;
   const callAgent = participants.find((participant) => participant.type === "agent") ?? null;
   const visibleAgentTasks = useMemo(() => {
-    const active = agentTasks.filter((task) => ["queued", "running", "awaiting_approval"].includes(task.status));
-    const recent = agentTasks.filter((task) => !active.includes(task)).slice(0, Math.max(0, 4 - active.length));
-    return [...active, ...recent].slice(0, 6);
+    return visibleAgentWorkTasks(agentTasks);
   }, [agentTasks]);
   const latestCallTranscript = callTranscript.at(-1);
   const handleTaskAction = useCallback((taskId: string, action: "cancel" | "approve" | "reject" | "retry", artifactId?: string) => {
@@ -2869,11 +2873,18 @@ export function ConversationWorkspace({
   }, [clearDraft, commitDraftAttachments, flushOutbox]);
 
   const sendRealtimeEvent = useCallback((event: Record<string, unknown>) => {
+    if (nativeRealtimeActiveRef.current && nativeRealtimeTransportAvailable()) {
+      postNativeVoiceBridgeEvent({ type: "realtime.event", event });
+      return;
+    }
     const channel = dataChannelRef.current;
     if (channel?.readyState === "open") channel.send(JSON.stringify(event));
   }, []);
 
-  const interruptRealtimePlayback = useCallback((detectedAt = performance.now()) => {
+  const interruptRealtimePlayback = useCallback((
+    detectedAt = performance.now(),
+    providerCommandsAlreadySent = false,
+  ) => {
     const generatingResponseId = activeResponseIdRef.current;
     const progressCue = activeRealtimeProgressCueRef.current;
     // `response.done` can arrive while WebRTC still has buffered audio. Keep a
@@ -2901,7 +2912,7 @@ export function ConversationWorkspace({
     if (generatingResponseId) activeResponseIdRef.current = null;
     if (progressCue?.responseId) {
       cancelledResponseIdsRef.current.add(progressCue.responseId);
-      if (!progressCue.done) {
+      if (!progressCue.done && !providerCommandsAlreadySent) {
         sendRealtimeEvent({ type: "response.cancel", response_id: progressCue.responseId });
       }
     }
@@ -2913,8 +2924,10 @@ export function ConversationWorkspace({
     // Cancel only a response that is still generating. If `response.done`
     // already arrived, the remaining work is buffered playback and clearing
     // the output buffer is sufficient (and avoids a harmless provider error).
-    if (generatingResponseId) sendRealtimeEvent({ type: "response.cancel", response_id: generatingResponseId });
-    if (responseId || progressCue?.responseId) {
+    if (generatingResponseId && !providerCommandsAlreadySent) {
+      sendRealtimeEvent({ type: "response.cancel", response_id: generatingResponseId });
+    }
+    if (!providerCommandsAlreadySent && (responseId || progressCue?.responseId)) {
       sendRealtimeEvent({ type: "output_audio_buffer.clear" });
     }
     if (remoteAudioRef.current) remoteAudioRef.current.muted = true;
@@ -3025,6 +3038,7 @@ export function ConversationWorkspace({
     postNativeVoiceBridgeEvent({ type: "call.end" });
     callActiveRef.current = false;
     realtimeActiveRef.current = false;
+    nativeRealtimeActiveRef.current = false;
     realtimeConnectionGenerationRef.current += 1;
     if (realtimeReconnectTimerRef.current != null) {
       window.clearTimeout(realtimeReconnectTimerRef.current);
@@ -3087,16 +3101,30 @@ export function ConversationWorkspace({
     callTranscriptStickRef.current = true;
     setCallTranscriptExpanded(false);
     setCallTranscript([]);
+    mutedRef.current = false;
+    setMuted(false);
     return callRecordSaved;
   }, [cancelActiveRealtimeTurn, persistCallEnd, selectedId]);
 
   useEffect(() => {
     const handleNativeVoiceCommand = (event: Event) => {
-      const detail = (event as CustomEvent<{ type?: string; message?: string; muted?: boolean }>).detail;
+      const detail = (event as CustomEvent<{ type?: string; message?: string; muted?: boolean; callId?: string; event?: RealtimeEvent }>).detail;
+      if (detail?.callId && detail.callId !== callIdRef.current) return;
       if (detail?.type === "end-requested" && callActiveRef.current && callIdRef.current) void endCall();
-      if (detail?.type === "native-audio-error" && callIdRef.current) {
+      if ((detail?.type === "native-audio-error" || detail?.type === "native-realtime-error") && callIdRef.current) {
         setError(`The iPhone call audio session could not start. ${detail.message ?? "Please try again."}`);
         if (callActiveRef.current) void endCall();
+      }
+      if (detail?.type === "native-realtime-event" && detail.event) {
+        if (detail.event.type === "native-task-created") {
+          if (selectedIdRef.current) {
+            void loadAgentTasks(selectedIdRef.current);
+            void loadMessages(selectedIdRef.current);
+          }
+        } else if (detail.event.type === "native-consult-completed" && selectedIdRef.current) {
+          void loadMessages(selectedIdRef.current);
+        }
+        nativeRealtimeEventHandlerRef.current({ ...detail.event, native_handled: true });
       }
       if (detail?.type === "mute-requested" && typeof detail.muted === "boolean" && callActiveRef.current) {
         mutedRef.current = detail.muted;
@@ -3116,8 +3144,9 @@ export function ConversationWorkspace({
       }
     };
     window.addEventListener("reslu-native-voice", handleNativeVoiceCommand);
+    if (nativeVoiceBridgeAvailable()) postNativeVoiceBridgeEvent({ type: "web.ready" });
     return () => window.removeEventListener("reslu-native-voice", handleNativeVoiceCommand);
-  }, [endCall]);
+  }, [endCall, loadAgentTasks, loadMessages]);
 
   const handleVoiceText = useCallback((text: string) => {
     const command = text.trim().toLowerCase().replace(/[.!?]+$/, "");
@@ -3427,7 +3456,7 @@ export function ConversationWorkspace({
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.type === "input_audio_buffer.speech_started") {
-      interruptRealtimePlayback(performance.now());
+      interruptRealtimePlayback(performance.now(), event.native_handled === true);
       setInterim("");
       return;
     }
@@ -3558,19 +3587,19 @@ export function ConversationWorkspace({
       upsertCallTranscript({ id: `agent-${transcriptResponseId}`, speaker: "agent", text: event.transcript, final: true });
       return;
     }
-    if (event.type === "response.function_call_arguments.done" && event.call_id && event.name === "consult_reslu_agent") {
+    if (!event.native_handled && event.type === "response.function_call_arguments.done" && event.call_id && event.name === "consult_reslu_agent") {
       void runRealtimeConsult(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}", true);
       return;
     }
-    if (event.type === "response.function_call_arguments.done" && event.call_id && event.name === "consult_reslu_specialist") {
+    if (!event.native_handled && event.type === "response.function_call_arguments.done" && event.call_id && event.name === "consult_reslu_specialist") {
       void runRealtimeConsult(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}", true, true);
       return;
     }
-    if (event.type === "response.function_call_arguments.done" && event.call_id && event.name === "start_reslu_task") {
+    if (!event.native_handled && event.type === "response.function_call_arguments.done" && event.call_id && event.name === "start_reslu_task") {
       void runRealtimeTask(event.call_id, event.response_id ?? activeResponseIdRef.current, event.arguments ?? "{}", true);
       return;
     }
-    if (event.type === "response.function_call_arguments.done" && event.call_id && event.name === "start_meeting_mode") {
+    if (!event.native_handled && event.type === "response.function_call_arguments.done" && event.call_id && event.name === "start_meeting_mode") {
       runRealtimeMeetingMode(event.call_id);
       return;
     }
@@ -3584,7 +3613,7 @@ export function ConversationWorkspace({
       const responseId = event.response.id ?? activeResponseIdRef.current;
       if (responseId && cancelledResponseIdsRef.current.has(responseId)) return;
       activeResponseIdRef.current = null;
-      for (const output of event.response.output ?? []) {
+      for (const output of event.native_handled ? [] : event.response.output ?? []) {
         if (output.type === "function_call" && output.name === "consult_reslu_agent" && output.call_id) {
           void runRealtimeConsult(output.call_id, responseId ?? null, output.arguments ?? "{}");
         }
@@ -3608,6 +3637,8 @@ export function ConversationWorkspace({
       setCallState("reconnecting");
     }
   }, [interruptRealtimePlayback, runRealtimeConsult, runRealtimeMeetingMode, runRealtimeTask, sendRealtimeEvent, startRealtimeProgressCue, upsertCallTranscript]);
+
+  nativeRealtimeEventHandlerRef.current = handleRealtimeEvent;
 
   const createCallRecord = useCallback(async () => {
     const conversationId = callConversationIdRef.current ?? selectedId;
@@ -3924,7 +3955,8 @@ export function ConversationWorkspace({
   }, [createCallRecord, handleVoiceText, messages, persistCallEnd, selectedId, upsertCallTranscript]);
 
   async function startCall() {
-    if (!selectedId || !callAgent) return;
+    if (!selectedId || !callAgent?.agent_slug) return;
+    const agentSlug = callAgent.agent_slug;
     if (realtimeReconnectTimerRef.current != null) {
       window.clearTimeout(realtimeReconnectTimerRef.current);
       realtimeReconnectTimerRef.current = null;
@@ -3934,11 +3966,13 @@ export function ConversationWorkspace({
     callConversationIdRef.current ??= selectedId;
     clientCallIdRef.current ??= crypto.randomUUID();
     const nativeStartEvent = {
-      type: "call.start",
-      callId: clientCallIdRef.current,
+      type: "call.start" as const,
+      callId: "pending",
+      clientCallId: clientCallIdRef.current,
       conversationId: selectedId,
       agent: callAgent.display_name,
-    } as const;
+      agentSlug,
+    };
     lastRealtimeSpeechStoppedAtRef.current = null;
     activeResponseIdRef.current = null;
     activeOutputAudioResponseIdRef.current = null;
@@ -3962,6 +3996,19 @@ export function ConversationWorkspace({
     messages.forEach((message) => spokenIdsRef.current.add(message.id));
 
     try {
+      if (nativeRealtimeTransportAvailable()) {
+        const activeCallId = await createCallRecord();
+        callIdRef.current = activeCallId;
+        setCallId(activeCallId);
+        nativeStartEvent.callId = activeCallId;
+        nativeRealtimeActiveRef.current = true;
+        await prepareNativeRealtimeSession(nativeStartEvent);
+        realtimeActiveRef.current = true;
+        setCallOpening(false);
+        setCallError(null);
+        setCallState("listening");
+        return;
+      }
       await prepareNativeVoiceSession(nativeStartEvent);
       if (!("RTCPeerConnection" in window) || !navigator.mediaDevices?.getUserMedia) {
         await startLegacyCall();
@@ -3985,6 +4032,7 @@ export function ConversationWorkspace({
       await startRealtimeCall(stream, activeCallId);
     } catch (reason) {
       const error = reason as Error & { code?: string };
+      nativeRealtimeActiveRef.current = false;
       microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
       microphoneStreamRef.current = null;
       if (error.code === "realtime_disabled") {
@@ -3993,6 +4041,13 @@ export function ConversationWorkspace({
       }
       callActiveRef.current = false;
       postNativeVoiceBridgeEvent({ type: "call.end" });
+      const failedCallId = callIdRef.current;
+      if (failedCallId) {
+        const failedConversationId = callConversationIdRef.current ?? selectedId;
+        if (failedConversationId) await persistCallEnd(failedConversationId, failedCallId, []);
+        callIdRef.current = null;
+        setCallId(null);
+      }
       setCallOpening(false);
       setCallError(error instanceof DOMException ? speechRecognitionErrorMessage(error.name) : error.message || "Could not start call");
     }
@@ -4301,7 +4356,7 @@ export function ConversationWorkspace({
                     >
                       {agentWorkExpanded ? "Show latest only" : `Show ${visibleAgentTasks.length - 1} more`}
                     </button>
-                  ) : <p className="text-[10px] text-charcoal/45">Continues after you leave this chat</p>}
+                  ) : <p className="text-[10px] text-charcoal/45">Email and reviewable work</p>}
                 </div>
                 <div className="grid max-h-[46vh] min-w-0 max-w-full grid-cols-1 gap-3 overflow-y-auto pb-1 md:flex md:max-h-52 md:snap-x md:overflow-x-auto md:overflow-y-hidden">
                   {visibleAgentTasks.map((task, index) => (
@@ -5052,7 +5107,7 @@ export function ConversationWorkspace({
               <div className="flex items-end justify-between gap-4 border-b border-white/10 px-4 py-3 md:px-6 md:py-4">
                 <div>
                   <p className="label-caps text-sand">Agent work</p>
-                  <p className="mt-1 text-[15px] text-white/65 md:text-[16px]">Drafts and results appear here while you keep talking.</p>
+                  <p className="mt-1 text-[15px] text-white/65 md:text-[16px]">Email drafts, approvals and structured results appear here.</p>
                 </div>
                 <p className="shrink-0 text-caption text-white/35">Continues after the call</p>
               </div>
@@ -5074,8 +5129,8 @@ export function ConversationWorkspace({
                 {visibleAgentTasks.length === 0 ? (
                   <div className="col-span-full flex h-full min-h-48 items-center justify-center text-center">
                     <div className="max-w-lg">
-                      <p className="text-[20px] font-semibold text-white/80">Nothing running yet</p>
-                      <p className="mt-2 text-[16px] leading-relaxed text-white/45">Ask {callAgent.display_name} to compose an email, prepare a report, research something or review a document. The work will take over this screen.</p>
+                      <p className="text-[20px] font-semibold text-white/80">Nothing to review</p>
+                      <p className="mt-2 text-[16px] leading-relaxed text-white/45">Email drafts, approvals, tables and useful lists will appear here. Routine work stays out of the way.</p>
                     </div>
                   </div>
                 ) : visibleAgentTasks.map((task) => (

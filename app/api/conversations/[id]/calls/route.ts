@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildRealtimeVoiceLatencyMetadata } from "@/lib/realtime-voice-metrics";
+import { sanitizeNativeVoiceContinuity } from "@/lib/native-voice-continuity";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -64,7 +65,7 @@ export async function PATCH(request: NextRequest, context: Context) {
   if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  const body = rawBody as { call_id?: unknown; summary?: unknown; voice_metrics?: unknown };
+  const body = rawBody as { call_id?: unknown; summary?: unknown; voice_metrics?: unknown; native_continuity?: unknown };
   if (typeof body.call_id !== "string" || !UUID_PATTERN.test(body.call_id)) {
     return NextResponse.json({ error: "Valid call_id is required" }, { status: 400 });
   }
@@ -76,6 +77,12 @@ export async function PATCH(request: NextRequest, context: Context) {
     return NextResponse.json({ error: "Call summary is too long" }, { status: 400 });
   }
   const voiceLatency = buildRealtimeVoiceLatencyMetadata(body.voice_metrics);
+  const nativeContinuity = body.native_continuity == null
+    ? null
+    : sanitizeNativeVoiceContinuity(body.native_continuity);
+  if (body.native_continuity != null && !nativeContinuity) {
+    return NextResponse.json({ error: "Invalid native continuity metadata" }, { status: 400 });
+  }
   const { data, error } = await supabase.rpc("end_conversation_call_idempotent", {
     p_conversation_id: id,
     p_call_id: body.call_id,
@@ -85,6 +92,21 @@ export async function PATCH(request: NextRequest, context: Context) {
   if (error || !data) {
     const message = error?.message ?? "Could not end call";
     return NextResponse.json({ error: message }, { status: callErrorStatus(message) });
+  }
+  const storedContinuity = data && typeof data === "object" && "metadata" in data
+    && data.metadata && typeof data.metadata === "object" && !Array.isArray(data.metadata)
+    ? sanitizeNativeVoiceContinuity((data.metadata as Record<string, unknown>).native_voice_continuity)
+    : null;
+  const continuityToRecord = nativeContinuity ?? storedContinuity;
+  if (continuityToRecord) {
+    const { error: continuityError } = await supabase.rpc("record_conversation_call_native_continuity", {
+      p_conversation_id: id,
+      p_call_id: body.call_id,
+      p_native_continuity: continuityToRecord,
+    });
+    if (continuityError) {
+      return NextResponse.json({ error: continuityError.message }, { status: callErrorStatus(continuityError.message) });
+    }
   }
   return NextResponse.json({ call: data });
 }

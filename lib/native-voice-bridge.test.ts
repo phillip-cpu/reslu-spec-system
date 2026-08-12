@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   nativeVoiceBridgeAvailable,
+  nativeRealtimeTransportAvailable,
+  prepareNativeRealtimeSession,
   prepareNativeVoiceSession,
 } from "./native-voice-bridge.ts";
 
 type TestWindow = EventTarget & {
+  __RESLU_NATIVE_VOICE_CAPABILITIES__?: { version?: number; nativeRealtimeTransport?: boolean };
   webkit?: { messageHandlers?: { resluVoice?: { postMessage(value: unknown): void } } };
   setTimeout: typeof setTimeout;
   clearTimeout: typeof clearTimeout;
@@ -34,8 +37,10 @@ test("Safari and SSR do not wait for a native audio session", async () => {
     await prepareNativeVoiceSession({
       type: "call.start",
       callId: "call-1",
+      clientCallId: "client-call-1",
       conversationId: "conversation-1",
       agent: "Aria",
+      agentSlug: "aria",
     }, 1);
   } finally {
     restore();
@@ -57,15 +62,47 @@ test("the native shell waits for CallKit audio activation", async () => {
     await prepareNativeVoiceSession({
       type: "call.start",
       callId: "call-1",
+      clientCallId: "client-call-1",
       conversationId: "conversation-1",
       agent: "Aria",
+      agentSlug: "aria",
     }, 50);
     assert.deepEqual(posted, {
       type: "call.start",
       callId: "call-1",
+      clientCallId: "client-call-1",
       conversationId: "conversation-1",
       agent: "Aria",
+      agentSlug: "aria",
     });
+  } finally {
+    restore();
+  }
+});
+
+test("version two native shell owns the realtime transport", async () => {
+  const target = new EventTarget() as TestWindow;
+  target.setTimeout = setTimeout;
+  target.clearTimeout = clearTimeout;
+  target.__RESLU_NATIVE_VOICE_CAPABILITIES__ = { version: 2, nativeRealtimeTransport: true };
+  let posted: unknown;
+  target.webkit = { messageHandlers: { resluVoice: { postMessage(value) {
+    posted = value;
+    queueMicrotask(() => target.dispatchEvent(nativeEvent("native-realtime-connected")));
+  } } } };
+  const restore = installWindow(target);
+  const start = {
+    type: "call.start" as const,
+    callId: "call-1",
+    clientCallId: "client-call-1",
+    conversationId: "conversation-1",
+    agent: "Aria",
+    agentSlug: "aria",
+  };
+  try {
+    assert.equal(nativeRealtimeTransportAvailable(), true);
+    await prepareNativeRealtimeSession(start, 50);
+    assert.deepEqual(posted, { ...start, transport: "native-realtime" });
   } finally {
     restore();
   }
@@ -82,8 +119,10 @@ test("native audio activation fails closed on timeout", async () => {
       prepareNativeVoiceSession({
         type: "call.start",
         callId: "call-1",
+        clientCallId: "client-call-1",
         conversationId: "conversation-1",
         agent: "Aria",
+        agentSlug: "aria",
       }, 1),
       /did not activate in time/
     );

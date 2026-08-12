@@ -12,6 +12,7 @@ const callsRoute = read("app/api/conversations/[id]/calls/route.ts");
 const metrics = read("lib/realtime-voice-metrics.ts");
 const progress = read("lib/realtime-progress.ts");
 const consultPoll = read("lib/realtime-consult-poll.ts");
+const nativeContinuity = read("lib/native-voice-continuity.ts");
 
 test("realtime calls measure actual WebRTC output audio instead of transcript timing", () => {
   assert.match(workspace, /output_audio_buffer\.started/);
@@ -57,6 +58,10 @@ test("call records retain bounded timing metadata without transcript or provider
   assert.match(metrics, /average_interruption_clear_ms/);
   assert.doesNotMatch(metrics, /transcript:/);
   assert.doesNotMatch(metrics, /tool_call_id:/);
+  assert.match(callsRoute, /sanitizeNativeVoiceContinuity/);
+  assert.match(callsRoute, /continuityToRecord/);
+  assert.match(nativeContinuity, /peak_buffered_web_events/);
+  assert.doesNotMatch(nativeContinuity, /transcript:/);
 });
 
 test("the spoken response is requested before refreshing canonical messages", () => {
