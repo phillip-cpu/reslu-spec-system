@@ -41,6 +41,9 @@ supabase/.temp
 
 # generated iOS project and local Xcode state (ios/RESLU/project.yml is canonical)
 /ios/RESLU/RESLU.xcodeproj/
+/ios/RESLU/Packages/WebRTC/WebRTC.xcframework/
+/ios/RESLU/Packages/WebRTC/.artifact-151.0.0.sha256
+/ios/RESLU/Packages/WebRTC/WebRTC-M151.xcframework.zip*
 **/xcuserdata/
 /ios/DerivedData/
 

@@ -18,6 +18,11 @@ struct RESLUWebView: UIViewRepresentable {
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
         configuration.userContentController.add(voiceSession, name: VoiceSessionCoordinator.handlerName)
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: "window.__RESLU_NATIVE_VOICE_CAPABILITIES__={version:2,nativeRealtimeTransport:true};",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
@@ -41,6 +46,14 @@ struct RESLUWebView: UIViewRepresentable {
 
         init(voiceSession: VoiceSessionCoordinator) {
             self.voiceSession = voiceSession
+        }
+
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            voiceSession.webWillNavigate()
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            voiceSession.webDidFinishNavigation()
         }
 
         func webView(

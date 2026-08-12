@@ -37,10 +37,11 @@ test("the call surface exposes captions, durable work and approvals", () => {
   assert.match(workspace, /setCallTranscriptExpanded\(false\)/);
   assert.ok(workspace.indexOf("Background agent work") < workspace.indexOf("Call captions"));
   assert.match(workspace, /Continues after the call/);
-  assert.match(workspace, /Drafts and results appear here while you keep talking/);
+  assert.match(workspace, /Email drafts, approvals and structured results appear here/);
   assert.match(workspace, /Approve/);
   assert.match(workspace, /Reject/);
-  assert.match(workspace, /Continues after you leave this chat/);
+  assert.match(workspace, /Email and reviewable work/);
+  assert.match(workspace, /visibleAgentWorkTasks\(agentTasks\)/);
 });
 
 test("cancelling durable work needs a deliberate second action", () => {
