@@ -174,5 +174,32 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  // ---- 4. Canonical Aria/Marco conversation transport ----
+  // One deduped incident covers actual stuck/failed work and stale calls. Voice
+  // latency misses remain visible warnings on /health but do not page anyone.
+  const conversationKind = "conversation_transport";
+  const conversationHealth = specHealth.conversation_transport;
+  if (conversationHealth.operational_incident) {
+    const { deduped } = await notifyAdminsOnce(
+      conversationKind,
+      "RESLU conversations need attention",
+      [
+        `${conversationHealth.pending_jobs} queued`,
+        `${conversationHealth.processing_jobs_stuck} stuck turns`,
+        `${conversationHealth.failed_jobs_24h} failed turns`,
+        `${conversationHealth.running_tasks_stuck} stuck tasks`,
+        `${conversationHealth.failed_tasks_24h} failed tasks`,
+        `${conversationHealth.active_calls_stale} stale calls`,
+        `${conversationHealth.unavailable_capabilities.length} unavailable messaging capabilities`,
+        `${conversationHealth.query_errors} health-read errors`,
+      ].join(" · "),
+      "/health"
+    );
+    if (!deduped) incidents.push(conversationKind);
+  } else {
+    await resolveOpenIncident(conversationKind);
+    resolved.push(conversationKind);
+  }
+
   return NextResponse.json({ ok: true, incidents, resolved });
 }

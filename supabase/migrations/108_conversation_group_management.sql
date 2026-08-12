@@ -722,6 +722,7 @@ revoke all on function set_conversation_group_admin(uuid, uuid, boolean, uuid) f
 revoke all on function remove_conversation_group_participant(uuid, uuid, text, uuid) from public, anon;
 revoke all on function leave_conversation_group(uuid, uuid) from public, anon;
 grant execute on function rename_conversation_group(uuid, text, uuid) to authenticated;
+grant execute on function rename_conversation_group(uuid, text, uuid) to service_role;
 grant execute on function add_conversation_group_participants(uuid, uuid[], text[], uuid) to authenticated;
 grant execute on function set_conversation_group_admin(uuid, uuid, boolean, uuid) to authenticated;
 grant execute on function remove_conversation_group_participant(uuid, uuid, text, uuid) to authenticated;

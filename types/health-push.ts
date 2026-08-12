@@ -84,6 +84,25 @@ export interface LatestUnreadNotificationResponse {
 /** Three-colour pill status shared by every Health page pill — see lib/health-status.ts. */
 export type HealthPillLevel = "green" | "amber" | "red";
 
+export interface ConversationTransportHealth {
+  query_errors: number;
+  unavailable_capabilities: string[];
+  pending_jobs: number;
+  oldest_pending_job_ms: number | null;
+  processing_jobs_stuck: number;
+  failed_jobs_24h: number;
+  queued_tasks: number;
+  running_tasks_stuck: number;
+  failed_tasks_24h: number;
+  active_calls_stale: number;
+  voice_calls_observed: number;
+  voice_turns_observed: number;
+  average_acknowledgement_ms: number | null;
+  slowest_interruption_clear_ms: number | null;
+  operational_incident: boolean;
+  level: HealthPillLevel;
+}
+
 /** Derived, display-ready shape for the Health page's Spec card — see lib/health.ts's computeSpecHealth(). */
 export interface SpecHealthSummary {
   crons: {
@@ -98,6 +117,7 @@ export interface SpecHealthSummary {
   failed_email_sends_7d: number;
   aria_queue_stuck: number;
   needs_aria_backlog: number;
+  conversation_transport: ConversationTransportHealth;
 }
 
 export interface CreateDiagnosticResponse {

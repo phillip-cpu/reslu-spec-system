@@ -310,6 +310,8 @@ revoke all on function forward_conversation_message(uuid, uuid, uuid[], uuid)
   from public, anon;
 grant execute on function forward_conversation_message(uuid, uuid, uuid[], uuid)
   to authenticated;
+grant execute on function forward_conversation_message(uuid, uuid, uuid[], uuid)
+  to service_role;
 
 comment on table conversation_forwarded_attachments is
   'Private attachment snapshots shared into a forwarded target message without duplicating or exposing the canonical storage row.';
