@@ -55,6 +55,16 @@ function secondsLabel(value: number) {
     : `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+function retentionDateLabel(value: string | null) {
+  if (!value) return "Not scheduled";
+  return new Intl.DateTimeFormat("en-AU", {
+    timeZone: "Australia/Adelaide",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(value));
+}
+
 function toLines(value: unknown): string {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").join("\n") : "";
 }
@@ -106,6 +116,7 @@ export function MeetingMode({
   const [audioSafeOnDevice, setAudioSafeOnDevice] = useState(false);
   const [recorderActive, setRecorderActive] = useState(false);
   const [allowDuplicate, setAllowDuplicate] = useState(false);
+  const [canManageSource, setCanManageSource] = useState(false);
   const meetingRef = useRef<ConversationMeetingMinutes | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -141,15 +152,20 @@ export function MeetingMode({
     if (!response.ok) throw new Error(body.error ?? "Could not prepare Meeting Mode");
     if (!mountedRef.current) return;
     setContext(body);
+    setCanManageSource(Boolean(body.active_minutes && body.active_minutes.created_by === body.current_user_id));
     if (initialMeetingId) {
       const meetingResponse = await fetch(`/api/conversations/${conversationId}/meeting-mode/${initialMeetingId}`, { cache: "no-store" });
-      const meetingBody = await meetingResponse.json() as { meeting?: ConversationMeetingMinutes; error?: string };
+      const meetingBody = await meetingResponse.json() as { meeting?: ConversationMeetingMinutes; can_manage_source?: boolean; error?: string };
       if (!meetingResponse.ok || !meetingBody.meeting) throw new Error(meetingBody.error ?? "Could not load filed minutes");
-      if (mountedRef.current) setCurrentMeeting(meetingBody.meeting);
+      if (mountedRef.current) {
+        setCanManageSource(meetingBody.can_manage_source === true);
+        setCurrentMeeting(meetingBody.meeting);
+      }
       return;
     }
     if (body.active_minutes) {
       setCurrentMeeting(body.active_minutes);
+      setCanManageSource(body.active_minutes.created_by === body.current_user_id);
       return;
     }
     if (body.suggested) {
@@ -275,6 +291,7 @@ export function MeetingMode({
       const body = await response.json() as { meeting?: ConversationMeetingMinutes; error?: string };
       if (!response.ok || !body.meeting) throw new Error(body.error ?? "Could not start Meeting Mode");
       setCurrentMeeting(body.meeting);
+      setCanManageSource(true);
       if (response.status !== 201) {
         stream.getTracks().forEach((track) => track.stop());
         stream = null;
@@ -498,6 +515,29 @@ export function MeetingMode({
     } finally { setBusy(false); }
   }
 
+  async function deleteMeetingSource(kind: "recording" | "transcript") {
+    if (!meeting || busy || !canManageSource) return;
+    const label = kind === "recording" ? "raw meeting audio" : "source transcript";
+    if (!window.confirm(`Permanently delete the ${label}? Filed structured minutes will remain, but this source cannot be recovered.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/conversations/${conversationId}/meeting-mode/${meeting.id}/source`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [kind]: true }),
+      });
+      const body = await response.json() as { meeting?: ConversationMeetingMinutes; error?: string };
+      if (!response.ok || !body.meeting) throw new Error(body.error ?? `Could not delete the ${label}`);
+      setCurrentMeeting(body.meeting);
+      setNotice(`${kind === "recording" ? "Raw meeting audio" : "Source transcript"} permanently deleted. Filed structured minutes were preserved.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : `Could not delete the ${label}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const status = meeting?.status ?? "setup";
   const setup = !meeting;
   const recording = status === "recording";
@@ -508,6 +548,25 @@ export function MeetingMode({
   const filed = status === "filed";
   const queuedForUpload = (paused || recording) && audioSafeOnDevice && !recorderActive;
   const interruptedCapture = (paused || recording) && !audioSafeOnDevice && !recorderActive;
+  const recordingAvailable = Boolean(meeting?.recording_storage_path && !meeting.recording_deleted_at);
+  const transcriptAvailable = Boolean(meeting?.transcript && !meeting.transcript_deleted_at);
+  const sourcePrivacyPanel = meeting && (
+    <section className="mt-6 rounded-xl border border-[#d4cbbd] bg-[#faf7f0] p-4 md:p-5" aria-labelledby="meeting-source-privacy-title">
+      <h3 id="meeting-source-privacy-title" className="text-subhead font-semibold">Source privacy</h3>
+      <p className="mt-2 text-caption leading-relaxed text-charcoal/60">
+        Filed structured minutes remain the business record. The proposed deletion dates are {retentionDateLabel(meeting.recording_retain_until)} for raw audio and {retentionDateLabel(meeting.transcript_retain_until)} for the source transcript. Automatic purging remains off until RESLU approves the policy; the recorder can delete either source now.
+      </p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        {transcriptAvailable && <a href={`/api/conversations/${conversationId}/meeting-mode/${meeting.id}/source?kind=transcript`} target="_blank" rel="noreferrer" className="min-h-11 rounded-xl border border-nearblack px-4 py-3 text-caption font-semibold">Export transcript</a>}
+        {transcriptAvailable && <a href={`/api/conversations/${conversationId}/meeting-mode/${meeting.id}/source?kind=bundle`} target="_blank" rel="noreferrer" className="min-h-11 rounded-xl border border-nearblack px-4 py-3 text-caption font-semibold">Export minutes + transcript</a>}
+        {canManageSource && recordingAvailable && <a href={`/api/conversations/${conversationId}/meeting-mode/${meeting.id}/source?kind=recording`} target="_blank" rel="noreferrer" className="min-h-11 rounded-xl border border-nearblack px-4 py-3 text-caption font-semibold">Export raw audio</a>}
+        {canManageSource && recordingAvailable && <button type="button" disabled={busy} onClick={() => void deleteMeetingSource("recording")} className="min-h-11 rounded-xl px-4 py-3 text-caption font-semibold text-red-800 disabled:opacity-35">Delete raw audio</button>}
+        {canManageSource && transcriptAvailable && <button type="button" disabled={busy} onClick={() => void deleteMeetingSource("transcript")} className="min-h-11 rounded-xl px-4 py-3 text-caption font-semibold text-red-800 disabled:opacity-35">Delete transcript</button>}
+      </div>
+      {!recordingAvailable && meeting.recording_deleted_at && <p className="mt-3 text-caption text-charcoal/55">Raw audio deleted {retentionDateLabel(meeting.recording_deleted_at)}.</p>}
+      {!transcriptAvailable && meeting.transcript_deleted_at && <p className="mt-2 text-caption text-charcoal/55">Source transcript deleted {retentionDateLabel(meeting.transcript_deleted_at)}.</p>}
+    </section>
+  );
 
   useDialogFocusBoundary({
     active: true,
@@ -576,7 +635,7 @@ export function MeetingMode({
                     <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} className="mt-1 h-4 w-4 accent-nearblack" />
                     <span>I have told everyone that Aria will record this meeting and they have consented.</span>
                   </label>
-                  <p className="mt-3 text-caption text-charcoal/50">Audio uploads to private RESLU storage and is transcribed locally on the Mac mini. It is not sent to OpenAI.</p>
+                  <p className="mt-3 text-caption text-charcoal/50">Audio uploads to private RESLU storage and is transcribed locally on the Mac mini. It is not sent to OpenAI. The proposed policy keeps raw audio for 30 days and the source transcript for 365 days; you can explicitly export or delete either source.</p>
                   <button type="button" onClick={() => void startCapture()} disabled={!consent || !mime || busy} className="mt-6 w-full rounded-xl bg-nearblack px-5 py-4 text-subhead text-white disabled:opacity-35">
                     {busy ? "Starting…" : mime ? "Start taking minutes" : "Recording is not supported in this browser"}
                   </button>
@@ -683,10 +742,11 @@ export function MeetingMode({
                     </label>
                   ))}
                 </div>
-                <details className="mt-6 rounded-xl border border-[#d4cbbd] bg-[#faf7f0] p-4">
+                {transcriptAvailable && <details className="mt-6 rounded-xl border border-[#d4cbbd] bg-[#faf7f0] p-4">
                   <summary className="cursor-pointer text-caption font-semibold text-charcoal/65">Source transcript</summary>
                   <p className="mt-3 max-h-80 overflow-y-auto whitespace-pre-wrap text-caption leading-relaxed text-charcoal/60">{meeting.transcript}</p>
-                </details>
+                </details>}
+                {sourcePrivacyPanel}
               </div>
               <div className="sticky bottom-0 mt-4 flex flex-wrap gap-3 border-t border-[#d4cbbd] bg-[#f5f1e8]/95 py-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] backdrop-blur">
                 <button type="button" onClick={() => void approveAndFile()} disabled={busy || !selectedDestination || !review.summary.trim() || Boolean(selectedCandidate?.duplicate_filed_minutes_id && !allowDuplicate)} className="min-w-56 flex-1 rounded-xl bg-nearblack px-5 py-4 text-subhead text-white disabled:opacity-35">{busy ? "Filing…" : "Approve & file"}</button>
@@ -721,10 +781,11 @@ export function MeetingMode({
                   </div>
                 ))}
               </div>
-              <details className="mt-6 rounded-xl border border-[#d4cbbd] bg-[#faf7f0] p-4">
+              {transcriptAvailable && <details className="mt-6 rounded-xl border border-[#d4cbbd] bg-[#faf7f0] p-4">
                 <summary className="cursor-pointer text-caption font-semibold text-charcoal/65">Source transcript</summary>
                 <p className="mt-3 max-h-96 overflow-y-auto whitespace-pre-wrap text-caption leading-relaxed text-charcoal/60">{meeting.transcript}</p>
-              </details>
+              </details>}
+              {sourcePrivacyPanel}
             </section>
           )}
         </div>
