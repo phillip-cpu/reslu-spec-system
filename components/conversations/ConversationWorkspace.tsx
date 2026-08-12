@@ -46,6 +46,11 @@ import {
   realtimeReconnectDelay,
   shouldAttemptRealtimeReconnect,
 } from "@/lib/realtime-call-recovery";
+import {
+  releaseCallScreenWakeLock,
+  requestCallScreenWakeLock,
+  type CallScreenWakeLock,
+} from "@/lib/call-screen-wake-lock";
 import { buildRealtimeProgressResponse, realtimeProgressCueId } from "@/lib/realtime-progress";
 import {
   CONVERSATION_MESSAGE_REACTIONS,
@@ -1206,6 +1211,7 @@ export function ConversationWorkspace({
   const clientCallIdRef = useRef<string | null>(null);
   const callConversationIdRef = useRef<string | null>(null);
   const callActiveRef = useRef(false);
+  const callScreenWakeLockRef = useRef<CallScreenWakeLock | null>(null);
   const mutedRef = useRef(false);
   const spokenIdsRef = useRef(new Set<string>());
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
@@ -2103,6 +2109,33 @@ export function ConversationWorkspace({
   useEffect(() => {
     onCallActiveChange?.(Boolean(callOpening || callId || callError));
   }, [callError, callId, callOpening, onCallActiveChange]);
+
+  useEffect(() => {
+    let disposed = false;
+    const acquire = async () => {
+      if (!callId || document.visibilityState !== "visible") return;
+      const current = callScreenWakeLockRef.current;
+      if (current && !current.released) return;
+      const next = await requestCallScreenWakeLock();
+      if (disposed || !callId || document.visibilityState !== "visible") {
+        await releaseCallScreenWakeLock(next);
+        return;
+      }
+      callScreenWakeLockRef.current = next;
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") void acquire();
+    };
+    void acquire();
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      disposed = true;
+      document.removeEventListener("visibilitychange", handleVisibility);
+      const current = callScreenWakeLockRef.current;
+      callScreenWakeLockRef.current = null;
+      void releaseCallScreenWakeLock(current);
+    };
+  }, [callId]);
 
   useEffect(() => {
     onUnreadCountChange?.(unreadCount);

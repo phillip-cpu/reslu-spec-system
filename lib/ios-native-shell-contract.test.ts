@@ -13,6 +13,7 @@ const webView = read("ios/RESLU/RESLU/RESLUWebView.swift");
 const voice = read("ios/RESLU/RESLU/VoiceSessionCoordinator.swift");
 const bridge = read("lib/native-voice-bridge.ts");
 const recovery = read("lib/realtime-call-recovery.ts");
+const wakeLock = read("lib/call-screen-wake-lock.ts");
 const workspace = read("components/conversations/ConversationWorkspace.tsx");
 const verifier = read("scripts/verify-ios-shell.sh");
 
@@ -59,6 +60,8 @@ test("web and native exchange lifecycle only while the browser path remains opti
   assert.match(bridge, /native-audio-ready/);
   assert.match(bridge, /NATIVE_AUDIO_ACTIVATION_TIMEOUT_MS = 5000/);
   assert.match(recovery, /!state\.visible && !state\.backgroundCapable/);
+  assert.match(wakeLock, /wakeLock\.request\("screen"\)/);
+  assert.match(workspace, /requestCallScreenWakeLock/);
   assert.match(workspace, /type: "call\.start"/);
   assert.match(workspace, /type: "call\.connected"/);
   assert.match(workspace, /type: "call\.end"/);
