@@ -495,8 +495,9 @@ Stage gate:
 
 ## Stage 7 - RESLU team intelligence
 
-Status: bounded owner/specialist consultation candidate implemented; production
-migration, bridge rollout and live cross-domain acceptance pending.
+Status: bounded owner/specialist consultation candidate implemented and
+migration 116 production-verified; app/bridge rollout and live cross-domain
+acceptance pending.
 
 The first collaboration slice does not create a new agent layer. During a live
 Aria or Marco call, Realtime may choose one dedicated specialist-consult tool.
