@@ -29,7 +29,9 @@ export function parseStartAgentTaskRequest(value: unknown): StartAgentTaskReques
   const clientTaskId = cleanText(body.client_task_id, 160);
   const title = cleanText(body.title, 200);
   const objective = cleanText(body.objective, 20_000);
-  const agentSlug = body.agent_slug === "aria" || body.agent_slug === "marco" ? body.agent_slug : null;
+  const agentSlug = body.agent_slug === "aria" || body.agent_slug === "marco" || body.agent_slug === "stuart"
+    ? body.agent_slug
+    : null;
   const modelTier = body.model_tier === "fast" || body.model_tier === "strong" ? body.model_tier : "standard";
   const requestedVia = body.requested_via === "voice" ? "voice" : "text";
   const sourceCallId = body.source_call_id == null ? null : cleanText(body.source_call_id, 160);

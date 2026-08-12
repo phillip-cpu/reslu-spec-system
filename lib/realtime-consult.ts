@@ -41,7 +41,9 @@ export function parseRealtimeConsultRequest(value: unknown): RealtimeConsultRequ
   if (!value || typeof value !== "object") return null;
   const body = value as Record<string, unknown>;
   const query = typeof body.query === "string" ? body.query.trim() : "";
-  const agentSlug = body.agent_slug === "aria" || body.agent_slug === "marco" ? body.agent_slug : null;
+  const agentSlug = body.agent_slug === "aria" || body.agent_slug === "marco" || body.agent_slug === "stuart"
+    ? body.agent_slug
+    : null;
   const callId = safeProviderId(body.call_id);
   const toolCallId = safeProviderId(body.tool_call_id);
   const responseId = body.response_id == null ? null : safeProviderId(body.response_id);

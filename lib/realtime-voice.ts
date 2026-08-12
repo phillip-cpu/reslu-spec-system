@@ -26,12 +26,13 @@ export interface RealtimeProviderResult {
 type Environment = Record<string, string | undefined>;
 
 export function realtimeConfig(environment: Environment, agentSlug: AgentSlug): RealtimeConfig {
+  const defaultVoice = agentSlug === "aria" ? "marin" : "cedar";
   const configuredVoice = environment[`RESLU_REALTIME_${agentSlug.toUpperCase()}_VOICE`]
     ?? environment.RESLU_REALTIME_VOICE_NAME
-    ?? (agentSlug === "aria" ? "marin" : "cedar");
+    ?? defaultVoice;
   const voice = REALTIME_VOICES.includes(configuredVoice as RealtimeVoice)
     ? configuredVoice as RealtimeVoice
-    : agentSlug === "aria" ? "marin" : "cedar";
+    : defaultVoice;
   return {
     enabled: environment.RESLU_REALTIME_VOICE_ENABLED === "true",
     model: environment.RESLU_REALTIME_VOICE_MODEL?.trim() || "gpt-realtime-2.1-mini",
@@ -55,6 +56,7 @@ export function buildRealtimeSession(agent: { slug: AgentSlug; display_name: str
     output_modalities: ["audio"],
     instructions: [
       `You are the realtime voice transport for ${agent.display_name} inside RESLU staff chat.`,
+      ...(agent.slug === "stuart" ? ["For Stuart, speak in a calm, understated Australian professional style: measured, plain-spoken and never theatrical."] : []),
       "You handle audio turn-taking only. You do not possess RESLU memory, calendar, project, finance, email or business tools.",
       "For every completed user turn, choose exactly one tool and include a faithful concise transcript of what the user asked.",
       "When the user asks you to create, prepare, research, review, compose, organize, update, or otherwise complete work that can continue independently, call start_reslu_task instead of consult_reslu_agent.",
@@ -70,7 +72,7 @@ export function buildRealtimeSession(agent: { slug: AgentSlug; display_name: str
           model: config.transcriptionModel,
           delay: "low",
           languages: ["en"],
-          prompt: "RESLU residential design and construction call. Common names include Aria, Marco, Phillip and Tennille.",
+          prompt: "RESLU residential design and construction call. Common names include Aria, Marco, Stuart, Phillip and Tennille. Stuart handles finance, forecasting and cost intelligence.",
         },
         turn_detection: {
           type: "semantic_vad",

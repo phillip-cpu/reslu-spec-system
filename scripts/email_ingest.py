@@ -107,6 +107,7 @@ EXPECTED_MAILBOXES = (
     ("phillip@reslu.com.au", "phillip-gmail/token.json", "PHILLIP_GMAIL_TOKEN_FILE"),
     ("tenille@reslu.com.au", "tenille-gmail/token.json", "TENILLE_GMAIL_TOKEN_FILE"),
     ("marco@reslu.com.au", "marco-gmail/token.json", "MARCO_GMAIL_TOKEN_FILE"),
+    ("accounts@reslu.com.au", "accounts-gmail/token.json", "ACCOUNTS_GMAIL_TOKEN_FILE"),
 )
 
 

@@ -52,7 +52,7 @@ test("call start and end survive lost responses without duplicate calls or timel
 });
 
 test("message targeting and queue permissions cannot be broadened by a direct client", () => {
-  assert.match(messageRoute, /Agent targets must be unique Aria or Marco values/);
+  assert.match(messageRoute, /Agent targets must be unique Aria, Marco or Stuart values/);
   assert.match(migration, /message metadata must be an object/);
   assert.match(migration, /message metadata is too large/);
   assert.match(migration, /message agent targets are invalid/);

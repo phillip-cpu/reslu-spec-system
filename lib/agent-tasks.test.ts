@@ -63,3 +63,15 @@ test("voice acknowledgement makes the persistence boundary explicit", () => {
   assert.match(realtimeTaskAcknowledgement("Draft client email"), /keep talking or end the call/i);
   assert.match(realtimeTaskAcknowledgement("Draft client email"), /post the result here/i);
 });
+
+test("accepts Stuart as a durable finance task owner", () => {
+  const parsed = parseStartAgentTaskRequest({
+    client_task_id: "stuart-task-1",
+    agent_slug: "stuart",
+    title: "Review cash position",
+    objective: "Review current read-only finance evidence and prepare a handover.",
+    model_tier: "strong",
+    requested_via: "text",
+  });
+  assert.equal(parsed?.agentSlug, "stuart");
+});

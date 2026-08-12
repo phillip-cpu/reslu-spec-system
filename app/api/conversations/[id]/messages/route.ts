@@ -24,7 +24,7 @@ export const dynamic = "force-dynamic";
 
 type Context = { params: Promise<{ id: string }> };
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const AGENT_SLUGS = new Set<AgentSlug>(["aria", "marco"]);
+const AGENT_SLUGS = new Set<AgentSlug>(["aria", "marco", "stuart"]);
 type MessageInput = {
   body?: unknown;
   source?: unknown;
@@ -321,7 +321,7 @@ export async function POST(request: NextRequest, context: Context) {
     || rawTargetAgentSlugs.some((value) => typeof value !== "string" || !AGENT_SLUGS.has(value as AgentSlug))
     || rawTargetAgentSlugs.length !== new Set(rawTargetAgentSlugs).size
   ) {
-    return NextResponse.json({ error: "Agent targets must be unique Aria or Marco values" }, { status: 400 });
+    return NextResponse.json({ error: "Agent targets must be unique Aria, Marco or Stuart values" }, { status: 400 });
   }
   const targetAgentSlugs = rawTargetAgentSlugs as AgentSlug[];
   if (body.attachment_ids != null && !Array.isArray(body.attachment_ids)) {

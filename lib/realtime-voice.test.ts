@@ -16,7 +16,9 @@ test("realtime defaults remain agent-specific and configurable", () => {
   assert.equal(aria.transcriptionModel, "gpt-live-transcribe");
   assert.equal(aria.voice, "marin");
   assert.equal(marco.voice, "cedar");
+  assert.equal(realtimeConfig({ RESLU_REALTIME_VOICE_ENABLED: "true" }, "stuart").voice, "cedar");
   assert.equal(realtimeConfig({ RESLU_REALTIME_ARIA_VOICE: "coral" }, "aria").voice, "coral");
+  assert.equal(realtimeConfig({ RESLU_REALTIME_STUART_VOICE: "echo" }, "stuart").voice, "echo");
 });
 
 test("session forces substantive turns through the existing RESLU agent", () => {
@@ -36,6 +38,14 @@ test("session forces substantive turns through the existing RESLU agent", () => 
   assert.match(tools.get("start_reslu_task")?.description ?? "", /continues if speech is interrupted/i);
   assert.match(session.instructions, /do not possess RESLU memory/i);
   assert.match(session.instructions, /Never answer a substantive question yourself/i);
+});
+
+test("Stuart voice transport carries his understated Australian delivery", () => {
+  const session = buildRealtimeSession(
+    { slug: "stuart", display_name: "Stuart" },
+    realtimeConfig({}, "stuart")
+  );
+  assert.match(session.instructions, /understated Australian professional style/);
 });
 
 test("standard API key is sent only to OpenAI by the server provider call", async () => {

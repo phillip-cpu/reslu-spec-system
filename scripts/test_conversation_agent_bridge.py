@@ -216,19 +216,20 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         connection.close.assert_called_once()
         self.assertIsNone(rest._connection)
 
-    def test_aria_and_marco_use_independent_serial_workers(self):
+    def test_all_agents_use_independent_serial_workers(self):
         with mock.patch.object(conversation_agent_bridge.threading, "Thread") as thread:
             workers = conversation_agent_bridge.build_agent_workers(
                 "https://example.supabase.co",
                 "secret",
             )
 
-        self.assertEqual(len(workers), 2)
-        self.assertEqual(thread.call_count, 2)
+        self.assertEqual(len(workers), 3)
+        self.assertEqual(thread.call_count, 3)
         calls_by_name = {call.kwargs["name"]: call for call in thread.call_args_list}
         self.assertEqual(set(calls_by_name), {
             "reslu-conversation-aria",
             "reslu-conversation-marco",
+            "reslu-conversation-stuart",
         })
         for slug in conversation_agent_bridge.AGENT_SLUGS:
             call = calls_by_name[f"reslu-conversation-{slug}"]
@@ -249,9 +250,9 @@ class ConversationAgentBridgeTests(unittest.TestCase):
                 "secret",
             )
 
-        self.assertEqual(len(workers), 2)
+        self.assertEqual(len(workers), 3)
         calls_by_name = {call.kwargs["name"]: call for call in thread.call_args_list}
-        self.assertEqual(set(calls_by_name), {"reslu-task-aria", "reslu-task-marco"})
+        self.assertEqual(set(calls_by_name), {"reslu-task-aria", "reslu-task-marco", "reslu-task-stuart"})
         self.assertTrue(all(call.kwargs["target"] is conversation_agent_bridge.task_worker_loop for call in thread.call_args_list))
 
     def test_strong_tasks_route_to_the_configured_capable_model(self):

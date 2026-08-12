@@ -1,6 +1,6 @@
 export type ConversationKind = "direct" | "group";
 export type ConversationMessageKind = "text" | "call_record" | "meeting_record" | "system";
-export type AgentSlug = "aria" | "marco";
+export type AgentSlug = "aria" | "marco" | "stuart";
 export type AgentTaskStatus = "queued" | "running" | "awaiting_approval" | "completed" | "failed" | "cancelled";
 export type AgentTaskModelTier = "fast" | "standard" | "strong";
 

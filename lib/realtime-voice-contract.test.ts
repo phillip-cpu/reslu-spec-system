@@ -36,7 +36,7 @@ test("consult turns persist once in the canonical thread and reuse the OpenClaw 
 test("realtime consult creation fails closed if supersession or enqueue is not proven", () => {
   assert.match(consultRoute, /const \{ error: cancellationError \} = await supabase\.rpc\("cancel_agent_conversation_jobs"/);
   assert.match(consultRoute, /previous voice turn could not be interrupted safely/);
-  assert.match(consultRoute, /Your voice turn was saved, but Aria or Marco could not be reached yet/);
+  assert.match(consultRoute, /Your voice turn was saved, but the selected RESLU agent could not be reached yet/);
   assert.match(consultRoute, /status: 503/);
 });
 
