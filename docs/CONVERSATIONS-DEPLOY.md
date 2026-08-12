@@ -22,10 +22,12 @@ For migration 110, run `supabase/fixtures/110_conversation_attachment_search_ver
 
 The web app provides durable chat history, staff and agent group membership, voice transcripts, call records, and a browser audio-first call presentation. Human-to-human text works entirely through Supabase. Aria and Marco replies use their existing OpenClaw runtimes through the Mac mini bridge.
 
+Conversation history, forwarded messages, attachment filenames/content and existing task artifacts cross the bridge as JSON-encoded untrusted data. The newest canonical message is separately labelled as a current human request or forwarded context; forwarded content never grants authority to act. Private attachment bytes must match their canonical database size, are staged mode `0600`, and carry a SHA-256 integrity label. Aria and Marco keep their existing permissions and approval rules: embedded file/history instructions cannot request secrets, change permissions, invoke unrelated tools or authorize an external side effect.
+
 ## Mac mini bridge
 
 1. Pull the deployed app repository on the mini.
-2. Confirm `.env.local` contains `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
+2. Confirm `.env.local` contains `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `RESLU_REALTIME_AGENT_THINKING=minimal`. `RESLU_REALTIME_AGENT_MODEL` is optional and affects only quick live-call consults; leave it blank unless the exact model override has passed an `openclaw agent --agent main --model … --message "Return exactly READY" --json` smoke test on this Mac. Durable task model tiers remain separate.
 3. Confirm `openclaw agent --agent main` reaches Aria and `openclaw agent --agent marco` reaches Marco. Override either mapping with `RESLU_ARIA_AGENT_ID` or `RESLU_MARCO_AGENT_ID`.
 4. Copy `scripts/ai.reslu.conversation-bridge.plist` to `~/Library/LaunchAgents/`, adjusting `/Users/vale/reslu-spec-system` if the checkout lives elsewhere.
 5. Bootstrap and inspect it:

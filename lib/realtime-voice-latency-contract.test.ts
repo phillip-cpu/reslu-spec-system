@@ -11,6 +11,7 @@ const consultRoute = read("app/api/conversations/[id]/realtime/consult/route.ts"
 const callsRoute = read("app/api/conversations/[id]/calls/route.ts");
 const metrics = read("lib/realtime-voice-metrics.ts");
 const progress = read("lib/realtime-progress.ts");
+const consultPoll = read("lib/realtime-consult-poll.ts");
 
 test("realtime calls measure actual WebRTC output audio instead of transcript timing", () => {
   assert.match(workspace, /output_audio_buffer\.started/);
@@ -44,6 +45,9 @@ test("consult timing separates queue wait, agent processing and backend total", 
   assert.match(consultRoute, /agent_processing_ms: millisecondsBetween/);
   assert.match(consultRoute, /backend_total_ms: millisecondsBetween/);
   assert.match(workspace, /consult_round_trip_ms/);
+  assert.match(workspace, /realtimeConsultPollDelay\(elapsedMs\)/);
+  assert.match(consultPoll, /elapsedMs < 5_000[\s\S]*return 250/);
+  assert.match(consultPoll, /elapsedMs < 15_000[\s\S]*return 500[\s\S]*return 1_000/);
 });
 
 test("call records retain bounded timing metadata without transcript or provider identifiers", () => {

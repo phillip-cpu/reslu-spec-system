@@ -33,7 +33,7 @@ export function realtimeConfig(environment: Environment, agentSlug: AgentSlug): 
     : agentSlug === "aria" ? "marin" : "cedar";
   return {
     enabled: environment.RESLU_REALTIME_VOICE_ENABLED === "true",
-    model: environment.RESLU_REALTIME_VOICE_MODEL?.trim() || "gpt-realtime-2.1",
+    model: environment.RESLU_REALTIME_VOICE_MODEL?.trim() || "gpt-realtime-2.1-mini",
     voice,
     transcriptionModel: environment.RESLU_REALTIME_TRANSCRIPTION_MODEL?.trim() || "gpt-live-transcribe",
     apiKey: environment.OPENAI_API_KEY?.trim() || null,
@@ -48,6 +48,7 @@ export function buildRealtimeSession(agent: { slug: AgentSlug; display_name: str
   return {
     type: "realtime",
     model: config.model,
+    max_output_tokens: 1024,
     output_modalities: ["audio"],
     instructions: [
       `You are the realtime voice transport for ${agent.display_name} inside RESLU staff chat.`,

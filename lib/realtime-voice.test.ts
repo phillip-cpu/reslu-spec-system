@@ -12,7 +12,7 @@ import {
 test("realtime defaults remain agent-specific and configurable", () => {
   const aria = realtimeConfig({ RESLU_REALTIME_VOICE_ENABLED: "true", OPENAI_API_KEY: "server-key" }, "aria");
   const marco = realtimeConfig({ RESLU_REALTIME_VOICE_ENABLED: "true", OPENAI_API_KEY: "server-key" }, "marco");
-  assert.equal(aria.model, "gpt-realtime-2.1");
+  assert.equal(aria.model, "gpt-realtime-2.1-mini");
   assert.equal(aria.transcriptionModel, "gpt-live-transcribe");
   assert.equal(aria.voice, "marin");
   assert.equal(marco.voice, "cedar");
@@ -23,6 +23,7 @@ test("session forces substantive turns through the existing RESLU agent", () => 
   const config = realtimeConfig({ RESLU_REALTIME_VOICE_ENABLED: "true", OPENAI_API_KEY: "server-key" }, "aria");
   const session = buildRealtimeSession({ slug: "aria", display_name: "Aria" }, config);
   assert.equal(session.tool_choice, "required");
+  assert.equal(session.max_output_tokens, 1024);
   assert.equal(session.audio.input.turn_detection.type, "semantic_vad");
   assert.equal(session.audio.input.turn_detection.eagerness, "high");
   assert.equal(session.audio.input.turn_detection.interrupt_response, true);

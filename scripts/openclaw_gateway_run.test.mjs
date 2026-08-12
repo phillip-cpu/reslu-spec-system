@@ -22,11 +22,14 @@ test("agent runs require a bounded stable session and idempotency key", () => {
     idempotencyKey: "job-123",
     timeoutSeconds: 180,
     thinking: "minimal",
+    model: "openai/gpt-5.6-terra",
   });
   assert.equal(input.sessionKey, "reslu-conversation-v2-123");
   assert.equal(input.idempotencyKey, "job-123");
+  assert.equal(input.model, "openai/gpt-5.6-terra");
   assert.throws(() => validateRunInput({ ...input, sessionKey: "../private" }), /session key/);
   assert.throws(() => validateRunInput({ ...input, timeoutSeconds: 0 }), /timeout/);
+  assert.throws(() => validateRunInput({ ...input, model: "openai/gpt-5.6-terra --unsafe" }), /model override/);
 });
 
 test("Gateway events expose lifecycle and safe tool labels without arguments or results", () => {
