@@ -42,6 +42,10 @@ This is implementation evidence only; it does not promote any live stage gate.
   corrective migrations 113 and 114 now enforce the invariant at both the RPC
   and database-trigger layers, and the strengthened migration 108 verifier
   passes with all test state rolled back.
+- Migrations 109 (bounded private voice notes), 110 (private attachment filename
+  search), 103 (review-before-filing Meeting Mode), and 111 (approval-safe task
+  retry) also pass their production rollback verifiers. The stacked release's
+  database gate is complete; merge/deployment and live client acceptance remain.
 - Pre-production review made migration 106 table grants explicitly read-only,
   required current membership again on migration 107 forwarding retries,
   blocked migration 108 from treating an Aria/Marco auth profile as a human,

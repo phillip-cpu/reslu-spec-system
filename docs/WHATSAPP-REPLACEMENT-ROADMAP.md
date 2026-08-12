@@ -556,13 +556,11 @@ Final product gate:
 
 ## Current next action
 
-Finish the production database gate first. Migrations 105 (after corrective
-112), 106 and 107 now pass. Migration 108 also passes after corrective
-migrations 113 and 114 proved both its RPC and database-level last-admin guards.
-Next apply and verify the reviewed versions of 109, 110, 103 and 111 in that
-order. Only after those
-fixtures pass should the stacked PRs be merged in order and the exact production
-deployment verified. Pull that release to the Mac bridge/MCP checkout, restart
+The production database gate is complete: migrations 105 (after corrective
+112), 106, 107, 108 (after corrective 113 and 114), 109, 110, 103 and 111 all
+pass their rollback-safe production verifiers. Merge the stacked PRs in order
+and verify the exact production deployment. Pull that release to the Mac
+bridge/MCP checkout, restart
 it, and repeat the same iPhone voice acceptance call. Require a Gateway run id
 and visible safe progress before waiting for Aria's answer; interrupt one answer,
 start one durable task, end the call, and confirm that the durable task keeps
