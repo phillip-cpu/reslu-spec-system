@@ -37,8 +37,10 @@ This is implementation evidence only; it does not promote any live stage gate.
 - The complete changed-surface suite passes 119 TypeScript contracts and 50 Mac
   conversation-bridge tests. TypeScript and the 100-route production build pass.
 - Production exposes the migration 105 recoverable-delete RPC and rejects a
-  content-free unauthenticated probe safely. The rollback fixture must still
-  report PASS before migration 106 is applied.
+  content-free unauthenticated probe safely. Its first rollback verification
+  correctly exposed a same-transaction edit-version collision caused by
+  transaction-stable `now()`. Corrective migration 112 must be applied and the
+  migration 105 fixture must report PASS before migration 106 is applied.
 - Pre-production review made migration 106 table grants explicitly read-only,
   required current membership again on migration 107 forwarding retries,
   blocked migration 108 from treating an Aria/Marco auth profile as a human,

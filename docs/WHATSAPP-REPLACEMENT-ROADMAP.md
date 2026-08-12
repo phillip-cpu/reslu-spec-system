@@ -115,7 +115,9 @@ virtualisation remain. Migration 105 adds author-owned 15-minute message edits
 with multi-device conflict detection, plus a recoverable delete that leaves a
 truthful tombstone, keeps original text private to its author for 30 days and
 immediately blocks deleted attachments. Restore changes history without
-silently re-running Aria, Marco or durable work. Migration 106 adds six bounded
+silently re-running Aria, Marco or durable work. Corrective migration 112 makes
+the optimistic version advance by at least one microsecond even when an insert
+and edit share one PostgreSQL transaction. Migration 106 adds six bounded
 quick reactions with one current choice per member and up to five shared pinned
 messages that remain reachable above the timeline even when they are older than
 the loaded page. Deleting a message clears its reaction and pin state in the
@@ -182,14 +184,16 @@ Rollout order for this slice:
    `098_conversation_quoted_replies.sql`, then
    `104_single_active_conversation_call.sql`, then
    `105_conversation_message_edit_delete.sql`, then
+   `112_conversation_message_edit_version.sql`, then
    `106_conversation_message_reactions_pins.sql`, then
    `107_conversation_message_forwarding.sql`, then
    `108_conversation_group_management.sql`, then
    `109_conversation_voice_notes.sql`, then
    `110_conversation_attachment_search.sql`, to Supabase.
 2. Run the matching rollback-only fixtures for migrations 093 through 098 and
-   migrations 104 through 110 in the SQL Editor. Every fixture must report PASS
-   and leave no test data.
+   migrations 104 through 110 in the SQL Editor. Migration 112 is proved by
+   rerunning the migration 105 fixture immediately after the corrective patch.
+   Every fixture must report PASS and leave no test data.
 3. Deploy the matching application release, pull it on the Mac and restart the
    conversation bridge so its independent push worker is active.
 4. Refresh every already-open RESLU client so it sends a stable client id.
@@ -548,9 +552,11 @@ Final product gate:
 
 ## Current next action
 
-Finish the production database gate first. Migration 105 is present; run its
-rollback-only fixture and require PASS. Then apply and verify the reviewed
-versions of 106, 107, 108, 109, 110, 103 and 111 in that order. Only after those
+Finish the production database gate first. Migration 105 is present, and its
+rollback verifier exposed the transaction-stable timestamp defect. Apply
+corrective migration 112 and rerun the migration 105 fixture; require PASS.
+Then apply and verify the reviewed versions of 106, 107, 108, 109, 110, 103 and
+111 in that order. Only after those
 fixtures pass should the stacked PRs be merged in order and the exact production
 deployment verified. Pull that release to the Mac bridge/MCP checkout, restart
 it, and repeat the same iPhone voice acceptance call. Require a Gateway run id
