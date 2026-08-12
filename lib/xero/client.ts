@@ -155,3 +155,55 @@ export async function xeroGet<T>(
   }
   return (await response.json()) as T;
 }
+
+async function xeroWrite<T>(
+  connection: StoredXeroConnection,
+  path: string,
+  init: { method: "POST" | "PUT"; body: BodyInit; contentType: string }
+): Promise<T> {
+  const url = new URL(path, "https://api.xero.com/");
+  const request = (token: string) => fetch(url, {
+    method: init.method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "xero-tenant-id": connection.tenant_id,
+      Accept: "application/json",
+      "Content-Type": init.contentType,
+    },
+    body: init.body,
+    cache: "no-store",
+  });
+  let token = await validAccessToken(connection);
+  let response = await request(token);
+  if (response.status === 401) {
+    token = await refreshAccessToken(connection);
+    response = await request(token);
+  }
+  if (!response.ok) throw new Error(`Xero API write failed (${response.status})`);
+  return (await response.json()) as T;
+}
+
+export async function xeroPostJson<T>(
+  connection: StoredXeroConnection,
+  path: string,
+  body: unknown
+): Promise<T> {
+  return xeroWrite<T>(connection, path, {
+    method: "POST",
+    body: JSON.stringify(body),
+    contentType: "application/json",
+  });
+}
+
+export async function xeroPutBytes<T>(
+  connection: StoredXeroConnection,
+  path: string,
+  bytes: Uint8Array,
+  contentType: string
+): Promise<T> {
+  return xeroWrite<T>(connection, path, {
+    method: "PUT",
+    body: Buffer.from(bytes),
+    contentType,
+  });
+}
