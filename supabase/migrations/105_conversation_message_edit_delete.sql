@@ -109,7 +109,15 @@ begin
   end if;
 
   update conversation_messages message
-  set body = normalized_body, edited_at = now()
+  set
+    body = normalized_body,
+    -- `now()` is fixed at transaction start, so an insert followed by an edit
+    -- in one transaction could otherwise retain the same optimistic version.
+    -- Advance by at least one PostgreSQL timestamp tick on every real edit.
+    edited_at = greatest(
+      clock_timestamp(),
+      coalesce(message_row.edited_at, message_row.created_at) + interval '1 microsecond'
+    )
   where message.id = message_row.id
   returning * into message_row;
 

@@ -6,6 +6,8 @@ do $verify$
 declare
   v_profile_id uuid;
   v_conversation_id uuid;
+  v_destination_conversation_id uuid := gen_random_uuid();
+  v_agent_id uuid;
   v_source_message_id uuid := gen_random_uuid();
   v_source_attachment_id uuid := gen_random_uuid();
   v_client_forward_id uuid := gen_random_uuid();
@@ -15,8 +17,10 @@ declare
   v_existing boolean;
   v_count integer;
   v_mismatch_rejected boolean := false;
-  v_revoked_retry_rejected boolean := false;
-  v_participant conversation_participants%rowtype;
+  v_revoked_source_retry_rejected boolean := false;
+  v_revoked_destination_retry_rejected boolean := false;
+  v_source_participant conversation_participants%rowtype;
+  v_destination_participant conversation_participants%rowtype;
 begin
   if to_regclass('public.conversation_forwarded_attachments') is null
      or to_regclass('public.conversation_message_forwards') is null
@@ -55,18 +59,21 @@ begin
     raise exception 'FAIL: target members can read the original private storage path';
   end if;
 
-  select human.profile_id, human.conversation_id
-  into v_profile_id, v_conversation_id
+  select human.profile_id, human.conversation_id, agent_member.agent_id
+  into v_profile_id, v_conversation_id, v_agent_id
   from conversation_participants human
+  join conversation_participants agent_member
+    on agent_member.conversation_id = human.conversation_id
+   and agent_member.agent_id is not null
   where human.profile_id is not null
     and (
       select count(*) from conversation_participants member
       where member.conversation_id = human.conversation_id
     ) = 2
     and (
-      select count(*) from conversation_participants agent_member
-      where agent_member.conversation_id = human.conversation_id
-        and agent_member.agent_id is not null
+      select count(*) from conversation_participants agent_count
+      where agent_count.conversation_id = human.conversation_id
+        and agent_count.agent_id is not null
     ) = 1
   limit 1;
   if v_profile_id is null then
@@ -75,6 +82,13 @@ begin
 
   perform set_config('request.jwt.claim.sub', v_profile_id::text, true);
   perform set_config('request.jwt.claim.role', 'authenticated', true);
+
+  insert into conversations(id, kind, created_by)
+  values (v_destination_conversation_id, 'direct', v_profile_id);
+  insert into conversation_participants(conversation_id, profile_id)
+  values (v_destination_conversation_id, v_profile_id);
+  insert into conversation_participants(conversation_id, agent_id)
+  values (v_destination_conversation_id, v_agent_id);
 
   insert into conversation_messages(
     id, conversation_id, author_profile_id, kind, body, metadata
@@ -116,7 +130,7 @@ begin
   from forward_conversation_message(
     v_conversation_id,
     v_source_message_id,
-    array[v_conversation_id],
+    array[v_destination_conversation_id],
     v_client_forward_id
   ) result;
   if v_existing then
@@ -128,7 +142,7 @@ begin
   from forward_conversation_message(
     v_conversation_id,
     v_source_message_id,
-    array[v_conversation_id],
+    array[v_destination_conversation_id],
     v_client_forward_id
   ) result;
   if not v_existing then
@@ -138,24 +152,47 @@ begin
   delete from conversation_participants participant
   where participant.conversation_id = v_conversation_id
     and participant.profile_id = v_profile_id
-  returning participant.* into strict v_participant;
+  returning participant.* into strict v_source_participant;
   begin
     perform *
     from forward_conversation_message(
       v_conversation_id,
       v_source_message_id,
-      array[v_conversation_id],
+      array[v_destination_conversation_id],
       v_client_forward_id
     );
   exception
     when others then
       if sqlerrm not like '%source message not found%' then raise; end if;
-      v_revoked_retry_rejected := true;
+      v_revoked_source_retry_rejected := true;
   end;
   insert into conversation_participants
-  select (v_participant).*;
-  if not v_revoked_retry_rejected then
-    raise exception 'FAIL: exactly-once retry bypassed current conversation membership';
+  select (v_source_participant).*;
+  if not v_revoked_source_retry_rejected then
+    raise exception 'FAIL: exactly-once retry bypassed current source membership';
+  end if;
+
+  delete from conversation_participants participant
+  where participant.conversation_id = v_destination_conversation_id
+    and participant.profile_id = v_profile_id
+  returning participant.* into strict v_destination_participant;
+  begin
+    perform *
+    from forward_conversation_message(
+      v_conversation_id,
+      v_source_message_id,
+      array[v_destination_conversation_id],
+      v_client_forward_id
+    );
+  exception
+    when others then
+      if sqlerrm not like '%destination conversation not found%' then raise; end if;
+      v_revoked_destination_retry_rejected := true;
+  end;
+  insert into conversation_participants
+  select (v_destination_participant).*;
+  if not v_revoked_destination_retry_rejected then
+    raise exception 'FAIL: exactly-once retry bypassed current destination membership';
   end if;
 
   select count(*) into v_count
@@ -196,7 +233,7 @@ begin
     from forward_conversation_message(
       v_conversation_id,
       gen_random_uuid(),
-      array[v_conversation_id],
+      array[v_destination_conversation_id],
       v_client_forward_id
     );
   exception
@@ -211,9 +248,9 @@ begin
   select result.forwarded_message_id
   into strict v_forwarded_again_message_id
   from forward_conversation_message(
-    v_conversation_id,
+    v_destination_conversation_id,
     v_forwarded_message_id,
-    array[v_conversation_id],
+    array[v_destination_conversation_id],
     v_second_client_forward_id
   ) result;
   select count(*) into v_count
@@ -242,6 +279,6 @@ begin
 exception
   when sqlstate 'P5107' then
     if sqlerrm <> 'RESLU_VERIFY_107_PASS' then raise; end if;
-    raise notice 'PASS: message forwarding is exactly-once, current-member scoped, private-file safe, repeatable and direct-agent aware; all test changes rolled back';
+    raise notice 'PASS: message forwarding is exactly-once, source-and-destination member scoped, private-file safe, repeatable and direct-agent aware; all test changes rolled back';
 end;
 $verify$;

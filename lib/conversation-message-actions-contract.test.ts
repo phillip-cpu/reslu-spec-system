@@ -18,6 +18,7 @@ test("message edits are owned, bounded, conflict-safe and do not re-enqueue agen
   assert.match(migration, /not is_conversation_member\(p_conversation_id\)/i);
   assert.match(migration, /created_at \+ interval '15 minutes'/i);
   assert.match(migration, /coalesce\(message_row\.edited_at, message_row\.created_at\) is distinct from p_expected_version/i);
+  assert.match(migration, /greatest\([\s\S]*clock_timestamp\(\)[\s\S]*interval '1 microsecond'/i);
   const editFunction = migration.match(/create or replace function edit_conversation_message[\s\S]*?\n\$\$;/i)?.[0] ?? "";
   assert.doesNotMatch(editFunction, /agent_conversation_jobs|enqueue/i);
   assert.match(actionRoute, /p_expected_version: body\.expected_version/);

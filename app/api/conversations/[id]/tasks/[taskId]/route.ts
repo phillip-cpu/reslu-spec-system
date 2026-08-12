@@ -21,6 +21,15 @@ export async function PATCH(request: NextRequest, context: Context) {
     return NextResponse.json({ task: data });
   }
 
+  if (body.action === "retry") {
+    const { data, error } = await supabase.rpc("retry_failed_agent_task", {
+      p_conversation_id: id,
+      p_task_id: taskId,
+    }).single();
+    if (error || !data) return NextResponse.json({ error: error?.message ?? "Could not retry task" }, { status: 400 });
+    return NextResponse.json({ task: data });
+  }
+
   if ((body.action === "approve" || body.action === "reject") && body.artifact_id) {
     const { data, error } = await supabase.rpc("decide_agent_task_artifact", {
       p_conversation_id: id,

@@ -25,6 +25,7 @@ declare
   v_added integer;
   v_count integer;
   v_last_admin_rejected boolean := false;
+  v_trigger_guard_rejected boolean := false;
   v_reused_action_rejected boolean := false;
   v_agent_profile_rejected boolean := false;
   v_status text;
@@ -175,6 +176,15 @@ begin
     raise exception 'FAIL: an agent authentication profile was accepted as a human participant';
   end if;
 
+  select count(*) into v_count
+  from conversation_participants participant
+  where participant.conversation_id = v_conversation_id
+    and participant.profile_id is not null
+    and participant.participant_role = 'admin';
+  if v_count <> 1 then
+    raise exception 'FAIL: last-admin demotion precondition expected one human admin, found %', v_count;
+  end if;
+
   begin
     perform set_conversation_group_admin(v_conversation_id, v_admin_id, false, v_demote_action_id);
   exception
@@ -184,6 +194,20 @@ begin
   end;
   if not v_last_admin_rejected then
     raise exception 'FAIL: the only group admin could demote themselves';
+  end if;
+
+  begin
+    update conversation_participants participant
+    set participant_role = 'member'
+    where participant.conversation_id = v_conversation_id
+      and participant.profile_id = v_admin_id;
+  exception
+    when others then
+      if sqlerrm not like '%keep at least one admin%' then raise; end if;
+      v_trigger_guard_rejected := true;
+  end;
+  if not v_trigger_guard_rejected then
+    raise exception 'FAIL: the database trigger allowed a group with no human admin';
   end if;
   if not set_conversation_group_admin(v_conversation_id, v_member_id, true, v_promote_action_id) then
     raise exception 'FAIL: another human member was not promoted';

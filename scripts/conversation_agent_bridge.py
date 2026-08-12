@@ -976,7 +976,7 @@ def invoke_task_agent(
                 prompt=prompt,
                 agent_id=openclaw_agent_id(agent["slug"]),
                 session_key=openclaw_task_session_key(task["id"]),
-                idempotency_key=f"reslu-task-{task['id']}",
+                idempotency_key=f"reslu-task-{task['id']}-attempt-{int(task.get('retry_count') or 0)}",
                 timeout_seconds=TASK_PROCESS_TIMEOUT_SECONDS,
                 should_continue=should_continue,
                 thinking_level=task_thinking_level(task["model_tier"]),

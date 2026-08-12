@@ -53,11 +53,22 @@ test("admins can exactly-once rename and add bounded valid people or existing ag
 test("a group always retains a human admin and leaving revokes access atomically", () => {
   assert.match(migration, /create or replace function set_conversation_group_admin/i);
   assert.match(migration, /a group must keep at least one admin/i);
+  assert.match(migration, /create or replace function enforce_conversation_group_human_admin/i);
+  assert.match(
+    migration,
+    /create trigger trg_require_group_human_admin[\s\S]*after update of participant_role, profile_id, conversation_id or delete/i,
+  );
+  assert.match(
+    migration,
+    /not exists \([\s\S]*participant\.profile_id is not null[\s\S]*participant\.participant_role = 'admin'/i,
+  );
   assert.match(migration, /create or replace function leave_conversation_group/i);
   assert.match(migration, /other_admin_count = 0[\s\S]*set participant_role = 'admin'/i);
   assert.match(migration, /delete from conversation_participants participant[\s\S]*participant\.profile_id = auth\.uid\(\)/i);
   assert.match(migration, /delete from notifications notification[\s\S]*notification\.user_id = auth\.uid\(\)/i);
   assert.match(verifier, /only group admin could demote themselves/i);
+  assert.match(verifier, /last-admin demotion precondition expected one human admin/i);
+  assert.match(verifier, /database trigger allowed a group with no human admin/i);
   assert.match(verifier, /group did not retain a human admin/i);
   assert.match(verifier, /former member retained a private notification preview/i);
   assert.match(verifier, /leave retry failed after access had already ended/i);
