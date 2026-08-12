@@ -643,19 +643,22 @@ async function probeConversationAttachment(
   }
 }
 
-function NewConversation({ people, onCreated, onClose }: {
+type ConversationWorkspaceScope = { kind: "project" | "lead"; id: string; label: string };
+
+function NewConversation({ people, scope, onCreated, onClose }: {
   people: ConversationParticipant[];
+  scope?: ConversationWorkspaceScope;
   onCreated: (id: string) => void;
   onClose: () => void;
 }) {
-  const [selected, setSelected] = useState<string[]>([]);
+  const [selected, setSelected] = useState<string[]>(scope ? ["agent:aria"] : []);
   const [title, setTitle] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const createIntentRef = useRef<{ signature: string; id: string } | null>(null);
   const newConversationDialogRef = useRef<HTMLFormElement>(null);
   useDialogFocusBoundary({ active: true, containerRef: newConversationDialogRef, onEscape: onClose });
-  const candidates = people.filter((person) => !person.is_self);
+  const candidates = people.filter((person) => !person.is_self && (!scope || person.type === "agent"));
 
   async function createConversation(event: FormEvent) {
     event.preventDefault();
@@ -664,15 +667,22 @@ function NewConversation({ people, onCreated, onClose }: {
     setError(null);
     const profileIds = selected.filter((key) => key.startsWith("human:")).map((key) => key.slice(6));
     const agentSlugs = selected.filter((key) => key.startsWith("agent:")).map((key) => key.slice(6)) as AgentSlug[];
-    const signature = JSON.stringify({ selected: [...selected].sort(), title: title.trim() });
+    const signature = JSON.stringify({ selected: [...selected].sort(), title: title.trim(), scope });
     if (createIntentRef.current?.signature !== signature) {
       createIntentRef.current = { signature, id: crypto.randomUUID() };
     }
     try {
-      const response = await fetch("/api/conversations", {
+      const response = await fetch(scope ? "/api/conversations/scoped" : "/api/conversations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(scope ? {
+          scope_kind: scope.kind,
+          scope_id: scope.id,
+          purpose_key: `topic_${createIntentRef.current.id.replaceAll("-", "")}`,
+          title,
+          agent_slug: agentSlugs[0],
+          client_conversation_id: createIntentRef.current.id,
+        } : {
           profile_ids: profileIds,
           agent_slugs: agentSlugs,
           title,
@@ -694,8 +704,8 @@ function NewConversation({ people, onCreated, onClose }: {
       <form ref={newConversationDialogRef} tabIndex={-1} onSubmit={createConversation} role="dialog" aria-modal="true" aria-labelledby="new-conversation-title" className="max-h-full w-full max-w-lg overflow-y-auto border border-[#d4cbbd] bg-[#f5f1e8] p-4 shadow-2xl md:p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="label-caps">New conversation</p>
-            <h2 id="new-conversation-title" className="mt-2 font-display text-section text-nearblack">Who’s in this chat?</h2>
+            <p className="label-caps">{scope ? scope.label : "New conversation"}</p>
+            <h2 id="new-conversation-title" className="mt-2 font-display text-section text-nearblack">{scope ? "Start a focused project chat" : "Who’s in this chat?"}</h2>
           </div>
           <button type="button" onClick={onClose} aria-label="Close" className="flex h-11 w-11 items-center justify-center text-charcoal/50 hover:text-charcoal">✕</button>
         </div>
@@ -708,7 +718,10 @@ function NewConversation({ people, onCreated, onClose }: {
                 <input
                   type="checkbox"
                   checked={checked}
-                  onChange={() => setSelected((value) => checked ? value.filter((item) => item !== key) : [...value, key])}
+                  onChange={() => setSelected((value) => scope
+                    ? (checked ? [] : [key])
+                    : checked ? value.filter((item) => item !== key) : [...value, key]
+                  )}
                   className="h-4 w-4 accent-[#1a1a1a]"
                 />
                 <Avatar participant={person} />
@@ -720,14 +733,14 @@ function NewConversation({ people, onCreated, onClose }: {
             );
           })}
         </div>
-        {selected.length > 1 && (
+        {(scope || selected.length > 1) && (
           <label className="mt-4 block">
-            <span className="label-caps">Group name (optional)</span>
-            <input value={title} onChange={(event) => setTitle(event.target.value)} className="mt-2 w-full border border-[#cfc6b8] bg-white px-3 py-2 text-body outline-none focus:border-nearblack" placeholder="e.g. Friday studio" />
+            <span className="label-caps">{scope ? "Outcome or topic" : "Group name (optional)"}</span>
+            <input value={title} onChange={(event) => setTitle(event.target.value)} className="mt-2 w-full border border-[#cfc6b8] bg-white px-3 py-2 text-body outline-none focus:border-nearblack" placeholder={scope ? "e.g. Window quotations" : "e.g. Friday studio"} />
           </label>
         )}
         {error && <p className="mt-3 text-caption text-red-700">{error}</p>}
-        <button disabled={saving || selected.length === 0} className="mt-5 w-full bg-nearblack px-4 py-3 text-subhead text-white disabled:opacity-30">
+        <button disabled={saving || selected.length === 0 || Boolean(scope && !title.trim())} className="mt-5 w-full bg-nearblack px-4 py-3 text-subhead text-white disabled:opacity-30">
           {saving ? "Creating…" : "Start conversation"}
         </button>
       </form>
@@ -1110,6 +1123,8 @@ export function ConversationWorkspace({
   callCompact = false,
   onCallCompactChange,
   onUnreadCountChange,
+  initialConversationId,
+  scope,
 }: {
   presentation?: "page" | "drawer";
   active?: boolean;
@@ -1117,6 +1132,8 @@ export function ConversationWorkspace({
   callCompact?: boolean;
   onCallCompactChange?: (compact: boolean) => void;
   onUnreadCountChange?: (count: number) => void;
+  initialConversationId?: string;
+  scope?: ConversationWorkspaceScope;
 } = {}) {
   const [data, setData] = useState<ConversationsResponse>({ conversations: [], people: [] });
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
@@ -1354,17 +1371,23 @@ export function ConversationWorkspace({
     await loadAgentTasks(conversationId);
   }, [loadAgentTasks]);
 
+  const scopedConversations = useMemo(
+    () => scope
+      ? data.conversations.filter((conversation) => conversation.context?.scope_kind === scope.kind && conversation.context.scope_id === scope.id)
+      : data.conversations,
+    [data.conversations, scope]
+  );
   const selectedConversation = useMemo(
     () => data.conversations.find((conversation) => conversation.id === selectedId) ?? null,
     [data.conversations, selectedId]
   );
   const activeConversations = useMemo(
-    () => data.conversations.filter((conversation) => !conversation.archived_at),
-    [data.conversations]
+    () => scopedConversations.filter((conversation) => !conversation.archived_at),
+    [scopedConversations]
   );
   const archivedConversations = useMemo(
-    () => data.conversations.filter((conversation) => Boolean(conversation.archived_at)),
-    [data.conversations]
+    () => scopedConversations.filter((conversation) => Boolean(conversation.archived_at)),
+    [scopedConversations]
   );
   const visibleConversations = showArchived ? archivedConversations : activeConversations;
   const filteredConversations = useMemo(() => {
@@ -2019,7 +2042,7 @@ export function ConversationWorkspace({
   }, [currentUserId, flushOutbox]);
   useEffect(() => {
     const search = new URLSearchParams(window.location.search);
-    const conversationId = search.get("conversation");
+    const conversationId = initialConversationId ?? search.get("conversation");
     const messageId = search.get("message");
     if (!conversationId || !UUID_PATTERN.test(conversationId)) return;
     hasInitialConversationSelectionRef.current = true;
@@ -2031,7 +2054,7 @@ export function ConversationWorkspace({
       setHistoryAnchorMessageId(messageId);
       shouldStickToBottomRef.current = false;
     }
-  }, []);
+  }, [initialConversationId]);
   useEffect(() => {
     const initial = window.setTimeout(() => void loadConversations(), 0);
     const timer = window.setInterval(() => {
@@ -4229,7 +4252,14 @@ export function ConversationWorkspace({
               {headerParticipant && <Avatar participant={headerParticipant} />}
               <div className="min-w-0 flex-1">
                 <h2 className="truncate font-display text-subhead text-nearblack">{selectedConversation.display_title}</h2>
-                <p className="mt-1 truncate text-caption text-charcoal/50">{participants.map((participant) => participant.display_name).join(", ")}</p>
+                <p className="mt-1 flex min-w-0 items-center gap-2 truncate text-caption text-charcoal/50">
+                  {selectedConversation.context && (
+                    <span className="shrink-0 border border-[#c9b998] bg-[#eee8de] px-2 py-0.5 font-semibold text-nearblack">
+                      {selectedConversation.context.scope_label}
+                    </span>
+                  )}
+                  <span className="truncate">{participants.map((participant) => participant.display_name).join(", ")}</span>
+                </p>
               </div>
               {callAgent && (
                 <button disabled={voiceNoteRecording} onClick={() => void startCall()} aria-label={`Call ${callAgent.display_name}`} className="flex h-11 shrink-0 items-center justify-center gap-2 border border-nearblack px-3 text-nearblack hover:bg-nearblack hover:text-white disabled:opacity-35 md:px-4">
@@ -4992,7 +5022,7 @@ export function ConversationWorkspace({
         </div>
       )}
 
-      {newOpen && <NewConversation people={data.people} onClose={() => setNewOpen(false)} onCreated={(id) => {
+      {newOpen && <NewConversation people={data.people} scope={scope} onClose={() => setNewOpen(false)} onCreated={(id) => {
         draftAttachmentsRef.current = draftAttachmentsByConversationRef.current.get(id) ?? [];
         setDraftAttachments(draftAttachmentsRef.current);
         setNewOpen(false);
