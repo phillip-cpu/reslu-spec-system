@@ -29,9 +29,11 @@ test("session forces substantive turns through the existing RESLU agent", () => 
   assert.equal(session.audio.input.turn_detection.interrupt_response, true);
   assert.equal(session.audio.input.transcription.model, "gpt-live-transcribe");
   assert.equal(session.audio.input.transcription.delay, "low");
-  assert.equal(session.tools[0].name, "consult_reslu_agent");
-  assert.equal(session.tools[1].name, "start_reslu_task");
-  assert.match(session.tools[1].description, /continues if speech is interrupted/i);
+  const tools = new Map(session.tools.map((tool) => [tool.name, tool]));
+  assert.equal(tools.has("consult_reslu_agent"), true);
+  assert.match(tools.get("consult_reslu_specialist")?.description ?? "", /bounded second opinion/i);
+  assert.match(tools.get("consult_reslu_specialist")?.description ?? "", /must not perform consequential actions/i);
+  assert.match(tools.get("start_reslu_task")?.description ?? "", /continues if speech is interrupted/i);
   assert.match(session.instructions, /do not possess RESLU memory/i);
   assert.match(session.instructions, /Never answer a substantive question yourself/i);
 });

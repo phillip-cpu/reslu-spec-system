@@ -1,0 +1,42 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  otherResluAgent,
+  parseRealtimeSpecialistConsultRequest,
+} from "./realtime-specialist-consult.ts";
+
+test("specialist routing is a closed Aria/Marco pair", () => {
+  assert.equal(otherResluAgent("aria"), "marco");
+  assert.equal(otherResluAgent("marco"), "aria");
+});
+
+test("specialist consult request keeps owner identity server-verifiable", () => {
+  assert.deepEqual(parseRealtimeSpecialistConsultRequest({
+    query: "  Ask Marco to challenge the commercial assumptions. ",
+    owner_agent_slug: "aria",
+    call_id: "call_123",
+    tool_call_id: "tool_123",
+    response_id: "response_123",
+  }), {
+    query: "Ask Marco to challenge the commercial assumptions.",
+    ownerAgentSlug: "aria",
+    callId: "call_123",
+    toolCallId: "tool_123",
+    responseId: "response_123",
+  });
+});
+
+test("specialist consult parser rejects arbitrary agents and unsafe ids", () => {
+  assert.equal(parseRealtimeSpecialistConsultRequest({
+    query: "Ask someone else",
+    owner_agent_slug: "external",
+    call_id: "call_123",
+    tool_call_id: "tool_123",
+  }), null);
+  assert.equal(parseRealtimeSpecialistConsultRequest({
+    query: "Ask Marco",
+    owner_agent_slug: "aria",
+    call_id: "not allowed",
+    tool_call_id: "tool_123",
+  }), null);
+});

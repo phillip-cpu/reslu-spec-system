@@ -431,7 +431,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
                     ],
                 }]
 
-        voice, attachments, body, forwarded = conversation_agent_bridge.triggering_message_context(
+        voice, attachments, body, forwarded, specialist = conversation_agent_bridge.triggering_message_context(
             FakeRest(),
             "conversation-1",
             "message-1",
@@ -441,6 +441,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         self.assertEqual([attachment["id"] for attachment in attachments], ["earlier", "later"])
         self.assertEqual(body, "")
         self.assertFalse(forwarded)
+        self.assertFalse(specialist)
 
     def test_materialized_private_file_is_size_checked_hashed_and_non_executable(self):
         class FakeRest:
@@ -869,17 +870,21 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         ), mock.patch.object(
             conversation_agent_bridge,
             "triggering_message_context",
-            return_value=(False, [attachment], "Please inspect this.", False),
+            return_value=(False, [attachment], "Please inspect this.", False, False),
         ), mock.patch.object(
             conversation_agent_bridge,
             "job_is_processing",
             side_effect=[True, True, True],
         ), mock.patch.object(
             conversation_agent_bridge,
+            "agent_consultation_for_job",
+        ) as consultation_lookup, mock.patch.object(
+            conversation_agent_bridge,
             "invoke_agent",
             side_effect=answer,
         ):
             self.assertEqual(conversation_agent_bridge.process_job(rest, job), "done")
+            consultation_lookup.assert_not_called()
             self.assertIsNotNone(observed_path)
             self.assertEqual(
                 observed_path.parents[1],
@@ -909,7 +914,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         ) as history, mock.patch.object(
             conversation_agent_bridge,
             "triggering_message_context",
-            return_value=(True, [], "What is on my list?", False),
+            return_value=(True, [], "What is on my list?", False, False),
         ), mock.patch.object(
             conversation_agent_bridge,
             "attachment_staging_parent",
@@ -932,6 +937,86 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         )
         self.assertEqual(invoke.call_args.kwargs["thinking_level"], "minimal")
         self.assertIsNone(invoke.call_args.kwargs["model"])
+
+    def test_specialist_consultation_is_advisory_and_completes_as_owner(self):
+        rest = mock.Mock()
+        rest.complete_agent_consultation.return_value = "owner-response-1"
+        job = {
+            "id": "specialist-job-1",
+            "agent_id": "marco-id",
+            "conversation_id": "conversation-1",
+            "triggering_message_id": "message-1",
+        }
+        agents = {
+            "marco-id": {"id": "marco-id", "slug": "marco", "display_name": "Marco", "role_label": "Commercial strategist"},
+            "aria-id": {"id": "aria-id", "slug": "aria", "display_name": "Aria", "role_label": "Studio assistant"},
+        }
+
+        def identity(_rest, agent_id):
+            return agents[agent_id]
+
+        def answer(agent, _history, _conversation_id, _attachments, **kwargs):
+            self.assertEqual(agent["slug"], "marco")
+            self.assertEqual(kwargs["consultation_owner"]["slug"], "aria")
+            return "Marco's bounded advice."
+
+        with mock.patch.object(
+            conversation_agent_bridge,
+            "triggering_message_context",
+            return_value=(True, [], "Ask Marco for his commercial view.", False, True),
+        ), mock.patch.object(
+            conversation_agent_bridge,
+            "agent_identity",
+            side_effect=identity,
+        ), mock.patch.object(
+            conversation_agent_bridge,
+            "agent_consultation_for_job",
+            return_value={"id": "consult-1", "owner_agent_id": "aria-id", "specialist_agent_id": "marco-id"},
+        ), mock.patch.object(
+            conversation_agent_bridge,
+            "conversation_history",
+            return_value="Phillip: Ask Marco for his commercial view.",
+        ), mock.patch.object(
+            conversation_agent_bridge,
+            "attachment_staging_parent",
+            return_value=None,
+        ), mock.patch.object(
+            conversation_agent_bridge,
+            "job_is_processing",
+            side_effect=[True, True],
+        ), mock.patch.object(
+            conversation_agent_bridge,
+            "invoke_agent",
+            side_effect=answer,
+        ):
+            self.assertEqual(conversation_agent_bridge.process_job(rest, job), "done")
+
+        rest.complete_agent_consultation.assert_called_once_with(
+            "specialist-job-1",
+            "Marco's bounded advice.",
+        )
+        rest.insert.assert_not_called()
+        rest.patch.assert_not_called()
+
+    @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
+    def test_specialist_prompt_forbids_side_effects_and_keeps_owner_visible(self, popen):
+        process = popen.return_value
+        process.communicate.return_value = ('{"final":"Commercial advice only."}', "")
+        process.returncode = 0
+
+        reply = conversation_agent_bridge.invoke_agent(
+            {"slug": "marco", "display_name": "Marco", "role_label": "Commercial strategist"},
+            "Phillip: Ask Marco for a second opinion.",
+            "conversation-1",
+            newest_message="Ask Marco for a second opinion.",
+            consultation_owner={"slug": "aria", "display_name": "Aria", "role_label": "Studio assistant"},
+        )
+
+        prompt = popen.call_args.args[0][popen.call_args.args[0].index("--message") + 1]
+        self.assertEqual(reply, "Commercial advice only.")
+        self.assertIn("advising Aria, who remains the visible owner", prompt)
+        self.assertIn("do not send messages", prompt)
+        self.assertIn('"kind":"specialist_consultation"', prompt)
 
     @mock.patch.object(conversation_agent_bridge.urllib.request, "urlopen")
     def test_push_delivery_uses_one_job_token_and_exact_job_id(self, urlopen):
