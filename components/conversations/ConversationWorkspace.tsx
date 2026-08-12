@@ -60,6 +60,7 @@ import type {
   ConversationAttachment,
   ConversationMessage,
   ConversationParticipant,
+  ConversationSummary,
   ConversationsResponse,
 } from "@/types/conversations";
 
@@ -520,6 +521,121 @@ function NewConversation({ people, onCreated, onClose }: {
   );
 }
 
+function ForwardMessageDialog({
+  message,
+  conversations,
+  onClose,
+  onForwarded,
+}: {
+  message: ConversationMessage;
+  conversations: ConversationSummary[];
+  onClose: () => void;
+  onForwarded: (destinationIds: string[]) => void;
+}) {
+  const [selected, setSelected] = useState<string[]>([]);
+  const [filter, setFilter] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const intentRef = useRef<{ signature: string; id: string } | null>(null);
+  const visible = useMemo(() => {
+    const term = filter.trim().toLowerCase();
+    if (!term) return conversations;
+    return conversations.filter((conversation) => [
+      conversation.display_title,
+      ...conversation.participants.map((participant) => participant.display_name),
+    ].some((value) => value.toLowerCase().includes(term)));
+  }, [conversations, filter]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (selected.length === 0 || saving) return;
+    const destinationIds = [...selected].sort();
+    const signature = JSON.stringify(destinationIds);
+    if (intentRef.current?.signature !== signature) {
+      intentRef.current = { signature, id: crypto.randomUUID() };
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `/api/conversations/${message.conversation_id}/messages/${message.id}/forward`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            destination_conversation_ids: destinationIds,
+            client_forward_id: intentRef.current.id,
+          }),
+        }
+      );
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "Could not forward this message");
+      onForwarded(destinationIds);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not forward this message");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="absolute inset-0 z-30 flex items-center justify-center overflow-y-auto bg-nearblack/60 p-3 md:p-4">
+      <form onSubmit={submit} role="dialog" aria-modal="true" aria-label="Forward message" className="flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-[#d4cbbd] bg-[#f5f1e8] shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-[#d4cbbd] p-4 md:p-5">
+          <div className="min-w-0">
+            <p className="label-caps">Forward message</p>
+            <p className="mt-2 line-clamp-2 text-body leading-relaxed text-charcoal/65">{message.body}</p>
+            {message.attachments.length > 0 && <p className="mt-1 text-caption text-charcoal/45">Includes {message.attachments.length} private attachment{message.attachments.length === 1 ? "" : "s"}</p>}
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close forwarding" className="shrink-0 text-charcoal/50 hover:text-charcoal">✕</button>
+        </div>
+        <div className="border-b border-[#d4cbbd] p-3 md:p-4">
+          <label className="flex items-center gap-2 rounded-xl border border-[#d4cbbd] bg-white px-3 py-2 focus-within:border-nearblack">
+            <span aria-hidden className="text-charcoal/40">⌕</span>
+            <span className="sr-only">Search conversations to forward to</span>
+            <input
+              type="search"
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+              placeholder="Search chats"
+              autoFocus
+              className="min-w-0 flex-1 bg-transparent text-[16px] text-nearblack outline-none placeholder:text-charcoal/40"
+            />
+          </label>
+        </div>
+        <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2 md:p-3">
+          {visible.length === 0 && <p className="p-6 text-center text-body text-charcoal/50">No matching chats.</p>}
+          {visible.map((conversation) => {
+            const checked = selected.includes(conversation.id);
+            const participant = conversation.participants.find((item) => !item.is_self) ?? conversation.participants[0];
+            return (
+              <label key={conversation.id} className={clsx("flex cursor-pointer items-center gap-3 rounded-xl border p-3", checked ? "border-nearblack bg-white" : "border-transparent hover:bg-white/50") }>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={!checked && selected.length >= 10}
+                  onChange={() => setSelected((current) => checked
+                    ? current.filter((id) => id !== conversation.id)
+                    : [...current, conversation.id])}
+                  className="h-4 w-4 shrink-0 accent-[#1a1a1a]"
+                />
+                {participant && <Avatar participant={participant} />}
+                <span className="min-w-0 flex-1 truncate text-body font-medium text-nearblack">{conversation.display_title}</span>
+              </label>
+            );
+          })}
+        </div>
+        <div className="border-t border-[#d4cbbd] p-3 md:p-4">
+          {error && <p className="mb-3 text-caption text-red-700">{error}</p>}
+          <button disabled={saving || selected.length === 0} className="min-h-12 w-full rounded-xl bg-nearblack px-4 py-3 text-subhead text-white disabled:opacity-30">
+            {saving ? "Forwarding…" : selected.length === 0 ? "Choose chats" : `Forward to ${selected.length} chat${selected.length === 1 ? "" : "s"}`}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 export function ConversationWorkspace({
   presentation = "page",
   active = true,
@@ -568,10 +684,12 @@ export function ConversationWorkspace({
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageBody, setEditingMessageBody] = useState("");
   const [messageMutationId, setMessageMutationId] = useState<string | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<ConversationMessage | null>(null);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [draftAttachments, setDraftAttachments] = useState<DraftAttachment[]>([]);
   const [attachmentDropActive, setAttachmentDropActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [callId, setCallId] = useState<string | null>(null);
   const [callOpening, setCallOpening] = useState(false);
   const [callState, setCallState] = useState<CallState>("connecting");
@@ -3591,6 +3709,19 @@ export function ConversationWorkspace({
                                 Reply
                               </button>
                             )}
+                            {!pending && !message.deleted_at && message.kind === "text" && (
+                              <button
+                                type="button"
+                                role="menuitem"
+                                onClick={() => {
+                                  setMessageMenuId(null);
+                                  setForwardingMessage(message);
+                                }}
+                                className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f1e8]"
+                              >
+                                Forward
+                              </button>
+                            )}
                             {!message.deleted_at && (
                               <button type="button" role="menuitem" onClick={() => void copyCanonicalMessage(message)} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f1e8]">
                                 Copy
@@ -3698,6 +3829,7 @@ export function ConversationWorkspace({
                           </div>
                         )}
                         {!message.deleted_at && message.pinned_at && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Pinned</p>}
+                        {!message.deleted_at && message.metadata.source === "forward" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Forwarded</p>}
                         {!message.deleted_at && message.metadata.source === "voice" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Voice transcript</p>}
                         {!message.deleted_at && message.edited_at && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Edited</p>}
                         {own && (pending || message.client_message_id) && (
@@ -3923,6 +4055,7 @@ export function ConversationWorkspace({
                 </div>
               </div>
               {error && <p className="mx-auto mt-2 max-w-3xl text-caption text-red-700">{error}</p>}
+              {notice && <p className="mx-auto mt-2 max-w-3xl text-caption text-green-800">{notice}</p>}
             </form>
           </>
         ) : (
@@ -3946,6 +4079,25 @@ export function ConversationWorkspace({
         setSelectedId(id);
         void loadConversations();
       }} />}
+
+      {forwardingMessage && (
+        <ForwardMessageDialog
+          message={forwardingMessage}
+          conversations={activeConversations}
+          onClose={() => setForwardingMessage(null)}
+          onForwarded={(destinationIds) => {
+            setForwardingMessage(null);
+            setError(null);
+            setNotice(`Message forwarded to ${destinationIds.length} chat${destinationIds.length === 1 ? "" : "s"}.`);
+            window.setTimeout(() => setNotice(null), 3500);
+            void loadConversations({ preserveError: true });
+            const selectedConversationId = selectedIdRef.current;
+            if (selectedConversationId && destinationIds.includes(selectedConversationId)) {
+              void loadMessages(selectedConversationId, { latest: true });
+            }
+          }}
+        />
+      )}
 
       {(callOpening || callId || callError) && callAgent && (
         <div className={clsx(
