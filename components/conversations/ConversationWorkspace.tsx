@@ -26,6 +26,11 @@ import {
 } from "@/lib/conversation-call-outbox";
 import type { RealtimeVoiceLatencyMetric, RealtimeVoiceOutcome } from "@/lib/realtime-voice-metrics";
 import {
+  nativeVoiceBridgeAvailable,
+  postNativeVoiceBridgeEvent,
+  prepareNativeVoiceSession,
+} from "@/lib/native-voice-bridge";
+import {
   parseRealtimeConsultArguments,
   parseRealtimeTaskArguments,
 } from "@/lib/realtime-tool-arguments";
@@ -2825,6 +2830,7 @@ export function ConversationWorkspace({
   }, [currentUserId, flushPendingCallEnds]);
 
   const endCall = useCallback(async (options?: { preserveStartIntent?: boolean }) => {
+    postNativeVoiceBridgeEvent({ type: "call.end" });
     callActiveRef.current = false;
     realtimeActiveRef.current = false;
     realtimeConnectionGenerationRef.current += 1;
@@ -2891,6 +2897,35 @@ export function ConversationWorkspace({
     setCallTranscript([]);
     return callRecordSaved;
   }, [cancelActiveRealtimeTurn, persistCallEnd, selectedId]);
+
+  useEffect(() => {
+    const handleNativeVoiceCommand = (event: Event) => {
+      const detail = (event as CustomEvent<{ type?: string; message?: string; muted?: boolean }>).detail;
+      if (detail?.type === "end-requested" && callActiveRef.current && callIdRef.current) void endCall();
+      if (detail?.type === "native-audio-error" && callIdRef.current) {
+        setError(`The iPhone call audio session could not start. ${detail.message ?? "Please try again."}`);
+        if (callActiveRef.current) void endCall();
+      }
+      if (detail?.type === "mute-requested" && typeof detail.muted === "boolean" && callActiveRef.current) {
+        mutedRef.current = detail.muted;
+        setMuted(detail.muted);
+        microphoneStreamRef.current?.getAudioTracks().forEach((track) => {
+          track.enabled = !detail.muted;
+        });
+        if (!realtimeActiveRef.current) {
+          if (detail.muted) recognitionRef.current?.stop();
+          else {
+            try { recognitionRef.current?.start(); } catch { /* already active */ }
+          }
+        }
+      }
+      if (detail?.type === "mute-sync-error") {
+        setNotice(`The iPhone lock-screen mute control could not update. ${detail.message ?? "The in-app microphone control is still active."}`);
+      }
+    };
+    window.addEventListener("reslu-native-voice", handleNativeVoiceCommand);
+    return () => window.removeEventListener("reslu-native-voice", handleNativeVoiceCommand);
+  }, [endCall]);
 
   const handleVoiceText = useCallback((text: string) => {
     const command = text.trim().toLowerCase().replace(/[.!?]+$/, "");
@@ -3373,6 +3408,7 @@ export function ConversationWorkspace({
       realtimeActive: realtimeActiveRef.current,
       online: navigator.onLine,
       visible: document.visibilityState === "visible",
+      backgroundCapable: nativeVoiceBridgeAvailable(),
       inFlight: realtimeReconnectInFlightRef.current,
       attempts: realtimeReconnectAttemptsRef.current,
       microphoneReady: mediaStreamCanResume(microphoneStreamRef.current),
@@ -3399,6 +3435,7 @@ export function ConversationWorkspace({
     const channel = peer.createDataChannel("oai-events");
     channel.onopen = () => {
       if (generation !== realtimeConnectionGenerationRef.current || !callActiveRef.current) return;
+      postNativeVoiceBridgeEvent({ type: "call.connected" });
       realtimeReconnectAttemptsRef.current = 0;
       realtimeReconnectInFlightRef.current = false;
       setCallOpening(false);
@@ -3481,6 +3518,7 @@ export function ConversationWorkspace({
       realtimeActive: realtimeActiveRef.current,
       online: navigator.onLine,
       visible: document.visibilityState === "visible",
+      backgroundCapable: nativeVoiceBridgeAvailable(),
       inFlight: realtimeReconnectInFlightRef.current,
       attempts: realtimeReconnectAttemptsRef.current,
       microphoneReady: mediaStreamCanResume(microphoneStreamRef.current),
@@ -3560,6 +3598,7 @@ export function ConversationWorkspace({
     const SpeechRecognition = (window as Window & { SpeechRecognition?: SpeechRecognitionConstructor; webkitSpeechRecognition?: SpeechRecognitionConstructor }).SpeechRecognition
       ?? (window as Window & { webkitSpeechRecognition?: SpeechRecognitionConstructor }).webkitSpeechRecognition;
     if (!SpeechRecognition) {
+      postNativeVoiceBridgeEvent({ type: "call.end" });
       setCallOpening(false);
       setCallError("Live speech recognition is unavailable here. Open RESLU directly in Safari, not from a Home Screen icon or another app.");
       return;
@@ -3612,6 +3651,7 @@ export function ConversationWorkspace({
         if (!callActiveRef.current || event.error === "aborted") return;
         if (isFatalSpeechRecognitionError(event.error)) {
           callActiveRef.current = false;
+          postNativeVoiceBridgeEvent({ type: "call.end" });
           setCallOpening(false);
           setCallError(speechRecognitionErrorMessage(event.error));
           recognition.abort();
@@ -3624,7 +3664,7 @@ export function ConversationWorkspace({
         try { recognition.start(); } catch { /* already restarting */ }
       };
       recognitionRef.current = recognition;
-      recognition.start();
+      if (!mutedRef.current) recognition.start();
       setCallState("listening");
 
       const activeCallId = existingCallId ?? await createCallRecord();
@@ -3640,8 +3680,10 @@ export function ConversationWorkspace({
       callIdRef.current = activeCallId;
       setCallId(activeCallId);
       setCallOpening(false);
+      postNativeVoiceBridgeEvent({ type: "call.connected" });
     } catch (reason) {
       callActiveRef.current = false;
+      postNativeVoiceBridgeEvent({ type: "call.end" });
       recognitionRef.current?.abort();
       recognitionRef.current = null;
       setCallOpening(false);
@@ -3660,6 +3702,12 @@ export function ConversationWorkspace({
     realtimeReconnectInFlightRef.current = false;
     callConversationIdRef.current ??= selectedId;
     clientCallIdRef.current ??= crypto.randomUUID();
+    const nativeStartEvent = {
+      type: "call.start",
+      callId: clientCallIdRef.current,
+      conversationId: selectedId,
+      agent: callAgent.display_name,
+    } as const;
     lastRealtimeSpeechStoppedAtRef.current = null;
     activeResponseIdRef.current = null;
     activeOutputAudioResponseIdRef.current = null;
@@ -3682,12 +3730,14 @@ export function ConversationWorkspace({
     callActiveRef.current = true;
     messages.forEach((message) => spokenIdsRef.current.add(message.id));
 
-    if (!("RTCPeerConnection" in window) || !navigator.mediaDevices?.getUserMedia) {
-      await startLegacyCall();
-      return;
-    }
     try {
+      await prepareNativeVoiceSession(nativeStartEvent);
+      if (!("RTCPeerConnection" in window) || !navigator.mediaDevices?.getUserMedia) {
+        await startLegacyCall();
+        return;
+      }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getAudioTracks().forEach((track) => { track.enabled = !mutedRef.current; });
       microphoneStreamRef.current = stream;
       const activeCallId = await createCallRecord();
       if (!callActiveRef.current) {
@@ -3711,6 +3761,7 @@ export function ConversationWorkspace({
         return;
       }
       callActiveRef.current = false;
+      postNativeVoiceBridgeEvent({ type: "call.end" });
       setCallOpening(false);
       setCallError(error instanceof DOMException ? speechRecognitionErrorMessage(error.name) : error.message || "Could not start call");
     }
@@ -3724,14 +3775,14 @@ export function ConversationWorkspace({
   }
 
   function toggleMute() {
-    setMuted((value) => {
-      const next = !value;
-      if (realtimeActiveRef.current) {
-        microphoneStreamRef.current?.getAudioTracks().forEach((track) => { track.enabled = !next; });
-      } else if (next) recognitionRef.current?.stop();
-      else if (callActiveRef.current) { try { recognitionRef.current?.start(); } catch { /* already active */ } }
-      return next;
-    });
+    const next = !mutedRef.current;
+    mutedRef.current = next;
+    setMuted(next);
+    if (realtimeActiveRef.current) {
+      microphoneStreamRef.current?.getAudioTracks().forEach((track) => { track.enabled = !next; });
+    } else if (next) recognitionRef.current?.stop();
+    else if (callActiveRef.current) { try { recognitionRef.current?.start(); } catch { /* already active */ } }
+    postNativeVoiceBridgeEvent({ type: "call.muted", muted: next });
   }
 
   function repeatLastReply() {

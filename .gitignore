@@ -39,5 +39,10 @@ next-env.d.ts
 supabase/.branches
 supabase/.temp
 
+# generated iOS project and local Xcode state (ios/RESLU/project.yml is canonical)
+/ios/RESLU/RESLU.xcodeproj/
+**/xcuserdata/
+/ios/DerivedData/
+
 # Claude Code local session/tool state — never app code, never commit
 .claude/

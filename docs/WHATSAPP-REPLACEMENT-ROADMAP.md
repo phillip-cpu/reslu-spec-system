@@ -407,7 +407,18 @@ Stage gate:
 
 ## Stage 5 - iPhone background and in-car continuity
 
-Status: pending.
+Status: native foundation implemented; signing and physical-device acceptance
+pending.
+
+The PWA limit is now proven rather than assumed: foreground recovery is guarded
+by document visibility, and a web manifest cannot opt into the iOS audio session,
+background modes or CallKit needed for a locked-screen VoIP experience. The
+Stage 5 foundation adds a thin SwiftUI/WKWebView shell with native
+`AVAudioSession` and CallKit ownership. It loads the canonical production RESLU
+application and sends call lifecycle only across a small bridge; Supabase auth,
+OpenAI key ownership, Realtime session creation, conversation IDs, call records,
+Aria/Marco logic, OpenClaw memory/tools and durable tasks remain in the existing
+web/server system. See `docs/IOS-NATIVE-SHELL.md` for build and acceptance.
 
 Work:
 
