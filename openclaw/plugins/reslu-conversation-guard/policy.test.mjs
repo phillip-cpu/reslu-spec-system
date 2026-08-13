@@ -81,6 +81,15 @@ test("ordinary and specialist turns allow reads but block mutation, host and cro
   }
 });
 
+test("an ordinary human request may use only the guarded specialist delegation boundary", () => {
+  assert.equal(decision("reslu_spec_delegate_reslu_agent_task", "human_request"), undefined);
+  assert.equal(decision("reslu_marco_delegate_reslu_agent_task", "human_request"), undefined);
+  assert.equal(decision("reslu_stuart_delegate_reslu_agent_task", "human_request"), undefined);
+  assert.equal(decision("reslu_spec_delegate_reslu_agent_task", "specialist_consultation")?.block, true);
+  assert.equal(decision("reslu_spec_delegate_reslu_agent_task", "attachment_review")?.block, true);
+  assert.equal(decision("sessions_spawn", "human_request")?.block, true);
+});
+
 test("unknown tools and unvalidated run state fail closed", () => {
   assert.equal(decision("mystery_business_tool", "human_request")?.block, true);
   assert.equal(evaluateResluConversationTool(

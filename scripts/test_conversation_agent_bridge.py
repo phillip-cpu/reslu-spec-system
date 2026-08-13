@@ -350,6 +350,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         process.returncode = 0
         task = {
             "id": "task-123",
+            "conversation_id": "conversation-123",
             "title": "Prepare report",
             "objective": "Prepare the report",
             "model_tier": "strong",
@@ -368,6 +369,10 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         command = popen.call_args.args[0]
         self.assertEqual(command[command.index("--session-key") + 1], "reslu-task-task-123")
         self.assertEqual(command[command.index("--model") + 1], "openai/gpt-5.6-sol")
+        prompt = command[command.index("--message") + 1]
+        self.assertIn('"task_id":"task-123"', prompt)
+        self.assertIn('"conversation_id":"conversation-123"', prompt)
+        self.assertIn("delegate_reslu_agent_task", prompt)
         self.assertEqual(result["status"], "completed")
 
     def test_task_cancellation_is_separate_from_call_or_conversation_state(self):
