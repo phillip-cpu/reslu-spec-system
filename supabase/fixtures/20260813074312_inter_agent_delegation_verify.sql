@@ -1,4 +1,4 @@
--- Run after 20260813033853_inter_agent_delegation.sql. All synthetic work is
+-- Run after 20260813074312_inter_agent_delegation.sql. All synthetic work is
 -- enclosed in this transaction and rolled back after the final PASS row.
 
 begin;

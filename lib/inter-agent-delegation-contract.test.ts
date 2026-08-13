@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path: string) => readFileSync(resolve(root, path), "utf8");
-const migration = read("supabase/migrations/20260813033853_inter_agent_delegation.sql");
+const migration = read("supabase/migrations/20260813074312_inter_agent_delegation.sql");
 const route = read("app/api/conversations/[id]/delegations/route.ts");
 const mcp = read("mcp/src/index.mjs");
 const bridge = read("scripts/conversation_agent_bridge.py");
@@ -50,7 +50,7 @@ test("specialist work returns through the owning chat with explicit attribution"
 });
 
 test("the production verifier exercises idempotency and rolls back", () => {
-  const verifier = read("supabase/fixtures/20260813033853_inter_agent_delegation_verify.sql");
+  const verifier = read("supabase/fixtures/20260813074312_inter_agent_delegation_verify.sql");
   assert.match(verifier, /(?:^|\n)begin;/i);
   assert.match(verifier, /delegate_conversation_agent_task\(/i);
   assert.match(verifier, /specialist was silently added/i);
