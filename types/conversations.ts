@@ -4,6 +4,14 @@ export type AgentSlug = "aria" | "marco" | "stuart";
 export type AgentTaskStatus = "queued" | "running" | "awaiting_approval" | "completed" | "failed" | "cancelled";
 export type AgentTaskModelTier = "fast" | "standard" | "strong";
 
+export interface ConversationContext {
+  scope_kind: "project" | "lead";
+  scope_id: string;
+  purpose_key: string;
+  scope_label: string;
+  summary_updated_at: string | null;
+}
+
 export interface ConversationAttachment {
   id: string;
   conversation_id: string;
@@ -106,12 +114,14 @@ export interface AgentTaskArtifact {
 export interface AgentTask {
   id: string;
   conversation_id: string;
+  project_id?: string | null;
+  lead_id?: string | null;
   requested_by: string;
   owner_agent_id: string;
+  delegated_by_agent_id?: string | null;
+  source_task_id?: string | null;
   source_message_id: string | null;
   source_call_id: string | null;
-  delegated_by_agent_id: string | null;
-  source_task_id: string | null;
   client_task_id: string;
   title: string;
   objective: string;
@@ -151,6 +161,7 @@ export interface ConversationSummary {
   pinned_at: string | null;
   participants: ConversationParticipant[];
   last_message: ConversationMessage | null;
+  context: ConversationContext | null;
 }
 
 export interface ConversationsResponse {

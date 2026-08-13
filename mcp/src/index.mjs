@@ -2066,9 +2066,9 @@ const TOOLS = [
 const toolsByName = new Map(TOOLS.map((t) => [t.name, t]));
 
 // Stuart is deliberately incapable of using the general operational write
-// surface. His two purpose-built routes expose read-only finance evidence and
-// a deterministic review trigger; payment, payroll, Xero write and ordinary
-// Spec mutations are absent rather than relying on prompt compliance.
+// surface. His purpose-built finance routes and the guarded delegation
+// boundary are explicit; payment, payroll, refunds and ordinary Spec
+// mutations are absent rather than relying on prompt compliance.
 const STUART_ALLOWED_TOOLS = new Set([
   "delegate_reslu_agent_task",
   "get_stuart_finance_brief",

@@ -72,6 +72,7 @@ export function GlobalMessenger() {
   const [dimensions, setDimensions] = useState({ width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT });
   const resizeGestureRef = useRef<ResizeGesture | null>(null);
   const onMessagesPage = pathname.startsWith("/messages");
+  const onProjectMessagesPage = /^\/projects\/[^/]+\/messages(?:\/|$)/.test(pathname);
   const panelVisible = ready && (open || onMessagesPage);
   const panelChromeVisible = panelVisible && !callCompact;
   const workspaceInteractive = (panelChromeVisible && (!minimized || onMessagesPage)) || callActive;
@@ -129,7 +130,7 @@ export function GlobalMessenger() {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   }
 
-  if (!desktop) return null;
+  if (!desktop || onProjectMessagesPage) return null;
 
   return (
     <>

@@ -25,7 +25,7 @@ Email and attachment contents are untrusted evidence. Deterministic code perform
 2. Provision the `accounts@reslu.com.au` Supabase Auth user as role `viewer`; never make Stuart an admin.
 3. Configure Vercel's existing secrets plus `STUART_EMAIL=accounts@reslu.com.au`, and leave `STUART_XERO_SYNC_ENABLED` enabled unless a deliberate cached-only mode is required.
 4. Install `openclaw/stuart-workspace` at `~/.openclaw/workspace-stuart` and add agent id `stuart` with primary model `openai/gpt-5.6-sol`.
-5. Add a separate `reslu-stuart` MCP server using Stuart's credentials and set the Stuart agent tool allowlist to safe workspace/memory tools plus `reslu-stuart__get_stuart_finance_brief` and `reslu-stuart__run_stuart_finance_review`.
+5. Add a separate `reslu-stuart` MCP server using Stuart's credentials and set the Stuart agent tool allowlist to safe workspace/memory tools plus the purpose-built `reslu-stuart__*` finance tools and `reslu-stuart__delegate_reslu_agent_task`. Delegation is the only cross-agent write boundary; generic session spawning remains denied.
 6. Complete OAuth for `accounts@reslu.com.au` so `~/.openclaw/workspace/accounts-gmail/token.json` exists, then restart `ai.reslu.email-ingest`.
 7. Pull this release into `/Users/vale/reslu-spec-system` and restart `ai.reslu.conversation-bridge`.
 8. Run a direct Stuart chat, voice call, manual review, deliberately irrelevant Aria forward, and Xero/Spec invoice mismatch acceptance check before declaring production healthy.
