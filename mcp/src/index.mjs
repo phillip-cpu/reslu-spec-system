@@ -2019,15 +2019,40 @@ const TOOLS = [
     },
     handler: async (body) => apiFetch("/api/stuart/supplier-statements", { method: "POST", body: JSON.stringify(body) }),
   },
+  {
+    name: "delegate_reslu_agent_task",
+    description:
+      "Delegate a substantial, independent part of the current RESLU conversation or durable task to another RESLU agent. The specialist works in their own OpenClaw runtime and posts the result back into the same canonical conversation. Use Aria for studio coordination and client/admin work, Marco for commercial/marketing strategy, and Stuart for finance. Do not use this for trivial work you can answer directly. This creates background work only; it never bypasses approval for email sends, bookings, spending, publication, deletion or other consequential actions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        conversation_id: { type: "string", description: "Canonical RESLU conversation UUID supplied by the trusted chat/task envelope" },
+        target_agent: { type: "string", enum: ["aria", "marco", "stuart"] },
+        delegation_id: { type: "string", pattern: "^[A-Za-z0-9_-]{1,160}$", description: "Stable idempotency key for this exact delegation; reuse it only for an exact retry" },
+        title: { type: "string", minLength: 1, maxLength: 200 },
+        objective: { type: "string", minLength: 1, maxLength: 20000, description: "Self-contained requested outcome, relevant scope and completion criteria; do not include hidden reasoning" },
+        model_tier: { type: "string", enum: ["fast", "standard", "strong"], default: "standard" },
+        source_task_id: { type: "string", description: "Current durable task UUID when delegating from background work; omit for a direct chat turn" },
+      },
+      required: ["conversation_id", "target_agent", "delegation_id", "title", "objective"],
+      additionalProperties: false,
+    },
+    handler: async ({ conversation_id, ...body }) =>
+      apiFetch(`/api/conversations/${encodeURIComponent(conversation_id)}/delegations`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+  },
 ];
 
 const toolsByName = new Map(TOOLS.map((t) => [t.name, t]));
 
 // Stuart is deliberately incapable of using the general operational write
-// surface. His two purpose-built routes expose read-only finance evidence and
-// a deterministic review trigger; payment, payroll, Xero write and ordinary
-// Spec mutations are absent rather than relying on prompt compliance.
+// surface. His purpose-built finance routes and the guarded delegation
+// boundary are explicit; payment, payroll, refunds and ordinary Spec
+// mutations are absent rather than relying on prompt compliance.
 const STUART_ALLOWED_TOOLS = new Set([
+  "delegate_reslu_agent_task",
   "get_stuart_finance_brief",
   "run_stuart_finance_review",
   "attach_stuart_source_invoice",

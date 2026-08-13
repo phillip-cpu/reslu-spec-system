@@ -118,6 +118,8 @@ export interface AgentTask {
   lead_id?: string | null;
   requested_by: string;
   owner_agent_id: string;
+  delegated_by_agent_id?: string | null;
+  source_task_id?: string | null;
   source_message_id: string | null;
   source_call_id: string | null;
   client_task_id: string;

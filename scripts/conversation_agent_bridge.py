@@ -926,6 +926,10 @@ def invoke_agent(
     attachment_context_json = bounded_json_data(attachment_descriptors, 16000)
     history_context_json = bounded_json_data({"chronological_transcript": history})
     scope_context_json = bounded_json_data(scope_context or {}, 16000)
+    transport_context_json = bounded_json_data({
+        "conversation_id": conversation_id,
+        "current_agent_slug": agent["slug"],
+    }, 1000)
     consultation_instruction = ""
     if consultation_owner:
         consultation_instruction = (
@@ -946,6 +950,9 @@ def invoke_agent(
         f"{consultation_instruction}"
         f"{voice_instruction}"
         "Use your existing memory, RESLU tools, permissions and business rules. Read the current request and recent context before replying. "
+        "If another RESLU specialist is materially better suited to substantial independent work, use delegate_reslu_agent_task with the conversation_id from TRUSTED_CONVERSATION_TRANSPORT_JSON. "
+        "Aria owns studio coordination and client/admin work; Marco owns commercial and marketing strategy; Stuart owns finance. Do not delegate trivial work, do not delegate to yourself, and do not claim the specialist has finished before their result appears in this chat. "
+        "Delegation continues in the background, but emails, bookings, spending, publication, deletion and other consequential actions still require the normal explicit approval. "
         "When AUTHORITATIVE_CONVERSATION_SCOPE_JSON is non-empty, treat that project or lead as the default and exclusive business scope. "
         "Do not silently import facts from another project; ask before changing scope. Retrieve additional records only for this scope unless the user explicitly requests a cross-project comparison. "
         f"{UNTRUSTED_DATA_POLICY} "
@@ -959,6 +966,9 @@ def invoke_agent(
         "CURRENT_REQUEST_JSON\n"
         f"{current_request_json}\n"
         "END_CURRENT_REQUEST_JSON\n\n"
+        "TRUSTED_CONVERSATION_TRANSPORT_JSON\n"
+        f"{transport_context_json}\n"
+        "END_TRUSTED_CONVERSATION_TRANSPORT_JSON\n\n"
         "AUTHORITATIVE_CONVERSATION_SCOPE_JSON\n"
         f"{scope_context_json}\n"
         "END_AUTHORITATIVE_CONVERSATION_SCOPE_JSON\n\n"
@@ -1090,6 +1100,8 @@ def invoke_task_agent(
 ) -> dict | None:
     approval_granted = task.get("approval_state") == "approved"
     task_payload = bounded_json_data({
+        "task_id": task["id"],
+        "conversation_id": task["conversation_id"],
         "title": task["title"],
         "objective": task["objective"],
         "model_tier": task["model_tier"],
@@ -1105,7 +1117,7 @@ def invoke_task_agent(
         "[RESLU durable background task]\n"
         f"You are {agent['display_name']}, {agent['role_label']}. Complete the task using your existing RESLU memory, "
         "tools, permissions and business rules. This task continues independently of any voice call. "
-        "For complex work, delegate independent parts to available specialist or subagent tools when that improves quality. "
+        "For complex work, delegate substantial independent parts with delegate_reslu_agent_task when another RESLU specialist improves quality. Pass this task_id as source_task_id and this conversation_id as conversation_id. Never delegate to yourself, and continue your own work without waiting for the specialist. "
         "Never reveal private reasoning or chain-of-thought; report only observable progress and finished work. "
         "Before explicit approval, do not send external messages, make bookings, spend money, delete data, or publish record changes. "
         f"{UNTRUSTED_DATA_POLICY} "
@@ -1350,12 +1362,19 @@ def process_task(rest: SupabaseRest, task: dict) -> str:
         "conversation_messages",
         {
             "conversation_id": task["conversation_id"],
-            "author_agent_id": task["owner_agent_id"],
+            # A delegated specialist does not become a participant in a direct
+            # room. Keep the room owner as the visible author and attribute the
+            # specialist explicitly, matching realtime consultation semantics.
+            "author_agent_id": task.get("delegated_by_agent_id") or task["owner_agent_id"],
             "body": result["message"],
             "metadata": {
                 "source": "agent_task",
                 "task_id": task["id"],
                 "task_status": "awaiting_approval" if awaiting_approval else "completed",
+                "delegated_by_agent_id": task.get("delegated_by_agent_id"),
+                "delegated_agent_slug": agent["slug"] if task.get("delegated_by_agent_id") else None,
+                "delegated_agent_name": agent["display_name"] if task.get("delegated_by_agent_id") else None,
+                "source_task_id": task.get("source_task_id"),
             },
         },
     )

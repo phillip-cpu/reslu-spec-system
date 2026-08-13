@@ -490,7 +490,7 @@ function AgentTaskCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className={clsx("text-[11px] font-semibold uppercase tracking-[0.13em]", dark ? "text-sand" : "text-charcoal/50") }>
-            {taskStatusLabel(task)} · {task.model_tier} model
+            {taskStatusLabel(task)} · {task.model_tier} model{task.delegated_by_agent_id && task.owner_agent?.display_name ? ` · ${task.owner_agent.display_name}` : ""}
           </p>
           <h3 className="mt-1 break-words text-[17px] font-semibold leading-snug md:text-[18px]">{task.title}</h3>
         </div>
@@ -4749,6 +4749,11 @@ export function ConversationWorkspace({
                         {!message.deleted_at && message.metadata.source === "agent_consultation" && typeof message.metadata.consulted_agent_slug === "string" && (
                           <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>
                             Consulted {message.metadata.consulted_agent_slug === "marco" ? "Marco" : "Aria"}
+                          </p>
+                        )}
+                        {!message.deleted_at && message.metadata.source === "agent_task" && typeof message.metadata.delegated_agent_name === "string" && (
+                          <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>
+                            Completed by {message.metadata.delegated_agent_name}
                           </p>
                         )}
                         {!message.deleted_at && message.edited_at && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Edited</p>}
