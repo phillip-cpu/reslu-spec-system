@@ -28,7 +28,21 @@ export function agentTaskArtifactNeedsReview(artifact: AgentTaskArtifact) {
 
 export function agentTaskBelongsInWorkPanel(task: AgentTask) {
   if (["completed", "cancelled"].includes(task.status)) return false;
-  if (task.status === "awaiting_approval") return true;
+  if (task.status === "awaiting_approval") {
+    const hasDraftArtifact = task.artifacts.some((artifact) => artifact.status === "draft");
+    const hasDecidedArtifact = task.artifacts.some((artifact) =>
+      artifact.status === "approved"
+      || artifact.status === "rejected"
+      || artifact.status === "published"
+    );
+
+    // The approval RPC normally advances the task immediately. If an older or
+    // partially completed task still says awaiting_approval after every
+    // artifact has already been decided, do not leave a contradictory
+    // "Needs approval / Approved" card pinned above the conversation.
+    if (hasDecidedArtifact && !hasDraftArtifact) return false;
+    return true;
+  }
   if (task.artifacts.some(agentTaskArtifactNeedsReview)) return true;
   return [task.title, task.objective].some((value) => EMAIL_WORD.test(value));
 }

@@ -449,6 +449,11 @@ function VoiceNoteRecorder({
 
 function taskStatusLabel(task: AgentTask) {
   if (task.cancellation_requested_at && task.status === "running") return "Stopping";
+  if (task.status === "awaiting_approval" && !task.artifacts.some((artifact) => artifact.status === "draft")) {
+    if (task.artifacts.some((artifact) => artifact.status === "published")) return "Published";
+    if (task.artifacts.some((artifact) => artifact.status === "approved")) return "Approved";
+    if (task.artifacts.some((artifact) => artifact.status === "rejected")) return "Rejected";
+  }
   return {
     queued: "Queued",
     running: "Working",
@@ -477,11 +482,17 @@ function AgentTaskCard({
   const latestEvent = task.events.at(-1);
   const active = task.status === "queued" || task.status === "running";
   const hasApprovedArtifact = task.artifacts.some((artifact) => artifact.status === "approved" || artifact.status === "published");
+  const approvalAlreadyDecided = task.status === "awaiting_approval"
+    && !task.artifacts.some((artifact) => artifact.status === "draft")
+    && task.artifacts.some((artifact) => artifact.status !== "draft");
   const retryBlockedByApproval = task.approval_state === "approved"
     || task.approval_state === "pending"
     || hasApprovedArtifact
     || task.events.some((event) => event.event_type === "approved");
   const retryable = task.status === "failed" && !retryBlockedByApproval && canRetry;
+  const statusDetail = task.error
+    ?? task.result_summary
+    ?? (!approvalAlreadyDecided ? latestEvent?.label : null);
   return (
     <article className={clsx(
       "min-w-0 max-w-full overflow-hidden rounded-2xl border p-3",
@@ -530,9 +541,9 @@ function AgentTaskCard({
         )}
       </div>
       {!compact && <p className={clsx("mt-2 line-clamp-4 text-[15px] leading-relaxed", dark ? "text-white/70" : "text-charcoal/70")}>{task.objective}</p>}
-      {(latestEvent || task.result_summary || task.error) && (
+      {statusDetail && (
         <p className={clsx("mt-2 text-[14px] leading-relaxed", task.error ? "text-red-600" : dark ? "text-white/55" : "text-charcoal/55") }>
-          {task.error ?? latestEvent?.label ?? task.result_summary}
+          {statusDetail}
         </p>
       )}
       {retryable && !confirmingRetry && (
@@ -587,6 +598,8 @@ function AgentTaskCard({
         const content = normalizeAgentTaskArtifactContent(artifact.content);
         const recipient = typeof content.to === "string" ? content.to : null;
         const subject = typeof content.subject === "string" ? content.subject : null;
+        const artifactText = agentTaskArtifactText(content);
+        const showArtifactDetails = artifact.status === "draft" || artifactText !== "Draft details are not available yet.";
         return (
           <div key={artifact.id} className={clsx("mt-4 rounded-xl border p-4", dark ? "border-white/10 bg-black/20" : "border-[#ded7cd] bg-[#f8f5ef]") }>
             <p className="text-[18px] font-semibold leading-snug md:text-[19px]">{artifact.title}</p>
@@ -595,7 +608,9 @@ function AgentTaskCard({
                 {[recipient && `To: ${recipient}`, subject && `Subject: ${subject}`].filter(Boolean).join(" · ")}
               </p>
             )}
-            <div className={clsx("mt-3 max-h-80 max-w-full overflow-y-auto whitespace-pre-wrap break-words font-sans text-[16px] leading-[1.55] md:text-[17px]", dark ? "text-white/85" : "text-charcoal/85") }>{agentTaskArtifactText(content)}</div>
+            {showArtifactDetails && (
+              <div className={clsx("mt-3 max-h-80 max-w-full overflow-y-auto whitespace-pre-wrap break-words font-sans text-[16px] leading-[1.55] md:text-[17px]", dark ? "text-white/85" : "text-charcoal/85") }>{artifactText}</div>
+            )}
             {task.status === "awaiting_approval" && artifact.status === "draft" && (
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button type="button" onClick={() => onAction(task.id, "reject", artifact.id)} className={clsx("min-h-11 rounded-lg border px-3 py-2 text-body", dark ? "border-white/20" : "border-[#cfc6b8]")}>Reject</button>
@@ -4674,7 +4689,7 @@ export function ConversationWorkspace({
                             <p className="mt-2 text-[9px] uppercase tracking-widest text-white/40">Editing changes the message history; it does not resend the request.</p>
                           </div>
                         ) : !voiceNoteAttachment ? (
-                          <p className={clsx("mt-2 whitespace-pre-wrap text-body leading-relaxed", message.deleted_at && "italic opacity-60")}>{message.body}</p>
+                          <p className={clsx("mt-2 whitespace-pre-wrap break-words text-[16px] leading-[1.55] md:text-[15px]", message.deleted_at && "italic opacity-60")}>{message.body}</p>
                         ) : null}
                         {!message.deleted_at && (message.attachments ?? []).length > 0 && (
                           <div className={clsx("mt-3 grid gap-2", message.attachments.length > 1 && "grid-cols-2")}>
@@ -4817,7 +4832,7 @@ export function ConversationWorkspace({
                       <Avatar participant={agent} />
                       <div className="max-w-[78%] rounded-2xl rounded-tl-sm border border-[#d4cbbd] bg-[#f5f1e8] px-4 py-3 text-charcoal">
                         <p className="text-caption font-semibold text-nearblack">{agent.display_name}</p>
-                        <div className="mt-2 flex items-center gap-2 text-caption text-charcoal/60">
+                        <div className="mt-2 flex items-center gap-2 text-[16px] leading-[1.45] text-charcoal/60 md:text-[15px]">
                           <span>{activity.status === "processing" ? activity.progress_label ?? "Working on your request" : "Waiting to start"}</span>
                           <span className="flex gap-1" aria-hidden>
                             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-charcoal/45" />

@@ -62,11 +62,17 @@ test("mobile agent work stays contained and the composer does not trigger iPhone
   assert.doesNotMatch(workspace, /JSON\.stringify\(content, null, 2\)/);
 });
 
+test("chat copy remains readable on mobile and decided work does not show stale approval copy", () => {
+  assert.match(workspace, /whitespace-pre-wrap break-words text-\[16px\] leading-\[1\.55\] md:text-\[15px\]/);
+  assert.match(workspace, /artifactText !== "Draft details are not available yet\."/);
+  assert.match(workspace, /!approvalAlreadyDecided \? latestEvent\?\.label : null/);
+});
+
 test("background work has separate workers, sessions and stronger model routing", () => {
   assert.match(bridge, /def build_task_workers/);
   assert.match(bridge, /reslu-task-\{task_id\}/);
   assert.match(bridge, /openai\/gpt-5\.6-sol/);
-  assert.match(bridge, /delegate independent parts to available specialist or subagent tools/i);
+  assert.match(bridge, /delegate substantial independent parts with delegate_reslu_agent_task/i);
   assert.match(bridge, /do not send external messages, make bookings, spend money, delete data/i);
 });
 
