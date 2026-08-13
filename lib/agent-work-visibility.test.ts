@@ -6,7 +6,8 @@ import { agentTaskBelongsInWorkPanel, visibleAgentWorkTasks } from "./agent-work
 function task(overrides: Partial<AgentTask> = {}): AgentTask {
   return {
     id: "task-1", conversation_id: "conversation-1", requested_by: "user-1", owner_agent_id: "agent-1",
-    source_message_id: null, source_call_id: null, client_task_id: "client-1", title: "Routine research",
+    source_message_id: null, source_call_id: null, delegated_by_agent_id: null, source_task_id: null,
+    client_task_id: "client-1", title: "Routine research",
     objective: "Check the project record", requested_via: "voice", status: "running", model_tier: "standard",
     model_name: null, approval_state: "none", approval_note: null, result_summary: null, error: null, retry_count: 0,
     gateway_run_id: null, progress_label: null, progress_updated_at: null, cancellation_requested_at: null,
@@ -33,6 +34,17 @@ test("the review panel keeps email work and approvals, not routine progress", ()
   assert.equal(agentTaskBelongsInWorkPanel(task({ title: "Draft client email" })), true);
   assert.equal(agentTaskBelongsInWorkPanel(task({ status: "awaiting_approval" })), true);
   assert.equal(agentTaskBelongsInWorkPanel(task({ artifacts: [artifact({ kind: "email_draft" })] })), true);
+});
+
+test("an already decided artifact cannot leave a contradictory approval card behind", () => {
+  assert.equal(agentTaskBelongsInWorkPanel(task({
+    status: "awaiting_approval",
+    artifacts: [artifact({ status: "approved" })],
+  })), false);
+  assert.equal(agentTaskBelongsInWorkPanel(task({
+    status: "awaiting_approval",
+    artifacts: [artifact({ status: "approved" }), artifact({ id: "artifact-2", status: "draft" })],
+  })), true);
 });
 
 test("structured tables and lists remain visible for glanceable review", () => {
