@@ -46,6 +46,15 @@ const MUTATION_TOKEN = /(?:^|[_-])(?:add|apply|approve|archive|book|cancel|creat
 const READ_ONLY_TOKEN = /(?:^|[_-])(?:check|describe|find|get|inspect|list|lookup|read|search|status|view)(?:[_-]|$)/i;
 const SAFE_BUILTIN_READ_TOOLS = new Set(["memory_get", "memory_search", "session_status"]);
 const DELEGATION_TOOL_SUFFIX = "delegate_reslu_agent_task";
+const HUMAN_AGENT_COORDINATION_TOOLS = new Set([
+  "sessions_list",
+  "sessions_history",
+  "sessions_send",
+  "sessions_spawn",
+  "sessions_yield",
+  "subagents",
+]);
+const HUMAN_OPERATION_PREFIXES = ["reslu-spec__", "reslu-marco__", "reslu-stuart__", "gsc__"];
 
 function extractJsonSection(prompt, startMarker, endMarker) {
   const start = prompt.indexOf(startMarker);
@@ -151,6 +160,18 @@ export function evaluateResluConversationTool(event, context, runState) {
   // membership, creates one bounded specialist task and preserves all normal
   // approval rules. Generic OpenClaw session/subagent tools remain blocked.
   if (state.mode === "human_request" && toolName.endsWith(DELEGATION_TOOL_SUFFIX)) {
+    return undefined;
+  }
+
+  // A direct request from the authenticated human is an operational turn,
+  // not an untrusted read-only document. Aria may use Reslu business tools
+  // and coordinate agents; the operating policy and each tool's own approval
+  // contract continue to govern consequential actions. Forwarded content,
+  // attachments and specialist consultations never receive this authority.
+  if (state.mode === "human_request" && (
+    HUMAN_AGENT_COORDINATION_TOOLS.has(toolName)
+    || HUMAN_OPERATION_PREFIXES.some((prefix) => toolName.startsWith(prefix))
+  )) {
     return undefined;
   }
 
