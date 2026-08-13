@@ -68,17 +68,25 @@ test("attachment PDF extraction uses the fixed tool and rejects host or shell ac
   assert.equal(decision("exec", "attachment_review", { command: `pdftotext "${safe}" -; env` })?.block, true);
 });
 
-test("ordinary and specialist turns allow reads but block mutation, host and cross-session tools", () => {
-  for (const mode of ["human_request", "specialist_consultation"]) {
-    assert.equal(decision("memory_search", mode), undefined);
-    assert.equal(decision("reslu_spec_get_project", mode), undefined);
-    assert.equal(decision("gmail_search_messages", mode), undefined);
-    assert.equal(decision("gmail_send_email", mode)?.block, true);
-    assert.equal(decision("reslu_spec_update_project", mode)?.block, true);
-    assert.equal(decision("exec", mode)?.block, true);
-    assert.equal(decision("read", mode)?.block, true);
-    assert.equal(decision("sessions_spawn", mode)?.block, true);
-  }
+test("direct human turns can operate Reslu and delegate while host and messaging tools stay blocked", () => {
+  assert.equal(decision("memory_search", "human_request"), undefined);
+  assert.equal(decision("reslu-spec__get_project", "human_request"), undefined);
+  assert.equal(decision("reslu-spec__update_project", "human_request"), undefined);
+  assert.equal(decision("sessions_spawn", "human_request"), undefined);
+  assert.equal(decision("subagents", "human_request"), undefined);
+  assert.equal(decision("message", "human_request")?.block, true);
+  assert.equal(decision("exec", "human_request")?.block, true);
+  assert.equal(decision("read", "human_request")?.block, true);
+});
+
+test("specialist consultations stay bounded to read-only advice", () => {
+  assert.equal(decision("memory_search", "specialist_consultation"), undefined);
+  assert.equal(decision("reslu_spec_get_project", "specialist_consultation"), undefined);
+  assert.equal(decision("gmail_search_messages", "specialist_consultation"), undefined);
+  assert.equal(decision("gmail_send_email", "specialist_consultation")?.block, true);
+  assert.equal(decision("reslu-spec__update_project", "specialist_consultation")?.block, true);
+  assert.equal(decision("sessions_spawn", "specialist_consultation")?.block, true);
+  assert.equal(decision("exec", "specialist_consultation")?.block, true);
 });
 
 test("an ordinary human request may use only the guarded specialist delegation boundary", () => {
@@ -87,7 +95,7 @@ test("an ordinary human request may use only the guarded specialist delegation b
   assert.equal(decision("reslu_stuart_delegate_reslu_agent_task", "human_request"), undefined);
   assert.equal(decision("reslu_spec_delegate_reslu_agent_task", "specialist_consultation")?.block, true);
   assert.equal(decision("reslu_spec_delegate_reslu_agent_task", "attachment_review")?.block, true);
-  assert.equal(decision("sessions_spawn", "human_request")?.block, true);
+  assert.equal(decision("sessions_spawn", "human_request"), undefined);
 });
 
 test("unknown tools and unvalidated run state fail closed", () => {
