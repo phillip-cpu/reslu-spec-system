@@ -350,6 +350,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         process.returncode = 0
         task = {
             "id": "task-123",
+            "conversation_id": "conversation-123",
             "title": "Prepare report",
             "objective": "Prepare the report",
             "model_tier": "strong",

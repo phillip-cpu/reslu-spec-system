@@ -11,6 +11,8 @@ const realtime = read("lib/realtime-voice.ts");
 const taskRoute = read("app/api/conversations/[id]/realtime/task/route.ts");
 const workspace = read("components/conversations/ConversationWorkspace.tsx");
 const bridge = read("scripts/conversation_agent_bridge.py");
+const delegationRoute = read("app/api/conversations/[id]/delegations/route.ts");
+const delegationMigration = read("supabase/migrations/20260813214034_agent_task_delegation_provenance.sql");
 const verifier = read("supabase/fixtures/099_persistent_agent_tasks_verify.sql");
 
 test("durable tasks have explicit lifecycle, RLS and service-only claiming", () => {
@@ -62,12 +64,28 @@ test("mobile agent work stays contained and the composer does not trigger iPhone
   assert.doesNotMatch(workspace, /JSON\.stringify\(content, null, 2\)/);
 });
 
+test("chat copy remains readable on mobile and decided work does not show stale approval copy", () => {
+  assert.match(workspace, /whitespace-pre-wrap break-words text-\[16px\] leading-\[1\.55\] md:text-\[15px\]/);
+  assert.match(workspace, /artifactText !== "Draft details are not available yet\."/);
+  assert.match(workspace, /!approvalAlreadyDecided \? latestEvent\?\.label : null/);
+});
+
 test("background work has separate workers, sessions and stronger model routing", () => {
   assert.match(bridge, /def build_task_workers/);
   assert.match(bridge, /reslu-task-\{task_id\}/);
   assert.match(bridge, /openai\/gpt-5\.6-sol/);
-  assert.match(bridge, /delegate independent parts to available specialist or subagent tools/i);
+  assert.match(bridge, /delegate substantial independent parts with delegate_reslu_agent_task/i);
   assert.match(bridge, /do not send external messages, make bookings, spend money, delete data/i);
+});
+
+test("agent delegation is authenticated, idempotent and provenance-bound", () => {
+  assert.match(delegationRoute, /auth_profile_id/);
+  assert.match(delegationRoute, /conversation_participants/);
+  assert.match(delegationRoute, /An agent cannot delegate work to itself/);
+  assert.match(delegationRoute, /delegate:\$\{sourceAgent\.slug\}:\$\{delegationId\}/);
+  assert.match(delegationRoute, /This delegation id was already used for different work/);
+  assert.match(delegationMigration, /delegated_by_agent_id/);
+  assert.match(delegationMigration, /source_task_id/);
 });
 
 test("the hosted database verifier exercises real rows and rolls back", () => {

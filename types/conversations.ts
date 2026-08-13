@@ -110,6 +110,8 @@ export interface AgentTask {
   owner_agent_id: string;
   source_message_id: string | null;
   source_call_id: string | null;
+  delegated_by_agent_id: string | null;
+  source_task_id: string | null;
   client_task_id: string;
   title: string;
   objective: string;

@@ -45,6 +45,7 @@ const BLOCKED_TOOL_NAMES = new Set([
 const MUTATION_TOKEN = /(?:^|[_-])(?:add|apply|approve|archive|book|cancel|create|delete|edit|forward|grant|invite|pay|post|publish|remove|revoke|schedule|send|share|spend|submit|update|upload|write)(?:[_-]|$)/i;
 const READ_ONLY_TOKEN = /(?:^|[_-])(?:check|describe|find|get|inspect|list|lookup|read|search|status|view)(?:[_-]|$)/i;
 const SAFE_BUILTIN_READ_TOOLS = new Set(["memory_get", "memory_search", "session_status"]);
+const DELEGATION_TOOL_SUFFIX = "delegate_reslu_agent_task";
 
 function extractJsonSection(prompt, startMarker, endMarker) {
   const start = prompt.indexOf(startMarker);
@@ -143,6 +144,14 @@ export function evaluateResluConversationTool(event, context, runState) {
       return undefined;
     }
     return blocked("Attachment review is restricted to its private staged files");
+  }
+
+  // This is the only state-changing capability exposed to an ordinary direct
+  // chat turn. The API authenticates the calling RESLU agent, validates their
+  // membership, creates one bounded specialist task and preserves all normal
+  // approval rules. Generic OpenClaw session/subagent tools remain blocked.
+  if (state.mode === "human_request" && toolName.endsWith(DELEGATION_TOOL_SUFFIX)) {
+    return undefined;
   }
 
   if (BLOCKED_TOOL_NAMES.has(toolName) || MUTATION_TOKEN.test(toolName)) {

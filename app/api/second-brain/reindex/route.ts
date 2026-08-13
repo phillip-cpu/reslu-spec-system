@@ -20,6 +20,7 @@ import {
   type IndexableBrainNote,
 } from "@/lib/second-brain/content-for";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { getUserRole } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -63,6 +64,7 @@ export const runtime = "nodejs";
 const ALL_ENTITY_TYPES: ContentEntityType[] = ["project", "lead", "item", "diary", "sow", "memory", "email"];
 const PAGE_SIZE = 500;
 const TIME_BUDGET_MS = 4 * 60 * 1000; // 4 minutes — comfortable margin under Vercel's 300s default.
+const MARCO_EMAIL = (process.env.MARCO_EMAIL ?? "marco@reslu.com.au").trim().toLowerCase();
 
 type Cursor = { phase: "index" | "cleanup"; entityTypeIndex: number; offset: number };
 
@@ -334,17 +336,20 @@ export async function GET(request: NextRequest) {
   const authHeader = request.headers.get("authorization");
   const isCronCall = !!cronSecret && authHeader === `Bearer ${cronSecret}`;
 
+  let authenticatedEmail: string | null = null;
   if (!isCronCall) {
     const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) {
+    const userInfo = await getUserRole(supabase);
+    if (!userInfo) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    authenticatedEmail = userInfo.email;
   }
 
   const entityTypeFilter = request.nextUrl.searchParams.get("entity_type") as ContentEntityType | null;
+  if (authenticatedEmail === MARCO_EMAIL && entityTypeFilter !== "memory") {
+    return NextResponse.json({ error: "Marco may only reindex Second Brain memory" }, { status: 403 });
+  }
   const entityTypes = entityTypeFilter ? [entityTypeFilter] : ALL_ENTITY_TYPES;
   if (entityTypeFilter && !ALL_ENTITY_TYPES.includes(entityTypeFilter)) {
     return NextResponse.json({ error: `Unknown entity_type: ${entityTypeFilter}` }, { status: 400 });
