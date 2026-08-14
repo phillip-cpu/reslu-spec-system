@@ -178,10 +178,11 @@ export function evaluateResluConversationTool(event, context, runState) {
     return blocked("Attachment review is restricted to its private staged files");
   }
 
-  // This is the only state-changing capability exposed to an ordinary direct
-  // chat turn. The API authenticates the calling RESLU agent, validates their
-  // membership, creates one bounded specialist task and preserves all normal
-  // approval rules. Generic OpenClaw session/subagent tools remain blocked.
+  // Typed specialist delegation remains available alongside generic agent
+  // coordination. The API authenticates the calling RESLU agent, validates
+  // membership, creates one bounded specialist task and preserves normal
+  // approval rules. Generic spawning may target any installed agent; the
+  // delegated task's authority envelope, not an agent-name allowlist, bounds it.
   if (state.mode === "human_request" && toolName.endsWith(DELEGATION_TOOL_SUFFIX)) {
     return undefined;
   }
