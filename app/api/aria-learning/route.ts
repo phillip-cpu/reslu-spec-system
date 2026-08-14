@@ -8,7 +8,9 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const [candidates, modules, enrolments] = await Promise.all([
-    supabase.from("aria_learning_candidates").select("*").order("created_at", { ascending: false }).limit(100),
+    supabase.from("aria_learning_candidates").select(
+      "*, sources:aria_learning_sources(*), evals:aria_learning_evals(*), reviews:aria_learning_reviews(*), releases:aria_learning_releases(*), monitors:aria_learning_monitors(*)"
+    ).order("created_at", { ascending: false }).limit(100),
     supabase.from("aria_learning_modules").select("*").eq("active", true).order("week_start"),
     supabase.from("aria_learning_enrolments").select("*").order("created_at"),
   ]);
