@@ -65,6 +65,21 @@ const ARIA_SKILL_DIRS = new Set([
   "aria-continuous-education",
   "aria-evaluate-skills",
   "aria-reflect",
+  "doc-package",
+  "ics-reader",
+  "img-reader",
+  "reslu-email",
+  "reslu-inbox",
+  "reslu-nurturer",
+  "reslu-radar",
+  "reslu-site-brief",
+  "reslu-site-lookup",
+  "reslu-weather-sync",
+  "sentiment-analytics",
+  "web-form",
+  "web-reader",
+  "word-docx",
+  "xlsx-reader",
 ]);
 
 function extractJsonSection(prompt, startMarker, endMarker) {

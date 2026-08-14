@@ -85,13 +85,14 @@ test("direct human turns can operate Reslu and delegate while host and messaging
   assert.equal(decision("read", "human_request")?.block, true);
 });
 
-test("direct human turns can load only the four governed Aria skill packages", () => {
+test("direct human turns can load governed core and operational Aria skill packages", () => {
   const skill = `${workspaceDir}/skills/aria-operating-loop/SKILL.md`;
   const reference = `${workspaceDir}/skills/aria-operating-loop/references/risk-and-authority.md`;
   const unrelated = `${workspaceDir}/gmail/token.json`;
   assert.equal(decision("read", "human_request", { path: "skills/aria-operating-loop/SKILL.md" }), undefined);
   assert.equal(decision("read", "human_request", { path: skill }), undefined);
   assert.equal(decision("read", "human_request", { path: reference }), undefined);
+  assert.equal(decision("read", "human_request", { path: "skills/reslu-inbox/SKILL.md" }), undefined);
   assert.equal(decision("read", "human_request", { path: unrelated })?.block, true);
   assert.equal(decision("read", "human_request", { path: "skills/unknown/SKILL.md" })?.block, true);
 });
