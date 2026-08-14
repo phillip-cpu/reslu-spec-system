@@ -73,10 +73,26 @@ test("direct human turns can operate Reslu and delegate while host and messaging
   assert.equal(decision("reslu-spec__get_project", "human_request"), undefined);
   assert.equal(decision("reslu-spec__update_project", "human_request"), undefined);
   assert.equal(decision("sessions_spawn", "human_request"), undefined);
+  assert.equal(decision("sessions_spawn", "human_request", { agentId: "reasoning" }), undefined);
+  assert.equal(decision("sessions_spawn", "human_request", { agentId: "coding" })?.block, true);
   assert.equal(decision("subagents", "human_request"), undefined);
+  assert.equal(decision("web_search", "human_request"), undefined);
+  assert.equal(decision("reslu-marco__delegate_reslu_agent_task", "human_request"), undefined);
+  assert.equal(decision("reslu-marco__add_brain_note", "human_request")?.block, true);
   assert.equal(decision("message", "human_request")?.block, true);
   assert.equal(decision("exec", "human_request")?.block, true);
   assert.equal(decision("read", "human_request")?.block, true);
+});
+
+test("direct human turns can load only the four governed Aria skill packages", () => {
+  const skill = `${workspaceDir}/skills/aria-operating-loop/SKILL.md`;
+  const reference = `${workspaceDir}/skills/aria-operating-loop/references/risk-and-authority.md`;
+  const unrelated = `${workspaceDir}/gmail/token.json`;
+  assert.equal(decision("read", "human_request", { path: "skills/aria-operating-loop/SKILL.md" }), undefined);
+  assert.equal(decision("read", "human_request", { path: skill }), undefined);
+  assert.equal(decision("read", "human_request", { path: reference }), undefined);
+  assert.equal(decision("read", "human_request", { path: unrelated })?.block, true);
+  assert.equal(decision("read", "human_request", { path: "skills/unknown/SKILL.md" })?.block, true);
 });
 
 test("specialist consultations stay bounded to read-only advice", () => {

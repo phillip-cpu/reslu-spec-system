@@ -54,7 +54,19 @@ const HUMAN_AGENT_COORDINATION_TOOLS = new Set([
   "sessions_yield",
   "subagents",
 ]);
-const HUMAN_OPERATION_PREFIXES = ["reslu-spec__", "reslu-marco__", "reslu-stuart__", "gsc__"];
+const HUMAN_SPAWN_AGENT_IDS = new Set(["main", "reasoning", "marco", "stuart"]);
+const HUMAN_OPERATION_PREFIXES = ["reslu-spec__", "gsc__"];
+const HUMAN_TYPED_SPECIALIST_TOOLS = new Set([
+  "reslu-marco__delegate_reslu_agent_task",
+  "reslu-stuart__delegate_reslu_agent_task",
+]);
+const HUMAN_RESEARCH_TOOLS = new Set(["web_search", "web_fetch"]);
+const ARIA_SKILL_DIRS = new Set([
+  "aria-operating-loop",
+  "aria-continuous-education",
+  "aria-evaluate-skills",
+  "aria-reflect",
+]);
 
 function extractJsonSection(prompt, startMarker, endMarker) {
   const start = prompt.indexOf(startMarker);
@@ -126,6 +138,23 @@ function isSafeAttachmentRead(event, workspaceDir) {
   return paths.length > 0 && paths.every((candidate) => isInside(root, candidate));
 }
 
+function isSafeAriaSkillRead(event, workspaceDir) {
+  if (typeof workspaceDir !== "string" || !path.isAbsolute(workspaceDir)) return false;
+  const requested = event?.params?.path ?? event?.params?.file_path;
+  if (typeof requested !== "string" || !requested.trim()) return false;
+  const resolved = path.resolve(workspaceDir, requested);
+  for (const skill of ARIA_SKILL_DIRS) {
+    const root = path.resolve(workspaceDir, "skills", skill);
+    if (resolved === path.join(root, "SKILL.md") || isInside(root, resolved)) return true;
+  }
+  return false;
+}
+
+function isSafeHumanSpawn(event) {
+  const requested = event?.params?.agentId ?? event?.params?.agent_id ?? event?.params?.agent;
+  return requested == null || HUMAN_SPAWN_AGENT_IDS.has(String(requested).trim().toLowerCase());
+}
+
 function blocked(reason) {
   return {
     block: true,
@@ -168,10 +197,20 @@ export function evaluateResluConversationTool(event, context, runState) {
   // and coordinate agents; the operating policy and each tool's own approval
   // contract continue to govern consequential actions. Forwarded content,
   // attachments and specialist consultations never receive this authority.
+  if (state.mode === "human_request" && toolName === "sessions_spawn" && !isSafeHumanSpawn(event)) {
+    return blocked("Aria may spawn only her own bounded workers or named Reslu specialists");
+  }
+
   if (state.mode === "human_request" && (
     HUMAN_AGENT_COORDINATION_TOOLS.has(toolName)
+    || HUMAN_TYPED_SPECIALIST_TOOLS.has(toolName)
+    || HUMAN_RESEARCH_TOOLS.has(toolName)
     || HUMAN_OPERATION_PREFIXES.some((prefix) => toolName.startsWith(prefix))
   )) {
+    return undefined;
+  }
+
+  if (state.mode === "human_request" && toolName === "read" && isSafeAriaSkillRead(event, state.workspaceDir)) {
     return undefined;
   }
 
