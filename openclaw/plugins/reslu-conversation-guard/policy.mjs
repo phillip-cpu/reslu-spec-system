@@ -54,7 +54,6 @@ const HUMAN_AGENT_COORDINATION_TOOLS = new Set([
   "sessions_yield",
   "subagents",
 ]);
-const HUMAN_SPAWN_AGENT_IDS = new Set(["main", "reasoning", "marco", "stuart"]);
 const HUMAN_OPERATION_PREFIXES = ["reslu-spec__", "gsc__"];
 const HUMAN_TYPED_SPECIALIST_TOOLS = new Set([
   "reslu-marco__delegate_reslu_agent_task",
@@ -150,11 +149,6 @@ function isSafeAriaSkillRead(event, workspaceDir) {
   return false;
 }
 
-function isSafeHumanSpawn(event) {
-  const requested = event?.params?.agentId ?? event?.params?.agent_id ?? event?.params?.agent;
-  return requested == null || HUMAN_SPAWN_AGENT_IDS.has(String(requested).trim().toLowerCase());
-}
-
 function blocked(reason) {
   return {
     block: true,
@@ -197,9 +191,6 @@ export function evaluateResluConversationTool(event, context, runState) {
   // and coordinate agents; the operating policy and each tool's own approval
   // contract continue to govern consequential actions. Forwarded content,
   // attachments and specialist consultations never receive this authority.
-  if (state.mode === "human_request" && toolName === "sessions_spawn" && !isSafeHumanSpawn(event)) {
-    return blocked("Aria may spawn only her own bounded workers or named Reslu specialists");
-  }
 
   if (state.mode === "human_request" && (
     HUMAN_AGENT_COORDINATION_TOOLS.has(toolName)

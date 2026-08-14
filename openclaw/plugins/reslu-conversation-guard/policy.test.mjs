@@ -74,7 +74,8 @@ test("direct human turns can operate Reslu and delegate while host and messaging
   assert.equal(decision("reslu-spec__update_project", "human_request"), undefined);
   assert.equal(decision("sessions_spawn", "human_request"), undefined);
   assert.equal(decision("sessions_spawn", "human_request", { agentId: "reasoning" }), undefined);
-  assert.equal(decision("sessions_spawn", "human_request", { agentId: "coding" })?.block, true);
+  assert.equal(decision("sessions_spawn", "human_request", { agentId: "coding" }), undefined);
+  assert.equal(decision("sessions_spawn", "human_request", { agentId: "any-installed-agent" }), undefined);
   assert.equal(decision("subagents", "human_request"), undefined);
   assert.equal(decision("web_search", "human_request"), undefined);
   assert.equal(decision("reslu-marco__delegate_reslu_agent_task", "human_request"), undefined);
