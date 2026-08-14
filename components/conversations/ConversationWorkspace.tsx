@@ -16,6 +16,7 @@ import {
   isConversationAttachmentMime,
   MAX_CONVERSATION_ATTACHMENTS,
   MAX_CONVERSATION_ATTACHMENT_BYTES,
+  normalizeConversationAttachmentMime,
 } from "@/lib/conversation-attachments";
 import {
   awaitConversationUploadReady,
@@ -2727,7 +2728,7 @@ export function ConversationWorkspace({
     }
 
     const drafts = files.map((file, index): DraftAttachment => {
-      const mimeType = file.type || (/\.pdf$/i.test(file.name) ? "application/pdf" : "");
+      const mimeType = normalizeConversationAttachmentMime(file.name, file.type) ?? file.type;
       return {
         localId: `${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
         conversationId,
@@ -2748,7 +2749,13 @@ export function ConversationWorkspace({
     const uploads: Promise<void>[] = [];
     for (const draft of drafts) {
       if (!draft.file) continue;
-      const preparedFile = await prepareConversationImageForUpload(draft.file);
+      const typedFile = draft.mimeType && draft.file.type !== draft.mimeType
+        ? new File([draft.file], draft.filename, {
+            type: draft.mimeType,
+            lastModified: draft.file.lastModified,
+          })
+        : draft.file;
+      const preparedFile = await prepareConversationImageForUpload(typedFile);
       const preparedDraft: DraftAttachment = {
         ...draft,
         file: preparedFile,

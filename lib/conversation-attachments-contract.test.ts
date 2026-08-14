@@ -63,6 +63,8 @@ test("modern composer exposes working camera and file entry points", () => {
   assert.match(workspace, /onDrop=/);
   assert.match(workspace, /Drop photos or PDFs here/);
   assert.match(workspace, /event\.clipboardData\.files/);
+  assert.match(workspace, /normalizeConversationAttachmentMime/);
+  assert.match(workspace, /new File\(\[draft\.file\]/);
 });
 
 test("attachment drafts cannot leak into another conversation mid-upload", () => {

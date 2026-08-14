@@ -921,10 +921,12 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             "storage_path": "conversations/c1/attachments/a1",
         }
         observed_path = None
+        observed_thinking_level = None
 
-        def answer(_agent, _history, _conversation_id, materialized, **_kwargs):
-            nonlocal observed_path
+        def answer(_agent, _history, _conversation_id, materialized, **kwargs):
+            nonlocal observed_path, observed_thinking_level
             observed_path = Path(materialized[0]["local_path"])
+            observed_thinking_level = kwargs["thinking_level"]
             self.assertTrue(observed_path.is_file())
             return "I read it."
 
@@ -963,6 +965,10 @@ class ConversationAgentBridgeTests(unittest.TestCase):
                 Path(workspace) / ".reslu-conversation-attachments",
             )
             self.assertFalse(observed_path.exists())
+            self.assertEqual(
+                observed_thinking_level,
+                conversation_agent_bridge.TEXT_CHAT_THINKING_LEVEL,
+            )
 
         rest.insert.assert_called_once()
         rest.patch.assert_called_once()

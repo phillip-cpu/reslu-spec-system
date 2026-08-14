@@ -11,6 +11,14 @@ export const CONVERSATION_ATTACHMENT_MIME_TYPES = [
 
 export type ConversationAttachmentMime = typeof CONVERSATION_ATTACHMENT_MIME_TYPES[number];
 
+const CONVERSATION_ATTACHMENT_EXTENSION_MIME = new Map<string, ConversationAttachmentMime>([
+  ["jpg", "image/jpeg"],
+  ["jpeg", "image/jpeg"],
+  ["png", "image/png"],
+  ["webp", "image/webp"],
+  ["pdf", "application/pdf"],
+]);
+
 export const MAX_CONVERSATION_ATTACHMENTS = 6;
 export const MAX_CONVERSATION_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 // Keep the complete multipart request below Vercel's request-body ceiling.
@@ -21,6 +29,23 @@ export const STAGED_CONVERSATION_ATTACHMENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export function isConversationAttachmentMime(value: unknown): value is ConversationAttachmentMime {
   return typeof value === "string"
     && CONVERSATION_ATTACHMENT_MIME_TYPES.includes(value as ConversationAttachmentMime);
+}
+
+/**
+ * Some iOS/Android file pickers return an empty MIME type or the non-standard
+ * image/jpg alias for an otherwise valid photo. Resolve only formats already
+ * accepted by the attachment boundary; the server still verifies the bytes.
+ */
+export function normalizeConversationAttachmentMime(
+  filename: string,
+  declaredMimeType: string
+): ConversationAttachmentMime | null {
+  const normalized = declaredMimeType.trim().toLowerCase();
+  if (normalized === "image/jpg") return "image/jpeg";
+  if (isConversationAttachmentMime(normalized)) return normalized;
+  if (normalized && normalized !== "application/octet-stream") return null;
+  const extension = filename.trim().toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  return extension ? CONVERSATION_ATTACHMENT_EXTENSION_MIME.get(extension) ?? null : null;
 }
 
 export function cleanConversationAttachmentFilename(value: unknown): string | null {

@@ -50,6 +50,7 @@ TASK_PROCESS_TIMEOUT_SECONDS = 900.0
 HISTORY_LIMIT = 80
 REALTIME_VOICE_HISTORY_LIMIT = 16
 TASK_HISTORY_LIMIT = 24
+TEXT_CHAT_THINKING_LEVEL = "low"
 REALTIME_VOICE_THINKING_DEFAULT = "minimal"
 REALTIME_VOICE_MODEL_DEFAULT = "openai/gpt-5.6-terra"
 OPENCLAW_SESSION_VERSION_DEFAULT = "v2"
@@ -1612,7 +1613,11 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
             job["conversation_id"],
             materialized,
             should_continue=lambda: job_should_continue(rest, job["id"]),
-            thinking_level=realtime_voice_thinking_level() if is_realtime_voice else None,
+            thinking_level=(
+                realtime_voice_thinking_level()
+                if is_realtime_voice
+                else TEXT_CHAT_THINKING_LEVEL
+            ),
             model=realtime_voice_agent_model() if is_realtime_voice else None,
             idempotency_key=job["id"],
             on_progress=report_progress,
