@@ -47,6 +47,12 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { createClient } from "@supabase/supabase-js";
+import {
+  decorateAriaTool,
+  FALLBACK_ARIA_READ_TOOLS,
+  policyMapFromResponse,
+  splitAriaAuthorityArgs,
+} from "./aria-authority.mjs";
 
 // ------------------------------------------------------------
 // Environment
@@ -2061,9 +2067,218 @@ const TOOLS = [
         body: JSON.stringify(body),
       }),
   },
+  {
+    name: "list_learning_candidates",
+    description:
+      "Read Aria's governed learning candidates, current curriculum modules, and enrolment state from Spec. This is the canonical learning lifecycle; local reflection files are inputs, not promoted memory.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    handler: async () => apiFetch("/api/aria-learning"),
+  },
+  {
+    name: "create_learning_candidate",
+    description:
+      "Persist one bounded, sanitised learning candidate in Spec. This does not approve, stage, release, or promote it. Use an immutable artifact reference and SHA-256; never copy secrets or unsafe attachment bodies.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        candidate_key: { type: "string", pattern: "^learn-[0-9]{8}-[a-z0-9-]{3,100}$" },
+        question: { type: "string", minLength: 1, maxLength: 2000 },
+        trigger_type: { type: "string", enum: ["correction", "failure", "expiry", "conflict", "new_obligation", "opportunity", "source_change"] },
+        trigger_summary: { type: "string", minLength: 1, maxLength: 4000 },
+        affected_assets: { type: "array", items: { type: "string" }, maxItems: 50 },
+        proposed_change_summary: { type: "string", minLength: 1, maxLength: 4000 },
+        proposed_version: { type: "string", minLength: 1, maxLength: 200 },
+        artifact_ref: { type: "string", minLength: 1, maxLength: 1000 },
+        artifact_sha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        risk_tier: { type: "string", enum: ["R1", "R2", "R3"] },
+        owner_profile_id: { type: "string", description: "Accepted accountable owner profile id; omit while unassigned" },
+        review_by: { type: "string", description: "ISO timestamp" },
+        expires_at: { type: "string", description: "ISO timestamp" },
+        rollback_plan: { type: "string", minLength: 1, maxLength: 4000 },
+      },
+      required: ["candidate_key", "question", "trigger_type", "trigger_summary", "affected_assets", "proposed_change_summary", "proposed_version", "artifact_ref", "artifact_sha256", "risk_tier", "review_by", "expires_at", "rollback_plan"],
+      additionalProperties: false,
+    },
+    handler: async (body) => apiFetch("/api/aria-learning", { method: "POST", body: JSON.stringify(body) }),
+  },
+  {
+    name: "add_learning_source",
+    description:
+      "Attach a claim-level source record to a governed candidate. T4 discovery evidence cannot support staging; all promotion-relevant source fields are required and expiry is enforced in Spec.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        candidate_id: { type: "string" },
+        source: {
+          type: "object",
+          properties: {
+            source_key: { type: "string" }, canonical_ref: { type: "string" }, publisher: { type: "string" }, title: { type: "string" },
+            authority_tier: { type: "string", enum: ["T0", "T1", "T2", "T3", "T4"] }, jurisdiction: { type: "string" },
+            sensitivity: { type: "string", enum: ["public", "internal", "confidential", "restricted"] }, purpose: { type: "string" },
+            rights_or_licence: { type: "string" }, issued_at: { type: "string" }, effective_at: { type: "string" }, fetched_at: { type: "string" },
+            review_by: { type: "string" }, revision_or_sha256: { type: "string" }, parser_version: { type: "string" },
+            status: { type: "string", enum: ["candidate", "active", "superseded", "disputed", "expired", "withdrawn"] },
+          },
+          required: ["source_key", "canonical_ref", "publisher", "title", "authority_tier", "sensitivity", "purpose", "rights_or_licence", "fetched_at", "review_by", "revision_or_sha256", "status"],
+          additionalProperties: false,
+        },
+      },
+      required: ["candidate_id", "source"],
+      additionalProperties: false,
+    },
+    handler: async ({ candidate_id, source }) => apiFetch(`/api/aria-learning/${encodeURIComponent(candidate_id)}`, {
+      method: "POST", body: JSON.stringify({ action: "add_source", source }),
+    }),
+  },
+  {
+    name: "record_learning_eval",
+    description:
+      "Bind an immutable eval result to the exact candidate artifact. Evaluation is evidence, never approval. Report human and trajectory status truthfully.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        candidate_id: { type: "string" },
+        eval_result: {
+          type: "object",
+          properties: {
+            run_id: { type: "string" }, suite_id: { type: "string" }, artifact_ref: { type: "string" },
+            artifact_sha256: { type: "string", pattern: "^[a-f0-9]{64}$" }, candidate_artifact_sha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+            hard_gates_passed: { type: "boolean" }, critical_regressions: { type: "integer", minimum: 0 },
+            human_review_status: { type: "string", enum: ["not_required", "pending", "passed", "failed"] },
+            trajectory_status: { type: "string", enum: ["not_required", "pending", "passed", "failed"] }, completed_at: { type: "string" },
+          },
+          required: ["run_id", "suite_id", "artifact_ref", "artifact_sha256", "candidate_artifact_sha256", "hard_gates_passed", "critical_regressions", "human_review_status", "trajectory_status", "completed_at"],
+          additionalProperties: false,
+        },
+      },
+      required: ["candidate_id", "eval_result"],
+      additionalProperties: false,
+    },
+    handler: async ({ candidate_id, eval_result }) => apiFetch(`/api/aria-learning/${encodeURIComponent(candidate_id)}`, {
+      method: "POST", body: JSON.stringify({ action: "record_eval", eval_result }),
+    }),
+  },
+  {
+    name: "request_learning_review",
+    description: "Request accountable human review after the current artifact has a passing immutable eval. This cannot approve the candidate.",
+    inputSchema: { type: "object", properties: { candidate_id: { type: "string" } }, required: ["candidate_id"], additionalProperties: false },
+    handler: async ({ candidate_id }) => apiFetch(`/api/aria-learning/${encodeURIComponent(candidate_id)}`, {
+      method: "POST", body: JSON.stringify({ action: "request_review" }),
+    }),
+  },
+  {
+    name: "stage_learning_candidate",
+    description: "Stage an exactly approved, current, sourced and evaluated candidate. Staging never promotes it into live trusted memory, policy, or skills.",
+    inputSchema: { type: "object", properties: { candidate_id: { type: "string" } }, required: ["candidate_id"], additionalProperties: false },
+    handler: async ({ candidate_id }) => apiFetch(`/api/aria-learning/${encodeURIComponent(candidate_id)}`, {
+      method: "POST", body: JSON.stringify({ action: "stage" }),
+    }),
+  },
+  {
+    name: "record_learning_monitor",
+    description: "Record immutable post-release outcome evidence. A rollback recommendation is evidence for the accountable operator; this tool cannot deploy or roll back files.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        candidate_id: { type: "string" },
+        monitor: {
+          type: "object",
+          properties: {
+            release_id: { type: "string" }, metric_key: { type: "string" }, metric_value: {},
+            status: { type: "string", enum: ["healthy", "watch", "rollback_recommended", "rolled_back"] },
+            evidence_ref: { type: "string" }, evidence_sha256: { type: "string", pattern: "^[a-f0-9]{64}$" }, observed_at: { type: "string" },
+          },
+          required: ["release_id", "metric_key", "metric_value", "status", "evidence_ref", "evidence_sha256", "observed_at"],
+          additionalProperties: false,
+        },
+      },
+      required: ["candidate_id", "monitor"],
+      additionalProperties: false,
+    },
+    handler: async ({ candidate_id, monitor }) => apiFetch(`/api/aria-learning/${encodeURIComponent(candidate_id)}`, {
+      method: "POST", body: JSON.stringify({ action: "record_monitor", monitor }),
+    }),
+  },
 ];
 
 const toolsByName = new Map(TOOLS.map((t) => [t.name, t]));
+
+let ariaPolicyCache = null;
+let ariaPolicyFetchedAt = 0;
+const ARIA_POLICY_MAX_AGE_MS = 60 * 1000;
+
+async function getAriaPolicyMap() {
+  if (AGENT_ROLE !== "aria") return null;
+  if (ariaPolicyCache && Date.now() - ariaPolicyFetchedAt < ARIA_POLICY_MAX_AGE_MS) return ariaPolicyCache;
+  const response = await apiFetch("/api/aria-actions/policy");
+  ariaPolicyCache = policyMapFromResponse(response);
+  ariaPolicyFetchedAt = Date.now();
+  return ariaPolicyCache;
+}
+
+async function listedToolsForAgent() {
+  if (AGENT_ROLE !== "aria") return TOOLS.filter(({ name }) => toolAllowedForAgent(name));
+  try {
+    const policies = await getAriaPolicyMap();
+    return TOOLS
+      .filter(({ name }) => policies.has(name))
+      .map((tool) => decorateAriaTool(tool, policies.get(tool.name)));
+  } catch (error) {
+    console.error(`[reslu-spec-mcp] Aria authority registry unavailable; exposing fallback reads only: ${error instanceof Error ? error.message : String(error)}`);
+    return TOOLS.filter(({ name }) => FALLBACK_ARIA_READ_TOOLS.has(name));
+  }
+}
+
+async function callAriaTool(tool, name, args) {
+  const policies = await getAriaPolicyMap();
+  const policy = policies.get(name);
+  if (!policy) throw new Error("Tool is absent or disabled in the Aria authority registry");
+  if (policy.risk_tier === "R0") return tool.handler(args ?? {});
+
+  const { authority, toolArgs } = splitAriaAuthorityArgs(args ?? {});
+  const authorization = await apiFetch("/api/aria-actions/authorize", {
+    method: "POST",
+    body: JSON.stringify({ tool_name: name, tool_args: toolArgs, authority }),
+  });
+  const action = authorization?.action;
+  if (!action?.id) throw new Error("Authority service returned no action run");
+  if (action.metadata?.authorization_replay) {
+    return {
+      replayed: true,
+      action_run_id: action.id,
+      completion_state: action.state,
+      message: "This idempotency key was already claimed. The business effect was not executed again.",
+    };
+  }
+
+  try {
+    const result = await tool.handler(toolArgs);
+    const finished = await apiFetch("/api/aria-actions/finish", {
+      method: "POST",
+      body: JSON.stringify({ action_run_id: action.id, result }),
+    });
+    return {
+      result,
+      aria_execution: {
+        action_run_id: action.id,
+        risk_tier: action.risk_tier,
+        authorization_kind: action.authorization_kind,
+        outcome: finished?.receipt?.outcome ?? "partial",
+        receipt_ref: finished?.receipt?.receipt_ref ?? null,
+      },
+    };
+  } catch (error) {
+    try {
+      await apiFetch("/api/aria-actions/finish", {
+        method: "POST",
+        body: JSON.stringify({ action_run_id: action.id, error_code: "tool_execution_failed" }),
+      });
+    } catch (finishError) {
+      console.error(`[reslu-spec-mcp] Could not record failed Aria action ${action.id}: ${finishError instanceof Error ? finishError.message : String(finishError)}`);
+    }
+    throw error;
+  }
+}
 
 // Stuart is deliberately incapable of using the general operational write
 // surface. His purpose-built finance routes and the guarded delegation
@@ -2138,7 +2353,7 @@ async function main() {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOLS.filter(({ name }) => toolAllowedForAgent(name)).map(({ name, description, inputSchema }) => ({
+    tools: (await listedToolsForAgent()).map(({ name, description, inputSchema }) => ({
       name,
       description,
       inputSchema,
@@ -2157,7 +2372,9 @@ async function main() {
     }
 
     try {
-      const result = await tool.handler(args ?? {});
+      const result = AGENT_ROLE === "aria"
+        ? await callAriaTool(tool, name, args ?? {})
+        : await tool.handler(args ?? {});
       const text = JSON.stringify(result, null, 2);
       return {
         content: [{ type: "text", text: truncateForResponse(text) }],
