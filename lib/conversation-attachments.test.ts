@@ -9,6 +9,7 @@ import {
   isConversationAttachmentMime,
   isConversationAttachmentSize,
   MAX_CONVERSATION_ATTACHMENT_BYTES,
+  normalizeConversationAttachmentMime,
 } from "./conversation-attachments.ts";
 
 test("conversation attachments accept only bounded photo, PDF and voice-note formats", () => {
@@ -20,6 +21,14 @@ test("conversation attachments accept only bounded photo, PDF and voice-note for
   assert.equal(isConversationAttachmentMime("audio/webm"), true);
   assert.equal(isConversationAttachmentMime("image/svg+xml"), false);
   assert.equal(isConversationAttachmentMime("application/x-sh"), false);
+});
+
+test("mobile picker MIME aliases and blank types resolve from safe extensions", () => {
+  assert.equal(normalizeConversationAttachmentMime("Site Photo.JPG", ""), "image/jpeg");
+  assert.equal(normalizeConversationAttachmentMime("Site Photo.jpg", "image/jpg"), "image/jpeg");
+  assert.equal(normalizeConversationAttachmentMime("Client brief.pdf", "application/octet-stream"), "application/pdf");
+  assert.equal(normalizeConversationAttachmentMime("unsafe.svg", ""), null);
+  assert.equal(normalizeConversationAttachmentMime("photo.heic", "image/heic"), null);
 });
 
 test("conversation attachment paths cannot preserve client path traversal", () => {
