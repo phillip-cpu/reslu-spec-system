@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { payloadSha256, verificationFromResult } from "@/lib/aria-authority";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
@@ -12,7 +12,11 @@ export async function POST(request: NextRequest) {
   try { body = await request.json(); } catch { return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 }); }
   if (typeof body.action_run_id !== "string") return NextResponse.json({ error: "action_run_id is required" }, { status: 400 });
 
-  const { data: run, error: runError } = await supabase
+  // aria_action_runs has no SELECT grant for authenticated — authenticated role
+  // can only execute the finish_aria_action RPC (SECURITY DEFINER). Use the
+  // service-role client for this pre-flight read; auth is already verified above.
+  const adminSupabase = createServiceRoleClient();
+  const { data: run, error: runError } = await adminSupabase
     .from("aria_action_runs")
     .select("id,tool_name")
     .eq("id", body.action_run_id)
