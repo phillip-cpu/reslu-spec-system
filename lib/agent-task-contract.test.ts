@@ -53,7 +53,9 @@ test("cancelling durable work needs a deliberate second action", () => {
 
 test("mobile agent work stays contained and the composer does not trigger iPhone zoom", () => {
   assert.match(workspace, /max-w-full flex-1 flex-col overflow-x-hidden/);
-  assert.match(workspace, /Show \$\{visibleAgentTasks\.length - 1\} more/);
+  assert.match(workspace, /aria-controls="conversation-agent-work-details"/);
+  assert.match(workspace, /agentWorkExpanded \? "grid" : "hidden md:flex"/);
+  assert.match(workspace, /block truncate text-\[14px\]/);
   assert.match(workspace, /text-\[16px\].*md:text-body/);
   const artifact = read("lib/agent-task-artifact.ts");
   assert.match(workspace, /normalizeAgentTaskArtifactContent/);

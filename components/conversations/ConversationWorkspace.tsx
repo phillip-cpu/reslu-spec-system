@@ -4379,22 +4379,47 @@ export function ConversationWorkspace({
             </header>
 
             {visibleAgentTasks.length > 0 && (
-              <section className="w-full min-w-0 max-w-full shrink-0 overflow-hidden border-b border-[#d4cbbd] bg-[#eee9df] px-3 py-2.5 md:px-4" aria-label="Agent work">
-                <div className="mb-2 flex items-center justify-between gap-3">
+              <section className="w-full min-w-0 max-w-full shrink-0 overflow-hidden border-b border-[#d4cbbd] bg-[#eee9df] md:px-4 md:py-2.5" aria-label="Agent work">
+                <button
+                  type="button"
+                  onClick={() => setAgentWorkExpanded((expanded) => !expanded)}
+                  aria-expanded={agentWorkExpanded}
+                  aria-controls="conversation-agent-work-details"
+                  className="flex min-h-14 w-full items-center gap-3 px-3 py-2 text-left md:hidden"
+                >
+                  <span aria-hidden className={clsx(
+                    "h-2.5 w-2.5 shrink-0 rounded-full",
+                    visibleAgentTasks[0].status === "failed" ? "bg-red-500"
+                      : visibleAgentTasks[0].status === "awaiting_approval" ? "bg-amber-500"
+                        : visibleAgentTasks[0].status === "completed" ? "bg-emerald-600"
+                          : "bg-charcoal/45",
+                  )} />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.13em] text-charcoal/50">
+                      <span>Agent work</span>
+                      <span aria-hidden>·</span>
+                      <span>{taskStatusLabel(visibleAgentTasks[0])}</span>
+                      {visibleAgentTasks.length > 1 && <span>+{visibleAgentTasks.length - 1}</span>}
+                    </span>
+                    <span className="mt-0.5 block truncate text-[14px] font-semibold leading-snug text-nearblack">
+                      {visibleAgentTasks[0].title}
+                    </span>
+                  </span>
+                  <span aria-hidden className="shrink-0 text-[18px] text-charcoal/45">{agentWorkExpanded ? "⌃" : "⌄"}</span>
+                </button>
+                <div className="mb-2 hidden items-center justify-between gap-3 md:flex">
                   <p className="label-caps">Agent work</p>
-                  {visibleAgentTasks.length > 1 ? (
-                    <button
-                      type="button"
-                      onClick={() => setAgentWorkExpanded((expanded) => !expanded)}
-                      className="text-caption font-medium text-charcoal/60 md:hidden"
-                    >
-                      {agentWorkExpanded ? "Show latest only" : `Show ${visibleAgentTasks.length - 1} more`}
-                    </button>
-                  ) : <p className="text-[10px] text-charcoal/45">Email and reviewable work</p>}
+                  <p className="text-[10px] text-charcoal/45">Email and reviewable work</p>
                 </div>
-                <div className="grid max-h-[46vh] min-w-0 max-w-full grid-cols-1 gap-3 overflow-y-auto pb-1 md:flex md:max-h-52 md:snap-x md:overflow-x-auto md:overflow-y-hidden">
-                  {visibleAgentTasks.map((task, index) => (
-                    <div key={task.id} className={clsx("min-w-0 max-w-full", index > 0 && !agentWorkExpanded && "hidden md:block", "md:w-80 md:shrink-0 md:snap-start") }>
+                <div
+                  id="conversation-agent-work-details"
+                  className={clsx(
+                    "max-h-[46vh] min-w-0 max-w-full grid-cols-1 gap-3 overflow-y-auto px-3 pb-3 md:flex md:max-h-52 md:snap-x md:overflow-x-auto md:overflow-y-hidden md:px-0 md:pb-1",
+                    agentWorkExpanded ? "grid" : "hidden md:flex",
+                  )}
+                >
+                  {visibleAgentTasks.map((task) => (
+                    <div key={task.id} className="min-w-0 max-w-full md:w-80 md:shrink-0 md:snap-start">
                       <AgentTaskCard task={task} compact canRetry={task.requested_by === selfParticipant?.id && task.retry_count < 3} onAction={handleTaskAction} />
                     </div>
                   ))}
