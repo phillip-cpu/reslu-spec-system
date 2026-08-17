@@ -1971,9 +1971,23 @@ const TOOLS = [
   {
     name: "get_stuart_finance_brief",
     description:
-      "Stuart-only read of the current cash snapshot, Xero/Spec exceptions, overdue receivables/payables, unlinked Accounts invoices, cost-change signals and pending coaching for Aria. Returns evidence and confidence. It cannot move money or change any financial record.",
+      "Stuart-only concise read of the current cash snapshot, Xero/Spec exceptions, overdue receivables/payables, unlinked Accounts invoices, cost-change signals and pending coaching for Aria. Returns evidence and confidence without the large forecast/history arrays. It cannot move money or change any financial record.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    handler: async () => apiFetch("/api/stuart/brief"),
+    handler: async () => apiFetch("/api/stuart/brief?response_format=concise"),
+  },
+  {
+    name: "get_stuart_invoice_evidence",
+    description:
+      "Read one Spec supplier invoice and the metadata for PDF attachments on its traceable source email. Returns exact attachment IDs, fingerprints, readable-evidence state, amount tokens and whether each PDF is already attached. Use this before attach_stuart_source_invoice. Read-only; it cannot alter Spec or Xero.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        invoice_id: { type: "string", description: "Exact Spec supplier invoices.id" },
+      },
+      required: ["invoice_id"],
+      additionalProperties: false,
+    },
+    handler: async ({ invoice_id }) => apiFetch(`/api/stuart/invoice-evidence?invoice_id=${encodeURIComponent(invoice_id)}`),
   },
   {
     name: "run_stuart_finance_review",
@@ -2287,6 +2301,7 @@ async function callAriaTool(tool, name, args) {
 const STUART_ALLOWED_TOOLS = new Set([
   "delegate_reslu_agent_task",
   "get_stuart_finance_brief",
+  "get_stuart_invoice_evidence",
   "run_stuart_finance_review",
   "attach_stuart_source_invoice",
   "create_stuart_xero_draft_bill",

@@ -5,6 +5,7 @@ import test from "node:test";
 const draftSource = readFileSync(new URL("./xero-draft-bills.ts", import.meta.url), "utf8");
 const statementSource = readFileSync(new URL("./supplier-statements.ts", import.meta.url), "utf8");
 const sourceAttachment = readFileSync(new URL("./source-invoice-attachment.ts", import.meta.url), "utf8");
+const accountsAutomation = readFileSync(new URL("./accounts-invoice-automation.ts", import.meta.url), "utf8");
 const mcpSource = readFileSync(new URL("../../mcp/src/index.mjs", import.meta.url), "utf8");
 const oauthSource = readFileSync(new URL("../xero/oauth.ts", import.meta.url), "utf8");
 
@@ -29,6 +30,15 @@ test("source invoice attachment is traceable, fingerprinted and does not write t
   assert.match(sourceAttachment, /storage_path/);
   assert.doesNotMatch(sourceAttachment, /xeroPostJson|xeroPutBytes|api\.xro/);
   assert.match(mcpSource, /attach_stuart_source_invoice/);
+  assert.match(mcpSource, /get_stuart_invoice_evidence/);
+});
+
+test("Accounts automation never reuses a rejected or voided invoice", () => {
+  assert.match(accountsAutomation, /\.not\("status", "in", "\(rejected,voided\)"\)/);
+});
+
+test("Stuart's finance brief uses the bounded response by default", () => {
+  assert.match(mcpSource, /\/api\/stuart\/brief\?response_format=concise/);
 });
 
 test("supplier statements reconcile locally and cannot post to Xero", () => {

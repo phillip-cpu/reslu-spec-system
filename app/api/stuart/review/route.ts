@@ -70,7 +70,7 @@ async function runReview(triggeredBy: string | null) {
         : Promise.resolve({ data: [] as XeroInvoiceReviewRow[], error: null }),
       service
         .from("invoices")
-        .select("id,invoice_number,supplier,total,status,source_email_id")
+        .select("id,invoice_number,supplier,total,status,source_email_id,storage_path")
         .neq("status", "rejected"),
       service
         .from("client_invoices")
