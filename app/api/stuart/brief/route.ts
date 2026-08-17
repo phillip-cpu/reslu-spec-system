@@ -81,7 +81,7 @@ export async function GET(request: NextRequest) {
   if (request.nextUrl.searchParams.get("response_format") === "concise") {
     const weeks = forecast.weeks;
     const openFindings = findings.data ?? [];
-    const conciseFindings = openFindings.slice(0, 25).map((finding) => ({
+    const conciseFindings = openFindings.slice(0, 10).map((finding) => ({
       finding_key: finding.finding_key,
       kind: finding.kind,
       severity: finding.severity,
@@ -112,7 +112,7 @@ export async function GET(request: NextRequest) {
       },
       latest_review: run.data,
       open_findings: conciseFindings,
-      open_findings_returned: Math.min(openFindings.length, 25),
+      open_findings_returned: Math.min(openFindings.length, 10),
       open_findings_total: openFindings.length,
       more_findings_available: openFindings.length > 25,
       aria_feedback: conciseFeedback,
