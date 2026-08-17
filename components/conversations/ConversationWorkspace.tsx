@@ -1230,6 +1230,7 @@ export function ConversationWorkspace({
   const callTranscriptStickRef = useRef(true);
   const messagesScrollerRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
+  const pendingInitialBottomScrollRef = useRef<string | null>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const messageSearchDialogRef = useRef<HTMLDivElement>(null);
   const mediaViewerDialogRef = useRef<HTMLDivElement>(null);
@@ -2136,9 +2137,33 @@ export function ConversationWorkspace({
     // conversation chrome stays pinned like a native messenger.
     const scroller = messagesScrollerRef.current;
     if (scroller && shouldStickToBottomRef.current) {
-      scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+      const openingAtLatest = Boolean(
+        selectedId
+        && pendingInitialBottomScrollRef.current === selectedId
+        && !historyAnchorMessageIdRef.current
+        && timelineItems.length > 0
+      );
+      const scrollToLatest = () => {
+        scroller.scrollTo({ top: scroller.scrollHeight, behavior: openingAtLatest ? "auto" : "smooth" });
+      };
+      scrollToLatest();
+      if (openingAtLatest) {
+        let secondFrame: number | null = null;
+        const firstFrame = window.requestAnimationFrame(() => {
+          secondFrame = window.requestAnimationFrame(() => {
+            scrollToLatest();
+            if (pendingInitialBottomScrollRef.current === selectedId) {
+              pendingInitialBottomScrollRef.current = null;
+            }
+          });
+        });
+        return () => {
+          window.cancelAnimationFrame(firstFrame);
+          if (secondFrame !== null) window.cancelAnimationFrame(secondFrame);
+        };
+      }
     }
-  }, [timelineItems]);
+  }, [selectedId, timelineItems]);
   useEffect(() => {
     const requestedMessageId = requestedMessageIdRef.current;
     if (!requestedMessageId) return;
@@ -2155,6 +2180,7 @@ export function ConversationWorkspace({
     draftAttachmentsRef.current = activeDrafts;
     setDraftAttachments(activeDrafts);
     shouldStickToBottomRef.current = !historyAnchorMessageIdRef.current;
+    pendingInitialBottomScrollRef.current = selectedId && !historyAnchorMessageIdRef.current ? selectedId : null;
     setConversationMenuOpen(false);
   }, [selectedId]);
   useEffect(() => {
@@ -2286,6 +2312,7 @@ export function ConversationWorkspace({
     if (conversationId) activeMessageRequestRef.current.delete(conversationId);
     setMessageSearch({ query: "", results: [], loading: false, error: null, hasSearched: false });
     selectedIdRef.current = conversationId;
+    pendingInitialBottomScrollRef.current = conversationId;
     setMessages([]);
     setPinnedMessages([]);
     setParticipants([]);
