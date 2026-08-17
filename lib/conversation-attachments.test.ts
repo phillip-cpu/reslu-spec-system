@@ -27,6 +27,7 @@ test("mobile picker MIME aliases and blank types resolve from safe extensions", 
   assert.equal(normalizeConversationAttachmentMime("Site Photo.JPG", ""), "image/jpeg");
   assert.equal(normalizeConversationAttachmentMime("Site Photo.jpg", "image/jpg"), "image/jpeg");
   assert.equal(normalizeConversationAttachmentMime("Client brief.pdf", "application/octet-stream"), "application/pdf");
+  assert.equal(normalizeConversationAttachmentMime("Client brief.pdf", "application/x-pdf"), "application/pdf");
   assert.equal(normalizeConversationAttachmentMime("unsafe.svg", ""), null);
   assert.equal(normalizeConversationAttachmentMime("photo.heic", "image/heic"), null);
 });
