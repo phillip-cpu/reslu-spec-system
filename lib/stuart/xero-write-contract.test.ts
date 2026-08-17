@@ -40,7 +40,7 @@ test("Accounts automation never reuses a rejected or voided invoice", () => {
 
 test("Stuart's finance brief uses the bounded response by default", () => {
   assert.match(mcpSource, /\/api\/stuart\/brief\?response_format=concise/);
-  assert.match(briefRoute, /const conciseFindings = openFindings\.slice\(0, 25\)\.map/);
+  assert.match(briefRoute, /const conciseFindings = openFindings\.slice\(0, 10\)\.map/);
   assert.match(briefRoute, /open_findings: conciseFindings/);
 });
 
