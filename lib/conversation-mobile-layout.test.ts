@@ -39,6 +39,9 @@ test("mobile chat keeps its native-style header and call action visible", () => 
   assert.match(workspace, /scroller\.scrollTo/);
   assert.doesNotMatch(workspace, /messagesEndRef\.current\?\.scrollIntoView/);
   assert.match(workspace, /shouldStickToBottomRef/);
+  assert.match(workspace, /pendingInitialBottomScrollRef/);
+  assert.match(workspace, /openingAtLatest \? "auto" : "smooth"/);
+  assert.match(workspace, /window\.requestAnimationFrame/);
   assert.match(workspace, /pane\.scrollHeight - pane\.scrollTop - pane\.clientHeight < 96/);
   assert.match(workspace, /sticky top-0 z-10/);
   assert.match(workspace, /aria-label=\{`Call \$\{callAgent\.display_name\}`\}/);
