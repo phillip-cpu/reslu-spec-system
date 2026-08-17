@@ -81,6 +81,19 @@ export async function GET(request: NextRequest) {
   if (request.nextUrl.searchParams.get("response_format") === "concise") {
     const weeks = forecast.weeks;
     const openFindings = findings.data ?? [];
+    const conciseFindings = openFindings.slice(0, 25).map((finding) => ({
+      finding_key: finding.finding_key,
+      kind: finding.kind,
+      severity: finding.severity,
+      title: finding.title,
+      source_id: finding.source_id,
+    }));
+    const conciseFeedback = (feedback.data ?? []).slice(0, 5).map((item) => ({
+      id: item.id,
+      source_email_id: item.source_email_id,
+      corrected_route: item.corrected_route,
+      created_at: item.created_at,
+    }));
     return NextResponse.json({
       generated_at: generatedAt,
       cash_snapshot: cash.data,
@@ -98,11 +111,11 @@ export async function GET(request: NextRequest) {
         projects_over_estimate: commercialHistory.filter((project) => project.actual_vs_estimated_ex_gst > 0).length,
       },
       latest_review: run.data,
-      open_findings: openFindings.slice(0, 25),
+      open_findings: conciseFindings,
       open_findings_returned: Math.min(openFindings.length, 25),
       open_findings_total: openFindings.length,
       more_findings_available: openFindings.length > 25,
-      aria_feedback: (feedback.data ?? []).slice(0, 10),
+      aria_feedback: conciseFeedback,
       authority,
     });
   }

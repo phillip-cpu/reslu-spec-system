@@ -6,6 +6,7 @@ const draftSource = readFileSync(new URL("./xero-draft-bills.ts", import.meta.ur
 const statementSource = readFileSync(new URL("./supplier-statements.ts", import.meta.url), "utf8");
 const sourceAttachment = readFileSync(new URL("./source-invoice-attachment.ts", import.meta.url), "utf8");
 const accountsAutomation = readFileSync(new URL("./accounts-invoice-automation.ts", import.meta.url), "utf8");
+const briefRoute = readFileSync(new URL("../../app/api/stuart/brief/route.ts", import.meta.url), "utf8");
 const mcpSource = readFileSync(new URL("../../mcp/src/index.mjs", import.meta.url), "utf8");
 const oauthSource = readFileSync(new URL("../xero/oauth.ts", import.meta.url), "utf8");
 
@@ -39,6 +40,8 @@ test("Accounts automation never reuses a rejected or voided invoice", () => {
 
 test("Stuart's finance brief uses the bounded response by default", () => {
   assert.match(mcpSource, /\/api\/stuart\/brief\?response_format=concise/);
+  assert.match(briefRoute, /const conciseFindings = openFindings\.slice\(0, 25\)\.map/);
+  assert.match(briefRoute, /open_findings: conciseFindings/);
 });
 
 test("supplier statements reconcile locally and cannot post to Xero", () => {
