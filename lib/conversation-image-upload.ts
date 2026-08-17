@@ -5,6 +5,11 @@ export const CONVERSATION_IMAGE_MAX_DIMENSION = 2048;
 export const CONVERSATION_IMAGE_QUALITY = 0.82;
 
 const OPTIMIZABLE_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const IPHONE_IMAGE_TYPES = new Set(["image/heic", "image/heif"]);
+
+function isIphoneImage(file: Pick<File, "name" | "type">) {
+  return IPHONE_IMAGE_TYPES.has(file.type.toLowerCase()) || /\.(?:heic|heif)$/i.test(file.name);
+}
 
 export interface ConversationImageSource {
   width: number;
@@ -18,9 +23,9 @@ export interface ConversationImageSource {
   dispose?: () => void;
 }
 
-export function shouldOptimizeConversationImage(file: Pick<File, "type" | "size">) {
-  return OPTIMIZABLE_IMAGE_TYPES.has(file.type)
-    && file.size > CONVERSATION_IMAGE_OPTIMIZE_THRESHOLD_BYTES;
+export function shouldOptimizeConversationImage(file: Pick<File, "name" | "type" | "size">) {
+  return isIphoneImage(file) || (OPTIMIZABLE_IMAGE_TYPES.has(file.type)
+    && file.size > CONVERSATION_IMAGE_OPTIMIZE_THRESHOLD_BYTES);
 }
 
 export function conversationImageUploadDimensions(
@@ -86,6 +91,8 @@ export async function prepareConversationImageForUpload(
 ): Promise<File> {
   if (!shouldOptimizeConversationImage(file)) return file;
 
+  const convertIphoneImage = isIphoneImage(file);
+  const outputMimeType = convertIphoneImage ? "image/jpeg" : file.type;
   let source: ConversationImageSource | null = null;
   try {
     source = await decode(file);
@@ -93,14 +100,22 @@ export async function prepareConversationImageForUpload(
     if (!dimensions) return file;
     const blob = await source.encode({
       ...dimensions,
-      mimeType: file.type,
+      mimeType: outputMimeType,
       quality: CONVERSATION_IMAGE_QUALITY,
     });
-    if (!blob || blob.size <= 0 || blob.type !== file.type || blob.size >= file.size * 0.9) {
+    if (
+      !blob
+      || blob.size <= 0
+      || blob.type !== outputMimeType
+      || (!convertIphoneImage && blob.size >= file.size * 0.9)
+    ) {
       return file;
     }
-    return new File([blob], file.name, {
-      type: file.type,
+    const filename = convertIphoneImage
+      ? (/\.(?:heic|heif)$/i.test(file.name) ? file.name.replace(/\.(?:heic|heif)$/i, ".jpg") : `${file.name}.jpg`)
+      : file.name;
+    return new File([blob], filename, {
+      type: outputMimeType,
       lastModified: file.lastModified,
     });
   } catch {

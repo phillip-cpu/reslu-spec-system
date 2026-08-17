@@ -9,12 +9,34 @@ import {
 } from "./conversation-image-upload.ts";
 
 test("only large supported images are prepared before upload", () => {
-  assert.equal(shouldOptimizeConversationImage({ type: "image/jpeg", size: 5_147_908 }), true);
+  assert.equal(shouldOptimizeConversationImage({ name: "photo.jpg", type: "image/jpeg", size: 5_147_908 }), true);
   assert.equal(shouldOptimizeConversationImage({
+    name: "photo.jpg",
     type: "image/jpeg",
     size: CONVERSATION_IMAGE_OPTIMIZE_THRESHOLD_BYTES,
   }), false);
-  assert.equal(shouldOptimizeConversationImage({ type: "application/pdf", size: 8_000_000 }), false);
+  assert.equal(shouldOptimizeConversationImage({ name: "photo.HEIC", type: "", size: 900_000 }), true);
+  assert.equal(shouldOptimizeConversationImage({ name: "brief.pdf", type: "application/pdf", size: 8_000_000 }), false);
+});
+
+test("an iPhone HEIC photo is converted to a bounded JPEG before upload", async () => {
+  const original = new File([new Uint8Array(2_000_000)], "IMG_7001.HEIC", {
+    type: "image/heic",
+    lastModified: 456,
+  });
+  const prepared = await prepareConversationImageForUpload(original, async () => ({
+    width: 4032,
+    height: 3024,
+    encode: async (options) => {
+      assert.equal(options.mimeType, "image/jpeg");
+      return new Blob([new Uint8Array(850_000)], { type: "image/jpeg" });
+    },
+  }));
+
+  assert.equal(prepared.name, "IMG_7001.jpg");
+  assert.equal(prepared.type, "image/jpeg");
+  assert.equal(prepared.lastModified, original.lastModified);
+  assert.equal(prepared.size, 850_000);
 });
 
 test("large camera dimensions are bounded without cropping", () => {
