@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildAgentParams,
   extractChatReply,
   safeAgentEvent,
   validateGatewayUrl,
@@ -30,6 +31,25 @@ test("agent runs require a bounded stable session and idempotency key", () => {
   assert.throws(() => validateRunInput({ ...input, sessionKey: "../private" }), /session key/);
   assert.throws(() => validateRunInput({ ...input, timeoutSeconds: 0 }), /timeout/);
   assert.throws(() => validateRunInput({ ...input, model: "openai/gpt-5.6-terra --unsafe" }), /model override/);
+});
+
+test("Gateway agent params use native bounded images and an agent-qualified session", () => {
+  const input = validateRunInput({
+    message: "Read this screenshot",
+    agentId: "marco",
+    sessionKey: "reslu-conversation-v2-123",
+    idempotencyKey: "job-vision-123",
+    timeoutSeconds: 180,
+    attachments: [{ fileName: "screen.png", mimeType: "image/png", content: "aGVsbG8=" }],
+  });
+  const params = buildAgentParams(input);
+  assert.deepEqual(params.attachments, input.attachments);
+  assert.equal(params.idempotencyKey, "job-vision-123");
+  assert.equal(params.sessionKey, "agent:marco:reslu-conversation-v2-123");
+  assert.throws(() => validateRunInput({
+    ...input,
+    attachments: [{ fileName: "brief.pdf", mimeType: "application/pdf", content: "aGVsbG8=" }],
+  }), /Invalid image attachment/);
 });
 
 test("Gateway events expose lifecycle and safe tool labels without arguments or results", () => {

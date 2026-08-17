@@ -1,4 +1,5 @@
 import importlib.util
+import base64
 import hashlib
 from datetime import datetime, timezone
 import http.client
@@ -21,6 +22,11 @@ SPEC.loader.exec_module(conversation_agent_bridge)
 
 
 class ConversationAgentBridgeTests(unittest.TestCase):
+    def setUp(self):
+        gateway_off = mock.patch.dict(os.environ, {"RESLU_OPENCLAW_GATEWAY_EVENTS_ENABLED": "false"})
+        gateway_off.start()
+        self.addCleanup(gateway_off.stop)
+
     def test_bridge_health_snapshot_reports_only_worker_liveness(self):
         workers = [mock.Mock(name="worker") for _ in range(2)]
         workers[0].name = "reslu-conversation-aria"
@@ -67,11 +73,11 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         parsed = json.loads(encoded)
         self.assertTrue(parsed["truncated"])
 
-    def test_gateway_event_transport_is_feature_flagged_for_safe_rollout(self):
+    def test_gateway_event_transport_is_enabled_with_an_emergency_off_switch(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertFalse(conversation_agent_bridge.openclaw_gateway_events_enabled())
-        with mock.patch.dict(os.environ, {"RESLU_OPENCLAW_GATEWAY_EVENTS_ENABLED": "true"}, clear=True):
             self.assertTrue(conversation_agent_bridge.openclaw_gateway_events_enabled())
+        with mock.patch.dict(os.environ, {"RESLU_OPENCLAW_GATEWAY_EVENTS_ENABLED": "false"}, clear=True):
+            self.assertFalse(conversation_agent_bridge.openclaw_gateway_events_enabled())
 
     def test_gateway_events_become_small_truthful_progress_labels(self):
         self.assertEqual(
@@ -133,6 +139,33 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         )
         self.assertEqual(invoke_gateway.call_args.kwargs["idempotency_key"], "job-123")
         self.assertEqual(invoke_gateway.call_args.kwargs["model"], "openai/gpt-5.6-terra")
+
+    @mock.patch.object(conversation_agent_bridge, "invoke_agent_via_gateway")
+    def test_shared_gateway_sends_native_images_to_every_agent(self, invoke_gateway):
+        invoke_gateway.return_value = "I can read it."
+        for slug in conversation_agent_bridge.AGENT_SLUGS:
+            invoke_gateway.reset_mock()
+            with tempfile.TemporaryDirectory() as directory:
+                image_path = Path(directory) / "screen.png"
+                image_path.write_bytes(b"small-image")
+                with mock.patch.dict(os.environ, {"RESLU_OPENCLAW_GATEWAY_EVENTS_ENABLED": "true"}):
+                    reply = conversation_agent_bridge.invoke_agent(
+                        {"slug": slug, "display_name": slug.title(), "role_label": "RESLU agent"},
+                        "Phillip: Read this screenshot",
+                        "conversation-123",
+                        attachments=[{
+                            "filename": "screen.png",
+                            "mime_type": "image/png",
+                            "byte_size": image_path.stat().st_size,
+                            "local_path": str(image_path),
+                        }],
+                    )
+            self.assertEqual(reply, "I can read it.")
+            self.assertEqual(invoke_gateway.call_args.kwargs["native_image_attachments"], [{
+                "fileName": "screen.png",
+                "mimeType": "image/png",
+                "content": base64.b64encode(b"small-image").decode("ascii"),
+            }])
 
     @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
     @mock.patch.object(conversation_agent_bridge, "invoke_agent_via_gateway")

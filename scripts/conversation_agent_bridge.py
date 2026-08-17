@@ -9,6 +9,7 @@ calendar, email, tools, permissions, or business logic.
 
 from __future__ import annotations
 
+import base64
 import http.client
 import hashlib
 import io
@@ -54,7 +55,7 @@ TEXT_CHAT_THINKING_LEVEL = "low"
 REALTIME_VOICE_THINKING_DEFAULT = "minimal"
 REALTIME_VOICE_MODEL_DEFAULT = "openai/gpt-5.6-terra"
 OPENCLAW_SESSION_VERSION_DEFAULT = "v2"
-OPENCLAW_GATEWAY_EVENTS_DEFAULT = False
+OPENCLAW_GATEWAY_EVENTS_DEFAULT = True
 OPENCLAW_GATEWAY_RUN_SCRIPT = Path(__file__).with_name("openclaw_gateway_run.mjs")
 OPENCLAW_THINKING_LEVELS = {
     "off",
@@ -797,6 +798,7 @@ def invoke_agent_via_gateway(
     thinking_level: str | None = None,
     model: str | None = None,
     on_progress: Callable[[dict], None] | None = None,
+    native_image_attachments: list[dict] | None = None,
 ) -> str | None:
     """Run one canonical OpenClaw turn over the local authenticated Gateway."""
     command = ["node", str(OPENCLAW_GATEWAY_RUN_SCRIPT)]
@@ -819,6 +821,7 @@ def invoke_agent_via_gateway(
         "timeoutSeconds": int(timeout_seconds),
         "thinking": thinking_level,
         "model": model,
+        "attachments": native_image_attachments or None,
     }
     process.stdin.write(json.dumps(request, ensure_ascii=True))
     process.stdin.close()
@@ -901,6 +904,7 @@ def invoke_agent(
     scope_context: dict | None = None,
 ) -> str | None:
     attachment_descriptors = []
+    native_image_attachments = []
     for attachment in attachments or []:
         metadata = attachment.get("metadata")
         descriptor = {
@@ -915,6 +919,14 @@ def invoke_agent(
         if descriptor["kind"] == "voice_note":
             descriptor["duration_ms"] = max(0, int(metadata.get("duration_ms") or 0))
         attachment_descriptors.append(descriptor)
+        if descriptor["mime_type"] in {"image/gif", "image/jpeg", "image/png", "image/webp"}:
+            local_path = Path(descriptor["local_path"])
+            if local_path.is_file() and 0 < local_path.stat().st_size <= 6 * 1024 * 1024 and len(native_image_attachments) < 6:
+                native_image_attachments.append({
+                    "fileName": descriptor["filename"],
+                    "mimeType": descriptor["mime_type"],
+                    "content": base64.b64encode(local_path.read_bytes()).decode("ascii"),
+                })
     current_request = {
         "kind": (
             "specialist_consultation"
@@ -992,6 +1004,7 @@ def invoke_agent(
                 thinking_level=thinking_level,
                 model=model,
                 on_progress=on_progress,
+                native_image_attachments=native_image_attachments,
             )
         except GatewayRunError as exc:
             if exc.accepted:

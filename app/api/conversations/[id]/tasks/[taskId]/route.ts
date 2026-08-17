@@ -30,6 +30,25 @@ export async function PATCH(request: NextRequest, context: Context) {
     return NextResponse.json({ task: data });
   }
 
+  if (body.action === "dismiss") {
+    const { data: task, error: taskError } = await supabase
+      .from("agent_tasks")
+      .select("id,status")
+      .eq("id", taskId)
+      .eq("conversation_id", id)
+      .maybeSingle();
+    if (taskError || !task) return NextResponse.json({ error: "Task not found" }, { status: 404 });
+    if (!["failed", "completed", "cancelled"].includes(task.status)) {
+      return NextResponse.json({ error: "Active Agent Work cannot be cleared. Stop it first." }, { status: 400 });
+    }
+    const { error } = await supabase.from("agent_task_dismissals").insert({
+      task_id: taskId,
+      profile_id: user.id,
+    });
+    if (error && error.code !== "23505") return NextResponse.json({ error: error.message }, { status: 400 });
+    return NextResponse.json({ dismissed: true });
+  }
+
   if ((body.action === "approve" || body.action === "reject") && body.artifact_id) {
     const { data, error } = await supabase.rpc("decide_agent_task_artifact", {
       p_conversation_id: id,

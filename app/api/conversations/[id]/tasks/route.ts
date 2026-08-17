@@ -35,15 +35,17 @@ export async function GET(_request: NextRequest, context: Context) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   const taskIds = (tasks ?? []).map((task) => task.id);
   if (taskIds.length === 0) return NextResponse.json({ tasks: [] });
-  const [eventsResult, artifactsResult] = await Promise.all([
+  const [eventsResult, artifactsResult, dismissalsResult] = await Promise.all([
     access.supabase.from("agent_task_events").select("*").in("task_id", taskIds).order("created_at"),
     access.supabase.from("agent_task_artifacts").select("*").in("task_id", taskIds).order("created_at"),
+    access.supabase.from("agent_task_dismissals").select("task_id").in("task_id", taskIds),
   ]);
-  if (eventsResult.error || artifactsResult.error) {
-    return NextResponse.json({ error: eventsResult.error?.message ?? artifactsResult.error?.message }, { status: 500 });
+  if (eventsResult.error || artifactsResult.error || dismissalsResult.error) {
+    return NextResponse.json({ error: eventsResult.error?.message ?? artifactsResult.error?.message ?? dismissalsResult.error?.message }, { status: 500 });
   }
+  const dismissedTaskIds = new Set((dismissalsResult.data ?? []).map((dismissal) => dismissal.task_id));
   return NextResponse.json({
-    tasks: (tasks ?? []).map((task) => ({
+    tasks: (tasks ?? []).filter((task) => !dismissedTaskIds.has(task.id)).map((task) => ({
       ...task,
       events: (eventsResult.data ?? []).filter((event) => event.task_id === task.id),
       artifacts: (artifactsResult.data ?? []).filter((artifact) => artifact.task_id === task.id),

@@ -9,7 +9,29 @@ const DEFAULT_GATEWAY_URL = "ws://127.0.0.1:18789";
 const CONNECT_TIMEOUT_MS = 10_000;
 const FINAL_EVENT_GRACE_MS = 5_000;
 const MAX_MESSAGE_CHARS = 200_000;
+const MAX_IMAGE_ATTACHMENTS = 6;
+const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 const MODEL_PATTERN = /^[A-Za-z0-9._:-]{1,80}\/[A-Za-z0-9._:-]{1,120}$/;
+const IMAGE_MIME_TYPES = new Set(["image/gif", "image/jpeg", "image/png", "image/webp"]);
+
+function validateImageAttachments(value) {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > MAX_IMAGE_ATTACHMENTS) throw new Error("Invalid image attachments");
+  return value.map((attachment, index) => {
+    if (!attachment || typeof attachment !== "object" || Array.isArray(attachment)) {
+      throw new Error(`Invalid image attachment ${index + 1}`);
+    }
+    const mimeType = typeof attachment.mimeType === "string" ? attachment.mimeType.trim().toLowerCase() : "";
+    const fileName = typeof attachment.fileName === "string" ? attachment.fileName.trim() : "";
+    const content = typeof attachment.content === "string" ? attachment.content.trim() : "";
+    if (!IMAGE_MIME_TYPES.has(mimeType) || !fileName || fileName.length > 240 || !content || !/^[A-Za-z0-9+/]*={0,2}$/.test(content)) {
+      throw new Error(`Invalid image attachment ${index + 1}`);
+    }
+    const decodedBytes = Math.floor(content.length * 3 / 4) - (content.endsWith("==") ? 2 : content.endsWith("=") ? 1 : 0);
+    if (decodedBytes < 1 || decodedBytes > MAX_IMAGE_BYTES) throw new Error(`Image attachment ${index + 1} is too large`);
+    return { fileName, mimeType, content };
+  });
+}
 
 export function validateGatewayUrl(raw) {
   const url = new URL(raw || DEFAULT_GATEWAY_URL);
@@ -39,7 +61,26 @@ export function validateRunInput(value) {
   const thinking = typeof value.thinking === "string" && value.thinking ? value.thinking : undefined;
   const model = typeof value.model === "string" && value.model.trim() ? value.model.trim() : undefined;
   if (model && !MODEL_PATTERN.test(model)) throw new Error("Invalid model override");
-  return { message, agentId, sessionKey, idempotencyKey, timeoutSeconds, thinking, model };
+  const attachments = validateImageAttachments(value.attachments);
+  return { message, agentId, sessionKey, idempotencyKey, timeoutSeconds, thinking, model, attachments };
+}
+
+export function buildAgentParams(input) {
+  const sessionKey = input.sessionKey.startsWith("agent:")
+    ? input.sessionKey
+    : `agent:${input.agentId}:${input.sessionKey}`;
+  return {
+    message: input.message,
+    agentId: input.agentId,
+    sessionKey,
+    thinking: input.thinking,
+    model: input.model,
+    deliver: false,
+    timeout: input.timeoutSeconds,
+    cleanupBundleMcpOnRunEnd: true,
+    idempotencyKey: input.idempotencyKey,
+    ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+  };
 }
 
 export function extractChatReply(message) {
@@ -189,17 +230,7 @@ export async function runGatewayAgent(input, options = {}) {
       }
       if (method === "connect") {
         clearTimeout(connectTimer);
-        request("agent", {
-          message: input.message,
-          agentId: input.agentId,
-          sessionKey: input.sessionKey,
-          thinking: input.thinking,
-          model: input.model,
-          deliver: false,
-          timeout: input.timeoutSeconds,
-          cleanupBundleMcpOnRunEnd: true,
-          idempotencyKey: input.idempotencyKey,
-        });
+        request("agent", buildAgentParams(input));
         return;
       }
       if (method === "agent") {
