@@ -89,3 +89,23 @@ test("a permanent finalisation error does not offer a misleading retry", async (
     }
   );
 });
+
+test("a missing probe row preserves the direct upload's real server error", async () => {
+  await assert.rejects(
+    awaitConversationUploadReady({
+      upload: Promise.resolve({ error: { message: "permission denied for attachment validator" } }),
+      probe: async () => ({
+        status: "failed",
+        error: new Error("Attachment not found"),
+        recoverable: false,
+      }),
+      delay: noWait,
+    }),
+    (reason: unknown) => {
+      assert.ok(reason instanceof ConversationUploadCompletionError);
+      assert.equal(reason.message, "permission denied for attachment validator");
+      assert.equal(isRecoverableConversationUploadError(reason), false);
+      return true;
+    }
+  );
+});

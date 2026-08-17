@@ -82,6 +82,14 @@ export async function awaitConversationUploadReady<T>({
       const result = await probe();
       if (result.status === "ready") return result.value;
       if (result.status === "failed") {
+        // A direct multipart upload can fail before its staged row exists.
+        // The follow-up probe then returns "Attachment not found", which is
+        // only a consequence of the original failure and must not replace its
+        // useful server error. A fresh Retry can safely upload the retained
+        // local File with a new id.
+        if (uploadProgress.state === "failed" && uploadProgress.failure) {
+          throw new ConversationUploadCompletionError(uploadProgress.failure.message, false);
+        }
         throw new ConversationUploadCompletionError(result.error.message, result.recoverable);
       }
     } catch (reason) {
