@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const migration = readFileSync(resolve(root, "supabase/migrations/115_stuart_finance_agent.sql"), "utf8");
+const evidenceKindMigration = readFileSync(resolve(root, "supabase/migrations/20260817220000_allow_stuart_missing_source_evidence.sql"), "utf8");
 const mcp = readFileSync(resolve(root, "mcp/src/index.mjs"), "utf8");
 
 test("Stuart becomes a first-class conversation agent without broad finance table access", () => {
@@ -29,4 +30,10 @@ test("Stuart is structurally denied general MCP mutation tools", () => {
 test("incorrect Aria forwards enter her existing durable queue", () => {
   assert.match(migration, /'finance_routing_feedback'/);
   assert.match(migration, /stuart_aria_feedback/);
+});
+
+test("the database accepts Stuart's missing-source-evidence classification", () => {
+  assert.match(evidenceKindMigration, /drop constraint if exists stuart_finance_findings_kind_check/);
+  assert.match(evidenceKindMigration, /'missing_source_evidence'/);
+  assert.match(evidenceKindMigration, /add constraint stuart_finance_findings_kind_check check/);
 });
