@@ -12,6 +12,8 @@ const taskRoute = read("app/api/conversations/[id]/realtime/task/route.ts");
 const workspace = read("components/conversations/ConversationWorkspace.tsx");
 const bridge = read("scripts/conversation_agent_bridge.py");
 const verifier = read("supabase/fixtures/099_persistent_agent_tasks_verify.sql");
+const dismissals = read("supabase/migrations/20260817053000_agent_task_dismissals.sql");
+const taskDetailRoute = read("app/api/conversations/[id]/tasks/[taskId]/route.ts");
 
 test("durable tasks have explicit lifecycle, RLS and service-only claiming", () => {
   assert.match(migration, /create table if not exists agent_tasks/i);
@@ -40,7 +42,7 @@ test("the call surface exposes captions, durable work and approvals", () => {
   assert.match(workspace, /Email drafts, approvals and structured results appear here/);
   assert.match(workspace, /Approve/);
   assert.match(workspace, /Reject/);
-  assert.match(workspace, /Email and reviewable work/);
+  assert.match(workspace, /<span>Agent work<\/span>/);
   assert.match(workspace, /visibleAgentWorkTasks\(agentTasks\)/);
 });
 
@@ -51,10 +53,10 @@ test("cancelling durable work needs a deliberate second action", () => {
   assert.doesNotMatch(workspace, /onClick=\{\(\) => onAction\(task\.id, "cancel"\)\}/);
 });
 
-test("mobile agent work stays contained and the composer does not trigger iPhone zoom", () => {
+test("agent work stays compact by default and the composer does not trigger iPhone zoom", () => {
   assert.match(workspace, /max-w-full flex-1 flex-col overflow-x-hidden/);
   assert.match(workspace, /aria-controls="conversation-agent-work-details"/);
-  assert.match(workspace, /agentWorkExpanded \? "grid" : "hidden md:flex"/);
+  assert.match(workspace, /agentWorkExpanded \? "grid md:flex" : "hidden"/);
   assert.match(workspace, /block truncate text-\[14px\]/);
   assert.match(workspace, /text-\[16px\].*md:text-body/);
   const artifact = read("lib/agent-task-artifact.ts");
@@ -62,6 +64,15 @@ test("mobile agent work stays contained and the composer does not trigger iPhone
   assert.match(artifact, /JSON\.parse\(embedded\)/);
   assert.match(workspace, /text-\[16px\] leading-\[1\.55\] md:text-\[17px\]/);
   assert.doesNotMatch(workspace, /JSON\.stringify\(content, null, 2\)/);
+});
+
+test("terminal Agent Work can be cleared per person without hiding active work", () => {
+  assert.match(dismissals, /primary key \(task_id, profile_id\)/i);
+  assert.match(dismissals, /profile_id = auth\.uid\(\)/i);
+  assert.match(dismissals, /status in \('failed', 'completed', 'cancelled'\)/i);
+  assert.match(taskDetailRoute, /body\.action === "dismiss"/);
+  assert.match(taskDetailRoute, /Active Agent Work cannot be cleared\. Stop it first\./);
+  assert.match(workspace, /Clear \$\{task\.title\} from Agent Work/);
 });
 
 test("chat copy remains readable on mobile and decided work does not show stale approval copy", () => {

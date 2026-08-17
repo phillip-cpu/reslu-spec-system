@@ -476,7 +476,7 @@ function AgentTaskCard({
   compact?: boolean;
   dark?: boolean;
   canRetry?: boolean;
-  onAction: (taskId: string, action: "cancel" | "approve" | "reject" | "retry", artifactId?: string) => void;
+  onAction: (taskId: string, action: "cancel" | "approve" | "reject" | "retry" | "dismiss", artifactId?: string) => void;
 }) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [confirmingRetry, setConfirmingRetry] = useState(false);
@@ -539,6 +539,16 @@ function AgentTaskCard({
               </button>
             </div>
           </div>
+        )}
+        {task.status === "failed" && (
+          <button
+            type="button"
+            onClick={() => onAction(task.id, "dismiss")}
+            className={clsx("shrink-0 rounded-full px-3 py-2 text-caption font-semibold", dark ? "bg-white/10 text-white/70" : "bg-[#eee8de] text-charcoal/70")}
+            aria-label={`Clear ${task.title} from Agent Work`}
+          >
+            Clear
+          </button>
         )}
       </div>
       {!compact && <p className={clsx("mt-2 line-clamp-4 text-[15px] leading-relaxed", dark ? "text-white/70" : "text-charcoal/70")}>{task.objective}</p>}
@@ -1372,7 +1382,7 @@ export function ConversationWorkspace({
 
   const updateAgentTask = useCallback(async (
     taskId: string,
-    action: "cancel" | "approve" | "reject" | "retry",
+    action: "cancel" | "approve" | "reject" | "retry" | "dismiss",
     artifactId?: string
   ) => {
     const conversationId = selectedIdRef.current;
@@ -1427,7 +1437,7 @@ export function ConversationWorkspace({
     return visibleAgentWorkTasks(agentTasks);
   }, [agentTasks]);
   const latestCallTranscript = callTranscript.at(-1);
-  const handleTaskAction = useCallback((taskId: string, action: "cancel" | "approve" | "reject" | "retry", artifactId?: string) => {
+  const handleTaskAction = useCallback((taskId: string, action: "cancel" | "approve" | "reject" | "retry" | "dismiss", artifactId?: string) => {
     void updateAgentTask(taskId, action, artifactId).catch((reason) => {
       setError(reason instanceof Error ? reason.message : "Could not update background task");
     });
@@ -4395,7 +4405,7 @@ export function ConversationWorkspace({
                   onClick={() => setAgentWorkExpanded((expanded) => !expanded)}
                   aria-expanded={agentWorkExpanded}
                   aria-controls="conversation-agent-work-details"
-                  className="flex min-h-14 w-full items-center gap-3 px-3 py-2 text-left md:hidden"
+                  className="flex min-h-14 w-full items-center gap-3 px-3 py-2 text-left md:min-h-12 md:px-0 md:py-1"
                 >
                   <span aria-hidden className={clsx(
                     "h-2.5 w-2.5 shrink-0 rounded-full",
@@ -4417,15 +4427,11 @@ export function ConversationWorkspace({
                   </span>
                   <span aria-hidden className="shrink-0 text-[18px] text-charcoal/45">{agentWorkExpanded ? "⌃" : "⌄"}</span>
                 </button>
-                <div className="mb-2 hidden items-center justify-between gap-3 md:flex">
-                  <p className="label-caps">Agent work</p>
-                  <p className="text-[10px] text-charcoal/45">Email and reviewable work</p>
-                </div>
                 <div
                   id="conversation-agent-work-details"
                   className={clsx(
                     "max-h-[46vh] min-w-0 max-w-full grid-cols-1 gap-3 overflow-y-auto px-3 pb-3 md:flex md:max-h-52 md:snap-x md:overflow-x-auto md:overflow-y-hidden md:px-0 md:pb-1",
-                    agentWorkExpanded ? "grid" : "hidden md:flex",
+                    agentWorkExpanded ? "grid md:flex" : "hidden",
                   )}
                 >
                   {visibleAgentTasks.map((task) => (
