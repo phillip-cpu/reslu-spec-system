@@ -103,6 +103,8 @@ test("a hung iPhone signed-upload response cannot block finalisation forever", (
 
 test("large phone photos are resized before their signed upload", () => {
   assert.match(workspace, /prepareConversationImageForUpload/);
+  assert.match(workspace, /image\/heic,image\/heif,\.heic,\.heif/);
+  assert.match(workspace, /mimeType: preparedMimeType/);
   assert.match(workspace, /Preparing/);
   assert.match(imageUpload, /CONVERSATION_IMAGE_OPTIMIZE_THRESHOLD_BYTES/);
   assert.match(imageUpload, /CONVERSATION_IMAGE_MAX_DIMENSION/);

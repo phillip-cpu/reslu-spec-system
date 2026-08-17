@@ -2756,14 +2756,24 @@ export function ConversationWorkspace({
           })
         : draft.file;
       const preparedFile = await prepareConversationImageForUpload(typedFile);
+      const preparedMimeType = normalizeConversationAttachmentMime(preparedFile.name, preparedFile.type) ?? preparedFile.type;
       const preparedDraft: DraftAttachment = {
         ...draft,
         file: preparedFile,
+        filename: preparedFile.name,
+        mimeType: preparedMimeType,
         byteSize: preparedFile.size,
         status: "uploading",
       };
       commitDraftAttachments((current) => current.map((item) => item.localId === draft.localId
-        ? { ...item, file: preparedFile, byteSize: preparedFile.size, status: "uploading" }
+        ? {
+            ...item,
+            file: preparedFile,
+            filename: preparedFile.name,
+            mimeType: preparedMimeType,
+            byteSize: preparedFile.size,
+            status: "uploading",
+          }
         : item), conversationId);
       uploads.push(uploadDraftAttachment(preparedDraft));
     }
@@ -4891,7 +4901,7 @@ export function ConversationWorkspace({
               <input
                 ref={cameraInputRef}
                 type="file"
-                accept="image/jpeg,image/png,image/webp"
+                accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.heic,.heif"
                 capture="environment"
                 className="hidden"
                 onChange={(event) => {
@@ -4902,7 +4912,7 @@ export function ConversationWorkspace({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/jpeg,image/png,image/webp,application/pdf,.pdf"
+                accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.heic,.heif,application/pdf,.pdf"
                 multiple
                 className="hidden"
                 onChange={(event) => {
