@@ -20,6 +20,7 @@ test("Stuart is structurally denied general MCP mutation tools", () => {
   assert.match(mcp, /const AGENT_ROLE = process\.env\.RESLU_AGENT_ROLE/);
   assert.match(mcp, /const STUART_ALLOWED_TOOLS = new Set/);
   assert.match(mcp, /"get_stuart_finance_brief"/);
+  assert.match(mcp, /"get_stuart_invoice_evidence"/);
   assert.match(mcp, /"run_stuart_finance_review"/);
   assert.match(mcp, /TOOLS\.filter\(\(\{ name \}\) => toolAllowedForAgent\(name\)\)/);
   assert.match(mcp, /if \(!tool \|\| !toolAllowedForAgent\(name\)\)/);

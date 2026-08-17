@@ -21,6 +21,21 @@ test("flags Spec invoices missing from Xero and exact-number total conflicts", (
   assert.deepEqual(findings.map((finding) => finding.kind).sort(), ["missing_from_xero", "xero_conflict"]);
 });
 
+test("does not call a source-less supplier candidate a verified bill missing from Xero", () => {
+  const findings = reviewSpecAgainstXero([
+    { id: "legacy-quote", invoice_number: "D11092", total: 2762.55, status: "unmatched", source_email_id: null, storage_path: null },
+  ], [], "ACCPAY", now);
+  assert.equal(findings[0]?.kind, "missing_source_evidence");
+  assert.match(findings[0]?.detail ?? "", /quote, duplicate or incomplete legacy entry/);
+});
+
+test("keeps evidence-backed supplier bills in the missing-from-Xero queue", () => {
+  const findings = reviewSpecAgainstXero([
+    { id: "verified-bill", invoice_number: "INV-44", total: 550, status: "unmatched", source_email_id: "email-1", storage_path: "invoices/inv-44.pdf" },
+  ], [], "ACCPAY", now);
+  assert.equal(findings[0]?.kind, "missing_from_xero");
+});
+
 test("quarantines non-finance Aria forwards and creates a controlled coaching rule", () => {
   const result = reviewAccountsEmails([{
     id: "e1", from_addr: "aria@reslu.com.au", subject: "Interesting furniture article",

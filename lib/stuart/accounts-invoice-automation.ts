@@ -70,7 +70,7 @@ export async function processAccountsInvoice(emailId: string): Promise<{ outcome
   }
 
   const { data: existingRows } = await service.from("invoices").select("id")
-    .eq("source_email_id", emailId).neq("status", "voided").order("created_at", { ascending: true }).limit(1);
+    .eq("source_email_id", emailId).not("status", "in", "(rejected,voided)").order("created_at", { ascending: true }).limit(1);
   const existing = existingRows?.[0];
   let invoiceId = existing?.id as string | undefined;
   if (!invoiceId) {

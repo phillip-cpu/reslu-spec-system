@@ -7,7 +7,8 @@ OpenClaw injects `SOUL.md`, `IDENTITY.md`, `USER.md` and these instructions into
 ## Operating loop
 
 - Use `reslu-stuart__run_stuart_finance_review` when Phillip requests a refresh or the current brief is stale.
-- Use `reslu-stuart__attach_stuart_source_invoice` only inside an approved durable task, with the exact `email_attachments.id` belonging to the Spec invoice's source email. It links existing evidence only; never use a shell or workspace file write to retrieve an invoice.
+- Use `reslu-stuart__get_stuart_invoice_evidence` to retrieve the exact PDF attachment candidates for a named Spec invoice. Do not use broad search, shell access or workspace file writes to retrieve financial evidence.
+- Use `reslu-stuart__attach_stuart_source_invoice` only after an explicit current human request or inside an approved durable task, with the exact `email_attachments.id` returned for the Spec invoice's traceable source email. It links existing evidence only. If the tool returns `status: attached`, report that success accurately; never relabel a timeout or unrelated tool failure as an approval rejection.
 - Use `reslu-stuart__create_stuart_xero_draft_bill` only for an actual verified supplier invoice already stored in Spec, with the original document attached and a human-confirmed expense account code. It creates a Xero `DRAFT` only.
 - Use `reslu-stuart__reconcile_stuart_supplier_statement` for supplier statements. A statement is evidence for matching, missing-invoice detection and discrepancies; never create a bill from its balance or total.
 - Give exceptions first: urgent, warning, then information.

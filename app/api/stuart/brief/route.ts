@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { isStuartUser } from "@/lib/stuart/access";
 import { buildThirteenWeekForecast, summariseProjectCosts, type StuartCostLine, type StuartForecastInvoice } from "@/lib/stuart/forecast";
@@ -6,7 +6,7 @@ import { buildThirteenWeekForecast, summariseProjectCosts, type StuartCostLine, 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!isStuartUser(user)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -69,22 +69,52 @@ export async function GET() {
     .map((summary) => ({ ...summary, project: projectById.get(summary.project_id) ?? null }))
     .sort((a, b) => Math.abs(b.actual_vs_estimated_ex_gst) - Math.abs(a.actual_vs_estimated_ex_gst));
   const generatedAt = new Date().toISOString();
+  const forecast = buildThirteenWeekForecast(
+    cash.data?.cash_balance ?? 0,
+    (invoices.data ?? []) as StuartForecastInvoice[],
+    generatedAt.slice(0, 10)
+  );
+  const authority = {
+    may: ["observe", "classify", "calculate", "forecast", "reconcile", "flag", "recommend", "prepare handovers", "create draft Xero supplier bills from verified invoices"],
+    may_not: ["approve Xero bills", "create a bill from a supplier statement total", "move money", "pay suppliers", "issue refunds", "run payroll", "change bank details", "reconcile bank feeds", "submit tax", "post journals", "delete financial records", "approve final prices"],
+  };
+  if (request.nextUrl.searchParams.get("response_format") === "concise") {
+    const weeks = forecast.weeks;
+    const openFindings = findings.data ?? [];
+    return NextResponse.json({
+      generated_at: generatedAt,
+      cash_snapshot: cash.data,
+      cash_forecast_summary: {
+        basis: forecast.basis,
+        opening_cash: forecast.opening_cash,
+        closing_cash_base_week_13: weeks.at(-1)?.closing_cash_base ?? forecast.opening_cash,
+        closing_cash_downside_week_13: weeks.at(-1)?.closing_cash_downside ?? forecast.opening_cash,
+        minimum_closing_cash_base: Math.min(...weeks.map((week) => week.closing_cash_base)),
+        minimum_closing_cash_downside: Math.min(...weeks.map((week) => week.closing_cash_downside)),
+      },
+      commercial_summary: {
+        projects: commercialHistory.length,
+        total_actual_ex_gst: commercialHistory.reduce((sum, project) => sum + project.actual_ex_gst, 0),
+        projects_over_estimate: commercialHistory.filter((project) => project.actual_vs_estimated_ex_gst > 0).length,
+      },
+      latest_review: run.data,
+      open_findings: openFindings.slice(0, 25),
+      open_findings_returned: Math.min(openFindings.length, 25),
+      open_findings_total: openFindings.length,
+      more_findings_available: openFindings.length > 25,
+      aria_feedback: (feedback.data ?? []).slice(0, 10),
+      authority,
+    });
+  }
   return NextResponse.json({
     generated_at: generatedAt,
     cash_snapshot: cash.data,
-    cash_forecast_13_weeks: buildThirteenWeekForecast(
-      cash.data?.cash_balance ?? 0,
-      (invoices.data ?? []) as StuartForecastInvoice[],
-      generatedAt.slice(0, 10)
-    ),
+    cash_forecast_13_weeks: forecast,
     commercial_history: commercialHistory,
     commercial_history_note: "Actuals are approved supplier costs already allocated to estimate lines; null actuals are not treated as proof of zero cost.",
     latest_review: run.data,
     open_findings: findings.data ?? [],
     aria_feedback: feedback.data ?? [],
-    authority: {
-      may: ["observe", "classify", "calculate", "forecast", "reconcile", "flag", "recommend", "prepare handovers", "create draft Xero supplier bills from verified invoices"],
-      may_not: ["approve Xero bills", "create a bill from a supplier statement total", "move money", "pay suppliers", "issue refunds", "run payroll", "change bank details", "reconcile bank feeds", "submit tax", "post journals", "delete financial records", "approve final prices"],
-    },
+    authority,
   });
 }
