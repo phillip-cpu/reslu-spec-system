@@ -43,8 +43,10 @@ export function normalizeConversationAttachmentMime(
   const normalized = declaredMimeType.trim().toLowerCase();
   if (normalized === "image/jpg") return "image/jpeg";
   if (isConversationAttachmentMime(normalized)) return normalized;
-  if (normalized && normalized !== "application/octet-stream") return null;
   const extension = filename.trim().toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  // iPhone Files and some document providers use vendor MIME aliases such as
+  // application/x-pdf. The server verifies the real file signature, so a
+  // supported extension is a safe way to normalise the upload request.
   return extension ? CONVERSATION_ATTACHMENT_EXTENSION_MIME.get(extension) ?? null : null;
 }
 
