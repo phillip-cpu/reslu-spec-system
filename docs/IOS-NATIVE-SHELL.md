@@ -44,10 +44,14 @@ can be regenerated and compiled with:
 
 1. From the repository root, run `bash scripts/verify-ios-shell.sh`. This
    generates the Xcode project and performs an unsigned simulator compile.
-2. Open `ios/RESLU/RESLU.xcodeproj`.
-3. Select the RESLU target, choose Phillip's Apple Developer team and confirm
-   the bundle identifier `au.com.reslu.spec` is available.
-4. Connect and unlock the paired physical iPhone, then run.
+2. Connect and unlock the paired physical iPhone. From the repository root run
+   `bash scripts/install-ios-shell.sh <device identifier>` using the identifier
+   shown by `xcrun devicectl list devices`. The installer fails before building
+   if Developer Mode or the CoreDevice tunnel is unavailable; otherwise it
+   performs a signed device build, installs the exact bundle and launches it.
+3. If manual Xcode inspection is needed, open `ios/RESLU/RESLU.xcodeproj`, select
+   the RESLU target and confirm team `3THNC3HJ63` and bundle identifier
+   `au.com.reslu.spec` before running on the connected phone.
 
 On 18 August 2026, CoreDevice reported Phillip's iPhone 15 Pro Max as paired
 with Developer Mode enabled. A generic iPhone Debug build compiled and signed
