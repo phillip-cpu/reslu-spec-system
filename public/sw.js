@@ -1,17 +1,14 @@
 // ============================================================
-// RESLU Spec System — Health + web push (r26)
+// RESLU Spec System — messaging continuity + web push (r27)
 // BUILD-SPEC.md item 2: "public/sw.js service worker (push +
 // notificationclick -> link_href)."
 //
-// Registered ONLY from components/settings/PushSettings.tsx (the
-// Settings -> Push notifications section), at the default '/' scope —
-// no root layout change was needed/made (see that component's own
-// header comment). This file is otherwise unremarkable: it does NOT
-// cache anything (no 'install'/'activate'/'fetch' handlers) — its only
-// job is to react to a push event and a notification click. Keeping it
-// this narrow avoids accidentally turning it into an offline-cache
-// service worker, which is a separate, much larger feature this round
-// never asked for.
+// Registered globally at the default '/' scope. The fetch handler is
+// intentionally narrow: immutable Next/static assets are cache-first and the
+// generic /messages document is network-first with an offline fallback. API
+// responses, private attachment bytes and project-specific HTML are never
+// cached here. Recent conversation JSON is stored separately in a bounded,
+// profile-scoped IndexedDB cache by ConversationWorkspace.
 //
 // Conversation pushes carry an encrypted opaque notification id and fetch
 // that exact private row from RESLU. Legacy payload-less admin/health pushes
@@ -19,6 +16,62 @@
 // the signed-in browser's same-origin session cookie; private message content
 // is never placed in the provider payload.
 // ============================================================
+
+const STATIC_CACHE = "reslu-static-v1";
+const MESSAGING_SHELL_CACHE = "reslu-messaging-shell-v1";
+const STATIC_PATHS = new Set([
+  "/manifest.json",
+  "/apple-touch-icon.png",
+  "/icon-192.png",
+  "/icon-512.png",
+]);
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(self.skipWaiting());
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener("fetch", (event) => {
+  const request = event.request;
+  if (request.method !== "GET") return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin || url.pathname.startsWith("/api/")) return;
+
+  if (request.mode === "navigate" && url.pathname === "/messages") {
+    event.respondWith((async () => {
+      const cache = await caches.open(MESSAGING_SHELL_CACHE);
+      const cacheKey = new Request(`${url.origin}/messages`, { credentials: "same-origin" });
+      try {
+        const response = await fetch(request);
+        const responseUrl = new URL(response.url);
+        // Never cache an authentication redirect or an error page.
+        if (response.ok && responseUrl.origin === url.origin && responseUrl.pathname === "/messages") {
+          await cache.put(cacheKey, response.clone());
+        }
+        return response;
+      } catch (reason) {
+        const cached = await cache.match(cacheKey);
+        if (cached) return cached;
+        throw reason;
+      }
+    })());
+    return;
+  }
+
+  if (url.pathname.startsWith("/_next/static/") || STATIC_PATHS.has(url.pathname)) {
+    event.respondWith((async () => {
+      const cache = await caches.open(STATIC_CACHE);
+      const cached = await cache.match(request);
+      if (cached) return cached;
+      const response = await fetch(request);
+      if (response.ok) await cache.put(request, response.clone());
+      return response;
+    })());
+  }
+});
 
 self.addEventListener("push", (event) => {
   let notificationRequest = fetch("/api/notifications/latest-unread", { credentials: "same-origin" });

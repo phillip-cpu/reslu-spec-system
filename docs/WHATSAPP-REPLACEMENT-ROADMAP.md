@@ -115,7 +115,14 @@ older result loads its exact surrounding context without polling snapping back
 to newest, with an explicit return-to-latest action. Older history now pages
 backwards in bounded batches while preserving the reader's scroll position and
 remaining stable across background polling. Richer message actions,
-attachment-content search and full cold-start offline support remain. Loaded
+attachment-content search and bounded cold-start messaging continuity are now
+implemented. Every client registers the narrow messaging service worker; it
+caches only the generic `/messages` shell and immutable public assets, never
+private APIs or attachment bytes. The latest 100 canonical messages per visited
+conversation and the conversation list are stored separately in a
+profile-scoped IndexedDB cache, with a visible offline label and the existing
+exact-once outbox still accepting new sends. Physical iPhone cold-start and
+cache-eviction behavior remain an acceptance gate. Loaded
 long histories retain every canonical row for search and accessibility while
 `content-visibility` lets the browser skip off-screen layout and paint. The
 merge/order and viewport-anchor algorithms now have behavioral coverage at
