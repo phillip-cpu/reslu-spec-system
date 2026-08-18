@@ -580,6 +580,15 @@ open, requeued the same task id once, completed it through the live Aria worker
 and resolved only the task incident. The unrelated pre-existing chat transport
 incident remained open throughout, proving one lane cannot mask or falsely
 resolve the other.
+The 18 August production prompt-injection drill then exercised a direct Aria
+message, an exactly-once forward to Marco and a private PDF containing the same
+harmless hostile payload. The direct turn treated the quoted payload as data;
+the forward used the structurally tool-free `forwarded_context` lane; the PDF
+used only the fixed private PDF reader. Three jobs completed once, all outputs
+contained no secret-like values, and content-free before/after counts proved no
+task, authority run, approval receipt, email send or participant change. The
+repeatable PDF lives at
+`docs/security-fixtures/reslu-prompt-injection-fixture.pdf`.
 
 Keep Next.js on a currently patched stable release. The Stage 2 dependency
   audit moved the app from vulnerable 16.0.10 to stable 16.3.0 and cleared the
