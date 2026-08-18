@@ -468,6 +468,59 @@ class ConversationAgentBridgeTests(unittest.TestCase):
 
         self.assertEqual(FakeRest.params["limit"], "16")
 
+    def test_first_voice_turn_keeps_prior_context_but_does_not_duplicate_current_request(self):
+        call_id = "123e4567-e89b-42d3-a456-426614174000"
+        rows = [
+            {"id": "older", "metadata": {}, "body": "Earlier context"},
+            {
+                "id": "current",
+                "metadata": {
+                    "source": "voice",
+                    "transport": "openai_realtime_webrtc",
+                    "realtime_call_id": call_id,
+                },
+                "body": "Current request",
+            },
+        ]
+
+        delta = conversation_agent_bridge.realtime_voice_history_delta(rows, call_id, "current")
+
+        self.assertEqual([row["id"] for row in delta], ["older"])
+
+    def test_later_voice_turn_replays_only_delta_from_previous_turn_in_same_call(self):
+        call_id = "123e4567-e89b-42d3-a456-426614174000"
+        voice_metadata = {
+            "source": "voice",
+            "transport": "openai_realtime_webrtc",
+            "realtime_call_id": call_id,
+        }
+        rows = [
+            {"id": "unrelated-old", "metadata": {}, "body": "Old chat"},
+            {"id": "previous-voice", "metadata": voice_metadata, "body": "First question"},
+            {"id": "previous-answer", "metadata": {"job_id": "job-1"}, "body": "First answer"},
+            {"id": "intervening", "metadata": {}, "body": "New shared context"},
+            {"id": "current-voice", "metadata": voice_metadata, "body": "Follow-up"},
+            {"id": "newer-future", "metadata": {}, "body": "Future queued turn"},
+        ]
+
+        delta = conversation_agent_bridge.realtime_voice_history_delta(rows, call_id, "current-voice")
+
+        self.assertEqual(
+            [row["id"] for row in delta],
+            ["previous-voice", "previous-answer", "intervening"],
+        )
+
+    def test_voice_history_falls_back_when_triggering_row_is_outside_window(self):
+        rows = [{"id": "older", "metadata": {}, "body": "Earlier context"}]
+
+        delta = conversation_agent_bridge.realtime_voice_history_delta(
+            rows,
+            "123e4567-e89b-42d3-a456-426614174000",
+            "missing-current",
+        )
+
+        self.assertIs(delta, rows)
+
     def test_history_labels_voice_notes_without_exposing_a_public_url(self):
         class FakeRest:
             @staticmethod
@@ -1119,6 +1172,8 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             rest,
             "conversation-1",
             conversation_agent_bridge.REALTIME_VOICE_HISTORY_LIMIT,
+            current_call_id="123e4567-e89b-42d3-a456-426614174000",
+            triggering_message_id="message-1",
         )
         self.assertEqual(invoke.call_args.kwargs["thinking_level"], "minimal")
         self.assertEqual(invoke.call_args.kwargs["model"], "openai/gpt-5.6-terra")

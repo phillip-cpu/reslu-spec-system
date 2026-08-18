@@ -384,10 +384,51 @@ def agent_identity(rest: SupabaseRest, agent_id: str) -> dict:
     return rows[0]
 
 
+def realtime_voice_history_delta(
+    messages: list[dict],
+    call_id: str | None,
+    triggering_message_id: str | None,
+) -> list[dict]:
+    """Avoid replaying context already retained by the current call session.
+
+    The first turn still receives the complete bounded history that precedes
+    its current request. Later turns begin at the previous human turn from the
+    same canonical call, so the call-scoped OpenClaw session receives only the
+    small intervening delta. The current request itself is supplied separately
+    in CURRENT_REQUEST_JSON and must not be duplicated in history.
+
+    If the transport identifiers are missing or the triggering row has fallen
+    outside the bounded window, preserve the existing full-history fallback.
+    """
+    if not call_id or not triggering_message_id or not re.fullmatch(UUID_PATTERN, call_id):
+        return messages
+    current_index = next(
+        (index for index, row in enumerate(messages) if row.get("id") == triggering_message_id),
+        None,
+    )
+    if current_index is None:
+        return messages
+    previous_index: int | None = None
+    for index, row in enumerate(messages[:current_index]):
+        metadata = row.get("metadata")
+        if (
+            isinstance(metadata, dict)
+            and metadata.get("source") == "voice"
+            and metadata.get("transport") == "openai_realtime_webrtc"
+            and metadata.get("realtime_call_id") == call_id
+        ):
+            previous_index = index
+    start_index = previous_index if previous_index is not None else 0
+    return messages[start_index:current_index]
+
+
 def conversation_history(
     rest: SupabaseRest,
     conversation_id: str,
     limit: int = HISTORY_LIMIT,
+    *,
+    current_call_id: str | None = None,
+    triggering_message_id: str | None = None,
 ) -> str:
     select = (
         "id,author_profile_id,author_agent_id,body,kind,metadata,reply_to_id,created_at,"
@@ -409,6 +450,11 @@ def conversation_history(
         },
     )
     messages.reverse()
+    messages = realtime_voice_history_delta(
+        messages,
+        current_call_id,
+        triggering_message_id,
+    )
     messages_by_id = {row["id"]: row for row in messages}
     missing_reply_ids = sorted({
         row["reply_to_id"]
@@ -1730,7 +1776,13 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
         else None
     )
     history_limit = REALTIME_VOICE_HISTORY_LIMIT if is_realtime_voice else HISTORY_LIMIT
-    history = conversation_history(rest, job["conversation_id"], history_limit)
+    history = conversation_history(
+        rest,
+        job["conversation_id"],
+        history_limit,
+        current_call_id=realtime_call_id if is_realtime_voice else None,
+        triggering_message_id=job["triggering_message_id"] if is_realtime_voice else None,
+    )
     prior_attachment_recall = conversation_attachment_recall(rest, job["conversation_id"])
     scope_context = conversation_scope_context(rest, job["conversation_id"])
     staging_parent = attachment_staging_parent(agent["slug"])

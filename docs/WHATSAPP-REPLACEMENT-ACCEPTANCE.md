@@ -301,6 +301,29 @@ This is latency-cause evidence and a code candidate, not a physical Stage 3
 pass. A fresh iPhone call must compare saved processing/first-audio timings and
 prove contextual follow-up, reconnection, interruption and canonical output.
 
+## Stage 3 same-call context delta candidate: 18 August 2026
+
+- The latest seven days contain 145 canonical voice messages across 29 calls;
+  27 calls had multiple turns and the longest had 16 turns.
+- A metadata-only replay of those real conversation/call shapes found 116
+  same-call continuation turns. The old bridge would have supplied 2,146
+  bounded history rows including a duplicated current request, averaging 14.8
+  rows per turn.
+- The candidate gives the first turn its complete preceding canonical window,
+  then gives later turns only the delta beginning at the previous human turn
+  from that same call. It also removes the current request from history because
+  the same text is already supplied through `CURRENT_REQUEST_JSON`.
+- On the production shapes, the candidate would supply 580 rows, averaging 4.0
+  per turn: a 73 percent reduction. Missing or out-of-window call identity
+  fails back to the complete bounded history.
+- Sixty-four bridge tests pass, including first-turn context, same-call delta,
+  future-turn exclusion, out-of-window fallback, call-scoped session identity,
+  cancellation and existing model/tool boundaries.
+
+This is bounded content and code evidence, not a physical latency pass. The
+next real iPhone call must prove that contextual follow-ups still answer from
+the right RESLU context and compare processing/first-audio timing after rollout.
+
 ## Stage 7 evidence: 18 August 2026 production trace
 
 - Aria delegated the bounded read-only cross-domain scenario to Marco; Marco
