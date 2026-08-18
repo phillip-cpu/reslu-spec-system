@@ -38,7 +38,15 @@ import {
   savePendingConversationCallEnd,
   type PendingConversationCallEnd,
 } from "@/lib/conversation-call-outbox";
-import type { RealtimeVoiceLatencyMetric, RealtimeVoiceOutcome } from "@/lib/realtime-voice-metrics";
+import {
+  addRealtimeResponseUsage,
+  addRealtimeTranscriptionUsage,
+  createRealtimeVoiceUsageAccumulator,
+  realtimeVoiceUsageSnapshot,
+  setRealtimeVoiceUsageModels,
+  type RealtimeVoiceLatencyMetric,
+  type RealtimeVoiceOutcome,
+} from "@/lib/realtime-voice-metrics";
 import {
   nativeRealtimeTransportAvailable,
   nativeVoiceBridgeAvailable,
@@ -160,10 +168,20 @@ interface RealtimeEvent {
   delta?: string;
   transcript?: string;
   item_id?: string;
+  usage?: Record<string, unknown>;
+  session?: {
+    model?: string;
+    audio?: {
+      input?: {
+        transcription?: { model?: string };
+      };
+    };
+  };
   response?: {
     id?: string;
     status?: string;
     metadata?: Record<string, unknown>;
+    usage?: Record<string, unknown>;
     output?: Array<{
       type?: string;
       name?: string;
@@ -1305,6 +1323,7 @@ export function ConversationWorkspace({
   const lastRealtimeSpeechStoppedAtRef = useRef<number | null>(null);
   const realtimeTurnSequenceRef = useRef(0);
   const realtimeTurnTimingsRef = useRef(new Map<string, RealtimeTurnTiming>());
+  const realtimeUsageRef = useRef(createRealtimeVoiceUsageAccumulator());
   const realtimeResponseToolCallIdsRef = useRef(new Map<string, string>());
   const realtimeProgressResponseToolCallIdsRef = useRef(new Map<string, string>());
   const activeRealtimeProgressCueRef = useRef<RealtimeProgressCue | null>(null);
@@ -3294,7 +3313,10 @@ export function ConversationWorkspace({
     realtimeReconnectAttemptsRef.current = 0;
     realtimeReconnectInFlightRef.current = false;
     cancelActiveRealtimeTurn();
-    const voiceMetrics = realtimeVoiceMetrics(realtimeTurnTimingsRef.current);
+    const voiceMetrics = {
+      turns: realtimeVoiceMetrics(realtimeTurnTimingsRef.current),
+      usage: realtimeVoiceUsageSnapshot(realtimeUsageRef.current),
+    };
     dataChannelRef.current?.close();
     dataChannelRef.current = null;
     peerConnectionRef.current?.close();
@@ -3337,6 +3359,7 @@ export function ConversationWorkspace({
     lastRealtimeSpeechStoppedAtRef.current = null;
     realtimeTurnSequenceRef.current = 0;
     realtimeTurnTimingsRef.current.clear();
+    realtimeUsageRef.current = createRealtimeVoiceUsageAccumulator();
     realtimeResponseToolCallIdsRef.current.clear();
     realtimeProgressResponseToolCallIdsRef.current.clear();
     realtimeProgressResponseCueIdsRef.current.clear();
@@ -3690,6 +3713,19 @@ export function ConversationWorkspace({
   }, [callAgent, endCall, selectedId, upsertCallTranscript]);
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
+    if ((event.type === "session.created" || event.type === "session.updated") && event.session) {
+      setRealtimeVoiceUsageModels(
+        realtimeUsageRef.current,
+        event.session.model,
+        event.session.audio?.input?.transcription?.model,
+      );
+    }
+    if (event.type === "conversation.item.input_audio_transcription.completed" && event.usage) {
+      addRealtimeTranscriptionUsage(realtimeUsageRef.current, event.usage);
+    }
+    if (event.type === "response.done" && event.response?.usage) {
+      addRealtimeResponseUsage(realtimeUsageRef.current, event.response.usage);
+    }
     if (event.type === "input_audio_buffer.speech_started") {
       interruptRealtimePlayback(performance.now(), event.native_handled === true);
       setInterim("");
@@ -4212,6 +4248,7 @@ export function ConversationWorkspace({
     activeOutputAudioResponseIdRef.current = null;
     realtimeTurnSequenceRef.current = 0;
     realtimeTurnTimingsRef.current.clear();
+    realtimeUsageRef.current = createRealtimeVoiceUsageAccumulator();
     realtimeResponseToolCallIdsRef.current.clear();
     realtimeProgressResponseToolCallIdsRef.current.clear();
     realtimeProgressResponseCueIdsRef.current.clear();

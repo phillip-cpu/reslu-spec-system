@@ -24,6 +24,10 @@ const healthy = {
   voice_turns_observed: 1,
   average_acknowledgement_ms: 800,
   slowest_interruption_clear_ms: 120,
+  voice_usage_calls_observed: 0,
+  voice_usage_truncated: false,
+  realtime_usage_by_model: [],
+  transcription_usage_by_model: [],
 };
 
 test("voice health retains only bounded timing aggregates", () => {
@@ -31,14 +35,68 @@ test("voice health retains only bounded timing aggregates", () => {
     { realtime_voice_latency: { turns: [
       { turn: 1, outcome: "spoken", speech_to_ack_ms: 800, interruption_to_buffer_cleared_ms: 120, transcript: "private" },
       { turn: 2, outcome: "spoken", speech_to_ack_ms: 1200, interruption_to_buffer_cleared_ms: 180, provider_id: "secret" },
-    ] } },
+    ], usage: {
+      realtime_model: "gpt-realtime-2.1",
+      transcription_model: "gpt-live-transcribe",
+      responses: { count: 2, total_tokens: 500, input_tokens: 350, output_tokens: 150, input_audio_tokens: 40, output_audio_tokens: 100, cached_tokens: 200 },
+      transcriptions: { count: 2, total_tokens: 50, input_tokens: 30, output_tokens: 20, input_audio_tokens: 30, seconds: 0 },
+    } } },
     { realtime_voice_latency: null },
   ]), {
     voice_calls_observed: 1,
     voice_turns_observed: 2,
     average_acknowledgement_ms: 1000,
     slowest_interruption_clear_ms: 180,
+    voice_usage_calls_observed: 1,
+    voice_usage_truncated: false,
+    realtime_usage_by_model: [{
+      model: "gpt-realtime-2.1",
+      calls: 1,
+      responses: 2,
+      total_tokens: 500,
+      input_tokens: 350,
+      output_tokens: 150,
+      input_audio_tokens: 40,
+      output_audio_tokens: 100,
+      cached_tokens: 200,
+    }],
+    transcription_usage_by_model: [{
+      model: "gpt-live-transcribe",
+      calls: 1,
+      transcriptions: 2,
+      total_tokens: 50,
+      input_tokens: 30,
+      output_tokens: 20,
+      input_audio_tokens: 30,
+      seconds: 0,
+    }],
   });
+});
+
+test("voice usage rolls up separately by exact model and declares a capped period", () => {
+  const result = summarizeConversationVoiceHealth([
+    { realtime_voice_latency: { usage: {
+      realtime_model: "gpt-realtime-2.1",
+      transcription_model: "gpt-live-transcribe",
+      responses: { count: 1, total_tokens: 100, input_tokens: 80, output_tokens: 20 },
+      transcriptions: { count: 1, total_tokens: 12, input_tokens: 8, output_tokens: 4 },
+    } } },
+    { realtime_voice_latency: { usage: {
+      realtime_model: "gpt-realtime-2.1-mini",
+      transcription_model: "gpt-live-transcribe",
+      responses: { count: 1, total_tokens: 40, input_tokens: 30, output_tokens: 10 },
+      transcriptions: { count: 1, total_tokens: 8, input_tokens: 6, output_tokens: 2 },
+    } } },
+  ], true);
+  assert.equal(result.voice_usage_calls_observed, 2);
+  assert.equal(result.voice_usage_truncated, true);
+  assert.deepEqual(result.realtime_usage_by_model.map((entry) => [entry.model, entry.total_tokens]), [
+    ["gpt-realtime-2.1", 100],
+    ["gpt-realtime-2.1-mini", 40],
+  ]);
+  assert.deepEqual(result.transcription_usage_by_model.map((entry) => [entry.model, entry.total_tokens]), [
+    ["gpt-live-transcribe", 20],
+  ]);
 });
 
 test("operational failures are incidents while latency misses are warnings", () => {

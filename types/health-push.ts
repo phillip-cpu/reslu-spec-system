@@ -101,6 +101,29 @@ export interface ConversationTransportHealth {
   voice_turns_observed: number;
   average_acknowledgement_ms: number | null;
   slowest_interruption_clear_ms: number | null;
+  voice_usage_calls_observed: number;
+  voice_usage_truncated: boolean;
+  realtime_usage_by_model: {
+    model: string;
+    calls: number;
+    responses: number;
+    total_tokens: number;
+    input_tokens: number;
+    output_tokens: number;
+    input_audio_tokens: number;
+    output_audio_tokens: number;
+    cached_tokens: number;
+  }[];
+  transcription_usage_by_model: {
+    model: string;
+    calls: number;
+    transcriptions: number;
+    total_tokens: number;
+    input_tokens: number;
+    output_tokens: number;
+    input_audio_tokens: number;
+    seconds: number;
+  }[];
   operational_incident: boolean;
   level: HealthPillLevel;
 }

@@ -1,4 +1,4 @@
-import { sanitizeRealtimeVoiceMetrics } from "./realtime-voice-metrics.ts";
+import { sanitizeRealtimeVoiceMetrics, sanitizeRealtimeVoiceUsage } from "./realtime-voice-metrics.ts";
 import type { ConversationTransportHealth, HealthPillLevel } from "../types/health-push.ts";
 
 export const CONVERSATION_PENDING_WARNING_MS = 2 * 60 * 1000;
@@ -24,7 +24,7 @@ function average(values: number[]) {
 }
 
 /** Content-free aggregate over the already-sanitized per-call timing payload. */
-export function summarizeConversationVoiceHealth(calls: CallLatencyRow[]) {
+export function summarizeConversationVoiceHealth(calls: CallLatencyRow[], usageTruncated = false) {
   const callMetrics = calls.map((call) => {
     const latency = call.realtime_voice_latency;
     if (!latency || typeof latency !== "object" || Array.isArray(latency)) return [];
@@ -35,11 +35,56 @@ export function summarizeConversationVoiceHealth(calls: CallLatencyRow[]) {
   const interruptions = turns.flatMap((turn) => typeof turn.interruption_to_buffer_cleared_ms === "number"
     ? [turn.interruption_to_buffer_cleared_ms]
     : []);
+  const usageCalls = calls.flatMap((call) => {
+    const latency = call.realtime_voice_latency;
+    if (!latency || typeof latency !== "object" || Array.isArray(latency)) return [];
+    const usage = sanitizeRealtimeVoiceUsage((latency as Record<string, unknown>).usage);
+    return usage ? [usage] : [];
+  });
+  const realtimeByModel = new Map<string, ConversationTransportHealth["realtime_usage_by_model"][number]>();
+  const transcriptionByModel = new Map<string, ConversationTransportHealth["transcription_usage_by_model"][number]>();
+  for (const usage of usageCalls) {
+    if (usage.responses.count > 0) {
+      const model = usage.realtime_model ?? "Unknown Realtime model";
+      const current = realtimeByModel.get(model) ?? {
+        model, calls: 0, responses: 0, total_tokens: 0, input_tokens: 0, output_tokens: 0,
+        input_audio_tokens: 0, output_audio_tokens: 0, cached_tokens: 0,
+      };
+      current.calls += 1;
+      current.responses += usage.responses.count;
+      current.total_tokens += usage.responses.total_tokens;
+      current.input_tokens += usage.responses.input_tokens;
+      current.output_tokens += usage.responses.output_tokens;
+      current.input_audio_tokens += usage.responses.input_audio_tokens;
+      current.output_audio_tokens += usage.responses.output_audio_tokens;
+      current.cached_tokens += usage.responses.cached_tokens;
+      realtimeByModel.set(model, current);
+    }
+    if (usage.transcriptions.count > 0) {
+      const model = usage.transcription_model ?? "Unknown transcription model";
+      const current = transcriptionByModel.get(model) ?? {
+        model, calls: 0, transcriptions: 0, total_tokens: 0, input_tokens: 0, output_tokens: 0,
+        input_audio_tokens: 0, seconds: 0,
+      };
+      current.calls += 1;
+      current.transcriptions += usage.transcriptions.count;
+      current.total_tokens += usage.transcriptions.total_tokens;
+      current.input_tokens += usage.transcriptions.input_tokens;
+      current.output_tokens += usage.transcriptions.output_tokens;
+      current.input_audio_tokens += usage.transcriptions.input_audio_tokens;
+      current.seconds = Math.round((current.seconds + usage.transcriptions.seconds) * 1000) / 1000;
+      transcriptionByModel.set(model, current);
+    }
+  }
   return {
     voice_calls_observed: callMetrics.filter((metrics) => metrics.length > 0).length,
     voice_turns_observed: turns.length,
     average_acknowledgement_ms: average(acknowledgements),
     slowest_interruption_clear_ms: interruptions.length > 0 ? Math.max(...interruptions) : null,
+    voice_usage_calls_observed: usageCalls.length,
+    voice_usage_truncated: usageTruncated,
+    realtime_usage_by_model: [...realtimeByModel.values()].sort((left, right) => right.total_tokens - left.total_tokens),
+    transcription_usage_by_model: [...transcriptionByModel.values()].sort((left, right) => right.total_tokens - left.total_tokens),
   };
 }
 

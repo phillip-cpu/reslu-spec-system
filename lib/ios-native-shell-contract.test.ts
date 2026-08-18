@@ -104,6 +104,10 @@ test("the shell keeps canonical RESLU authentication, server SDP and production 
     voice,
     /let nativeContinuity = continuity\.payload[\s\S]*realtimeHTTPClient\.endCall\([\s\S]*realtimeTransport\.stop\(\)/,
   );
+  assert.match(voice, /NativeRealtimeUsageMetrics/);
+  assert.match(voice, /realtimeUsage\.observe\(event\)/);
+  assert.match(voice, /openai_realtime_response_done_client_observed/);
+  assert.match(nativeHTTP, /body\["voice_metrics"\] = voiceMetrics/);
 });
 
 test("web and native exchange provider events while the browser path remains optional", () => {

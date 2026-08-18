@@ -63,6 +63,16 @@ test("call records retain bounded timing metadata without transcript or provider
   assert.doesNotMatch(nativeContinuity, /transcript:/);
 });
 
+test("browser and native Realtime calls retain content-free model usage from provider completion events", () => {
+  assert.match(workspace, /event\.response\?\.usage/);
+  assert.match(workspace, /event\.usage/);
+  assert.match(workspace, /realtimeVoiceUsageSnapshot/);
+  assert.match(metrics, /openai_realtime_response_done_client_observed/);
+  assert.match(metrics, /input_audio_tokens/);
+  assert.match(metrics, /output_audio_tokens/);
+  assert.match(metrics, /cached_tokens/);
+});
+
 test("the spoken response is requested before refreshing canonical messages", () => {
   assert.match(workspace, /void loadMessages\(selectedId\)/);
   assert.ok(workspace.indexOf("void loadMessages(selectedId)") < workspace.indexOf('type: "response.create"'));
