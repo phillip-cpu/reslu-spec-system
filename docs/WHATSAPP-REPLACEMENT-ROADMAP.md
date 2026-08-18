@@ -508,8 +508,8 @@ Stage gate:
 
 ## Stage 6 - Meeting Mode and intelligent filing
 
-Status: implementation, database safeguards and the pinned Mac-side local
-Whisper adapter are deployed and runtime-verified. Real client-meeting
+Status: implementation, database safeguards and the deterministic Mac-side
+local Whisper worker are deployed and production-verified. Real client-meeting
 acceptance remains pending.
 
 Implemented in the core slice:
@@ -521,19 +521,21 @@ Implemented in the core slice:
 - Explicit participant-consent gate, silent capture, pause/resume/finish,
   30-second private on-device audio/session checkpoints and recoverable upload.
 - Private Supabase source audio and local-Whisper transcription on the Mac mini.
-  The MCP adapter validates the signed URL against the configured Supabase
-  origin, bounds the download, uses a mode-0600 temporary file, withholds the
-  URL from Aria and deletes the audio after success or failure. Full client
-  meetings are not sent to OpenAI.
-- Durable strong-model Aria drafting that continues after the capture screen
-  closes, with seven editable minutes sections and the source transcript.
+  The deterministic worker authenticates as Aria, accepts only a bound Meeting
+  Mode job, validates the signed URL against the configured Supabase origin,
+  bounds the download, uses a mode-0600 temporary file and deletes the audio
+  after success or failure. Full client recordings are not sent to OpenAI.
+- Server-side strict-schema drafting with seven editable minutes sections and
+  the source transcript. The server owns the OpenAI credential; the Mac submits
+  only the exact transcript and the draft remains held for review.
 - Optimistic draft versioning, destination revalidation, duplicate-event
   confirmation, one transactional canonical record/timeline link and an audit
   trail for capture, destination, draft and filing state changes.
 
 Still required before the stage gate can pass:
 
-- Test the complete local-Whisper task on real production meeting data.
+- Test the complete local-Whisper task in a real client meeting. The synthetic
+  production path has already passed end to end.
 - Add speaker labels only if a locally approved diarization path proves reliable;
   the current source is a verbatim meeting-level transcript.
 - Prove lead, active-project and ambiguous-destination scenarios in real meetings.
