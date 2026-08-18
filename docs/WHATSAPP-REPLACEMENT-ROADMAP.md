@@ -572,6 +572,14 @@ and records a recovery event. A pending approval, an approved/published artifact
 an approved event or an approved failed task remains a visible dead letter until
 the relevant email, booking or record is inspected; RESLU never claims an
 uncertain external action was undone and never retries it automatically.
+Production commit `9493c7a` gives durable-task failures their own
+`conversation_tasks` incident lifecycle, separate from chat turns, calls and
+capability failures. The 18 August acceptance drill opened one incident and one
+notification for a synthetic read-only failed task, deduplicated the repeated
+open, requeued the same task id once, completed it through the live Aria worker
+and resolved only the task incident. The unrelated pre-existing chat transport
+incident remained open throughout, proving one lane cannot mask or falsely
+resolve the other.
 
 Keep Next.js on a currently patched stable release. The Stage 2 dependency
   audit moved the app from vulnerable 16.0.10 to stable 16.3.0 and cleared the
