@@ -129,6 +129,17 @@ test("poor-network reads are bounded and agent-work polling stays single-flight"
   assert.match(workspace, /activeAgentTaskRequestRef\.current\.delete\(conversationId\)/);
 });
 
+test("interactive chat actions release their busy state after a bounded network wait", () => {
+  const boundedActionUses = workspace.match(/CONVERSATION_ACTION_TIMEOUT_MS/g)?.length ?? 0;
+  assert.match(workspace, /CONVERSATION_ACTION_TIMEOUT_MS = 15000/);
+  assert.ok(boundedActionUses >= 13, `expected every interactive action class to be bounded, found ${boundedActionUses}`);
+  assert.match(workspace, /boundedFetch\([\s\S]*messages\/\$\{message\.id\}\/forward[\s\S]*CONVERSATION_ACTION_TIMEOUT_MS/);
+  assert.match(workspace, /boundedFetch\([\s\S]*tasks\/\$\{taskId\}[\s\S]*CONVERSATION_ACTION_TIMEOUT_MS/);
+  assert.match(workspace, /boundedFetch\([\s\S]*\/preferences[\s\S]*CONVERSATION_ACTION_TIMEOUT_MS/);
+  assert.match(workspace, /boundedFetch\([\s\S]*\/reaction[\s\S]*CONVERSATION_ACTION_TIMEOUT_MS/);
+  assert.match(workspace, /boundedFetch\([\s\S]*\/pin[\s\S]*CONVERSATION_ACTION_TIMEOUT_MS/);
+});
+
 test("permanent send failures do not offer an endless retry loop", () => {
   assert.match(workspace, /pending\.retryable && \(/);
   assert.match(workspace, /copyOutboxEntry/);

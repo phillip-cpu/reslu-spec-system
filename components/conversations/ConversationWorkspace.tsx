@@ -135,6 +135,7 @@ const MESSAGE_SEND_TIMEOUT_MS = 20000;
 const MESSAGE_RECONCILIATION_TIMEOUT_MS = 4000;
 const ATTACHMENT_FINALIZE_REQUEST_TIMEOUT_MS = 6000;
 const CONVERSATION_READ_TIMEOUT_MS = 8000;
+const CONVERSATION_ACTION_TIMEOUT_MS = 15000;
 const OFFLINE_CONVERSATION_NOTICE = "Offline — showing recent conversations saved on this device.";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -739,23 +740,27 @@ function NewConversation({ people, scope, onCreated, onClose }: {
       createIntentRef.current = { signature, id: crypto.randomUUID() };
     }
     try {
-      const response = await fetch(scope ? "/api/conversations/scoped" : "/api/conversations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(scope ? {
-          scope_kind: scope.kind,
-          scope_id: scope.id,
-          purpose_key: `topic_${createIntentRef.current.id.replaceAll("-", "")}`,
-          title,
-          agent_slug: agentSlugs[0],
-          client_conversation_id: createIntentRef.current.id,
-        } : {
-          profile_ids: profileIds,
-          agent_slugs: agentSlugs,
-          title,
-          client_conversation_id: createIntentRef.current.id,
-        }),
-      });
+      const response = await boundedFetch(
+        scope ? "/api/conversations/scoped" : "/api/conversations",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(scope ? {
+            scope_kind: scope.kind,
+            scope_id: scope.id,
+            purpose_key: `topic_${createIntentRef.current.id.replaceAll("-", "")}`,
+            title,
+            agent_slug: agentSlugs[0],
+            client_conversation_id: createIntentRef.current.id,
+          } : {
+            profile_ids: profileIds,
+            agent_slugs: agentSlugs,
+            title,
+            client_conversation_id: createIntentRef.current.id,
+          }),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Could not create conversation");
       onCreated(body.id);
@@ -853,7 +858,7 @@ function ForwardMessageDialog({
     setSaving(true);
     setError(null);
     try {
-      const response = await fetch(
+      const response = await boundedFetch(
         `/api/conversations/${message.conversation_id}/messages/${message.id}/forward`,
         {
           method: "POST",
@@ -862,7 +867,8 @@ function ForwardMessageDialog({
             destination_conversation_ids: destinationIds,
             client_forward_id: intentRef.current.id,
           }),
-        }
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
       );
       const body = await response.json().catch(() => ({})) as { error?: string };
       if (!response.ok) throw new Error(body.error ?? "Could not forward this message");
@@ -974,11 +980,15 @@ function GroupDetailsDialog({
     setError(null);
     let applied = false;
     try {
-      const response = await fetch(`/api/conversations/${conversation.id}/group`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...payload, client_action_id: actionIntentRef.current.id }),
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${conversation.id}/group`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...payload, client_action_id: actionIntentRef.current.id }),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const body = await response.json().catch(() => ({})) as { error?: string };
       if (!response.ok) throw new Error(body.error ?? "Could not update this group");
       applied = true;
@@ -1041,11 +1051,15 @@ function GroupDetailsDialog({
     setError(null);
     let applied = false;
     try {
-      const response = await fetch(`/api/conversations/${conversation.id}/group`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...payload, client_action_id: actionIntentRef.current.id }),
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${conversation.id}/group`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...payload, client_action_id: actionIntentRef.current.id }),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const body = await response.json().catch(() => ({})) as { error?: string };
       if (!response.ok) throw new Error(body.error ?? "Could not leave this group");
       applied = true;
@@ -1478,11 +1492,15 @@ export function ConversationWorkspace({
   ) => {
     const conversationId = selectedIdRef.current;
     if (!conversationId) return;
-    const response = await fetch(`/api/conversations/${conversationId}/tasks/${taskId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, artifact_id: artifactId }),
-    });
+    const response = await boundedFetch(
+      `/api/conversations/${conversationId}/tasks/${taskId}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, artifact_id: artifactId }),
+      },
+      CONVERSATION_ACTION_TIMEOUT_MS,
+    );
     const body = await response.json() as { error?: string };
     if (!response.ok) throw new Error(body.error ?? "Could not update task");
     await loadAgentTasks(conversationId);
@@ -1678,11 +1696,15 @@ export function ConversationWorkspace({
     if (lastReadMessageByConversationRef.current.get(conversationId) === throughMessageId) return;
     lastReadMessageByConversationRef.current.set(conversationId, throughMessageId);
     try {
-      const response = await fetch(`/api/conversations/${conversationId}/read`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ through_message_id: throughMessageId }),
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${conversationId}/read`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ through_message_id: throughMessageId }),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       if (!response.ok) throw new Error("Could not update read state");
       void loadConversations({ preserveError: true });
     } catch {
@@ -2088,15 +2110,19 @@ export function ConversationWorkspace({
     setMessageMutationId(message.id);
     setError(null);
     try {
-      const response = await fetch(`/api/conversations/${selectedIdRef.current}/messages/${message.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "edit",
-          body: normalized,
-          expected_version: message.edited_at ?? message.created_at,
-        }),
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${selectedIdRef.current}/messages/${message.id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "edit",
+            body: normalized,
+            expected_version: message.edited_at ?? message.created_at,
+          }),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const result = await response.json().catch(() => ({})) as { message?: ConversationMessage; error?: string };
       if (!response.ok || !result.message) throw new Error(result.error ?? "Could not edit this message");
       applyMessageMutation(result.message);
@@ -2116,7 +2142,11 @@ export function ConversationWorkspace({
     setMessageMutationId(message.id);
     setError(null);
     try {
-      const response = await fetch(`/api/conversations/${conversationId}/messages/${message.id}`, { method: "DELETE" });
+      const response = await boundedFetch(
+        `/api/conversations/${conversationId}/messages/${message.id}`,
+        { method: "DELETE" },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const result = await response.json().catch(() => ({})) as { message?: ConversationMessage; error?: string };
       if (!response.ok || !result.message) throw new Error(result.error ?? "Could not delete this message");
       applyMessageMutation(result.message);
@@ -2134,11 +2164,15 @@ export function ConversationWorkspace({
     setMessageMutationId(message.id);
     setError(null);
     try {
-      const response = await fetch(`/api/conversations/${conversationId}/messages/${message.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "restore" }),
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${conversationId}/messages/${message.id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "restore" }),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const result = await response.json().catch(() => ({})) as { message?: ConversationMessage; error?: string };
       if (!response.ok || !result.message) throw new Error(result.error ?? "Could not restore this message");
       applyMessageMutation(result.message);
@@ -2159,11 +2193,15 @@ export function ConversationWorkspace({
     setMessageMutationId(message.id);
     setError(null);
     try {
-      const response = await fetch(`/api/conversations/${conversationId}/messages/${message.id}/reaction`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reaction }),
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${conversationId}/messages/${message.id}/reaction`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reaction }),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const result = await response.json().catch(() => ({})) as { reactions?: ConversationMessage["reactions"]; error?: string };
       if (!response.ok || !result.reactions) throw new Error(result.error ?? "Could not update reaction");
       setMessages((current) => current.map((candidate) => candidate.id === message.id
@@ -2187,11 +2225,15 @@ export function ConversationWorkspace({
     setMessageMutationId(message.id);
     setError(null);
     try {
-      const response = await fetch(`/api/conversations/${conversationId}/messages/${message.id}/pin`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pinned: nextPinned }),
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${conversationId}/messages/${message.id}/pin`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pinned: nextPinned }),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const result = await response.json().catch(() => ({})) as { pinned_at?: string | null; pinned_by?: string | null; error?: string };
       if (!response.ok || !("pinned_at" in result)) throw new Error(result.error ?? "Could not update pinned message");
       const updated = { ...message, pinned_at: result.pinned_at ?? null, pinned_by: result.pinned_by ?? null };
@@ -2573,11 +2615,15 @@ export function ConversationWorkspace({
     setConversationMenuOpen(false);
     setError(null);
     try {
-      const response = await fetch(`/api/conversations/${selectedId}/preferences`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(changes),
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${selectedId}/preferences`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(changes),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Could not update this conversation");
       const preferences = body.preferences as {
@@ -2613,9 +2659,10 @@ export function ConversationWorkspace({
     messageSearchRequestRef.current = requestNumber;
     setMessageSearch((current) => ({ ...current, loading: true, error: null, hasSearched: true }));
     try {
-      const response = await fetch(
+      const response = await boundedFetch(
         `/api/conversations/${selectedId}/search?q=${encodeURIComponent(query)}`,
-        { cache: "no-store" }
+        { cache: "no-store" },
+        CONVERSATION_READ_TIMEOUT_MS,
       );
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Could not search this conversation");
