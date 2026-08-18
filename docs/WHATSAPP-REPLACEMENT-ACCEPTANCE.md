@@ -252,6 +252,27 @@ and no required control is smaller than 44 px in either dimension.
 This improves the production baseline but does not replace the required live
 larger-Dynamic-Type, contrast, VoiceOver or physical touch-target exercises.
 
+## Stage 8 desktop forwarding keyboard trace: 19 August 2026
+
+- In an authenticated production Safari session on `spec.reslu.com.au/office`,
+  the latest Aria message action menu opened from the keyboard-accessible
+  message-action control and exposed Reply, Forward, Copy and Pin.
+- Opening Forward placed initial focus on the dialog's Close control. Safari
+  Option-Tab reached the conversation search field, every visible destination
+  checkbox and Close, then wrapped inside the dialog without escaping to the
+  underlying page.
+- Before the repair, Escape closed Forward but left focus on the document root.
+  PR #153 deployed production commit `39c4bfabb8abe62ded565e00cd9bf860e1482b62`;
+  the exact production retest then closed Forward with Escape and returned focus
+  to the same Aria message-action control.
+- The production login returned HTTP 200 and the unauthenticated conversations
+  endpoint still redirected to login. No destination was selected, no message
+  was forwarded and no RESLU record changed during this trace.
+
+This closes the live desktop forwarding focus-containment and focus-return
+slice only. VoiceOver, Reduce Motion, larger Dynamic Type, contrast and physical
+iPhone touch-target exercises remain open, so Stage 8 remains pending.
+
 ## Stage 4 desktop persistence observation: 18 August 2026
 
 - In the authenticated production Safari session, the persistent messenger was
