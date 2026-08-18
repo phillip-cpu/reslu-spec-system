@@ -1978,7 +1978,7 @@ const TOOLS = [
   {
     name: "get_stuart_invoice_evidence",
     description:
-      "Read one Spec supplier invoice and the metadata for PDF attachments on its traceable source email. Returns exact attachment IDs, fingerprints, readable-evidence state, amount tokens and whether each PDF is already attached. Use this before attach_stuart_source_invoice. Read-only; it cannot alter Spec or Xero.",
+      "Read one Spec supplier invoice and bounded PDF evidence from its traceable source email. Returns exact attachment IDs, fingerprints, amount tokens, whether the Spec legal name appears, and labelled checksum-valid Australian ABN candidates. It never returns raw document text or bank details. Use this before attaching evidence or requesting approval for a new supplier contact. Read-only; it cannot alter Spec or Xero.",
     inputSchema: {
       type: "object",
       properties: {
