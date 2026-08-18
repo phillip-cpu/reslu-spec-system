@@ -44,14 +44,32 @@ export function summarizeConversationVoiceHealth(calls: CallLatencyRow[]) {
 }
 
 export function conversationTransportHasIncident(health: Omit<ConversationTransportHealth, "level" | "operational_incident">) {
+  return conversationTurnTransportHasIncident(health)
+    || conversationTaskTransportHasIncident(health);
+}
+
+/**
+ * Conversational transport failures share one lifecycle: queued/processing
+ * turns, stale calls, missing capabilities and health-read failures. Durable
+ * background work is intentionally excluded so it can alert and recover
+ * independently without being masked by an unrelated failed chat turn.
+ */
+export function conversationTurnTransportHasIncident(
+  health: Omit<ConversationTransportHealth, "level" | "operational_incident">
+) {
   return health.query_errors > 0
     || health.unavailable_capabilities.length > 0
     || health.processing_jobs_stuck > 0
     || health.failed_jobs_24h > 0
-    || health.running_tasks_stuck > 0
-    || health.failed_tasks_24h > 0
     || health.active_calls_stale > 0
     || (health.oldest_pending_job_ms ?? 0) > CONVERSATION_PENDING_INCIDENT_MS;
+}
+
+/** Durable task dead letters/recovery have their own deduplicated incident. */
+export function conversationTaskTransportHasIncident(
+  health: Omit<ConversationTransportHealth, "level" | "operational_incident">
+) {
+  return health.running_tasks_stuck > 0 || health.failed_tasks_24h > 0;
 }
 
 export function conversationTransportLevel(
