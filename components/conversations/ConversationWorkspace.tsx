@@ -23,6 +23,13 @@ import {
   isRecoverableConversationUploadError,
   type ConversationUploadProbe,
 } from "@/lib/conversation-upload-recovery";
+import {
+  lastConversationCacheProfile,
+  loadCachedConversationList,
+  loadCachedConversationMessages,
+  saveCachedConversationList,
+  saveCachedConversationMessages,
+} from "@/lib/conversation-offline-cache";
 import { prepareConversationImageForUpload } from "@/lib/conversation-image-upload";
 import { isFatalSpeechRecognitionError, speechRecognitionErrorMessage } from "@/lib/conversation-voice";
 import {
@@ -109,6 +116,7 @@ type CallState = "connecting" | "listening" | "thinking" | "speaking" | "interru
 const MESSAGE_SEND_TIMEOUT_MS = 20000;
 const MESSAGE_RECONCILIATION_TIMEOUT_MS = 4000;
 const ATTACHMENT_FINALIZE_REQUEST_TIMEOUT_MS = 6000;
+const OFFLINE_CONVERSATION_NOTICE = "Offline — showing recent conversations saved on this device.";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface SpeechResultLike {
@@ -1302,6 +1310,7 @@ export function ConversationWorkspace({
   const conversationListRequestRef = useRef(0);
   const messageRequestSequenceRef = useRef(0);
   const activeMessageRequestRef = useRef(new Map<string, number>());
+  const offlineMessageCacheHydratedRef = useRef(new Set<string>());
   const messageLongPressRef = useRef<{ timer: number; messageId: string; x: number; y: number } | null>(null);
   const swipeBackRef = useRef<{ pointerId: number; x: number; y: number; latestX: number; latestY: number } | null>(null);
 
@@ -1499,12 +1508,7 @@ export function ConversationWorkspace({
   const loadConversations = useCallback(async (options?: { preserveError?: boolean }) => {
     const requestNumber = conversationListRequestRef.current + 1;
     conversationListRequestRef.current = requestNumber;
-    try {
-      const response = await fetch("/api/conversations", { cache: "no-store" });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error ?? "Could not load conversations");
-      if (conversationListRequestRef.current !== requestNumber) return;
-      const conversationData = body as ConversationsResponse;
+    const applyConversationData = (conversationData: ConversationsResponse) => {
       const signedInProfileId = conversationData.people.find((person) => person.is_self)?.id ?? null;
       currentUserIdRef.current = signedInProfileId;
       setCurrentUserId(signedInProfileId);
@@ -1522,9 +1526,38 @@ export function ConversationWorkspace({
         selectedIdRef.current = next;
         return next;
       });
+      return signedInProfileId;
+    };
+    try {
+      const response = await fetch("/api/conversations", { cache: "no-store" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Could not load conversations");
+      if (conversationListRequestRef.current !== requestNumber) return;
+      const conversationData = body as ConversationsResponse;
+      const signedInProfileId = applyConversationData(conversationData);
+      if (signedInProfileId) {
+        void saveCachedConversationList(signedInProfileId, conversationData).catch(() => null);
+      }
+      setNotice((current) => current === OFFLINE_CONVERSATION_NOTICE ? null : current);
       if (!options?.preserveError) setError(null);
     } catch (reason) {
       if (conversationListRequestRef.current !== requestNumber) return;
+      const cachedProfileId = currentUserIdRef.current ?? lastConversationCacheProfile();
+      if (cachedProfileId) {
+        try {
+          const cached = await loadCachedConversationList(cachedProfileId);
+          if (conversationListRequestRef.current !== requestNumber) return;
+          if (cached?.ownerProfileId === cachedProfileId) {
+            applyConversationData(cached.data);
+            setNotice(OFFLINE_CONVERSATION_NOTICE);
+            setError(null);
+            return;
+          }
+        } catch {
+          // Preserve the original network error when the device cache is not
+          // available or has been evicted by the browser.
+        }
+      }
       setError(reason instanceof Error ? reason.message : "Could not load conversations");
     } finally {
       if (conversationListRequestRef.current === requestNumber) setLoading(false);
@@ -1618,6 +1651,19 @@ export function ConversationWorkspace({
       setParticipants(body.participants);
       setAgentActivity(Array.isArray(body.agent_activity) ? body.agent_activity as ConversationAgentActivity[] : []);
       setPinnedMessages(Array.isArray(body.pinned_messages) ? body.pinned_messages as ConversationMessage[] : []);
+      const cacheOwnerProfileId = currentUserIdRef.current;
+      if (cacheOwnerProfileId && !anchorMessageId && !options?.before && !options?.mergeOlder) {
+        offlineMessageCacheHydratedRef.current.delete(conversationId);
+        void saveCachedConversationMessages({
+          ownerProfileId: cacheOwnerProfileId,
+          conversationId,
+          messages: incoming,
+          participants: body.participants,
+          agentActivity: Array.isArray(body.agent_activity) ? body.agent_activity as ConversationAgentActivity[] : [],
+          pinnedMessages: Array.isArray(body.pinned_messages) ? body.pinned_messages as ConversationMessage[] : [],
+          hasOlder: Boolean(body.context?.has_older),
+        }).catch(() => null);
+      }
       const requestedMessage = requestedMessageIdRef.current
         ? incoming.find((message) => message.id === requestedMessageIdRef.current)
         : null;
@@ -1653,6 +1699,35 @@ export function ConversationWorkspace({
       }
     } catch (reason) {
       if (activeMessageRequestRef.current.get(conversationId) === requestNumber) {
+        const ownerProfileId = currentUserIdRef.current ?? lastConversationCacheProfile();
+        if (ownerProfileId && offlineMessageCacheHydratedRef.current.has(conversationId)) {
+          setNotice(OFFLINE_CONVERSATION_NOTICE);
+          setError(null);
+          return;
+        }
+        if (ownerProfileId && !offlineMessageCacheHydratedRef.current.has(conversationId)) {
+          try {
+            const cached = await loadCachedConversationMessages(ownerProfileId, conversationId);
+            if (
+              cached?.ownerProfileId === ownerProfileId
+              && activeMessageRequestRef.current.get(conversationId) === requestNumber
+              && selectedIdRef.current === conversationId
+            ) {
+              offlineMessageCacheHydratedRef.current.add(conversationId);
+              setMessages(cached.messages);
+              setParticipants(cached.participants);
+              setAgentActivity(cached.agentActivity);
+              setPinnedMessages(cached.pinnedMessages);
+              setHasOlderMessages(cached.hasOlder);
+              setNotice(OFFLINE_CONVERSATION_NOTICE);
+              setError(null);
+              return;
+            }
+          } catch {
+            // Preserve the original network error if no bounded local
+            // snapshot is available for this profile and conversation.
+          }
+        }
         setError(reason instanceof Error ? reason.message : "Could not load messages");
       }
     } finally {

@@ -189,6 +189,30 @@ This closes the known lost-success-response ambiguity in the browser. The
 physical airplane-mode reconnect and two-device agreement exercise remains
 open, so Stage 2 stays partial.
 
+## Stage 2 cold-start continuity candidate: 18 August 2026
+
+- The root app now registers the existing RESLU service worker on every
+  supported client, independent of whether push notifications are enabled.
+- Its fetch boundary is deliberately narrow: only immutable public assets and
+  the generic `/messages` document are cached. `/api/*`, project-specific HTML,
+  notification content and private attachment bytes are excluded. A redirect
+  to login or an error document is never accepted as an offline chat shell.
+- Conversation lists and the latest 100 canonical messages per visited thread
+  are stored in a separate IndexedDB database keyed by the last signed-in
+  profile and conversation. Text/file metadata may be shown from that bounded
+  snapshot, but attachments still require the authenticated route to open.
+- A cold offline reopen can show the saved inbox and recent thread with an
+  explicit offline label, while the existing profile-scoped outbox accepts new
+  messages for exact-once reconnect delivery. Repeated offline polling keeps
+  the snapshot visible instead of replacing it with network errors.
+- Thirty-two focused offline, outbox, push and reliability tests, targeted
+  ESLint, TypeScript and the complete 111-page webpack production build pass.
+
+This is code and build evidence only. Stage 2 remains partial until an installed
+physical iPhone visits a populated thread online, is fully closed, enters
+airplane mode, cold-opens `/messages`, reads the cached thread, queues a new
+message and then reconnects to prove one canonical message and one agent job.
+
 ## Stage 8 accessibility candidate: 12 August 2026
 
 Automated code contracts now protect the complete stacked conversation surface:

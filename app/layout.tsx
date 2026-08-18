@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { ServiceWorkerRegistrar } from "@/components/ServiceWorkerRegistrar";
 import "./globals.css";
 
 /**
@@ -60,6 +61,7 @@ export default function RootLayout({
           paddingRight: "env(safe-area-inset-right)",
         }}
       >
+        <ServiceWorkerRegistrar />
         {children}
       </body>
     </html>
