@@ -391,6 +391,72 @@ class ConversationAgentBridgeTests(unittest.TestCase):
                 "anthropic/claude-opus-4-6",
             )
 
+    def test_meeting_minutes_tasks_use_the_restricted_worker(self):
+        task = {
+            "id": "task-123",
+            "conversation_id": "conversation-123",
+            "client_task_id": "meeting-minutes:123e4567-e89b-42d3-a456-426614174000",
+            "title": "Prepare meeting minutes",
+            "objective": "Prepare meeting_minutes_id 123e4567-e89b-42d3-a456-426614174000.",
+            "model_tier": "strong",
+            "approval_state": "none",
+            "approval_note": None,
+        }
+        self.assertTrue(conversation_agent_bridge.is_meeting_minutes_task(task))
+        self.assertEqual(
+            conversation_agent_bridge.meeting_minutes_id_for_task(task),
+            "123e4567-e89b-42d3-a456-426614174000",
+        )
+
+    @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
+    def test_meeting_minutes_use_the_deterministic_worker_not_openclaw(self, popen):
+        process = popen.return_value
+        process.communicate.return_value = (json.dumps({
+            "status": "completed",
+            "summary": "Meeting draft prepared for review.",
+            "message": "The meeting draft is ready for review.",
+        }), "")
+        process.returncode = 0
+        task = {
+            "id": "task-123",
+            "conversation_id": "conversation-123",
+            "client_task_id": "meeting-minutes:123e4567-e89b-42d3-a456-426614174000",
+            "title": "Prepare meeting minutes",
+            "objective": "Prepare meeting_minutes_id 123e4567-e89b-42d3-a456-426614174000.",
+            "model_tier": "strong",
+            "approval_state": "none",
+            "approval_note": None,
+        }
+        result = conversation_agent_bridge.invoke_task_agent(
+            {"slug": "aria", "display_name": "Aria", "role_label": "Studio assistant"},
+            task,
+            "unrelated conversation history",
+            [],
+            should_continue=lambda: True,
+        )
+
+        self.assertEqual(result["status"], "completed")
+        command = popen.call_args.args[0]
+        self.assertEqual(command[0], "node")
+        self.assertEqual(command[-2:], ["--meeting-id", "123e4567-e89b-42d3-a456-426614174000"])
+        self.assertNotIn("openclaw", command)
+
+    def test_spoofed_meeting_title_does_not_gain_restricted_worker_path(self):
+        task = {
+            "client_task_id": "ordinary-task",
+            "title": "Prepare meeting minutes",
+            "objective": "meeting_minutes_id 123e4567-e89b-42d3-a456-426614174000",
+        }
+        self.assertFalse(conversation_agent_bridge.is_meeting_minutes_task(task))
+
+    def test_mismatched_meeting_task_ids_do_not_enter_the_privileged_worker(self):
+        task = {
+            "client_task_id": "meeting-minutes:123e4567-e89b-42d3-a456-426614174000",
+            "title": "Prepare meeting minutes",
+            "objective": "meeting_minutes_id 223e4567-e89b-42d3-a456-426614174000",
+        }
+        self.assertFalse(conversation_agent_bridge.is_meeting_minutes_task(task))
+
     def test_realtime_consults_use_a_bounded_latency_oriented_model(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(

@@ -64,6 +64,7 @@ REALTIME_VOICE_MODEL_DEFAULT = "openai/gpt-5.6-terra"
 OPENCLAW_SESSION_VERSION_DEFAULT = "v2"
 OPENCLAW_GATEWAY_EVENTS_DEFAULT = True
 OPENCLAW_GATEWAY_RUN_SCRIPT = Path(__file__).with_name("openclaw_gateway_run.mjs")
+MEETING_MINUTES_WORKER_SCRIPT = Path(__file__).parent.parent / "mcp" / "src" / "process-meeting-minutes.mjs"
 UUID_PATTERN = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}"
 OPENCLAW_THINKING_LEVELS = {
     "off",
@@ -886,6 +887,53 @@ def openclaw_task_session_key(task_id: str) -> str:
     return f"reslu-task-{task_id}"
 
 
+def meeting_minutes_id_for_task(task: dict) -> str | None:
+    client_task_id = str(task.get("client_task_id") or "")
+    if task.get("title") != "Prepare meeting minutes" or not client_task_id.startswith("meeting-minutes:"):
+        return None
+    candidate = client_task_id.removeprefix("meeting-minutes:")
+    objective_match = re.search(rf"meeting_minutes_id ({UUID_PATTERN})\b", str(task.get("objective") or ""), re.IGNORECASE)
+    if not objective_match or objective_match.group(1).lower() != candidate.lower():
+        return None
+    return candidate if re.fullmatch(UUID_PATTERN, candidate) else None
+
+
+def is_meeting_minutes_task(task: dict) -> bool:
+    return meeting_minutes_id_for_task(task) is not None
+
+
+def invoke_meeting_minutes_worker(task: dict, should_continue: Callable[[], bool]) -> dict | None:
+    meeting_id = meeting_minutes_id_for_task(task)
+    if meeting_id is None:
+        raise ValueError("Meeting Mode task identity is invalid")
+    command = ["node", str(MEETING_MINUTES_WORKER_SCRIPT), "--meeting-id", meeting_id]
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    started_at = time.monotonic()
+    try:
+        while True:
+            try:
+                stdout, stderr = process.communicate(timeout=AGENT_STATUS_CHECK_SECONDS)
+                break
+            except subprocess.TimeoutExpired:
+                if not should_continue():
+                    stop_agent_process(process)
+                    return None
+                if time.monotonic() - started_at >= TASK_PROCESS_TIMEOUT_SECONDS:
+                    raise subprocess.TimeoutExpired(command, TASK_PROCESS_TIMEOUT_SECONDS)
+    except BaseException:
+        stop_agent_process(process)
+        raise
+    if process.returncode != 0:
+        raise RuntimeError(stderr.strip() or "Meeting Mode worker failed")
+    try:
+        result = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Meeting Mode worker returned invalid JSON") from exc
+    if not isinstance(result, dict) or result.get("status") != "completed":
+        raise RuntimeError("Meeting Mode worker returned an invalid result")
+    return result
+
+
 def agent_consultation_for_job(rest: SupabaseRest, job_id: str) -> dict | None:
     rows = rest.rows(
         "conversation_agent_consultations",
@@ -1331,6 +1379,8 @@ def invoke_task_agent(
     on_progress: Callable[[dict], None] | None = None,
     scope_context: dict | None = None,
 ) -> dict | None:
+    if is_meeting_minutes_task(task):
+        return invoke_meeting_minutes_worker(task, should_continue)
     approval_granted = task.get("approval_state") == "approved"
     task_payload = bounded_json_data({
         "task_id": task["id"],
@@ -1363,17 +1413,19 @@ def invoke_task_agent(
         f"TASK_REQUEST_JSON\n{task_payload}\nEND_TASK_REQUEST_JSON\n\n"
         f"CONTEXT_DATA_JSON\n{context_payload}\nEND_CONTEXT_DATA_JSON"
     )
+    runtime_agent_id = openclaw_agent_id(agent["slug"])
     model = task_model_override(task["model_tier"])
+    thinking_level = task_thinking_level(task["model_tier"])
     if openclaw_gateway_events_enabled():
         try:
             reply = invoke_agent_via_gateway(
                 prompt=prompt,
-                agent_id=openclaw_agent_id(agent["slug"]),
+                agent_id=runtime_agent_id,
                 session_key=openclaw_task_session_key(task["id"]),
                 idempotency_key=f"reslu-task-{task['id']}-attempt-{int(task.get('retry_count') or 0)}",
                 timeout_seconds=TASK_PROCESS_TIMEOUT_SECONDS,
                 should_continue=should_continue,
-                thinking_level=task_thinking_level(task["model_tier"]),
+                thinking_level=thinking_level,
                 model=model,
                 on_progress=on_progress,
             )
@@ -1387,9 +1439,9 @@ def invoke_task_agent(
                 flush=True,
             )
     command = [
-        "openclaw", "agent", "--agent", openclaw_agent_id(agent["slug"]),
+        "openclaw", "agent", "--agent", runtime_agent_id,
         "--session-key", openclaw_task_session_key(task["id"]),
-        "--thinking", task_thinking_level(task["model_tier"]),
+        "--thinking", thinking_level,
     ]
     if model:
         command.extend(["--model", model])

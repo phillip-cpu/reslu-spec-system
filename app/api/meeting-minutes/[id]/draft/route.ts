@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { MAX_MEETING_TRANSCRIPT_CHARS, cleanMeetingString, cleanMeetingStringList } from "@/lib/meeting-mode";
+import { structureMeetingTranscript } from "@/lib/meeting-minutes-structure";
 import { ASSET_BUCKET } from "@/lib/storage";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import type { ConversationMeetingMinutes } from "@/types/meeting-mode";
@@ -69,8 +70,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const result = await authenticatedMinutes(id);
   if ("response" in result) return result.response;
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
-  if (!body || (body.status !== "done" && body.status !== "failed")) {
-    return NextResponse.json({ error: "status must be done or failed" }, { status: 400 });
+  if (!body || !["done", "failed", "structure"].includes(String(body.status))) {
+    return NextResponse.json({ error: "status must be done, failed or structure" }, { status: 400 });
   }
   if (body.status === "failed") {
     if (result.meeting.status !== "processing") {
@@ -93,7 +94,19 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "Meeting is no longer processing; late draft ignored" }, { status: 409 });
   }
   const transcript = cleanMeetingString(body.transcript, MAX_MEETING_TRANSCRIPT_CHARS);
-  const summary = cleanMeetingString(body.summary, 20_000);
+  let draftBody = body;
+  if (body.status === "structure") {
+    if (!transcript) return NextResponse.json({ error: "transcript is required" }, { status: 400 });
+    try {
+      draftBody = { ...await structureMeetingTranscript(transcript), transcript, status: "done" };
+    } catch (error) {
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : "Meeting structuring failed" },
+        { status: 502 },
+      );
+    }
+  }
+  const summary = cleanMeetingString(draftBody.summary, 20_000);
   if (!transcript || !summary) return NextResponse.json({ error: "transcript and summary are required" }, { status: 400 });
   const { data, error } = await result.supabase
     .from("conversation_meeting_minutes")
@@ -102,12 +115,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       transcript,
       transcript_segments: [{ item_id: `local-whisper:${id}`, text: transcript, sequence: 0, captured_at: new Date().toISOString() }],
       summary,
-      decisions: cleanMeetingStringList(body.decisions),
-      client_requests: cleanMeetingStringList(body.client_requests),
-      reslu_actions: cleanMeetingStringList(body.reslu_actions),
-      client_actions: cleanMeetingStringList(body.client_actions),
-      open_questions: cleanMeetingStringList(body.open_questions),
-      important_notes: cleanMeetingStringList(body.important_notes),
+      decisions: cleanMeetingStringList(draftBody.decisions),
+      client_requests: cleanMeetingStringList(draftBody.client_requests),
+      reslu_actions: cleanMeetingStringList(draftBody.reslu_actions),
+      client_actions: cleanMeetingStringList(draftBody.client_actions),
+      open_questions: cleanMeetingStringList(draftBody.open_questions),
+      important_notes: cleanMeetingStringList(draftBody.important_notes),
       draft_version: result.meeting.draft_version + 1,
       failure_note: null,
     })
