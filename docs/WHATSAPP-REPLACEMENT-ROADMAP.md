@@ -489,9 +489,8 @@ Stage gate:
 
 ## Stage 6 - Meeting Mode and intelligent filing
 
-Status: implementation and database safeguards are deployed. A missing Mac-side
-Whisper runtime was found during acceptance preparation; the pinned local MCP
-transcription adapter is now the release candidate. Real client-meeting
+Status: implementation, database safeguards and the pinned Mac-side local
+Whisper adapter are deployed and runtime-verified. Real client-meeting
 acceptance remains pending.
 
 Implemented in the core slice:
