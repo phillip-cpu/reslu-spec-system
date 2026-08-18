@@ -611,6 +611,13 @@ Work:
 - VoiceOver, large text, contrast, captions and reduced-motion support.
 - A real iPhone/car/desktop test matrix under poor networks and long histories.
 
+Browser voice recovery now shares the durable typed-message outbox for legacy
+spoken turns, while Realtime consult, specialist and task requests use bounded
+same-intent retries keyed by their canonical tool-call id. Polling exposes a
+reconnecting state and an uncertain task outcome directs the user to Agent work
+instead of replaying potentially accepted work. Physical handoff, packet-loss
+and lock-screen acceptance is still required before this stage can pass.
+
 The bridge process already uses launchd `RunAtLoad`, `KeepAlive` and a bounded
 restart throttle. Push delivery has a six-attempt exponential retry budget.
 The bridge now also emits one content-free health report per minute for its

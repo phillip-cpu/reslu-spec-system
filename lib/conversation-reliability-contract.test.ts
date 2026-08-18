@@ -80,6 +80,19 @@ test("the browser persists outbox entries before clearing the composer", () => {
   assert.ok(workspace.indexOf("await savePendingConversationMessage(entry)") < workspace.indexOf("clearDraft(conversationId, body)"));
 });
 
+test("legacy voice turns use the same durable idempotent outbox as typed chat", () => {
+  const legacyVoice = workspace.match(
+    /const queueLegacyVoiceMessage = useCallback\(async \(([\s\S]*?)\n  \}, \[flushOutbox, persistOutboxEntry\]\);/,
+  )?.[1] ?? "";
+  assert.match(outbox, /source: "text" \| "voice" \| "voice_note"/);
+  assert.match(legacyVoice, /clientMessageId: crypto\.randomUUID\(\)/);
+  assert.match(legacyVoice, /source: "voice"/);
+  assert.match(legacyVoice, /targetAgent/);
+  assert.match(legacyVoice, /await persistOutboxEntry\(entry\)/);
+  assert.match(legacyVoice, /await flushOutbox\(\)/);
+  assert.doesNotMatch(legacyVoice, /fetch\(/);
+});
+
 test("optimistic messages expose queued, sending, failed, delivered and retry states", () => {
   assert.match(workspace, /Waiting for connection/);
   assert.match(workspace, /Sending…/);
