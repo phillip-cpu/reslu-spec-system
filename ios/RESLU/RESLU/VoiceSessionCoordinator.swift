@@ -126,6 +126,7 @@ final class VoiceSessionCoordinator: NSObject, ObservableObject {
     private var webReady = false
     private var webDocumentReady = false
     private var appIsBackgrounded = false
+    private var speakerRequested = false
     private var pendingWebPayloads = [[String: Any]]()
     private let maximumPendingWebPayloads = 80
 
@@ -206,6 +207,7 @@ final class VoiceSessionCoordinator: NSObject, ObservableObject {
         guard callUUID == nil else { return }
         continuity.reset()
         realtimeUsage.reset()
+        speakerRequested = false
         if context.usesNativeRealtime {
             realtimeTransport.setMuted(false)
         }
@@ -250,6 +252,26 @@ final class VoiceSessionCoordinator: NSObject, ObservableObject {
         }
     }
 
+    private func setAudioRouteFromWeb(_ route: String) {
+        guard callUUID != nil else {
+            sendToWeb(type: "audio-route-error", message: "Start the call before changing its audio route.")
+            return
+        }
+        guard route == "speaker" || route == "automatic" else {
+            sendToWeb(type: "audio-route-error", message: "That audio route is not supported.")
+            return
+        }
+        let wantsSpeaker = route == "speaker"
+        do {
+            try AVAudioSession.sharedInstance().overrideOutputAudioPort(wantsSpeaker ? .speaker : .none)
+            speakerRequested = wantsSpeaker
+            continuity.didChangeAudioRoute()
+            sendToWeb(type: "audio-route-changed", route: wantsSpeaker ? "speaker" : "automatic")
+        } catch {
+            sendToWeb(type: "audio-route-error", message: error.localizedDescription)
+        }
+    }
+
     private func endCallFromWeb() {
         guard let callUUID else {
             deactivateAudioSession()
@@ -279,6 +301,8 @@ final class VoiceSessionCoordinator: NSObject, ObservableObject {
         if callContext?.usesNativeRealtime == true {
             realtimeTransport.stop()
         }
+        try? AVAudioSession.sharedInstance().overrideOutputAudioPort(.none)
+        speakerRequested = false
         callUUID = nil
         callContext = nil
         let shouldNotify = notifyWeb && !endingFromWeb
@@ -365,12 +389,14 @@ final class VoiceSessionCoordinator: NSObject, ObservableObject {
         message: String? = nil,
         muted: Bool? = nil,
         event: [String: Any]? = nil,
-        callId: String? = nil
+        callId: String? = nil,
+        route: String? = nil
     ) {
         var payload: [String: Any] = ["type": type]
         if let message { payload["message"] = message }
         if let muted { payload["muted"] = muted }
         if let event { payload["event"] = event }
+        if let route { payload["route"] = route }
         if let callId = callId ?? callContext?.callId { payload["callId"] = callId }
         deliverToWeb(payload)
     }
@@ -417,6 +443,8 @@ extension VoiceSessionCoordinator: WKScriptMessageHandler {
                 markConnected()
             case "call.muted":
                 setMutedFromWeb(body["muted"] as? Bool ?? false)
+            case "call.audio-route":
+                setAudioRouteFromWeb(body["route"] as? String ?? "automatic")
             case "call.end":
                 endCallFromWeb()
             case "realtime.event":
@@ -489,6 +517,15 @@ extension VoiceSessionCoordinator: CXProviderDelegate {
             // browser-owned audio; native-Realtime clients ignore it while
             // they wait for native-realtime-connected.
             sendToWeb(type: "native-audio-ready")
+            if speakerRequested {
+                do {
+                    try audioSession.overrideOutputAudioPort(.speaker)
+                    sendToWeb(type: "audio-route-changed", route: "speaker")
+                } catch {
+                    speakerRequested = false
+                    sendToWeb(type: "audio-route-error", message: error.localizedDescription)
+                }
+            }
             if let callContext, callContext.usesNativeRealtime {
                 realtimeTransport.setAudioActive(true)
                 realtimeTransport.start(context: callContext)

@@ -1244,6 +1244,8 @@ export function ConversationWorkspace({
   const [callOpening, setCallOpening] = useState(false);
   const [callState, setCallState] = useState<CallState>("connecting");
   const [muted, setMuted] = useState(false);
+  const [nativeAudioRouting, setNativeAudioRouting] = useState(false);
+  const [speakerEnabled, setSpeakerEnabled] = useState(false);
   const [interim, setInterim] = useState("");
   const [callError, setCallError] = useState<string | null>(null);
   const [lastSpoken, setLastSpoken] = useState("");
@@ -3373,12 +3375,13 @@ export function ConversationWorkspace({
     setCallTranscript([]);
     mutedRef.current = false;
     setMuted(false);
+    setSpeakerEnabled(false);
     return callRecordSaved;
   }, [cancelActiveRealtimeTurn, persistCallEnd, selectedId]);
 
   useEffect(() => {
     const handleNativeVoiceCommand = (event: Event) => {
-      const detail = (event as CustomEvent<{ type?: string; message?: string; muted?: boolean; callId?: string; event?: RealtimeEvent }>).detail;
+      const detail = (event as CustomEvent<{ type?: string; message?: string; muted?: boolean; route?: "speaker" | "automatic"; callId?: string; event?: RealtimeEvent }>).detail;
       if (detail?.callId && detail.callId !== callIdRef.current) return;
       if (detail?.type === "end-requested" && callActiveRef.current && callIdRef.current) void endCall();
       if ((detail?.type === "native-audio-error" || detail?.type === "native-realtime-error") && callIdRef.current) {
@@ -3412,9 +3415,17 @@ export function ConversationWorkspace({
       if (detail?.type === "mute-sync-error") {
         setNotice(`The iPhone lock-screen mute control could not update. ${detail.message ?? "The in-app microphone control is still active."}`);
       }
+      if (detail?.type === "audio-route-changed" && detail.route) {
+        setSpeakerEnabled(detail.route === "speaker");
+      }
+      if (detail?.type === "audio-route-error") {
+        setNotice(`The iPhone audio output could not change. ${detail.message ?? "Please try again."}`);
+      }
     };
     window.addEventListener("reslu-native-voice", handleNativeVoiceCommand);
-    if (nativeVoiceBridgeAvailable()) postNativeVoiceBridgeEvent({ type: "web.ready" });
+    const bridgeAvailable = nativeVoiceBridgeAvailable();
+    setNativeAudioRouting(bridgeAvailable);
+    if (bridgeAvailable) postNativeVoiceBridgeEvent({ type: "web.ready" });
     return () => window.removeEventListener("reslu-native-voice", handleNativeVoiceCommand);
   }, [endCall, loadAgentTasks, loadMessages]);
 
@@ -4340,6 +4351,11 @@ export function ConversationWorkspace({
     } else if (next) recognitionRef.current?.stop();
     else if (callActiveRef.current) { try { recognitionRef.current?.start(); } catch { /* already active */ } }
     postNativeVoiceBridgeEvent({ type: "call.muted", muted: next });
+  }
+
+  function toggleSpeaker() {
+    const next = !speakerEnabled;
+    postNativeVoiceBridgeEvent({ type: "call.audio-route", route: next ? "speaker" : "automatic" });
   }
 
   function repeatLastReply() {
@@ -5513,8 +5529,9 @@ export function ConversationWorkspace({
               <button onClick={() => void retryCall()} className="bg-sand px-3 py-5 text-subhead text-nearblack">Try again</button>
             </div>
           ) : (
-            <div className={clsx("shrink-0 grid-cols-3 border-t border-white/10 pb-[env(safe-area-inset-bottom)]", drawer && callCompact ? "grid md:hidden" : "grid")}>
+            <div className={clsx("shrink-0 border-t border-white/10 pb-[env(safe-area-inset-bottom)]", nativeAudioRouting ? "grid grid-cols-4" : "grid grid-cols-3", drawer && callCompact && "md:hidden")}>
               <button onClick={toggleMute} className="border-r border-white/10 px-3 py-4 text-subhead md:py-6"><span className="block text-xl">{muted ? "×" : "●"}</span><span className="mt-2 block text-caption text-white/55">{muted ? "Unmute" : "Mute"}</span></button>
+              {nativeAudioRouting && <button onClick={toggleSpeaker} aria-pressed={speakerEnabled} aria-label={speakerEnabled ? "Use automatic audio output" : "Use speakerphone"} className="min-h-11 border-r border-white/10 px-2 py-4 text-subhead md:py-6"><span aria-hidden className="block text-xl">{speakerEnabled ? "◉" : "◌"}</span><span className="mt-2 block text-caption text-white/55">{speakerEnabled ? "Speaker on" : "Speaker"}</span></button>}
               <button onClick={repeatLastReply} disabled={!lastSpoken} className="border-r border-white/10 px-3 py-4 text-subhead disabled:opacity-30 md:py-6"><span className="block text-xl">↻</span><span className="mt-2 block text-caption text-white/55">Repeat</span></button>
               <button onClick={() => void endCall()} className="bg-[#8e2f2f] px-3 py-4 text-subhead md:py-6"><span className="block text-xl">■</span><span className="mt-2 block text-caption text-white/70">End call</span></button>
             </div>
