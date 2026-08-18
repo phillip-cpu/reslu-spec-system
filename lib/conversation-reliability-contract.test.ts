@@ -98,6 +98,22 @@ test("the device drains sends in order and a retryable failure cannot be overtak
   assert.doesNotMatch(workspace, /then\(\(\) => dispatchOutboxEntry\(queued\)\)/);
 });
 
+test("a lost POST response is reconciled against the canonical message before showing failure", () => {
+  assert.match(messageRoute, /client_message_id/);
+  assert.match(messageRoute, /\.eq\("author_profile_id", user\.id\)/);
+  assert.match(messageRoute, /canonical_message_id: canonicalMessage\?\.id \?\? null/);
+  assert.match(workspace, /messages\?client_message_id=\$\{entry\.clientMessageId\}/);
+  assert.match(workspace, /typeof reconciliation\.canonical_message_id === "string"/);
+  assert.match(workspace, /attempt < 3 && !canonicalMessageId/);
+  assert.match(workspace, /MESSAGE_RECONCILIATION_TIMEOUT_MS/);
+  assert.match(workspace, /await discardOutboxEntry\(entry\.clientMessageId\)/);
+  assert.ok(
+    workspace.indexOf("typeof reconciliation.canonical_message_id")
+      < workspace.indexOf('error: offline ? null : timedOut ? "Delivery confirmation timed out.'),
+    "canonical reconciliation must run before the device reports a retryable failure"
+  );
+});
+
 test("slow polling responses cannot overwrite a newer conversation or message snapshot", () => {
   assert.match(workspace, /conversationListRequestRef\.current !== requestNumber/);
   assert.match(workspace, /activeMessageRequestRef\.current\.has\(conversationId\)/);
