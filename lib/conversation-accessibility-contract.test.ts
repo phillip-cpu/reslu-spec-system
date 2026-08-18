@@ -8,6 +8,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path: string) => readFileSync(resolve(root, path), "utf8");
 const workspace = read("components/conversations/ConversationWorkspace.tsx");
 const meetingMode = read("components/conversations/MeetingMode.tsx");
+const sidebar = read("components/layout/Sidebar.tsx");
 const globals = read("app/globals.css");
 const acceptance = read("docs/WHATSAPP-REPLACEMENT-ACCEPTANCE.md");
 
@@ -32,6 +33,12 @@ test("high-frequency mobile icon controls retain 44px touch targets", () => {
   assert.match(workspace, /aria-label="Add photos or files"[\s\S]*className="flex h-11 w-11/);
   assert.match(workspace, /aria-label="Send message"[\s\S]*className="flex h-11 min-w-11/);
   assert.match(workspace, /Actions for message from[\s\S]*h-11 w-11/);
+  assert.match(workspace, /min-h-11 bg-nearblack px-4 py-2 text-body[\s\S]*New chat/);
+  assert.match(workspace, /min-h-11 px-3 py-2 text-body font-medium/);
+  assert.match(workspace, /flex min-h-11 items-center gap-2[\s\S]*placeholder="Search chats"/);
+  assert.match(sidebar, /mb-px flex min-h-11 items-center/);
+  assert.match(sidebar, /min-h-11 w-full[\s\S]*Arrange menu/);
+  assert.match(sidebar, /h-11 w-11[\s\S]*md:h-7 md:w-7/);
 });
 
 test("keyboard focus and reduced-motion behavior are global conversation contracts", () => {

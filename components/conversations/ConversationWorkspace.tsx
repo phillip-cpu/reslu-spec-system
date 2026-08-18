@@ -4540,7 +4540,7 @@ export function ConversationWorkspace({
       <aside className={clsx("flex min-h-0 w-full shrink-0 flex-col border-r border-[#d4cbbd] bg-[#ede8de]", drawer ? "md:w-64" : "md:w-80", selectedId && "hidden md:flex")}>
         <div className="flex items-center justify-between border-b border-[#d4cbbd] py-3 pl-20 pr-3 md:p-4">
           <p className="label-caps">Conversations</p>
-          <button onClick={() => setNewOpen(true)} disabled={sending || voiceNoteRecording} className="bg-nearblack px-3 py-2 text-caption text-white disabled:opacity-30">New chat</button>
+          <button onClick={() => setNewOpen(true)} disabled={sending || voiceNoteRecording} className="min-h-11 bg-nearblack px-4 py-2 text-body text-white disabled:opacity-30">New chat</button>
         </div>
         {data.conversations.length === 0 ? (
           <div className="p-6 text-body text-charcoal/60">
@@ -4553,20 +4553,20 @@ export function ConversationWorkspace({
               <button
                 type="button"
                 onClick={() => setShowArchived(false)}
-                className={clsx("px-3 py-2 text-caption font-medium", !showArchived ? "bg-[#f5f1e8] text-nearblack shadow-sm" : "text-charcoal/55")}
+                className={clsx("min-h-11 px-3 py-2 text-body font-medium", !showArchived ? "bg-[#f5f1e8] text-nearblack shadow-sm" : "text-charcoal/55")}
               >
-                Chats <span className="ml-1 text-[10px] opacity-55">{activeConversations.length}</span>
+                Chats <span className="ml-1 text-caption opacity-55">{activeConversations.length}</span>
               </button>
               <button
                 type="button"
                 onClick={() => setShowArchived(true)}
-                className={clsx("px-3 py-2 text-caption font-medium", showArchived ? "bg-[#f5f1e8] text-nearblack shadow-sm" : "text-charcoal/55")}
+                className={clsx("min-h-11 px-3 py-2 text-body font-medium", showArchived ? "bg-[#f5f1e8] text-nearblack shadow-sm" : "text-charcoal/55")}
               >
-                Archived <span className="ml-1 text-[10px] opacity-55">{archivedConversations.length}</span>
+                Archived <span className="ml-1 text-caption opacity-55">{archivedConversations.length}</span>
               </button>
             </div>
             <div className="border-b border-[#d4cbbd] bg-[#ede8de] p-2.5">
-              <label className="flex items-center gap-2 rounded-xl border border-[#d4cbbd] bg-[#f8f5ee] px-3 py-2 focus-within:border-nearblack">
+              <label className="flex min-h-11 items-center gap-2 rounded-xl border border-[#d4cbbd] bg-[#f8f5ee] px-3 py-2 focus-within:border-nearblack">
                 <span aria-hidden className="text-charcoal/40">⌕</span>
                 <span className="sr-only">Search conversations</span>
                 <input
