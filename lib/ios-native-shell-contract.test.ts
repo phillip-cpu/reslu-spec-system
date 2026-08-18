@@ -38,6 +38,11 @@ test("native iOS owns lock-safe WebRTC audio and CallKit without duplicating RES
   assert.match(voice, /CXEndCallAction/);
   assert.match(voice, /CXSetMutedCallAction/);
   assert.match(voice, /case "call\.muted"[\s\S]*setMutedFromWeb/);
+  assert.match(voice, /case "call\.audio-route"[\s\S]*setAudioRouteFromWeb/);
+  assert.match(voice, /route == "speaker" \|\| route == "automatic"/);
+  assert.match(voice, /overrideOutputAudioPort\(wantsSpeaker \? \.speaker : \.none\)/);
+  assert.match(voice, /audio-route-changed/);
+  assert.match(voice, /audio-route-error/);
   assert.match(voice, /mute-requested/);
   assert.match(voice, /mute-sync-error/);
   assert.match(voice, /reportOutgoingCall/);
@@ -127,6 +132,8 @@ test("web and native exchange provider events while the browser path remains opt
   assert.match(workspace, /detail\?\.type === "mute-requested"/);
   assert.match(workspace, /track\.enabled = !detail\.muted/);
   assert.match(workspace, /type: "call\.muted", muted: next/);
+  assert.match(workspace, /type: "call\.audio-route", route: next \? "speaker" : "automatic"/);
+  assert.match(workspace, /nativeAudioRouting && <button[\s\S]*Use speakerphone/);
   assert.match(workspace, /nativeRealtimeEventHandlerRef/);
   assert.match(workspace, /native_handled: true/);
   assert.match(workspace, /type: "web\.ready"/);
