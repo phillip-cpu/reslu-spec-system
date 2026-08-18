@@ -32,7 +32,11 @@ import {
   saveCachedConversationMessages,
 } from "@/lib/conversation-offline-cache";
 import { prepareConversationImageForUpload } from "@/lib/conversation-image-upload";
-import { isFatalSpeechRecognitionError, speechRecognitionErrorMessage } from "@/lib/conversation-voice";
+import {
+  isFatalSpeechRecognitionError,
+  shouldFallbackToLegacyVoice,
+  speechRecognitionErrorMessage,
+} from "@/lib/conversation-voice";
 import {
   listPendingConversationCallEnds,
   removePendingConversationCallEnd,
@@ -4076,13 +4080,18 @@ export function ConversationWorkspace({
 
   const startRealtimeCall = useCallback(async (stream: MediaStream, activeCallId: string) => {
     if (!selectedId || !callAgent?.agent_slug) throw new Error("No RESLU agent selected");
+    const microphoneTrack = stream.getAudioTracks()[0];
+    if (!microphoneTrack) throw new Error("Microphone audio is unavailable");
     const generation = ++realtimeConnectionGenerationRef.current;
     const peer = new RTCPeerConnection();
     const audio = document.createElement("audio");
     audio.autoplay = true;
     audio.setAttribute("playsinline", "true");
     peer.ontrack = (event) => { audio.srcObject = event.streams[0]; };
-    stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+    // Match OpenAI's browser WebRTC contract exactly. Omitting the optional
+    // MediaStream argument avoids Safari generating a stream constraint that
+    // some audio routes reject during SDP negotiation.
+    peer.addTrack(microphoneTrack);
     const channel = peer.createDataChannel("oai-events");
     channel.onopen = () => {
       if (generation !== realtimeConnectionGenerationRef.current || !callActiveRef.current) return;
@@ -4107,24 +4116,29 @@ export function ConversationWorkspace({
         scheduleRealtimeReconnect();
       }
     };
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-    const response = await fetch(`/api/conversations/${selectedId}/realtime/session`, {
-      method: "POST",
-      headers: { "Content-Type": "application/sdp", "X-RESLU-Agent": callAgent.agent_slug },
-      body: offer.sdp,
-    });
-    if (!response.ok) {
-      let body: { error?: string; code?: string } = {};
-      try { body = await response.json(); } catch { /* provider returned non-JSON */ }
-      const error = new Error(body.error ?? "Could not start realtime voice") as Error & { code?: string };
-      error.code = body.code;
+    try {
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      const response = await fetch(`/api/conversations/${selectedId}/realtime/session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/sdp", "X-RESLU-Agent": callAgent.agent_slug },
+        body: offer.sdp,
+      });
+      if (!response.ok) {
+        let body: { error?: string; code?: string } = {};
+        try { body = await response.json(); } catch { /* provider returned non-JSON */ }
+        const error = new Error(body.error ?? "Could not start realtime voice") as Error & { code?: string };
+        error.code = body.code;
+        throw error;
+      }
+      await peer.setRemoteDescription({ type: "answer", sdp: await response.text() });
+    } catch (reason) {
+      channel.close();
       peer.close();
       audio.pause();
       audio.srcObject = null;
-      throw error;
+      throw reason;
     }
-    await peer.setRemoteDescription({ type: "answer", sdp: await response.text() });
     if (generation !== realtimeConnectionGenerationRef.current || !callActiveRef.current) {
       channel.close();
       peer.close();
@@ -4426,6 +4440,10 @@ export function ConversationWorkspace({
       microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
       microphoneStreamRef.current = null;
       if (error.code === "realtime_disabled") {
+        await startLegacyCall(callIdRef.current ?? undefined);
+        return;
+      }
+      if (shouldFallbackToLegacyVoice(error)) {
         await startLegacyCall(callIdRef.current ?? undefined);
         return;
       }
