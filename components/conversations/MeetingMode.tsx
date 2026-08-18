@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
+import { boundedFetch, BoundedRequestTimeoutError } from "@/lib/bounded-request";
 import {
   listPendingConversationMeetingAudio,
   removePendingConversationMeetingAudio,
@@ -37,6 +38,68 @@ const EMPTY_REVIEW: ReviewFields = {
   open_questions: "",
   important_notes: "",
 };
+
+const MEETING_READ_TIMEOUT_MS = 8_000;
+const MEETING_ACTION_TIMEOUT_MS = 15_000;
+const MEETING_UPLOAD_TIMEOUT_MS = 120_000;
+
+function isMeetingTransportError(reason: unknown) {
+  return reason instanceof BoundedRequestTimeoutError
+    || reason instanceof TypeError
+    || (reason instanceof DOMException && reason.name === "AbortError");
+}
+
+async function boundedMeetingUpload<T>(upload: Promise<T>) {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      upload,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new BoundedRequestTimeoutError()), MEETING_UPLOAD_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function sameStringList(actual: string[], expected: unknown) {
+  return Array.isArray(expected)
+    && actual.length === expected.length
+    && actual.every((value, index) => value === expected[index]);
+}
+
+function meetingActionConfirmed(
+  action: string,
+  values: Record<string, unknown>,
+  meeting: ConversationMeetingMinutes,
+) {
+  if (action === "checkpoint") return meeting.duration_seconds === Math.max(0, Math.round(Number(values.duration_seconds) || 0));
+  if (action === "pause") return meeting.status === "paused";
+  if (action === "resume") return meeting.status === "recording";
+  if (action === "finish") {
+    return meeting.recording_storage_path === values.recording_storage_path
+      && ["processing", "review", "failed", "filed"].includes(meeting.status);
+  }
+  if (action === "retry_processing") return ["processing", "review", "filed"].includes(meeting.status);
+  if (action === "file") return meeting.status === "filed";
+  if (action === "discard") return meeting.status === "discarded";
+  if (action !== "save_draft") return false;
+  const destinationId = values.destination_kind === "lead" ? meeting.lead_id : meeting.project_id;
+  return meeting.status === "review"
+    && meeting.draft_version > Number(values.expected_version)
+    && meeting.meeting_type === values.meeting_type
+    && meeting.destination_kind === values.destination_kind
+    && destinationId === values.destination_id
+    && meeting.client_event_id === values.client_event_id
+    && meeting.summary === values.summary
+    && sameStringList(meeting.decisions, values.decisions)
+    && sameStringList(meeting.client_requests, values.client_requests)
+    && sameStringList(meeting.reslu_actions, values.reslu_actions)
+    && sameStringList(meeting.client_actions, values.client_actions)
+    && sameStringList(meeting.open_questions, values.open_questions)
+    && sameStringList(meeting.important_notes, values.important_notes);
+}
 
 function recordingMime(): string | null {
   if (typeof MediaRecorder === "undefined") return null;
@@ -128,6 +191,7 @@ export function MeetingMode({
   const checkpointRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pendingAudioIdRef = useRef<string | null>(null);
   const clientSessionIdRef = useRef<string | null>(null);
+  const meetingPollActiveRef = useRef(false);
   const mountedRef = useRef(true);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const mime = useMemo(() => recordingMime(), []);
@@ -146,21 +210,39 @@ export function MeetingMode({
     setMeetingType(next.meeting_type);
   }, []);
 
-  const loadContext = useCallback(async () => {
-    const response = await fetch(`/api/conversations/${conversationId}/meeting-mode/context`, { cache: "no-store" });
+  const fetchContextSnapshot = useCallback(async () => {
+    const response = await boundedFetch(
+      `/api/conversations/${conversationId}/meeting-mode/context`,
+      { cache: "no-store" },
+      MEETING_READ_TIMEOUT_MS,
+    );
     const body = await response.json() as MeetingContextResponse & { error?: string };
     if (!response.ok) throw new Error(body.error ?? "Could not prepare Meeting Mode");
+    return body;
+  }, [conversationId]);
+
+  const fetchMeetingSnapshot = useCallback(async (meetingId: string) => {
+    const response = await boundedFetch(
+      `/api/conversations/${conversationId}/meeting-mode/${meetingId}`,
+      { cache: "no-store" },
+      MEETING_READ_TIMEOUT_MS,
+    );
+    const body = await response.json() as { meeting?: ConversationMeetingMinutes; can_manage_source?: boolean; error?: string };
+    if (!response.ok || !body.meeting) throw new Error(body.error ?? "Could not load meeting minutes");
+    if (mountedRef.current) {
+      setCanManageSource(body.can_manage_source === true);
+      setCurrentMeeting(body.meeting);
+    }
+    return body.meeting;
+  }, [conversationId, setCurrentMeeting]);
+
+  const loadContext = useCallback(async () => {
+    const body = await fetchContextSnapshot();
     if (!mountedRef.current) return;
     setContext(body);
     setCanManageSource(Boolean(body.active_minutes && body.active_minutes.created_by === body.current_user_id));
     if (initialMeetingId) {
-      const meetingResponse = await fetch(`/api/conversations/${conversationId}/meeting-mode/${initialMeetingId}`, { cache: "no-store" });
-      const meetingBody = await meetingResponse.json() as { meeting?: ConversationMeetingMinutes; can_manage_source?: boolean; error?: string };
-      if (!meetingResponse.ok || !meetingBody.meeting) throw new Error(meetingBody.error ?? "Could not load filed minutes");
-      if (mountedRef.current) {
-        setCanManageSource(meetingBody.can_manage_source === true);
-        setCurrentMeeting(meetingBody.meeting);
-      }
+      await fetchMeetingSnapshot(initialMeetingId);
       return;
     }
     if (body.active_minutes) {
@@ -172,7 +254,7 @@ export function MeetingMode({
       setSelectedDestination(destinationValue(body.suggested));
       setMeetingType(body.suggested.meeting_type);
     }
-  }, [conversationId, initialMeetingId, setCurrentMeeting]);
+  }, [fetchContextSnapshot, fetchMeetingSnapshot, initialMeetingId, setCurrentMeeting]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -192,14 +274,15 @@ export function MeetingMode({
     if (!meeting || !["processing", "review", "failed"].includes(meeting.status)) return;
     if (meeting.status === "review") return;
     const poll = window.setInterval(async () => {
+      if (meetingPollActiveRef.current) return;
+      meetingPollActiveRef.current = true;
       try {
-        const response = await fetch(`/api/conversations/${conversationId}/meeting-mode/${meeting.id}`, { cache: "no-store" });
-        const body = await response.json() as { meeting?: ConversationMeetingMinutes };
-        if (response.ok && body.meeting && mountedRef.current) setCurrentMeeting(body.meeting);
+        await fetchMeetingSnapshot(meeting.id);
       } catch { /* the durable task keeps running; retry on the next poll */ }
+      finally { meetingPollActiveRef.current = false; }
     }, 3000);
     return () => window.clearInterval(poll);
-  }, [conversationId, meeting, setCurrentMeeting]);
+  }, [fetchMeetingSnapshot, meeting]);
 
   useEffect(() => {
     if (!meeting || !["recording", "paused"].includes(meeting.status) || recorderRef.current) return;
@@ -217,15 +300,30 @@ export function MeetingMode({
   async function patchMeeting(action: string, values: Record<string, unknown> = {}) {
     const currentMeeting = meetingRef.current;
     if (!currentMeeting) throw new Error("Meeting has not started");
-    const response = await fetch(`/api/conversations/${conversationId}/meeting-mode/${currentMeeting.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, ...values }),
-    });
-    const body = await response.json() as { meeting?: ConversationMeetingMinutes; error?: string };
-    if (!response.ok || !body.meeting) throw new Error(body.error ?? "Meeting update failed");
-    setCurrentMeeting(body.meeting);
-    return body.meeting;
+    try {
+      const response = await boundedFetch(`/api/conversations/${conversationId}/meeting-mode/${currentMeeting.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, ...values }),
+      }, MEETING_ACTION_TIMEOUT_MS);
+      const body = await response.json() as { meeting?: ConversationMeetingMinutes; error?: string };
+      if (!response.ok || !body.meeting) throw new Error(body.error ?? "Meeting update failed");
+      setCurrentMeeting(body.meeting);
+      return body.meeting;
+    } catch (reason) {
+      if (!isMeetingTransportError(reason)) throw reason;
+      try {
+        const canonical = await fetchMeetingSnapshot(currentMeeting.id);
+        if (meetingActionConfirmed(action, values, canonical)) {
+          setNotice("The connection was slow, but RESLU confirmed the meeting update.");
+          return canonical;
+        }
+      } catch { /* report the unresolved outcome below */ }
+      const instruction = action === "file"
+        ? "RESLU could not confirm whether filing completed. Review the current meeting state before trying again; it will not be filed twice automatically."
+        : "RESLU could not confirm the meeting update. Review the current state before trying again.";
+      throw new Error(instruction);
+    }
   }
 
   function activeSeconds() {
@@ -275,19 +373,37 @@ export function MeetingMode({
       const destination = selectedCandidate;
       const clientSessionId = clientSessionIdRef.current ?? crypto.randomUUID();
       clientSessionIdRef.current = clientSessionId;
-      const response = await fetch(`/api/conversations/${conversationId}/meeting-mode`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          client_session_id: clientSessionId,
-          consent_confirmed: true,
-          source_call_id: sourceCallId,
-          destination_kind: destination?.kind ?? null,
-          destination_id: destination?.id ?? null,
-          client_event_id: destination?.client_event_id ?? null,
-          meeting_type: destination?.meeting_type ?? meetingType,
-        }),
-      });
+      let response;
+      try {
+        response = await boundedFetch(`/api/conversations/${conversationId}/meeting-mode`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            client_session_id: clientSessionId,
+            consent_confirmed: true,
+            source_call_id: sourceCallId,
+            destination_kind: destination?.kind ?? null,
+            destination_id: destination?.id ?? null,
+            client_event_id: destination?.client_event_id ?? null,
+            meeting_type: destination?.meeting_type ?? meetingType,
+          }),
+        }, MEETING_ACTION_TIMEOUT_MS);
+      } catch (reason) {
+        if (!isMeetingTransportError(reason)) throw reason;
+        const refreshed = await fetchContextSnapshot();
+        const recovered = refreshed.active_minutes?.client_session_id === clientSessionId
+          ? refreshed.active_minutes
+          : null;
+        if (!recovered) throw new Error("RESLU could not confirm that Meeting Mode started. No recording has begun; please try again.");
+        setContext(refreshed);
+        setCurrentMeeting(recovered);
+        setCanManageSource(recovered.created_by === refreshed.current_user_id);
+        setNotice("The connection was slow, but RESLU confirmed Meeting Mode started.");
+        response = new Response(JSON.stringify({ meeting: recovered }), {
+          status: recovered.status === "recording" ? 201 : 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       const body = await response.json() as { meeting?: ConversationMeetingMinutes; error?: string };
       if (!response.ok || !body.meeting) throw new Error(body.error ?? "Could not start Meeting Mode");
       setCurrentMeeting(body.meeting);
@@ -366,22 +482,32 @@ export function MeetingMode({
 
   async function uploadPendingAudio(entry: PendingConversationMeetingAudio) {
     if (!meeting) throw new Error("Meeting has not started");
-    const urlResponse = await fetch(`/api/conversations/${conversationId}/meeting-mode/${meeting.id}/upload-url`, {
+    const urlResponse = await boundedFetch(`/api/conversations/${conversationId}/meeting-mode/${meeting.id}/upload-url`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: entry.filename, byte_size: entry.blob.size }),
-    });
+    }, MEETING_ACTION_TIMEOUT_MS);
     const urlBody = await urlResponse.json() as { path?: string; token?: string; error?: string };
     if (!urlResponse.ok || !urlBody.path || !urlBody.token) throw new Error(urlBody.error ?? "Could not start the private upload");
     const withPath = { ...entry, storagePath: urlBody.path };
     await savePendingConversationMeetingAudio(withPath);
     const supabase = createClient();
-    const { error: uploadError } = await supabase.storage.from(ASSET_BUCKET).uploadToSignedUrl(
-      urlBody.path,
-      urlBody.token,
-      entry.blob,
-      { contentType: entry.mimeType || "application/octet-stream" },
-    );
+    let uploadError = null;
+    try {
+      ({ error: uploadError } = await boundedMeetingUpload(
+        supabase.storage.from(ASSET_BUCKET).uploadToSignedUrl(
+          urlBody.path,
+          urlBody.token,
+          entry.blob,
+          { contentType: entry.mimeType || "application/octet-stream" },
+        ),
+      ));
+    } catch (reason) {
+      if (reason instanceof BoundedRequestTimeoutError) {
+        throw new Error("The private upload took too long. The recording remains safe on this device; retry when the connection improves.");
+      }
+      throw reason;
+    }
     if (uploadError) throw new Error(uploadError.message);
     const finished = await patchMeeting("finish", {
       recording_storage_path: urlBody.path,
@@ -488,6 +614,18 @@ export function MeetingMode({
     } finally { setBusy(false); }
   }
 
+  async function saveReviewDraft() {
+    if (!meeting || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await saveReview();
+      setNotice("Draft minutes saved. They have not been filed.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not save draft");
+    } finally { setBusy(false); }
+  }
+
   async function discard() {
     if (!meeting || busy || !window.confirm("Discard this staged meeting draft? The private source recording remains governed by RESLU retention policy.")) return;
     setBusy(true);
@@ -522,14 +660,21 @@ export function MeetingMode({
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`/api/conversations/${conversationId}/meeting-mode/${meeting.id}/source`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ [kind]: true }),
-      });
-      const body = await response.json() as { meeting?: ConversationMeetingMinutes; error?: string };
-      if (!response.ok || !body.meeting) throw new Error(body.error ?? `Could not delete the ${label}`);
-      setCurrentMeeting(body.meeting);
+      try {
+        const response = await boundedFetch(`/api/conversations/${conversationId}/meeting-mode/${meeting.id}/source`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [kind]: true }),
+        }, MEETING_ACTION_TIMEOUT_MS);
+        const body = await response.json() as { meeting?: ConversationMeetingMinutes; error?: string };
+        if (!response.ok || !body.meeting) throw new Error(body.error ?? `Could not delete the ${label}`);
+        setCurrentMeeting(body.meeting);
+      } catch (reason) {
+        if (!isMeetingTransportError(reason)) throw reason;
+        const canonical = await fetchMeetingSnapshot(meeting.id).catch(() => null);
+        const deleted = kind === "recording" ? canonical?.recording_deleted_at : canonical?.transcript_deleted_at;
+        if (!deleted) throw new Error(`RESLU could not confirm deletion of the ${label}. It will not retry this permanent action automatically.`);
+      }
       setNotice(`${kind === "recording" ? "Raw meeting audio" : "Source transcript"} permanently deleted. Filed structured minutes were preserved.`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : `Could not delete the ${label}`);
@@ -750,7 +895,7 @@ export function MeetingMode({
               </div>
               <div className="sticky bottom-0 mt-4 flex flex-wrap gap-3 border-t border-[#d4cbbd] bg-[#f5f1e8]/95 py-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] backdrop-blur">
                 <button type="button" onClick={() => void approveAndFile()} disabled={busy || !selectedDestination || !review.summary.trim() || Boolean(selectedCandidate?.duplicate_filed_minutes_id && !allowDuplicate)} className="min-w-56 flex-1 rounded-xl bg-nearblack px-5 py-4 text-subhead text-white disabled:opacity-35">{busy ? "Filing…" : "Approve & file"}</button>
-                <button type="button" onClick={() => void saveReview().catch((reason) => setError(reason instanceof Error ? reason.message : "Could not save draft"))} disabled={busy || !review.summary.trim()} className="rounded-xl border border-nearblack px-5 py-4 text-subhead disabled:opacity-35">Save draft</button>
+                <button type="button" onClick={() => void saveReviewDraft()} disabled={busy || !review.summary.trim()} className="rounded-xl border border-nearblack px-5 py-4 text-subhead disabled:opacity-35">Save draft</button>
                 <button type="button" onClick={() => void discard()} disabled={busy} className="rounded-xl px-5 py-4 text-subhead text-red-800 disabled:opacity-35">Discard</button>
               </div>
             </section>
