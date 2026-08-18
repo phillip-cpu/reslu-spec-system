@@ -24,12 +24,14 @@ test("realtime calls measure actual WebRTC output audio instead of transcript ti
   assert.match(workspace, /interruption_to_buffer_cleared_ms/);
 });
 
-test("speech stop stays visual while a completed consult tool call starts one bounded acknowledgement", () => {
+test("speech stop stays visual while an accepted consult starts one bounded acknowledgement", () => {
   assert.match(workspace, /input_audio_buffer\.speech_stopped/);
   assert.match(workspace, /setCallState\("thinking"\)/);
   const speechStopHandler = workspace.match(/if \(event\.type === "input_audio_buffer\.speech_stopped"\) \{([\s\S]*?)\n    \}/)?.[1] ?? "";
   assert.doesNotMatch(speechStopHandler, /response\.create|startRealtimeProgressCue/);
-  assert.match(workspace, /startRealtimeProgressCue\(output\.call_id\)/);
+  assert.match(workspace, /if \(!start\.ok\) throw[\s\S]*?startRealtimeProgressCue\(toolCallId\);/);
+  const completedResponseHandler = workspace.match(/if \(event\.type === "response\.done"[\s\S]*?return;\n    \}/)?.[0] ?? "";
+  assert.doesNotMatch(completedResponseHandler, /startRealtimeProgressCue/);
   assert.match(workspace, /reslu_kind: REALTIME_PROGRESS_KIND/);
   assert.match(workspace, /realtimeProgressAcknowledgement\(callAgent\.agent_slug, timing\.turn\)/);
   assert.doesNotMatch(workspace, /buildRealtimeProgressResponse/);

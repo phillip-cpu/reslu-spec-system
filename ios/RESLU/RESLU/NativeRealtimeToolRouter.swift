@@ -115,11 +115,6 @@ final class NativeRealtimeToolRouter {
                 responseId: responseId,
                 arguments: output["arguments"] as? String
             )
-            if let toolCallId,
-               ["consult_reslu_agent", "consult_reslu_specialist"].contains(output["name"] as? String ?? ""),
-               activeConsult?.id == toolCallId {
-                startProgressCue(toolCallId: toolCallId)
-            }
         }
     }
 
@@ -188,6 +183,7 @@ final class NativeRealtimeToolRouter {
                     body: body
                 )
                 latencyMetrics.didAcceptConsult(toolCallId)
+                startProgressCue(toolCallId: toolCallId)
                 let pollingStartedAt = Date()
                 while !Task.isCancelled {
                     let ownerKey = specialist ? "owner_agent_slug" : "agent_slug"
