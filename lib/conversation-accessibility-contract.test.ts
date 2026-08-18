@@ -43,6 +43,14 @@ test("keyboard focus and reduced-motion behavior are global conversation contrac
   assert.match(meetingMode, /escapeDisabled: recording \|\| paused \|\| busy/);
 });
 
+test("iPhone conversations permit text scaling and keep operational metadata readable", () => {
+  assert.match(globals, /-webkit-text-size-adjust: 100%/);
+  assert.match(globals, /\.conversation-accessible \.conversation-meta \{[\s\S]*font-size: 12px/);
+  assert.match(workspace, /conversation-meta[\s\S]*timeLabel\(message\.created_at\)/);
+  assert.match(workspace, /conversation-meta[\s\S]*Waiting for connection/);
+  assert.doesNotMatch(workspace, /text-\[9px\][\s\S]{0,120}(Delivered|Not sent|Voice transcript|Edited)/);
+});
+
 test("live acceptance still requires keyboard, screen reader, reduced-motion and physical touch evidence", () => {
   assert.match(acceptance, /keyboard-only/);
   assert.match(acceptance, /VoiceOver/);

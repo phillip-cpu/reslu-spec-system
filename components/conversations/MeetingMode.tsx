@@ -587,7 +587,7 @@ export function MeetingMode({
       <header className="flex shrink-0 items-center gap-3 border-b border-[#d4cbbd] px-4 pb-3 pt-[calc(env(safe-area-inset-top)+0.75rem)] md:px-6 md:py-4">
         <span className={clsx("h-3 w-3 rounded-full", recording ? "animate-pulse bg-red-700" : processing ? "bg-[#C9971E]" : "bg-[#66a466]")} />
         <div className="min-w-0 flex-1">
-          <h1 id="meeting-mode-title" className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#806d55]">Aria Meeting Mode</h1>
+          <h1 id="meeting-mode-title" className="text-xs font-bold uppercase tracking-[0.14em] text-[#806d55]">Aria Meeting Mode</h1>
           <p className="mt-1 truncate text-caption text-charcoal/55" role="status" aria-live="polite" aria-atomic="true">
             {setup ? "Resolve context and confirm consent" : recording ? `Recording · ${secondsLabel(seconds)}` : paused ? `Paused · ${secondsLabel(seconds)}` : processing ? "Preparing draft minutes in background" : reviewReady ? "Review before filing" : failed ? "Draft preparation needs attention" : status}
           </p>

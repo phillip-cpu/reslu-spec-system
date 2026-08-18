@@ -21,6 +21,8 @@ html,
 body {
   background-color: #ede8de;
   color: #313131;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
@@ -51,6 +53,13 @@ body {
 }
 
 .conversation-accessible .text-caption {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* Conversation metadata is operational information: delivery, attachment and
+   task states must remain readable without zooming on an iPhone. */
+.conversation-accessible .conversation-meta {
   font-size: 12px;
   line-height: 1.45;
 }

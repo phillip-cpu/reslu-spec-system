@@ -512,7 +512,7 @@ function AgentTaskCard({
     )}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className={clsx("text-[11px] font-semibold uppercase tracking-[0.13em]", dark ? "text-sand" : "text-charcoal/50") }>
+          <p className={clsx("conversation-meta font-semibold uppercase tracking-[0.13em]", dark ? "text-sand" : "text-charcoal/60") }>
             {taskStatusLabel(task)} · {task.model_tier} model{task.delegated_by_agent_id && task.owner_agent?.display_name ? ` · ${task.owner_agent.display_name}` : ""}
           </p>
           <h3 className="mt-1 break-words text-[17px] font-semibold leading-snug md:text-[18px]">{task.title}</h3>
@@ -529,7 +529,7 @@ function AgentTaskCard({
         )}
         {active && confirmingCancel && !task.cancellation_requested_at && (
           <div className="flex shrink-0 flex-col items-end gap-1" role="group" aria-label={`Confirm stopping ${task.title}`}>
-            <span className={clsx("text-[11px] font-semibold", dark ? "text-white/65" : "text-charcoal/65")}>Stop this task?</span>
+            <span className={clsx("conversation-meta font-semibold", dark ? "text-white/75" : "text-charcoal/70")}>Stop this task?</span>
             <div className="flex gap-1.5">
               <button
                 type="button"
@@ -639,7 +639,7 @@ function AgentTaskCard({
                 <button type="button" onClick={() => onAction(task.id, "approve", artifact.id)} className={clsx("min-h-11 rounded-lg px-3 py-2 text-body font-semibold", dark ? "bg-sand text-nearblack" : "bg-nearblack text-white")}>Approve</button>
               </div>
             )}
-            {artifact.status !== "draft" && <p className={clsx("mt-2 text-[10px] font-semibold uppercase tracking-[0.14em]", dark ? "text-sand" : "text-charcoal/45")}>{artifact.status}</p>}
+            {artifact.status !== "draft" && <p className={clsx("conversation-meta mt-2 font-semibold uppercase tracking-[0.14em]", dark ? "text-sand" : "text-charcoal/60")}>{artifact.status}</p>}
           </div>
         );
       })}
@@ -4356,7 +4356,7 @@ export function ConversationWorkspace({
                         <span className={clsx("min-w-0 flex-1 truncate text-body text-nearblack", conversation.unread_count > 0 ? "font-semibold" : "font-medium")}>{conversation.display_title}</span>
                         {conversation.unread_count > 0 && (
                           <span
-                            className="flex min-h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-nearblack px-1.5 text-[10px] font-semibold text-white"
+                            className="conversation-meta flex min-h-6 min-w-6 shrink-0 items-center justify-center rounded-full bg-nearblack px-1.5 font-semibold text-white"
                             aria-label={`${conversation.unread_count} unread message${conversation.unread_count === 1 ? "" : "s"}`}
                           >
                             {conversation.unread_count > 99 ? "99+" : conversation.unread_count}
@@ -4371,7 +4371,7 @@ export function ConversationWorkspace({
                           : conversation.last_message?.body ?? "New conversation"}
                       </span>
                       {(conversation.pinned_at || conversation.notifications_muted) && (
-                        <span className="mt-1.5 block text-[9px] font-medium uppercase tracking-[0.14em] text-charcoal/40">
+                        <span className="conversation-meta mt-1.5 block font-medium uppercase tracking-[0.14em] text-charcoal/55">
                           {[conversation.pinned_at ? "Pinned" : null, conversation.notifications_muted ? "Muted" : null].filter(Boolean).join(" · ")}
                         </span>
                       )}
@@ -4556,7 +4556,7 @@ export function ConversationWorkspace({
                           : "bg-charcoal/45",
                   )} />
                   <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.13em] text-charcoal/50">
+                    <span className="conversation-meta flex items-center gap-2 font-semibold uppercase tracking-[0.13em] text-charcoal/60">
                       <span>Agent work</span>
                       <span aria-hidden>·</span>
                       <span>{taskStatusLabel(visibleAgentTasks[0])}</span>
@@ -4637,13 +4637,13 @@ export function ConversationWorkspace({
                       <span className="mx-auto block max-w-3xl">
                         <span className="flex items-baseline justify-between gap-3">
                           <span className="text-caption font-semibold text-nearblack">{message.author.display_name}</span>
-                          <span className="shrink-0 text-[10px] text-charcoal/40">{timeLabel(message.created_at)}</span>
+                          <span className="conversation-meta shrink-0 text-charcoal/55">{timeLabel(message.created_at)}</span>
                         </span>
                         <span className="mt-1.5 block max-h-12 overflow-hidden text-body leading-6 text-charcoal/70">{message.body}</span>
                         {(message.search_match?.attachment_filenames.length ?? 0) > 0 && (
                           <span className="mt-2 flex flex-wrap gap-1.5">
                             {message.search_match?.attachment_filenames.map((filename, index) => (
-                              <span key={`${message.id}:${index}:${filename}`} className="max-w-full truncate rounded-full bg-[#e8e1d5] px-2.5 py-1 text-[10px] font-medium text-charcoal/70">
+                              <span key={`${message.id}:${index}:${filename}`} className="conversation-meta max-w-full truncate rounded-full bg-[#e8e1d5] px-2.5 py-1 font-medium text-charcoal/75">
                                 File · {filename}
                               </span>
                             ))}
@@ -4668,7 +4668,7 @@ export function ConversationWorkspace({
             {pinnedMessages.length > 0 && (
               <div className="shrink-0 border-b border-[#d4cbbd] bg-[#f5f1e8] px-3 py-2 md:px-5" aria-label="Pinned messages">
                 <div className="mx-auto flex max-w-3xl items-center gap-2 overflow-x-auto">
-                  <span className="shrink-0 text-[10px] font-semibold uppercase tracking-widest text-charcoal/45">Pinned</span>
+                  <span className="conversation-meta shrink-0 font-semibold uppercase tracking-widest text-charcoal/60">Pinned</span>
                   {pinnedMessages.map((message) => (
                     <button
                       key={message.id}
@@ -4715,7 +4715,7 @@ export function ConversationWorkspace({
                   const showDaySeparator = !previousMessage || conversationDayKey(previousMessage.created_at) !== conversationDayKey(message.created_at);
                   const daySeparator = showDaySeparator ? (
                     <div className="sticky top-2 z-[5] flex justify-center py-1" role="separator" aria-label={conversationDayLabel(message.created_at)}>
-                      <span className="rounded-full border border-[#d4cbbd] bg-[#f5f1e8]/95 px-3 py-1 text-[11px] font-semibold text-charcoal/60 shadow-sm backdrop-blur">
+                      <span className="conversation-meta rounded-full border border-[#d4cbbd] bg-[#f5f1e8]/95 px-3 py-1 font-semibold text-charcoal/70 shadow-sm backdrop-blur">
                         {conversationDayLabel(message.created_at)}
                       </span>
                     </div>
@@ -4776,7 +4776,7 @@ export function ConversationWorkspace({
                       >
                         <div className="flex items-baseline gap-2">
                           <span className={clsx("text-caption font-semibold", own ? "text-white" : "text-nearblack")}>{message.author.display_name}</span>
-                          <span className={clsx("text-[10px]", own ? "text-white/45" : "text-charcoal/40")}>{timeLabel(message.created_at)}</span>
+                          <span className={clsx("conversation-meta", own ? "text-white/60" : "text-charcoal/55")}>{timeLabel(message.created_at)}</span>
                           <button
                             type="button"
                             onClick={() => setMessageMenuId((current) => current === message.id ? null : message.id)}
@@ -4857,7 +4857,7 @@ export function ConversationWorkspace({
                             onClick={() => jumpToReferencedMessage(message.reply_to_id!)}
                             className={clsx("mt-2 block w-full border-l-2 px-3 py-2 text-left", own ? "border-white/40 bg-white/10" : "border-charcoal/30 bg-white/55")}
                           >
-                            <span className={clsx("block truncate text-[10px] font-semibold", own ? "text-white/65" : "text-charcoal/55")}>{repliedMessage?.author.display_name ?? "Earlier message"}</span>
+                            <span className={clsx("conversation-meta block truncate font-semibold", own ? "text-white/75" : "text-charcoal/65")}>{repliedMessage?.author.display_name ?? "Earlier message"}</span>
                             <span className={clsx("mt-1 block truncate text-caption", own ? "text-white/80" : "text-charcoal/70")}>{repliedMessage?.deleted_at ? "Message deleted" : repliedMessage?.body ?? "Open original message"}</span>
                           </button>
                         )}
@@ -4875,7 +4875,7 @@ export function ConversationWorkspace({
                               <button type="button" onClick={cancelMessageEdit} className="rounded-lg px-3 py-2 text-white/70 hover:bg-white/10">Cancel</button>
                               <button type="button" onClick={() => void saveMessageEdit(message)} disabled={messageMutationId === message.id || !editingMessageBody.trim()} className="rounded-lg bg-white px-3 py-2 font-semibold text-nearblack disabled:opacity-40">Save</button>
                             </div>
-                            <p className="mt-2 text-[9px] uppercase tracking-widest text-white/40">Editing changes the message history; it does not resend the request.</p>
+                            <p className="conversation-meta mt-2 uppercase tracking-widest text-white/60">Editing changes the message history; it does not resend the request.</p>
                           </div>
                         ) : !voiceNoteAttachment ? (
                           <p className={clsx("mt-2 whitespace-pre-wrap break-words text-[16px] leading-[1.55] md:text-[15px]", message.deleted_at && "italic opacity-60")}>{message.body}</p>
@@ -4901,12 +4901,12 @@ export function ConversationWorkspace({
                                     unoptimized
                                     className="h-36 w-full object-cover md:h-48"
                                   />
-                                  <span className="block truncate px-2 py-2 text-[10px] opacity-65">{attachment.filename}</span>
+                                  <span className="conversation-meta block truncate px-2 py-2 opacity-75">{attachment.filename}</span>
                                 </button>
                               );
                               if (attachmentKind === "audio" && attachment.url && isVoiceNoteMetadata(attachment.metadata)) return (
                                 <div key={attachment.id} className={clsx("min-w-[240px] rounded-xl border p-3", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/55") }>
-                                  <div className="mb-2 flex items-center justify-between gap-3 text-[10px] uppercase tracking-widest opacity-60">
+                                  <div className="conversation-meta mb-2 flex items-center justify-between gap-3 uppercase tracking-widest opacity-75">
                                     <span>Voice note</span>
                                     <span>{voiceNoteDurationLabel(attachment.metadata.duration_ms)}</span>
                                   </div>
@@ -4915,10 +4915,10 @@ export function ConversationWorkspace({
                               );
                               return (
                                 <a key={attachment.id} href={attachment.url ?? undefined} target="_blank" rel="noreferrer" className={clsx("flex min-w-0 items-center gap-3 border px-3 py-3", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/50", !attachment.url && "pointer-events-none opacity-50")}>
-                                  <span aria-hidden className="flex h-10 w-10 shrink-0 items-center justify-center border border-current text-[10px] font-semibold">{imageAttachment ? "IMG" : attachmentKind === "audio" ? "AUDIO" : "PDF"}</span>
+                                  <span aria-hidden className="conversation-meta flex h-10 w-10 shrink-0 items-center justify-center border border-current font-semibold">{imageAttachment ? "IMG" : attachmentKind === "audio" ? "AUDIO" : "PDF"}</span>
                                   <span className="min-w-0">
                                     <span className="block truncate text-caption font-semibold">{attachment.filename}</span>
-                                    <span className="mt-1 block text-[10px] opacity-55">{fileSizeLabel(attachment.byte_size)}</span>
+                                    <span className="conversation-meta mt-1 block opacity-70">{fileSizeLabel(attachment.byte_size)}</span>
                                   </span>
                                 </a>
                               );
@@ -4946,23 +4946,23 @@ export function ConversationWorkspace({
                             ))}
                           </div>
                         )}
-                        {!message.deleted_at && message.pinned_at && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Pinned</p>}
-                        {!message.deleted_at && message.metadata.source === "forward" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Forwarded</p>}
-                        {!message.deleted_at && message.metadata.source === "voice_note" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Voice note</p>}
-                        {!message.deleted_at && message.metadata.source === "voice" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Voice transcript</p>}
+                        {!message.deleted_at && message.pinned_at && <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>Pinned</p>}
+                        {!message.deleted_at && message.metadata.source === "forward" && <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>Forwarded</p>}
+                        {!message.deleted_at && message.metadata.source === "voice_note" && <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>Voice note</p>}
+                        {!message.deleted_at && message.metadata.source === "voice" && <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>Voice transcript</p>}
                         {!message.deleted_at && message.metadata.source === "agent_consultation" && typeof message.metadata.consulted_agent_slug === "string" && (
-                          <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>
+                          <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>
                             Consulted {message.metadata.consulted_agent_slug === "marco" ? "Marco" : "Aria"}
                           </p>
                         )}
                         {!message.deleted_at && message.metadata.source === "agent_task" && typeof message.metadata.delegated_agent_name === "string" && (
-                          <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>
+                          <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>
                             Completed by {message.metadata.delegated_agent_name}
                           </p>
                         )}
-                        {!message.deleted_at && message.edited_at && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Edited</p>}
+                        {!message.deleted_at && message.edited_at && <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>Edited</p>}
                         {own && (pending || message.client_message_id) && (
-                          <div className="mt-2 flex items-center justify-end gap-2 text-[9px] uppercase tracking-widest text-white/45">
+                          <div className="conversation-meta mt-2 flex items-center justify-end gap-2 uppercase tracking-widest text-white/65">
                             <span>
                               {pending?.status === "failed"
                                 ? "Not sent"
@@ -5006,7 +5006,7 @@ export function ConversationWorkspace({
                           </div>
                         )}
                         {pending?.status === "failed" && pending.error && (
-                          <p className="mt-1 text-right text-[10px] text-white/60">{pending.error}</p>
+                          <p className="conversation-meta mt-1 text-right text-white/75">{pending.error}</p>
                         )}
                       </div>
                     </div>
@@ -5030,7 +5030,7 @@ export function ConversationWorkspace({
                           </span>
                         </div>
                         {activity.pending_turns > 1 && (
-                          <p className="mt-1 text-[10px] text-charcoal/40">{activity.pending_turns} requests in progress</p>
+                          <p className="conversation-meta mt-1 text-charcoal/55">{activity.pending_turns} requests in progress</p>
                         )}
                       </div>
                     </div>
@@ -5041,7 +5041,7 @@ export function ConversationWorkspace({
 
             <form onSubmit={submitDraft} className="shrink-0 border-t border-[#d4cbbd] bg-[#f5f1e8] px-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 md:p-4">
               {!online && (
-                <p className="mx-auto mb-2 max-w-3xl text-center text-[10px] font-medium text-amber-800" role="status">
+                <p className="conversation-meta mx-auto mb-2 max-w-3xl text-center font-medium text-amber-800" role="status">
                   Offline — messages will stay on this device and send when the connection returns.
                 </p>
               )}
@@ -5071,7 +5071,7 @@ export function ConversationWorkspace({
                 {replyingTo && (
                   <div className="flex items-start gap-3 border-b border-[#e3ddd2] px-3 py-2.5">
                     <div className="min-w-0 flex-1 border-l-2 border-nearblack pl-3">
-                      <p className="text-[10px] font-semibold text-nearblack">Replying to {replyingTo.author.display_name}</p>
+                      <p className="conversation-meta font-semibold text-nearblack">Replying to {replyingTo.author.display_name}</p>
                       <p className="mt-1 truncate text-caption text-charcoal/55">{replyingTo.body}</p>
                     </div>
                     <button type="button" onClick={() => setReplyingTo(null)} aria-label="Cancel reply" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-lg text-charcoal/50 hover:bg-[#f1ece3]">
@@ -5086,13 +5086,13 @@ export function ConversationWorkspace({
                         {item.previewUrl ? (
                           <Image src={item.previewUrl} alt="" width={48} height={48} unoptimized className="h-12 w-12 shrink-0 rounded-lg object-cover" />
                         ) : (
-                          <span aria-hidden className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-[#e9e2d6] text-[10px] font-semibold text-charcoal">
+                          <span aria-hidden className="conversation-meta flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-[#e9e2d6] font-semibold text-charcoal">
                             {item.mimeType.startsWith("image/") ? "IMG" : item.voiceNoteDurationMs != null ? "VOICE" : "PDF"}
                           </span>
                         )}
                         <div className="min-w-0 flex-1 pr-4">
                           <span className="block truncate text-caption font-semibold text-nearblack">{item.filename}</span>
-                          <span className={clsx("mt-1 block truncate text-[10px]", item.status === "error" ? "text-red-700" : "text-charcoal/50")}>
+                          <span className={clsx("conversation-meta mt-1 block truncate", item.status === "error" ? "text-red-700" : "text-charcoal/60")}>
                             {item.status === "preparing"
                               ? "Preparing…"
                               : item.status === "uploading"
@@ -5107,7 +5107,7 @@ export function ConversationWorkspace({
                             <button
                               type="button"
                               onClick={() => retryDraftAttachment(item.localId)}
-                              className="mt-1 text-[10px] font-semibold text-red-800 underline underline-offset-2"
+                              className="conversation-meta mt-1 font-semibold text-red-800 underline underline-offset-2"
                             >
                               Retry upload
                             </button>
@@ -5128,7 +5128,7 @@ export function ConversationWorkspace({
                   </div>
                 )}
                 {attachmentUploadFailed && (
-                  <p className="border-b border-[#e3ddd2] px-3 py-2 text-[10px] text-red-700">
+                  <p className="conversation-meta border-b border-[#e3ddd2] px-3 py-2 text-red-700">
                     Retry or remove failed files before sending, so nothing is silently left behind.
                   </p>
                 )}
@@ -5183,7 +5183,7 @@ export function ConversationWorkspace({
                     onError={setError}
                     onRecordingChange={setVoiceNoteRecording}
                   />
-                  {!voiceNoteRecording && <span className="hidden flex-1 text-center text-[10px] text-charcoal/40 sm:block">Up to 6 files · voice notes up to 5 min</span>}
+                  {!voiceNoteRecording && <span className="conversation-meta hidden flex-1 text-center text-charcoal/55 sm:block">Up to 6 files · voice notes up to 5 min</span>}
                   {!voiceNoteRecording && (
                     <button
                       disabled={composerBusy || attachmentUploadFailed || (!draft.trim() && !draftAttachments.some((item) => item.status === "ready"))}
@@ -5366,7 +5366,7 @@ export function ConversationWorkspace({
                 aria-expanded={callTranscriptExpanded}
                 className="flex min-h-12 w-full items-center gap-3 px-4 py-2 text-left md:px-6"
               >
-                <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.14em] text-sand">Captions</span>
+                <span className="shrink-0 text-caption font-semibold uppercase tracking-[0.14em] text-sand">Captions</span>
                 <span className="min-w-0 flex-1 truncate text-caption text-white/45">
                   {interim || latestCallTranscript?.text || (callState === "connecting" ? "Connecting…" : "Optional live transcript")}
                 </span>
@@ -5388,7 +5388,7 @@ export function ConversationWorkspace({
                         entry.speaker === "user" ? "bg-white text-nearblack" : entry.speaker === "system" ? "border border-sand/30 bg-sand/10 text-white" : "bg-white/10 text-white",
                         !entry.final && "opacity-65",
                       )}>
-                        <p className={clsx("text-[11px] font-semibold uppercase tracking-[0.12em]", entry.speaker === "user" ? "text-charcoal/45" : "text-sand") }>
+                        <p className={clsx("text-caption font-semibold uppercase tracking-[0.12em]", entry.speaker === "user" ? "text-charcoal/55" : "text-sand") }>
                           {entry.speaker === "user" ? "You" : entry.speaker === "agent" ? callAgent.display_name : "Agent work"}
                         </p>
                         <p className="mt-0.5 whitespace-pre-wrap text-caption leading-relaxed">{entry.text}</p>
