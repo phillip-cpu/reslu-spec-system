@@ -65,6 +65,8 @@ import {
   conversationDayKey,
   conversationDayLabel,
   conversationLongPressMoved,
+  mergeConversationTimelineMessages,
+  preservedConversationScrollTop,
 } from "@/lib/conversation-timeline";
 import {
   canStartConversationSwipeBack,
@@ -1603,13 +1605,7 @@ export function ConversationWorkspace({
       setHistoryAnchorMessageId(anchorMessageId);
       const shouldMerge = options?.mergeOlder || (!anchorMessageId && historyExpandedRef.current && !options?.latest);
       if (shouldMerge) {
-        setMessages((current) => {
-          const merged = new Map(current.map((message) => [message.id, message]));
-          for (const message of incoming) merged.set(message.id, message);
-          return [...merged.values()].sort((left, right) => (
-            left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id)
-          ));
-        });
+        setMessages((current) => mergeConversationTimelineMessages(current, incoming));
       } else {
         setMessages(incoming);
       }
@@ -2491,7 +2487,11 @@ export function ConversationWorkspace({
       window.requestAnimationFrame(() => {
         const currentScroller = messagesScrollerRef.current;
         if (!currentScroller) return;
-        currentScroller.scrollTop = previousTop + (currentScroller.scrollHeight - previousHeight);
+        currentScroller.scrollTop = preservedConversationScrollTop(
+          previousTop,
+          previousHeight,
+          currentScroller.scrollHeight,
+        );
       });
     });
     setHistoryLoading(false);

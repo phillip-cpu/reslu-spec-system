@@ -115,8 +115,14 @@ older result loads its exact surrounding context without polling snapping back
 to newest, with an explicit return-to-latest action. Older history now pages
 backwards in bounded batches while preserving the reader's scroll position and
 remaining stable across background polling. Richer message actions,
-attachment-content search, full cold-start offline support and long-history
-virtualisation remain. Migration 105 adds author-owned 15-minute message edits
+attachment-content search and full cold-start offline support remain. Loaded
+long histories retain every canonical row for search and accessibility while
+`content-visibility` lets the browser skip off-screen layout and paint. The
+merge/order and viewport-anchor algorithms now have behavioral coverage at
+2,000 rows; production keyset pagination returned the largest real 370-message
+thread in four complete, distinct pages. Physical 2,000-row mixed-media paint
+and composer responsiveness remain an acceptance gate. Migration 105 adds
+author-owned 15-minute message edits
 with multi-device conflict detection, plus a recoverable delete that leaves a
 truthful tombstone, keeps original text private to its author for 30 days and
 immediately blocks deleted attachments. Restore changes history without
