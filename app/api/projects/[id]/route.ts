@@ -58,6 +58,14 @@ export async function PUT(
   delete body.client_token;
   delete body.created_at;
   delete body.updated_at;
+  const expectedUpdatedAt = typeof body.expected_updated_at === "string"
+    ? body.expected_updated_at.trim()
+    : null;
+  delete body.expected_updated_at;
+
+  if (Object.keys(body).length === 0) {
+    return NextResponse.json({ error: "No project fields supplied" }, { status: 400 });
+  }
 
   // job_number (migration 028_job_numbers.sql, BUILD-SPEC.md "Three
   // from Phillip — 6 July 2026 evening" item 2): "Overridable in
@@ -94,12 +102,16 @@ export async function PUT(
     }
   }
 
-  const { data: project, error } = await supabase
+  const updateQuery = supabase
     .from("projects")
     .update(body)
-    .eq("id", id)
+    .eq("id", id);
+  const versionedUpdate = expectedUpdatedAt
+    ? updateQuery.eq("updated_at", expectedUpdatedAt)
+    : updateQuery;
+  const { data: project, error } = await versionedUpdate
     .select()
-    .single();
+    .maybeSingle();
 
   if (error) {
     const status = error.code === "23505" ? 409 : 500;
@@ -108,6 +120,12 @@ export async function PUT(
         ? "That job number is already used by another project."
         : error.message;
     return NextResponse.json({ error: message }, { status });
+  }
+  if (!project) {
+    return NextResponse.json(
+      { error: expectedUpdatedAt ? "Project changed since it was read; refresh and retry." : "Project not found" },
+      { status: expectedUpdatedAt ? 409 : 404 }
+    );
   }
 
   return NextResponse.json({ project });

@@ -21,6 +21,7 @@ const TARGET_KEYS: Record<string, { type: string; keys: string[] }> = {
   update_item_status: { type: "item", keys: ["item_id"] },
   update_item_pricing: { type: "item", keys: ["item_id"] },
   create_project: { type: "project", keys: ["client_task_id", "name"] },
+  update_project: { type: "project", keys: ["project_id"] },
   move_lead_stage: { type: "lead", keys: ["lead_id"] },
   update_lead: { type: "lead", keys: ["lead_id"] },
   add_lead_note: { type: "lead", keys: ["lead_id"] },
