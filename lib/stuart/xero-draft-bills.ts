@@ -1,12 +1,14 @@
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { ASSET_BUCKET } from "@/lib/storage";
 import { getActiveXeroConnection, xeroGet, xeroPostJson, xeroPutBytes } from "@/lib/xero/client";
+import { resolveLineAccountCodes, type LineAccountCodeInput } from "@/lib/stuart/line-account-codes";
 
 type XeroRecord = Record<string, unknown>;
 
 export interface DraftBillInput {
   invoiceId: string;
-  accountCode: string;
+  accountCode?: string;
+  lineAccountCodes?: LineAccountCodeInput[];
 }
 
 const REQUIRED_SCOPES = ["accounting.invoices", "accounting.contacts.read"] as const;
@@ -42,7 +44,6 @@ export async function createStuartXeroDraftBill(input: DraftBillInput) {
   if (invoice.status === "rejected" || invoice.status === "voided") throw new Error("Rejected or voided invoices cannot be sent to Xero");
   if (!invoice.invoice_date) throw new Error("Invoice date must be verified before creating a Xero draft");
   if (!invoice.storage_path) throw new Error("The original supplier invoice must be attached before creating a Xero draft");
-  if (!/^\d{3,10}$/.test(input.accountCode.trim())) throw new Error("A valid Xero expense account code is required");
 
   const { data: sourceEvidence, error: sourceEvidenceError } = await service
     .from("email_attachments")
@@ -59,9 +60,11 @@ export async function createStuartXeroDraftBill(input: DraftBillInput) {
   if (prior && prior.status !== "failed") {
     throw new Error("This Spec invoice already has a Stuart Xero draft attempt; inspect the audit record before retrying");
   }
+  const sourceLines = [...(invoice.supplier_invoice_lines ?? [])].sort((a, b) => a.sort - b.sort);
+  const accountMapping = resolveLineAccountCodes(sourceLines, input.accountCode, input.lineAccountCodes);
   const reservation = prior
-    ? service.from("stuart_xero_draft_bills").update({ status: "creating", account_code: input.accountCode.trim(), safe_error: null, updated_at: new Date().toISOString() }).eq("id", prior.id).select("id").single()
-    : service.from("stuart_xero_draft_bills").insert({ invoice_id: invoice.id, status: "creating", account_code: input.accountCode.trim() }).select("id").single();
+    ? service.from("stuart_xero_draft_bills").update({ status: "creating", account_code: accountMapping.auditAccountCode, line_account_codes: accountMapping.auditMappings, safe_error: null, updated_at: new Date().toISOString() }).eq("id", prior.id).select("id").single()
+    : service.from("stuart_xero_draft_bills").insert({ invoice_id: invoice.id, status: "creating", account_code: accountMapping.auditAccountCode, line_account_codes: accountMapping.auditMappings }).select("id").single();
   const { data: reserved, error: reserveError } = await reservation;
   if (reserveError || !reserved) {
     throw new Error(reserveError?.message ?? "Could not reserve the Xero draft operation");
@@ -85,7 +88,6 @@ export async function createStuartXeroDraftBill(input: DraftBillInput) {
     throw new Error("Stuart requires one exact existing Xero supplier contact; a human must resolve this supplier first");
   }
 
-  const sourceLines = [...(invoice.supplier_invoice_lines ?? [])].sort((a, b) => a.sort - b.sort);
   const lineItems = sourceLines.length
     ? sourceLines.map((line) => ({
         Description: line.description,
@@ -93,13 +95,13 @@ export async function createStuartXeroDraftBill(input: DraftBillInput) {
         UnitAmount: line.unit_price_ex_gst === null
           ? Number(line.amount_ex_gst) / Math.max(Number(line.quantity), 1)
           : Number(line.unit_price_ex_gst),
-        AccountCode: input.accountCode.trim(),
+        AccountCode: accountMapping.accountCodeBySort.get(line.sort),
       }))
     : [{
         Description: `Supplier invoice ${invoice.invoice_number}`,
         Quantity: 1,
         UnitAmount: Number(invoice.amount_ex_gst),
-        AccountCode: input.accountCode.trim(),
+        AccountCode: accountMapping.fallbackAccountCode,
       }];
 
   const created = await xeroPostJson<{ Invoices?: XeroRecord[] }>(connection, "api.xro/2.0/Invoices", {
