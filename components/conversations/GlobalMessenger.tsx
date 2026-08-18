@@ -151,7 +151,7 @@ export function GlobalMessenger() {
           <svg viewBox="0 0 24 24" className="h-6 w-6 fill-none stroke-current" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <path d="M20 11.5a7.8 7.8 0 0 1-8 7.5 9.2 9.2 0 0 1-3.3-.6L4 20l1.5-4A7.1 7.1 0 0 1 4 11.5 7.8 7.8 0 0 1 12 4a7.8 7.8 0 0 1 8 7.5Z" />
           </svg>
-          {unreadCount > 0 && <span className="absolute -right-2 -top-2 min-w-5 rounded-full bg-red-700 px-1 text-center text-[10px] leading-5 text-white">{unreadCount > 99 ? "99+" : unreadCount}</span>}
+          {unreadCount > 0 && <span className="absolute -right-2 -top-2 min-w-6 rounded-full bg-red-700 px-1 text-center text-xs leading-6 text-white">{unreadCount > 99 ? "99+" : unreadCount}</span>}
         </span>
         Messages
       </button>
@@ -190,7 +190,7 @@ export function GlobalMessenger() {
           </span>
           <div className="min-w-0 flex-1">
             <p className="truncate text-subhead font-semibold">RESLU Messages</p>
-            <p className="truncate text-[10px] text-white/50">Stays open while you move through RESLU</p>
+            <p className="truncate text-xs text-white/65">Stays open while you move through RESLU</p>
           </div>
           {!onMessagesPage && (
             <>
