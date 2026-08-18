@@ -7,7 +7,11 @@ import { pathToFileURL } from "node:url";
 const PROTOCOL_VERSION = 4;
 const DEFAULT_GATEWAY_URL = "ws://127.0.0.1:18789";
 const CONNECT_TIMEOUT_MS = 10_000;
-const FINAL_EVENT_GRACE_MS = 5_000;
+const HISTORY_RECONCILE_TIMEOUT_MS = 30_000;
+const HISTORY_RECONCILE_INTERVAL_MS = 1_000;
+const HISTORY_TIMESTAMP_TOLERANCE_MS = 2_000;
+const HISTORY_MESSAGE_LIMIT = 12;
+const HISTORY_MAX_CHARS = 220_000;
 const MAX_MESSAGE_CHARS = 200_000;
 const MAX_IMAGE_ATTACHMENTS = 6;
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -96,6 +100,32 @@ export function extractChatReply(message) {
   return parts.join("\n\n") || null;
 }
 
+export function extractDurableRunReply(history, inputMessage, acceptedAt) {
+  if (!history || typeof history !== "object" || !Array.isArray(history.messages)) return null;
+  const expected = typeof inputMessage === "string" ? inputMessage.trim() : "";
+  const acceptedTimestamp = Number(acceptedAt);
+  if (!expected || !Number.isFinite(acceptedTimestamp)) return null;
+  const earliestTimestamp = acceptedTimestamp - HISTORY_TIMESTAMP_TOLERANCE_MS;
+
+  for (let index = history.messages.length - 1; index >= 0; index -= 1) {
+    const assistantMessage = history.messages[index];
+    if (assistantMessage?.role !== "assistant") continue;
+    const assistantTimestamp = Number(assistantMessage.timestamp);
+    if (!Number.isFinite(assistantTimestamp) || assistantTimestamp < earliestTimestamp) continue;
+    const reply = extractChatReply(assistantMessage);
+    if (!reply) continue;
+
+    for (let preceding = index - 1; preceding >= 0; preceding -= 1) {
+      const userMessage = history.messages[preceding];
+      if (userMessage?.role !== "user") continue;
+      const userTimestamp = Number(userMessage.timestamp);
+      if (!Number.isFinite(userTimestamp) || userTimestamp < earliestTimestamp) break;
+      return extractChatReply(userMessage) === expected ? reply : null;
+    }
+  }
+  return null;
+}
+
 export function safeAgentEvent(frame, expectedRunId) {
   if (!frame || frame.type !== "event" || !["agent", "chat"].includes(frame.event)) return null;
   const payload = frame.payload;
@@ -155,6 +185,9 @@ export async function runGatewayAgent(input, options = {}) {
   const pendingMethods = new Map();
   let requestSequence = 0;
   let acceptedRunId = null;
+  let acceptedAt = null;
+  let historyReconcileDeadline = null;
+  let historyReconcileTimer = null;
   let terminal = false;
   let abortRequested = false;
   let resolveDone;
@@ -165,18 +198,44 @@ export async function runGatewayAgent(input, options = {}) {
     const id = `reslu-${++requestSequence}-${crypto.randomUUID()}`;
     pendingMethods.set(id, method);
     websocket.send(JSON.stringify({ type: "req", id, method, params }));
+    return id;
+  };
+
+  const clearHistoryReconcileTimer = () => {
+    if (historyReconcileTimer) clearTimeout(historyReconcileTimer);
+    historyReconcileTimer = null;
+  };
+
+  const scheduleHistoryReconcile = (delay = 0) => {
+    if (terminal) return;
+    if (historyReconcileDeadline === null) historyReconcileDeadline = Date.now() + HISTORY_RECONCILE_TIMEOUT_MS;
+    if (Date.now() >= historyReconcileDeadline) {
+      closeWithError(new Error("OpenClaw run ended without a durable final response"));
+      return;
+    }
+    clearHistoryReconcileTimer();
+    historyReconcileTimer = setTimeout(() => {
+      if (terminal || websocket.readyState !== WebSocket.OPEN) return;
+      request("chat.history", {
+        sessionKey: buildAgentParams(input).sessionKey,
+        agentId: input.agentId,
+        limit: HISTORY_MESSAGE_LIMIT,
+        maxChars: HISTORY_MAX_CHARS,
+      });
+    }, delay);
   };
 
   const closeWithError = (reason) => {
     if (terminal) return;
     terminal = true;
+    clearHistoryReconcileTimer();
     rejectDone(reason instanceof Error ? reason : new Error(String(reason)));
   };
 
   const abortRun = () => {
     if (abortRequested || !acceptedRunId || websocket.readyState !== WebSocket.OPEN) return;
     abortRequested = true;
-    request("chat.abort", { sessionKey: input.sessionKey, runId: acceptedRunId });
+    request("chat.abort", { sessionKey: buildAgentParams(input).sessionKey, runId: acceptedRunId });
   };
 
   const connectTimer = setTimeout(() => closeWithError(new Error("OpenClaw Gateway connect timed out")), CONNECT_TIMEOUT_MS);
@@ -198,6 +257,7 @@ export async function runGatewayAgent(input, options = {}) {
   websocket.onmessage = (message) => {
     let frame;
     try { frame = JSON.parse(message.data); } catch { return; }
+    if (terminal) return;
     if (frame.type === "event" && frame.event === "connect.challenge") {
       request("connect", {
         minProtocol: PROTOCOL_VERSION,
@@ -225,7 +285,24 @@ export async function runGatewayAgent(input, options = {}) {
       pendingMethods.delete(frame.id);
       if (!frame.ok) {
         if (method === "chat.abort" && abortRequested) return;
+        if (method === "chat.history" && historyReconcileDeadline !== null) {
+          scheduleHistoryReconcile(HISTORY_RECONCILE_INTERVAL_MS);
+          return;
+        }
         closeWithError(new Error(`OpenClaw Gateway ${method || "request"} failed: ${frame.error?.code || "UNKNOWN"}`));
+        return;
+      }
+      if (method === "chat.history") {
+        const reply = extractDurableRunReply(frame.payload, input.message, acceptedAt);
+        if (reply) {
+          terminal = true;
+          clearHistoryReconcileTimer();
+          output({ type: "final", reply, source: "durable_history" });
+          resolveDone(reply);
+          setTimeout(() => websocket.close(), 0);
+        } else {
+          scheduleHistoryReconcile(HISTORY_RECONCILE_INTERVAL_MS);
+        }
         return;
       }
       if (method === "connect") {
@@ -235,11 +312,12 @@ export async function runGatewayAgent(input, options = {}) {
       }
       if (method === "agent") {
         acceptedRunId = typeof frame.payload?.runId === "string" ? frame.payload.runId : input.idempotencyKey;
+        acceptedAt = typeof frame.payload?.acceptedAt === "number" ? frame.payload.acceptedAt : Date.now();
         output({
           type: "accepted",
           run_id: acceptedRunId,
           session_key: typeof frame.payload?.sessionKey === "string" ? frame.payload.sessionKey : input.sessionKey,
-          accepted_at: typeof frame.payload?.acceptedAt === "number" ? frame.payload.acceptedAt : Date.now(),
+          accepted_at: acceptedAt,
         });
       }
       return;
@@ -249,13 +327,14 @@ export async function runGatewayAgent(input, options = {}) {
     output(event);
     if (["final", "error", "aborted"].includes(event.type)) {
       terminal = true;
+      clearHistoryReconcileTimer();
       if (event.type === "final") resolveDone(event.reply);
       else rejectDone(new Error(event.message));
       setTimeout(() => websocket.close(), 0);
-    } else if (event.type === "lifecycle" && ["end", "error"].includes(event.phase)) {
-      setTimeout(() => {
-        if (!terminal) closeWithError(new Error("OpenClaw run ended without a final chat event"));
-      }, FINAL_EVENT_GRACE_MS);
+    } else if (event.type === "lifecycle" && event.phase === "end") {
+      scheduleHistoryReconcile();
+    } else if (event.type === "lifecycle" && event.phase === "error") {
+      closeWithError(new Error("OpenClaw run failed"));
     }
   };
   websocket.onerror = () => closeWithError(new Error("OpenClaw Gateway connection failed"));
@@ -268,6 +347,7 @@ export async function runGatewayAgent(input, options = {}) {
   } finally {
     clearTimeout(connectTimer);
     clearTimeout(runTimer);
+    clearHistoryReconcileTimer();
     process.removeListener("SIGTERM", handleSignal);
     process.removeListener("SIGINT", handleSignal);
     try { websocket.close(); } catch { /* already closed */ }

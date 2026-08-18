@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   buildAgentParams,
   extractChatReply,
+  extractDurableRunReply,
+  runGatewayAgent,
   safeAgentEvent,
   validateGatewayUrl,
   validateRunInput,
@@ -101,4 +103,86 @@ test("only a matching final chat event becomes the canonical reply", () => {
     payload: { runId: "older-run", state: "final", message: "stale" },
   }, "run-1"), null);
   assert.equal(extractChatReply({ content: [{ type: "tool_use", text: "hidden" }] }), null);
+});
+
+test("durable history recovers only the reply to the exact accepted prompt", () => {
+  const acceptedAt = 10_000;
+  const history = {
+    messages: [
+      { role: "user", timestamp: 2_000, content: "An older prompt" },
+      { role: "assistant", timestamp: 3_000, content: "An older answer" },
+      { role: "user", timestamp: 9_500, content: "The current prompt" },
+      { role: "toolResult", timestamp: 10_100, content: "private tool output" },
+      { role: "assistant", timestamp: 12_000, content: [{ type: "text", text: "The durable answer" }] },
+    ],
+  };
+  assert.equal(extractDurableRunReply(history, "The current prompt", acceptedAt), "The durable answer");
+  assert.equal(extractDurableRunReply(history, "A different prompt", acceptedAt), null);
+});
+
+test("durable history rejects stale and non-visible assistant output", () => {
+  assert.equal(extractDurableRunReply({ messages: [
+    { role: "user", timestamp: 2_000, content: "Current" },
+    { role: "assistant", timestamp: 2_100, content: "Stale answer" },
+  ] }, "Current", 10_000), null);
+
+  assert.equal(extractDurableRunReply({ messages: [
+    { role: "user", timestamp: 9_500, content: "Current" },
+    { role: "assistant", timestamp: 10_100, content: [{ type: "reasoning", text: "hidden" }] },
+  ] }, "Current", 10_000), null);
+});
+
+test("a lifecycle end recovers from durable history without rerunning the agent", async () => {
+  const sentMethods = [];
+  const socket = {
+    readyState: WebSocket.OPEN,
+    onmessage: null,
+    onerror: null,
+    onclose: null,
+    send(raw) {
+      const request = JSON.parse(raw);
+      sentMethods.push(request.method);
+      if (request.method === "connect") {
+        setImmediate(() => this.onmessage({ data: JSON.stringify({ type: "res", id: request.id, ok: true }) }));
+      } else if (request.method === "agent") {
+        setImmediate(() => {
+          this.onmessage({ data: JSON.stringify({
+            type: "res",
+            id: request.id,
+            ok: true,
+            payload: { runId: "run-current", sessionKey: request.params.sessionKey, acceptedAt: 10_000 },
+          }) });
+          this.onmessage({ data: JSON.stringify({
+            type: "event",
+            event: "agent",
+            payload: { runId: "run-current", stream: "lifecycle", data: { phase: "end" } },
+          }) });
+        });
+      } else if (request.method === "chat.history") {
+        setImmediate(() => this.onmessage({ data: JSON.stringify({
+          type: "res",
+          id: request.id,
+          ok: true,
+          payload: { messages: [
+            { role: "user", timestamp: 9_500, content: "Recover this exact turn" },
+            { role: "assistant", timestamp: 10_500, content: "Recovered once" },
+          ] },
+        }) }));
+      }
+    },
+    close() { this.readyState = WebSocket.CLOSED; },
+  };
+
+  const run = runGatewayAgent(validateRunInput({
+    message: "Recover this exact turn",
+    agentId: "marco",
+    sessionKey: "reslu-transport-test",
+    idempotencyKey: "transport-test-1",
+    timeoutSeconds: 10,
+  }), { websocket: socket, token: "test-token", emit() {} });
+  socket.onmessage({ data: JSON.stringify({ type: "event", event: "connect.challenge", payload: {} }) });
+
+  assert.equal(await run, "Recovered once");
+  assert.equal(sentMethods.filter((method) => method === "agent").length, 1);
+  assert.equal(sentMethods.filter((method) => method === "chat.history").length, 1);
 });
