@@ -9,6 +9,7 @@ const accountsAutomation = readFileSync(new URL("./accounts-invoice-automation.t
 const briefRoute = readFileSync(new URL("../../app/api/stuart/brief/route.ts", import.meta.url), "utf8");
 const mcpSource = readFileSync(new URL("../../mcp/src/index.mjs", import.meta.url), "utf8");
 const oauthSource = readFileSync(new URL("../xero/oauth.ts", import.meta.url), "utf8");
+const contactSearchSource = readFileSync(new URL("./xero-contacts.ts", import.meta.url), "utf8");
 
 test("Stuart creates only draft ACCPAY bills and never payments", () => {
   assert.match(draftSource, /Type: "ACCPAY"/);
@@ -58,4 +59,10 @@ test("OAuth requests invoice and attachment writes but payment reads only", () =
   assert.match(oauthSource, /"accounting\.attachments"/);
   assert.match(oauthSource, /"accounting\.payments\.read"/);
   assert.doesNotMatch(oauthSource, /"accounting\.payments"\s*,/);
+});
+
+test("Stuart can resolve supplier contacts through a read-only bounded search", () => {
+  assert.match(contactSearchSource, /xeroGet/);
+  assert.doesNotMatch(contactSearchSource, /xeroPostJson|xeroPutBytes/);
+  assert.match(mcpSource, /search_stuart_xero_contacts/);
 });
