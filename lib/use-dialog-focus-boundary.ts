@@ -32,11 +32,13 @@ function focusableElements(container: HTMLElement) {
 export function useDialogFocusBoundary<T extends HTMLElement>({
   active,
   containerRef,
+  returnFocusRef,
   onEscape,
   escapeDisabled = false,
 }: {
   active: boolean;
   containerRef: RefObject<T | null>;
+  returnFocusRef?: RefObject<HTMLElement | null>;
   onEscape?: () => void;
   escapeDisabled?: boolean;
 }) {
@@ -53,6 +55,7 @@ export function useDialogFocusBoundary<T extends HTMLElement>({
     const container = containerRef.current;
     if (!container) return;
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const explicitReturnFocus = returnFocusRef?.current ?? null;
     const frame = window.requestAnimationFrame(() => {
       const preferred = container.querySelector<HTMLElement>("[autofocus]");
       const first = focusableElements(container)[0];
@@ -78,7 +81,8 @@ export function useDialogFocusBoundary<T extends HTMLElement>({
     return () => {
       window.cancelAnimationFrame(frame);
       document.removeEventListener("keydown", handleKeyDown);
-      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+      const returnFocus = explicitReturnFocus ?? previousFocus;
+      if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
     };
-  }, [active, containerRef]);
+  }, [active, containerRef, returnFocusRef]);
 }
