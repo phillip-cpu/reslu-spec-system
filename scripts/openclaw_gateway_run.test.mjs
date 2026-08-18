@@ -4,8 +4,10 @@ import {
   buildAgentParams,
   extractChatReply,
   extractDurableRunReply,
+  extractDurableRunResult,
   runGatewayAgent,
   safeAgentEvent,
+  safeOpenClawUsage,
   validateGatewayUrl,
   validateRunInput,
 } from "./openclaw_gateway_run.mjs";
@@ -105,6 +107,44 @@ test("only a matching final chat event becomes the canonical reply", () => {
   assert.equal(extractChatReply({ content: [{ type: "tool_use", text: "hidden" }] }), null);
 });
 
+test("final events expose bounded content-free OpenClaw usage only", () => {
+  const message = {
+    content: [{ type: "text", text: "Done." }],
+    provider: "openai",
+    model: "gpt-5.6-terra",
+    usage: {
+      input: 120,
+      output: 8,
+      cacheRead: 20,
+      cacheWrite: 0,
+      totalTokens: 148,
+      cost: { total: 0.001234567891, private: "do not retain" },
+      prompt: "private",
+    },
+  };
+  const usage = safeOpenClawUsage(message);
+  assert.deepEqual(usage, {
+    schema_version: 1,
+    provider: "openai",
+    model: "gpt-5.6-terra",
+    input_tokens: 120,
+    output_tokens: 8,
+    cache_read_tokens: 20,
+    cache_write_tokens: 0,
+    total_tokens: 148,
+    cost_usd: 0.00123457,
+  });
+  const final = safeAgentEvent({
+    type: "event",
+    event: "chat",
+    payload: { runId: "run-usage", state: "final", message },
+  }, "run-usage");
+  assert.deepEqual(final, { type: "final", reply: "Done.", usage });
+  assert.equal(JSON.stringify(final).includes("private"), false);
+  assert.equal(safeOpenClawUsage({ ...message, model: "bad model" }), null);
+  assert.equal(safeOpenClawUsage({ ...message, usage: { ...message.usage, input: 1_000_000_001 } }), null);
+});
+
 test("durable history recovers only the reply to the exact accepted prompt", () => {
   const acceptedAt = 10_000;
   const history = {
@@ -118,6 +158,22 @@ test("durable history recovers only the reply to the exact accepted prompt", () 
   };
   assert.equal(extractDurableRunReply(history, "The current prompt", acceptedAt), "The durable answer");
   assert.equal(extractDurableRunReply(history, "A different prompt", acceptedAt), null);
+});
+
+test("durable history recovery retains only safe runtime usage", () => {
+  const result = extractDurableRunResult({ messages: [
+    { role: "user", timestamp: 9_500, content: "Current" },
+    {
+      role: "assistant",
+      timestamp: 10_500,
+      content: "Answer",
+      provider: "openai",
+      model: "gpt-5.6-terra",
+      usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 12 },
+    },
+  ] }, "Current", 10_000);
+  assert.equal(result?.reply, "Answer");
+  assert.equal(result?.usage?.total_tokens, 12);
 });
 
 test("durable history rejects stale and non-visible assistant output", () => {

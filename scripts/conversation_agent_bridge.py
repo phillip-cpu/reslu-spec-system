@@ -14,6 +14,7 @@ import http.client
 import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -958,6 +959,36 @@ def openclaw_progress_label(event: dict) -> str | None:
     return "Working with RESLU tools"
 
 
+def bounded_openclaw_usage(value: object) -> dict | None:
+    """Accept only the helper's content-free, bounded runtime counters."""
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        return None
+    if set(value) != {
+        "schema_version", "provider", "model", "input_tokens", "output_tokens",
+        "cache_read_tokens", "cache_write_tokens", "total_tokens", "cost_usd",
+    }:
+        return None
+    provider = value.get("provider")
+    model = value.get("model")
+    if not isinstance(provider, str) or not re.fullmatch(r"[A-Za-z0-9._:/-]{1,80}", provider):
+        return None
+    if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9._:/-]{1,160}", model):
+        return None
+    for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens"):
+        token_count = value.get(key)
+        if isinstance(token_count, bool) or not isinstance(token_count, int) or not 0 <= token_count <= 1_000_000_000:
+            return None
+    cost = value.get("cost_usd")
+    if cost is not None and (
+        isinstance(cost, bool)
+        or not isinstance(cost, (int, float))
+        or not math.isfinite(cost)
+        or not 0 <= cost <= 1_000_000
+    ):
+        return None
+    return dict(value)
+
+
 def invoke_agent_via_gateway(
     *,
     prompt: str,
@@ -1028,7 +1059,7 @@ def invoke_agent_via_gateway(
                 if event["type"] == "accepted":
                     accepted = True
                 if on_progress is not None and event["type"] in {
-                    "accepted", "lifecycle", "tool", "assistant_delta"
+                    "accepted", "lifecycle", "tool", "assistant_delta", "final"
                 }:
                     on_progress(event)
                 if event["type"] == "final":
@@ -1437,17 +1468,22 @@ def gateway_progress_reporter(
     task_id: str | None = None,
 ) -> Callable[[dict], None]:
     """Persist bounded metadata-only progress without storing tool arguments."""
-    state: dict[str, str | None] = {"label": None, "run_id": None}
+    state: dict[str, object] = {"label": None, "run_id": None, "usage_recorded": False}
 
     def report(event: dict) -> None:
         label = openclaw_progress_label(event)
         run_id = event.get("run_id") if event.get("type") == "accepted" else None
         safe_run_id = str(run_id)[:160] if isinstance(run_id, str) and run_id else None
+        usage = bounded_openclaw_usage(event.get("usage")) if event.get("type") == "final" else None
         if safe_run_id:
             # Retain this in memory even if one progress PATCH has a transient
             # network failure; the next safe event retries the run-id write.
             state["run_id"] = safe_run_id
-        if label == state["label"] and (safe_run_id is None or safe_run_id == state["run_id"]):
+        if (
+            label == state["label"]
+            and (safe_run_id is None or safe_run_id == state["run_id"])
+            and (usage is None or state["usage_recorded"] is True)
+        ):
             return
         values: dict[str, object] = {
             "progress_updated_at": datetime.now(timezone.utc).isoformat(),
@@ -1456,6 +1492,8 @@ def gateway_progress_reporter(
             values["progress_label"] = label[:240]
         if state["run_id"]:
             values["gateway_run_id"] = state["run_id"]
+        if usage is not None:
+            values["openclaw_usage"] = usage
         try:
             rest.patch(table, row_id, values)
             if task_id and label and label != state["label"]:
@@ -1469,6 +1507,8 @@ def gateway_progress_reporter(
             return
         if label:
             state["label"] = label
+        if usage is not None:
+            state["usage_recorded"] = True
 
     return report
 

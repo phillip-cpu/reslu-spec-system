@@ -32,5 +32,5 @@ test("conversation incidents are deduped and contain no private content", () => 
   assert.match(check, /unavailable messaging capabilities/);
   assert.doesNotMatch(health, /select\("(?:body|summary|objective|error|transcript|prompt|tool_arguments)/);
   assert.doesNotMatch(card, /transcript\}/);
-  assert.match(card, /No transcript, prompt, file, tool argument or provider identifier/);
+  assert.match(card, /No transcript, prompt, reply, reasoning, file or tool argument is stored/);
 });

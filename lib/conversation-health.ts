@@ -7,6 +7,7 @@ export const VOICE_ACK_TARGET_MS = 1000;
 export const VOICE_INTERRUPTION_TARGET_MS = 250;
 
 type CallLatencyRow = { realtime_voice_latency?: unknown };
+type OpenClawUsageRow = { openclaw_usage?: unknown };
 
 type ConversationCapabilityProbeError = { code?: string | null; message?: string | null } | null;
 
@@ -21,6 +22,88 @@ export function conversationCapabilityUnavailable(error: ConversationCapabilityP
 function average(values: number[]) {
   if (values.length === 0) return null;
   return Math.round(values.reduce((total, value) => total + value, 0) / values.length);
+}
+
+function boundedUsageInteger(value: unknown) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000
+    ? value
+    : null;
+}
+
+export function sanitizeOpenClawUsage(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const usage = value as Record<string, unknown>;
+  const keys = Object.keys(usage).sort();
+  const expected = [
+    "cache_read_tokens", "cache_write_tokens", "cost_usd", "input_tokens", "model",
+    "output_tokens", "provider", "schema_version", "total_tokens",
+  ];
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) return null;
+  const provider = typeof usage.provider === "string" && /^[A-Za-z0-9._:/-]{1,80}$/.test(usage.provider)
+    ? usage.provider
+    : null;
+  const model = typeof usage.model === "string" && /^[A-Za-z0-9._:/-]{1,160}$/.test(usage.model)
+    ? usage.model
+    : null;
+  if (usage.schema_version !== 1 || !provider || !model) return null;
+  const inputTokens = boundedUsageInteger(usage.input_tokens);
+  const outputTokens = boundedUsageInteger(usage.output_tokens);
+  const cacheReadTokens = boundedUsageInteger(usage.cache_read_tokens);
+  const cacheWriteTokens = boundedUsageInteger(usage.cache_write_tokens);
+  const totalTokens = boundedUsageInteger(usage.total_tokens);
+  if ([inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, totalTokens].includes(null)) return null;
+  const costUsd = usage.cost_usd === null
+    ? 0
+    : typeof usage.cost_usd === "number" && Number.isFinite(usage.cost_usd) && usage.cost_usd >= 0 && usage.cost_usd <= 1_000_000
+      ? usage.cost_usd
+      : null;
+  if (costUsd === null) return null;
+  return {
+    provider,
+    model,
+    input_tokens: inputTokens!,
+    output_tokens: outputTokens!,
+    cache_read_tokens: cacheReadTokens!,
+    cache_write_tokens: cacheWriteTokens!,
+    total_tokens: totalTokens!,
+    cost_usd: costUsd,
+  };
+}
+
+/** Content-free aggregate over bounded OpenClaw usage captured per completed run. */
+export function summarizeOpenClawUsage(rows: OpenClawUsageRow[], truncated = false) {
+  const byModel = new Map<string, ConversationTransportHealth["openclaw_usage_by_model"][number]>();
+  let observed = 0;
+  for (const row of rows) {
+    const usage = sanitizeOpenClawUsage(row.openclaw_usage);
+    if (!usage) continue;
+    observed += 1;
+    const key = `${usage.provider}/${usage.model}`;
+    const current = byModel.get(key) ?? {
+      provider: usage.provider,
+      model: usage.model,
+      runs: 0,
+      total_tokens: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reported_cost_usd: 0,
+    };
+    current.runs += 1;
+    current.total_tokens += usage.total_tokens;
+    current.input_tokens += usage.input_tokens;
+    current.output_tokens += usage.output_tokens;
+    current.cache_read_tokens += usage.cache_read_tokens;
+    current.cache_write_tokens += usage.cache_write_tokens;
+    current.reported_cost_usd = Math.round((current.reported_cost_usd + usage.cost_usd) * 100_000_000) / 100_000_000;
+    byModel.set(key, current);
+  }
+  return {
+    openclaw_usage_runs_observed: observed,
+    openclaw_usage_truncated: truncated,
+    openclaw_usage_by_model: [...byModel.values()].sort((left, right) => right.total_tokens - left.total_tokens),
+  };
 }
 
 /** Content-free aggregate over the already-sanitized per-call timing payload. */

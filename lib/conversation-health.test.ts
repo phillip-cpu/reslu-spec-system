@@ -6,7 +6,9 @@ import {
   conversationTransportHasIncident,
   conversationTransportLevel,
   conversationTurnTransportHasIncident,
+  sanitizeOpenClawUsage,
   summarizeConversationVoiceHealth,
+  summarizeOpenClawUsage,
 } from "./conversation-health.ts";
 
 const healthy = {
@@ -28,6 +30,9 @@ const healthy = {
   voice_usage_truncated: false,
   realtime_usage_by_model: [],
   transcription_usage_by_model: [],
+  openclaw_usage_runs_observed: 0,
+  openclaw_usage_truncated: false,
+  openclaw_usage_by_model: [],
 };
 
 test("voice health retains only bounded timing aggregates", () => {
@@ -97,6 +102,42 @@ test("voice usage rolls up separately by exact model and declares a capped perio
   assert.deepEqual(result.transcription_usage_by_model.map((entry) => [entry.model, entry.total_tokens]), [
     ["gpt-live-transcribe", 20],
   ]);
+});
+
+test("OpenClaw usage is content-free, bounded and grouped by exact runtime model", () => {
+  const first = {
+    schema_version: 1,
+    provider: "openai",
+    model: "gpt-5.6-terra",
+    input_tokens: 100,
+    output_tokens: 5,
+    cache_read_tokens: 20,
+    cache_write_tokens: 0,
+    total_tokens: 125,
+    cost_usd: 0.001,
+  };
+  assert.equal(sanitizeOpenClawUsage({ ...first, prompt: "private" }), null);
+  assert.equal(sanitizeOpenClawUsage({ ...first, total_tokens: -1 }), null);
+  assert.deepEqual(summarizeOpenClawUsage([
+    { openclaw_usage: first },
+    { openclaw_usage: { ...first, input_tokens: 50, output_tokens: 10, total_tokens: 80, cost_usd: 0.002 } },
+    { openclaw_usage: { ...first, model: "gpt-5.6-sol", input_tokens: 40, total_tokens: 65 } },
+  ], true), {
+    openclaw_usage_runs_observed: 3,
+    openclaw_usage_truncated: true,
+    openclaw_usage_by_model: [
+      {
+        provider: "openai", model: "gpt-5.6-terra", runs: 2, total_tokens: 205,
+        input_tokens: 150, output_tokens: 15, cache_read_tokens: 40, cache_write_tokens: 0,
+        reported_cost_usd: 0.003,
+      },
+      {
+        provider: "openai", model: "gpt-5.6-sol", runs: 1, total_tokens: 65,
+        input_tokens: 40, output_tokens: 5, cache_read_tokens: 20, cache_write_tokens: 0,
+        reported_cost_usd: 0.001,
+      },
+    ],
+  });
 });
 
 test("operational failures are incidents while latency misses are warnings", () => {
