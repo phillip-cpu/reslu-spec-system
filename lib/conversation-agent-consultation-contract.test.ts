@@ -44,7 +44,10 @@ test("the bridge invokes the existing specialist runtime but publishes through t
   assert.match(bridge, /agent_consultation_for_job/);
   assert.match(bridge, /consultation_owner/);
   assert.match(bridge, /do not send messages/);
-  assert.match(bridge, /rest\.complete_agent_consultation\(job\["id"\], reply\)/);
+  assert.match(
+    bridge,
+    /rest\.complete_agent_consultation\(job\["id"\], reply, usage_capture\.get\("value"\)\)/,
+  );
   assert.doesNotMatch(bridge, /openclaw_agent_id\("specialist"\)/);
 });
 

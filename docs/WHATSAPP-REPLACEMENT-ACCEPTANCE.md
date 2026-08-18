@@ -713,6 +713,29 @@ overhead even without tool work. The same agent, model, memory and tool policy
 remain live for the agreed one-week quality trial; no faster-but-weaker model
 has been substituted.
 
+## Stage 8 OpenClaw usage observability: 19 August 2026
+
+- Migration `20260819093000` adds one bounded content-free usage envelope to
+  completed chat/voice jobs and durable tasks. The database accepts exactly the
+  provider, model, input/output/cache/total token counters and reported cost;
+  arbitrary fields, unsafe labels and negative or oversized counts fail closed.
+- The loopback Gateway extracts those counters from the canonical final event,
+  including its exact durable-history recovery path. The bridge validates them
+  independently before storage. Prompts, replies, reasoning, files, tool names,
+  arguments and results are excluded.
+- Health groups the latest seven days by exact OpenClaw provider/model alongside
+  the existing Realtime and transcription totals, with explicit 1,000-turn and
+  1,000-task caps.
+- Migration `20260819102000` keeps specialist-consultation usage in the same
+  transaction as its canonical response and job completion. Ordinary turns and
+  tasks include captured usage in their final completion update, so a transient
+  best-effort progress-write failure cannot silently lose the accounting row.
+- Both rollback verifiers retain no synthetic conversation or usage data.
+
+This makes future model-cost comparisons auditable. It does not backfill older
+runs and it does not close Stage 8's physical accessibility, revocation,
+retention, network, long-history or two-week pilot gates.
+
 ## Next physical acceptance session
 
 Run these in order and record the exact device, build/deployment, timestamps and

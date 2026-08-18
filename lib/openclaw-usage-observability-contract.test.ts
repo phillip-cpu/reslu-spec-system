@@ -5,6 +5,8 @@ import test from "node:test";
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const migration = read("supabase/migrations/20260819093000_openclaw_runtime_usage.sql");
 const verifier = read("supabase/fixtures/20260819093000_openclaw_runtime_usage_verify.sql");
+const atomicMigration = read("supabase/migrations/20260819102000_atomic_openclaw_usage_completion.sql");
+const atomicVerifier = read("supabase/fixtures/20260819102000_atomic_openclaw_usage_completion_verify.sql");
 const helper = read("scripts/openclaw_gateway_run.mjs");
 const bridge = read("scripts/conversation_agent_bridge.py");
 const health = read("lib/health.ts");
@@ -23,6 +25,10 @@ test("Gateway and bridge persist only sanitized final usage", () => {
   assert.match(helper, /schema_version:\s*1[\s\S]*input_tokens[\s\S]*cost_usd/);
   assert.doesNotMatch(helper.match(/export function safeOpenClawUsage[\s\S]*?\n}\n/)?.[0] ?? "", /prompt|reply|reasoning|tool/i);
   assert.match(bridge, /bounded_openclaw_usage[\s\S]*openclaw_usage/);
+  assert.match(bridge, /usage_capture[\s\S]*completion_values\["openclaw_usage"\]/);
+  assert.match(atomicMigration, /complete_conversation_agent_consultation\([\s\S]*p_openclaw_usage jsonb/);
+  assert.match(atomicMigration, /created_message_id := public\.complete_conversation_agent_consultation\([\s\S]*update public\.agent_conversation_jobs[\s\S]*openclaw_usage = p_openclaw_usage/);
+  assert.match(atomicVerifier, /canonical consultation and usage were not completed atomically/);
 });
 
 test("Health reports exact OpenClaw model usage without content", () => {
