@@ -21,7 +21,7 @@
  * GHSA-xq3m-2v4x-88gg and others). `@huggingface/transformers` uses
  * `onnxruntime-node` instead (the native Node binding, also more
  * appropriate for a server environment than a WASM build). As of the
- * 2026-08-10 audit, its current upstream release still inherits advisories
+ * 2026-08-19 audit, its current upstream release still inherits advisories
  * through sharp/libvips and adm-zip, with no vendor fix available. This
  * wrapper passes text only to a fixed feature-extraction model; it never sends
  * user images, archives or file bytes through those optional code paths. Keep
@@ -44,8 +44,12 @@
  */
 
 import { pipeline, env, type FeatureExtractionPipeline } from "@huggingface/transformers";
+import { assertBoundedEmbeddingTexts } from "@/lib/second-brain/embedding-input";
 
 const MODEL = "Supabase/gte-small";
+// Pin the immutable upstream artifact rather than trusting the mutable main
+// branch. Verified against the Hugging Face model API on 19 August 2026.
+const MODEL_REVISION = "93b36ff09519291b77d6000d2e86bd8565378086";
 const BATCH_SIZE = 8;
 
 env.cacheDir = "/tmp/hf-cache";
@@ -57,7 +61,10 @@ function getPipeline(): Promise<FeatureExtractionPipeline> {
     // Vercel's default Node function memory is not large enough for the fp32
     // model once ONNX has allocated its working buffers. The model repository
     // ships a q8 ONNX build with the same 384-dimensional output contract.
-    pipelinePromise = pipeline("feature-extraction", MODEL, { dtype: "q8" }) as Promise<FeatureExtractionPipeline>;
+    pipelinePromise = pipeline("feature-extraction", MODEL, {
+      dtype: "q8",
+      revision: MODEL_REVISION,
+    }) as Promise<FeatureExtractionPipeline>;
   }
   return pipelinePromise;
 }
@@ -68,6 +75,7 @@ function getPipeline(): Promise<FeatureExtractionPipeline> {
  * batching themselves.
  */
 export async function embedTexts(texts: string[]): Promise<number[][]> {
+  assertBoundedEmbeddingTexts(texts);
   if (texts.length === 0) return [];
 
   let extractor: FeatureExtractionPipeline;

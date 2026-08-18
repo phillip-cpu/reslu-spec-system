@@ -656,7 +656,12 @@ Keep Next.js on a currently patched stable release. The Stage 2 dependency
   audit moved the app from vulnerable 16.0.10 to stable 16.3.0 and cleared the
   framework/proxy advisories. Track the remaining no-fix advisories inherited
   by `@huggingface/transformers`; the current embedding wrapper is text-only
-  and must never receive untrusted images, archives or file bytes.
+  and must never receive untrusted images, archives or file bytes. The 19 August
+  audit patched `brace-expansion` and `js-yaml`, reducing the high-severity
+  count from six to four. The remaining four are one upstream ONNX/Sharp chain
+  with no published fix; the runtime now pins the exact immutable gte-small
+  model commit and rejects non-text, oversized-item and oversized-aggregate
+  inputs before loading the native pipeline.
 
 Final product gate:
 
