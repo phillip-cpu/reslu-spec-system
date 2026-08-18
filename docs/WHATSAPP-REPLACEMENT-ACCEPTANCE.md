@@ -582,6 +582,24 @@ the guard's fail-closed tests remain a required regression gate. Stage 8 stays
 pending on revocation, accessibility, retention, poor-network, long-history and
 the two-week no-WhatsApp pilot.
 
+## Stage 8 production function validation: 19 August 2026
+
+- Linked production schema lint identified two existing PL/pgSQL validator
+  errors: an ambiguous `baseline_id` conflict target in finance activation and
+  an unqualified `pgcrypto.digest` call in task-artifact approval.
+- Corrective migration `20260818173619` replaced the three finance upserts with
+  the named uniqueness constraint and schema-qualified only the approval hash
+  call as `extensions.digest`.
+- Production retained both functions as `SECURITY DEFINER`, retained their
+  existing function-local search paths, denied `anon` execution and allowed
+  `authenticated` execution.
+- The post-migration linked lint completed with no errors and all 599 repository
+  tests passed.
+
+This closes the two known production function-validator errors. It does not
+close the remaining physical-device, accessibility, retention, network,
+long-history or two-week pilot gates.
+
 ## Next physical acceptance session
 
 Run these in order and record the exact device, build/deployment, timestamps and

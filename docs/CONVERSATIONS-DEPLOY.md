@@ -78,3 +78,13 @@ Migration 115 adds member-scoped transcript/bundle export, recorder-only raw-aud
 Migration `20260818105029` installs the service-only abandoned-runtime watchdog. Run `supabase/fixtures/20260818105029_reconcile_stale_conversation_runtime_verify.sql`; it must print its PASS notice and roll back. The watchdog terminally cancels cancellation-requested tasks whose worker vanished, marks other abandoned tasks failed for explicit review or safe retry, drops calls left active for more than four hours, cancels only unfinished conversational output, and writes one generic call record. It never requeues work or replays an approved action. The health cron invokes it before measuring health, and the migration restores the one-active-call-per-starter index.
 
 Migration `20260818111114` adds an atomic service-only lease to the Mac diagnostics queue and terminally fails claims abandoned for more than ten minutes. It never automatically repeats a repair. Run `supabase/fixtures/20260818111114_recover_abandoned_health_diagnostics_verify.sql`; it must print its PASS notice and roll back. Install the matching bounded scripts from `scripts/reslu-health/` on the Mac: authentication and Spec requests have finite connection/total timeouts, and WhatsApp verification, restart and `softwareupdate` checks are also bounded. Restart both health launch agents after copying the scripts.
+
+Corrective migration `20260818173619_repair_production_function_lint.sql`
+repairs two function-validator failures without changing function signatures,
+owners, `SECURITY DEFINER` status, search paths or authenticated-only grants.
+Finance activation targets the named forecast-line uniqueness constraint so its
+`baseline_id` output column cannot conflict with the table column. Task-artifact
+approval explicitly calls `extensions.digest`, while retaining its restrictive
+`public, pg_temp` search path. After applying it, run
+`supabase db lint --linked --level error`; both schemas must lint without an
+error, and confirm `anon` still has no execute privilege on either function.
