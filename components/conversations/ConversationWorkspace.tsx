@@ -99,6 +99,7 @@ import {
   conversationDayLabel,
   conversationLongPressMoved,
   mergeConversationTimelineMessages,
+  preserveEqualConversationCollection,
   preservedConversationScrollTop,
 } from "@/lib/conversation-timeline";
 import {
@@ -1376,6 +1377,7 @@ export function ConversationWorkspace({
   const activeMessageRequestRef = useRef(new Map<string, number>());
   const activeAgentTaskRequestRef = useRef(new Set<string>());
   const offlineMessageCacheHydratedRef = useRef(new Set<string>());
+  const offlineMessageCacheSnapshotRef = useRef<{ conversationId: string; fingerprint: string } | null>(null);
   const messageLongPressRef = useRef<{ timer: number; messageId: string; x: number; y: number } | null>(null);
   const swipeBackRef = useRef<{ pointerId: number; x: number; y: number; latestX: number; latestY: number } | null>(null);
 
@@ -1764,20 +1766,26 @@ export function ConversationWorkspace({
       if (shouldMerge) {
         setMessages((current) => mergeConversationTimelineMessages(current, incoming));
       } else {
-        setMessages(incoming);
+        setMessages((current) => preserveEqualConversationCollection(current, incoming));
       }
       if (options?.latest) historyExpandedRef.current = false;
       if (options?.mergeOlder) historyExpandedRef.current = true;
       if (!historyExpandedRef.current || options?.mergeOlder || options?.latest || anchorMessageId) {
         setHasOlderMessages(Boolean(body.context?.has_older));
       }
-      setParticipants(body.participants);
-      setAgentActivity(Array.isArray(body.agent_activity) ? body.agent_activity as ConversationAgentActivity[] : []);
-      setPinnedMessages(Array.isArray(body.pinned_messages) ? body.pinned_messages as ConversationMessage[] : []);
+      setParticipants((current) => preserveEqualConversationCollection(current, body.participants));
+      setAgentActivity((current) => preserveEqualConversationCollection(
+        current,
+        Array.isArray(body.agent_activity) ? body.agent_activity as ConversationAgentActivity[] : [],
+      ));
+      setPinnedMessages((current) => preserveEqualConversationCollection(
+        current,
+        Array.isArray(body.pinned_messages) ? body.pinned_messages as ConversationMessage[] : [],
+      ));
       const cacheOwnerProfileId = currentUserIdRef.current;
       if (cacheOwnerProfileId && !anchorMessageId && !options?.before && !options?.mergeOlder) {
         offlineMessageCacheHydratedRef.current.delete(conversationId);
-        void saveCachedConversationMessages({
+        const cacheSnapshot = {
           ownerProfileId: cacheOwnerProfileId,
           conversationId,
           messages: incoming,
@@ -1785,7 +1793,22 @@ export function ConversationWorkspace({
           agentActivity: Array.isArray(body.agent_activity) ? body.agent_activity as ConversationAgentActivity[] : [],
           pinnedMessages: Array.isArray(body.pinned_messages) ? body.pinned_messages as ConversationMessage[] : [],
           hasOlder: Boolean(body.context?.has_older),
-        }).catch(() => null);
+        };
+        const cacheFingerprint = JSON.stringify(cacheSnapshot);
+        if (
+          offlineMessageCacheSnapshotRef.current?.conversationId !== conversationId
+          || offlineMessageCacheSnapshotRef.current.fingerprint !== cacheFingerprint
+        ) {
+          offlineMessageCacheSnapshotRef.current = { conversationId, fingerprint: cacheFingerprint };
+          void saveCachedConversationMessages(cacheSnapshot).catch(() => {
+            if (
+              offlineMessageCacheSnapshotRef.current?.conversationId === conversationId
+              && offlineMessageCacheSnapshotRef.current.fingerprint === cacheFingerprint
+            ) {
+              offlineMessageCacheSnapshotRef.current = null;
+            }
+          });
+        }
       }
       const requestedMessage = requestedMessageIdRef.current
         ? incoming.find((message) => message.id === requestedMessageIdRef.current)

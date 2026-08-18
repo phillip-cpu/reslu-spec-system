@@ -9,6 +9,7 @@ import {
   conversationDayLabel,
   conversationLongPressMoved,
   mergeConversationTimelineMessages,
+  preserveEqualConversationCollection,
   preservedConversationScrollTop,
 } from "./conversation-timeline.ts";
 
@@ -87,6 +88,36 @@ test("twenty keyset pages merge into 2,000 unique chronological messages", () =>
   assert.equal(duplicatePage.at(-1)?.body, "Canonical correction");
 });
 
+test("unchanged polling pages preserve long-history and metadata references", () => {
+  const loaded = Array.from({ length: 2_000 }, (_, index) => ({
+    id: `message-${String(index).padStart(4, "0")}`,
+    created_at: new Date(Date.UTC(2026, 7, 1, 0, Math.floor(index / 4), 0)).toISOString(),
+    body: `Message ${index}`,
+    reactions: index % 10 === 0 ? [{ reaction: "like", count: 1 }] : [],
+  }));
+  const unchangedLatestPage = loaded.slice(-100).map((message) => ({
+    ...message,
+    reactions: message.reactions.map((reaction) => ({ ...reaction })),
+  }));
+  let polled = loaded;
+  for (let poll = 0; poll < 100; poll += 1) {
+    polled = mergeConversationTimelineMessages(polled, unchangedLatestPage);
+    assert.equal(polled, loaded);
+  }
+
+  const participants = [{ id: "person-1", display_name: "Phillip" }];
+  assert.equal(
+    preserveEqualConversationCollection(participants, [{ id: "person-1", display_name: "Phillip" }]),
+    participants,
+  );
+
+  const changed = mergeConversationTimelineMessages(loaded, [
+    { ...unchangedLatestPage.at(-1)!, body: "Updated canonical message" },
+  ]);
+  assert.notEqual(changed, loaded);
+  assert.equal(changed.at(-1)?.body, "Updated canonical message");
+});
+
 test("older page insertion preserves the same visible timeline anchor", () => {
   let scrollTop = 260;
   let scrollHeight = 11_200;
@@ -99,5 +130,7 @@ test("older page insertion preserves the same visible timeline anchor", () => {
   }
   assert.equal(preservedConversationScrollTop(10, 100, 20), 0);
   assert.match(workspace, /mergeConversationTimelineMessages\(current, incoming\)/);
+  assert.match(workspace, /preserveEqualConversationCollection\(current, incoming\)/);
+  assert.match(workspace, /offlineMessageCacheSnapshotRef/);
   assert.match(workspace, /preservedConversationScrollTop\(/);
 });

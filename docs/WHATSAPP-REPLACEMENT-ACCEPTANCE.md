@@ -273,6 +273,26 @@ This closes the live desktop forwarding focus-containment and focus-return
 slice only. VoiceOver, Reduce Motion, larger Dynamic Type, contrast and physical
 iPhone touch-target exercises remain open, so Stage 8 remains pending.
 
+## Stage 8 long-history refresh candidate: 19 August 2026
+
+- Long threads still retain complete keyset-paged history and canonical edits,
+  but an unchanged latest-message poll now preserves the existing 2,000-row
+  collection reference instead of replacing every overlapping row and sorting
+  the complete accumulated thread again.
+- Participant, active-agent and pinned-message snapshots also preserve their
+  references when unchanged. This prevents an idle three-second refresh from
+  scheduling redundant React state work solely because the API returned fresh
+  JSON objects with identical content.
+- The newest 100-message offline snapshot is written to IndexedDB only when its
+  messages or associated metadata actually change, rather than on every poll.
+- Deterministic tests exercise 100 unchanged latest-page polls over a 2,000-row
+  history, then prove a genuine canonical edit still produces a new ordered
+  snapshot.
+
+This removes a known repeated-work source before physical long-history testing.
+It does not substitute for the required mixed-media iPhone scroll/composer
+measurement, so the Stage 2 and Stage 8 physical gates remain open.
+
 ## Stage 8 bounded voice-network candidate: 19 August 2026
 
 - Browser call creation and canonical call-end writes now use an eight-second
