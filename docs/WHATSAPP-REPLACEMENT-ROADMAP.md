@@ -559,8 +559,11 @@ from an idle queue. The report contains only worker names/counts and liveness,
 never conversation text, identifiers, filenames or task content.
 This reporter is deployed through `5d200d9`; two production samples one minute
 apart proved the row advances and reports all five required workers active. A
-deliberate failure/recovery alert test remains pending and must use an isolated
-test path rather than interrupting the production bridge.
+separately named synthetic worker drill on 18 August used the real governed
+health route without stopping the production bridge: its first down report
+opened one incident and one notification, the repeated down report was deduped,
+and recovery resolved the incident and stale notification. The production bridge
+remained `ok` with a fresh report throughout.
 Durable Aria/Marco work deliberately enters `failed` instead of blindly
 replaying an uncertain run. Migration 111 adds a requester-only recovery action
 for failed work with no unresolved or completed approval boundary: it reuses the
