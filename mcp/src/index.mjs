@@ -2040,6 +2040,20 @@ const TOOLS = [
     handler: async (body) => apiFetch("/api/stuart/xero-draft-bills", { method: "POST", body: JSON.stringify(body) }),
   },
   {
+    name: "search_stuart_xero_contacts",
+    description:
+      "Search existing Xero supplier contacts by name before creating a draft bill. Returns at most 25 contact IDs, names and statuses. Read-only: it cannot create or change a Xero contact, bill, payment or approval.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", minLength: 2, maxLength: 100, description: "Supplier name or distinctive name fragment" },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+    handler: async ({ query }) => apiFetch(`/api/stuart/xero-contacts?q=${encodeURIComponent(query)}`),
+  },
+  {
     name: "reconcile_stuart_supplier_statement",
     description:
       "Reconcile an uploaded supplier statement's invoice lines against the read-only Xero cache. Returns matched, missing and total-mismatch items and writes an audit result. Never create a bill from a statement total and never reconcile a bank feed.",
@@ -2318,6 +2332,7 @@ const STUART_ALLOWED_TOOLS = new Set([
   "run_stuart_finance_review",
   "attach_stuart_source_invoice",
   "create_stuart_xero_draft_bill",
+  "search_stuart_xero_contacts",
   "reconcile_stuart_supplier_statement",
 ]);
 
