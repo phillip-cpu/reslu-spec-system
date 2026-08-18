@@ -43,6 +43,19 @@ test("conversation inbox and project UI preserve and visibly constrain scope", (
   assert.match(workspace, /selectedConversation\.context\.scope_label/);
 });
 
+test("project chat opening is bounded, idempotent and recoverable on a poor network", () => {
+  assert.match(projectPanel, /boundedFetch\("\/api\/conversations\/scoped"/);
+  assert.match(projectPanel, /PROJECT_CONVERSATION_OPEN_TIMEOUT_MS = 15_000/);
+  assert.match(projectPanel, /const clientConversationId = createIntentRef\.current\.id/);
+  assert.match(projectPanel, /client_conversation_id: clientConversationId/);
+  assert.match(projectPanel, /BoundedRequestTimeoutError/);
+  assert.match(projectPanel, /window\.addEventListener\("online", retryWhenOnline/);
+  assert.match(projectPanel, /setOpenAttempt\(\(attempt\) => attempt \+ 1\)/);
+  assert.match(projectPanel, /role="alert"/);
+  assert.match(projectPanel, /min-h-11[\s\S]*Try again/);
+  assert.doesNotMatch(projectPanel, /void fetch\("\/api\/conversations\/scoped"/);
+});
+
 test("background work and agent turns inherit a bounded authoritative scope", () => {
   assert.match(migration, /trg_agent_tasks_inherit_conversation_scope/);
   assert.match(bridge, /def conversation_scope_context/);
