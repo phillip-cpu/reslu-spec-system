@@ -222,7 +222,7 @@ export function Sidebar({
                 onDragOver={(event) => arranging && event.preventDefault()}
                 onDrop={() => dropBefore(item.id)}
                 className={clsx(
-                  "mb-px flex min-h-10 items-center gap-1 transition-colors",
+                  "mb-px flex min-h-11 items-center gap-1 transition-colors",
                   active ? "bg-charcoal text-white" : "text-white/70 hover:bg-charcoal/60 hover:text-white",
                   arranging && "cursor-grab border border-white/10"
                 )}
@@ -258,7 +258,7 @@ export function Sidebar({
                         title={project.name}
                         aria-label={`Open recent project ${project.name}`}
                         onClick={closeOnMobile}
-                        className="flex h-6 w-6 items-center justify-center border border-white/30 bg-white/10 text-[9px] font-semibold text-white hover:border-sand hover:text-sand"
+                        className="flex h-11 w-11 items-center justify-center border border-white/30 bg-white/10 text-[10px] font-semibold text-white hover:border-sand hover:text-sand md:h-7 md:w-7 md:text-[9px]"
                       >
                         {projectShortcutLabel(project.name)}
                       </Link>
@@ -273,14 +273,14 @@ export function Sidebar({
                       aria-label={`Move ${item.label} up`}
                       disabled={index === 0}
                       onClick={() => moveItem(item.id, -1)}
-                      className="px-1.5 py-2 text-caption text-white/60 hover:text-white disabled:opacity-20"
+                      className="min-h-11 min-w-11 px-1.5 py-2 text-subhead text-white/60 hover:text-white disabled:opacity-20"
                     >↑</button>
                     <button
                       type="button"
                       aria-label={`Move ${item.label} down`}
                       disabled={index === orderedItems.length - 1}
                       onClick={() => moveItem(item.id, 1)}
-                      className="px-1.5 py-2 text-caption text-white/60 hover:text-white disabled:opacity-20"
+                      className="min-h-11 min-w-11 px-1.5 py-2 text-subhead text-white/60 hover:text-white disabled:opacity-20"
                     >↓</button>
                   </div>
                 )}
@@ -293,11 +293,11 @@ export function Sidebar({
           <button
             type="button"
             onClick={() => setArranging((value) => !value)}
-            className="w-full border border-white/20 px-3 py-2 text-left text-caption text-white/60 hover:border-white/50 hover:text-white"
+            className="min-h-11 w-full border border-white/20 px-3 py-2 text-left text-subhead text-white/70 hover:border-white/50 hover:text-white"
           >
             {arranging ? "Done arranging" : "Arrange menu"}
           </button>
-          <p className="mt-4 px-3 text-caption text-white/30">RESLU Spec System v0.1</p>
+          <p className="mt-4 px-3 text-[10px] leading-relaxed text-white/40">RESLU Spec System v0.1</p>
         </div>
       </aside>
     </>
