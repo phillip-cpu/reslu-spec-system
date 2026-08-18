@@ -103,6 +103,22 @@ test("poor-network call control cannot leave the call UI waiting forever", () =>
   assert.match(workspace, /if \(saved\) window\.setTimeout\(\(\) => void flushPendingCallEnds\(\), 0\)/);
 });
 
+test("realtime tool requests are bounded and retry the same canonical intent", () => {
+  assert.match(workspace, /REALTIME_TOOL_REQUEST_TIMEOUT_MS = 15000/);
+  assert.match(workspace, /MAX_REALTIME_TOOL_NETWORK_FAILURES = 3/);
+  assert.match(
+    workspace,
+    /retrySameConversationIntent\(\(\) => boundedFetch\([\s\S]*realtime\/\$\{endpoint\}[\s\S]*consultBody[\s\S]*REALTIME_TOOL_REQUEST_TIMEOUT_MS/,
+  );
+  assert.match(
+    workspace,
+    /retrySameConversationIntent\(\(\) => boundedFetch\([\s\S]*realtime\/task[\s\S]*taskBody[\s\S]*REALTIME_TOOL_REQUEST_TIMEOUT_MS/,
+  );
+  assert.match(workspace, /tool_call_id: toolCallId/);
+  assert.match(workspace, /setCallState\("reconnecting"\)/);
+  assert.match(workspace, /Check Agent work before asking again; the task may already be running/);
+});
+
 test("partial provider tool arguments wait for response.done fallback", () => {
   assert.match(workspace, /parseRealtimeConsultArguments\(argumentsJson\)/);
   assert.match(workspace, /parseRealtimeSpecialistArguments\(argumentsJson, callAgent\.agent_slug\)/);

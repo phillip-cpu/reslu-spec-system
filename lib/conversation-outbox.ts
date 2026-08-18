@@ -7,7 +7,7 @@ export interface PendingConversationMessage {
   ownerProfileId: string;
   conversationId: string;
   body: string;
-  source: "text" | "voice_note";
+  source: "text" | "voice" | "voice_note";
   targetAgent?: AgentSlug;
   replyToId: string | null;
   attachmentIds: string[];

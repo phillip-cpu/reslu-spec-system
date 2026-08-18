@@ -58,7 +58,8 @@ test("modern composer exposes working camera and file entry points", () => {
   assert.match(workspace, /capture="environment"/);
   assert.match(workspace, /Photos or PDF/);
   assert.match(workspace, /draftAttachments/);
-  assert.match(workspace, /attachment_ids: attachmentIds/);
+  assert.match(workspace, /attachmentIds: attachments\.map\(\(attachment\) => attachment\.id\)/);
+  assert.match(workspace, /attachment_ids: entry\.attachmentIds/);
   assert.match(workspace, /message\.attachments\.map/);
   assert.match(workspace, /onDrop=/);
   assert.match(workspace, /Drop photos or PDFs here/);

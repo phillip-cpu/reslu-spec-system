@@ -12,6 +12,10 @@ import {
 import { visibleAgentWorkTasks } from "@/lib/agent-work-visibility";
 import { boundedFetch } from "@/lib/bounded-request";
 import {
+  isTransientConversationNetworkError,
+  retrySameConversationIntent,
+} from "@/lib/conversation-network-retry";
+import {
   CONVERSATION_DIRECT_UPLOAD_MAX_BYTES,
   conversationAttachmentKind,
   isConversationAttachmentMime,
@@ -142,6 +146,8 @@ const CONVERSATION_READ_TIMEOUT_MS = 8000;
 const CONVERSATION_ACTION_TIMEOUT_MS = 15000;
 const CALL_CONTROL_REQUEST_TIMEOUT_MS = 8000;
 const REALTIME_SESSION_REQUEST_TIMEOUT_MS = 15000;
+const REALTIME_TOOL_REQUEST_TIMEOUT_MS = 15000;
+const MAX_REALTIME_TOOL_NETWORK_FAILURES = 3;
 const OFFLINE_CONVERSATION_NOTICE = "Offline — showing recent conversations saved on this device.";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -3097,53 +3103,44 @@ export function ConversationWorkspace({
     void uploadDraftAttachment(draftAttachment);
   }, [commitDraftAttachments, uploadDraftAttachment]);
 
-  const sendMessage = useCallback(async (
+  const queueLegacyVoiceMessage = useCallback(async (
     body: string,
-    source: "text" | "voice" = "text",
-    targetAgent?: AgentSlug,
-    attachmentIds: string[] = []
+    targetAgent: AgentSlug,
   ) => {
-    if (!selectedId || (!body.trim() && attachmentIds.length === 0)) return;
+    const conversationId = selectedIdRef.current;
+    const ownerProfileId = currentUserIdRef.current;
+    if (!conversationId || !ownerProfileId || !body.trim()) return;
     historyAnchorMessageIdRef.current = null;
     setHistoryAnchorMessageId(null);
     shouldStickToBottomRef.current = true;
     setSending(true);
-    if (source === "voice") setCallState("thinking");
+    setCallState("thinking");
+    const entry: PendingConversationMessage = {
+      clientMessageId: crypto.randomUUID(),
+      ownerProfileId,
+      conversationId,
+      body: body.trim(),
+      source: "voice",
+      targetAgent,
+      replyToId: null,
+      attachmentIds: [],
+      attachments: [],
+      createdAt: new Date().toISOString(),
+      status: "queued",
+      error: null,
+      retryable: true,
+    };
     try {
-      const response = await fetch(`/api/conversations/${selectedId}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          body,
-          source,
-          target_agent_slugs: targetAgent ? [targetAgent] : undefined,
-          attachment_ids: attachmentIds,
-          client_message_id: crypto.randomUUID(),
-        }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not send message");
-      const queueWarning = result.queue_error
-        ? `Message saved, but ${targetAgent ? targetAgent[0].toUpperCase() + targetAgent.slice(1) : "the agent"} could not be notified. Please try again shortly.`
-        : null;
+      await persistOutboxEntry(entry);
       setInterim("");
-      if (attachmentIds.length > 0) {
-        commitDraftAttachments((current) => {
-          current.forEach((item) => item.previewUrl?.startsWith("blob:") && URL.revokeObjectURL(item.previewUrl));
-          return [];
-        }, selectedId);
-      }
-      shouldStickToBottomRef.current = true;
-      await loadMessages(selectedId);
-      await loadConversations();
-      if (queueWarning) setError(queueWarning);
+      await flushOutbox();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not send message");
-      if (source === "voice") setCallState("listening");
+      setError(reason instanceof Error ? reason.message : "This voice turn could not be saved for sending.");
+      setCallState("listening");
     } finally {
       setSending(false);
     }
-  }, [commitDraftAttachments, selectedId, loadMessages, loadConversations]);
+  }, [flushOutbox, persistOutboxEntry]);
 
   const queueDraftMessage = useCallback(async (
     conversationId: string,
@@ -3528,8 +3525,8 @@ export function ConversationWorkspace({
     }
     if (command === "end the call" || command === "hang up") { void endCall(); return; }
     if (command === "repeat" && lastSpoken) { speak(lastSpoken); return; }
-    if (text.trim() && callAgent?.agent_slug) void sendMessage(text.trim(), "voice", callAgent.agent_slug);
-  }, [callAgent, endCall, lastSpoken, sendMessage, speak]);
+    if (text.trim() && callAgent?.agent_slug) void queueLegacyVoiceMessage(text.trim(), callAgent.agent_slug);
+  }, [callAgent, endCall, lastSpoken, queueLegacyVoiceMessage, speak]);
 
   const beginRealtimeTurnTiming = useCallback((toolCallId: string) => {
     const existing = realtimeTurnTimingsRef.current.get(toolCallId);
@@ -3652,31 +3649,63 @@ export function ConversationWorkspace({
     setCallState("thinking");
     try {
       timing.consultStartedAt = performance.now();
-      const start = await fetch(`/api/conversations/${selectedId}/realtime/${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: abortController.signal,
-        body: JSON.stringify({
-          query,
-          ...(specialist
-            ? { owner_agent_slug: callAgent.agent_slug, target_agent_slug: targetAgent }
-            : { agent_slug: callAgent.agent_slug }),
-          call_id: callIdRef.current,
-          tool_call_id: toolCallId,
-          response_id: responseId,
-        }),
+      const consultBody = JSON.stringify({
+        query,
+        ...(specialist
+          ? { owner_agent_slug: callAgent.agent_slug, target_agent_slug: targetAgent }
+          : { agent_slug: callAgent.agent_slug }),
+        call_id: callIdRef.current,
+        tool_call_id: toolCallId,
+        response_id: responseId,
       });
+      const start = await retrySameConversationIntent(() => boundedFetch(
+        `/api/conversations/${selectedId}/realtime/${endpoint}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: abortController.signal,
+          body: consultBody,
+        },
+        REALTIME_TOOL_REQUEST_TIMEOUT_MS,
+      ));
       const startBody = await start.json() as { error?: string };
       timing.consultAcceptedAt = performance.now();
       if (!start.ok) throw new Error(startBody.error ?? "Could not consult the RESLU agent");
       startRealtimeProgressCue(toolCallId);
 
+      let consecutiveNetworkFailures = 0;
       while (!abortController.signal.aborted && callActiveRef.current) {
-        const statusResponse = await fetch(
-          `/api/conversations/${selectedId}/realtime/${endpoint}?tool_call_id=${encodeURIComponent(toolCallId)}&${specialist ? "owner_agent_slug" : "agent_slug"}=${callAgent.agent_slug}`,
-          { cache: "no-store", signal: abortController.signal }
-        );
-        const statusBody = await statusResponse.json() as RealtimeConsultStatusResponse;
+        let statusResponse: Response;
+        let statusBody: RealtimeConsultStatusResponse;
+        try {
+          statusResponse = await boundedFetch(
+            `/api/conversations/${selectedId}/realtime/${endpoint}?tool_call_id=${encodeURIComponent(toolCallId)}&${specialist ? "owner_agent_slug" : "agent_slug"}=${callAgent.agent_slug}`,
+            { cache: "no-store", signal: abortController.signal },
+            REALTIME_TOOL_REQUEST_TIMEOUT_MS,
+          );
+          statusBody = await statusResponse.json() as RealtimeConsultStatusResponse;
+          consecutiveNetworkFailures = 0;
+          setCallState("thinking");
+        } catch (reason) {
+          if (
+            isTransientConversationNetworkError(reason)
+            && consecutiveNetworkFailures < MAX_REALTIME_TOOL_NETWORK_FAILURES
+            && !abortController.signal.aborted
+            && callActiveRef.current
+          ) {
+            consecutiveNetworkFailures += 1;
+            setCallState("reconnecting");
+            await new Promise<void>((resolve, reject) => {
+              const timer = window.setTimeout(resolve, realtimeConsultPollDelay(consecutiveNetworkFailures * 1000));
+              abortController.signal.addEventListener("abort", () => {
+                window.clearTimeout(timer);
+                reject(new DOMException("Aborted", "AbortError"));
+              }, { once: true });
+            });
+            continue;
+          }
+          throw reason;
+        }
         if (!statusResponse.ok) throw new Error(statusBody.error ?? "Could not read the RESLU agent response");
         if (statusBody.latency) {
           timing.queueWaitMs = statusBody.latency.queue_wait_ms ?? timing.queueWaitMs;
@@ -3776,19 +3805,24 @@ export function ConversationWorkspace({
     if (activeRealtimeConsultRef.current) cancelActiveRealtimeConsult();
     setCallState("thinking");
     try {
-      const response = await fetch(`/api/conversations/${selectedId}/realtime/task`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title,
-          objective,
-          model_tier: modelTier,
-          agent_slug: callAgent.agent_slug,
-          call_id: callIdRef.current,
-          tool_call_id: toolCallId,
-          response_id: responseId,
-        }),
+      const taskBody = JSON.stringify({
+        title,
+        objective,
+        model_tier: modelTier,
+        agent_slug: callAgent.agent_slug,
+        call_id: callIdRef.current,
+        tool_call_id: toolCallId,
+        response_id: responseId,
       });
+      const response = await retrySameConversationIntent(() => boundedFetch(
+        `/api/conversations/${selectedId}/realtime/task`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: taskBody,
+        },
+        REALTIME_TOOL_REQUEST_TIMEOUT_MS,
+      ));
       const body = await response.json() as { acknowledgement?: string; task?: AgentTask; error?: string };
       if (!response.ok || !body.task || !body.acknowledgement) {
         throw new Error(body.error ?? "Could not start the background task");
@@ -3828,6 +3862,9 @@ export function ConversationWorkspace({
     } catch (reason) {
       timing.outcome = "failed";
       stopRealtimeProgressCue();
+      if (isTransientConversationNetworkError(reason)) {
+        setNotice("The connection was interrupted. Check Agent work before asking again; the task may already be running.");
+      }
       setCallError(reason instanceof Error ? reason.message : "Could not start the background task");
       setCallState("listening");
     }

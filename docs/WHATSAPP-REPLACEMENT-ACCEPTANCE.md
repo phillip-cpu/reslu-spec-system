@@ -292,6 +292,26 @@ This is deterministic code and build evidence, not the physical poor-network
 matrix. Wi-Fi/mobile handoff, genuine packet loss and deliberate iPhone screen
 lock still require the signed native build on an available paired phone.
 
+## Stage 8 durable voice-turn recovery candidate: 19 August 2026
+
+- The legacy iPhone speech fallback now writes spoken turns through the same
+  IndexedDB outbox and canonical `client_message_id` path as typed chat. A lost
+  response, browser suspension or temporary offline transition can no longer
+  create a second agent turn merely because the user retries.
+- Realtime consult, specialist and durable-task creation now have a fifteen-
+  second transport boundary and retry only transient network failures. Every
+  retry reuses the original tool-call id and serialized request, so the server's
+  existing idempotency constraint remains the authority.
+- Consult status reads are also bounded. Three transient failures show a
+  reconnecting state before surfacing an error; cancellation is never retried.
+  An uncertain durable-task outcome tells the user to inspect Agent work rather
+  than asking again and risking duplicate work.
+- Focused network/outbox/voice contracts, TypeScript and targeted ESLint passed.
+
+This removes the remaining known unbounded voice-tool and legacy spoken-send
+paths in the browser. It is implementation evidence only; the physical
+Wi-Fi/mobile handoff, packet-loss and lock-screen matrix remains open.
+
 ## Stage 4 desktop persistence observation: 18 August 2026
 
 - In the authenticated production Safari session, the persistent messenger was
