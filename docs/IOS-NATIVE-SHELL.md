@@ -1,6 +1,6 @@
 # RESLU iPhone native voice shell
 
-Status: Stage 5 foundation implemented; Xcode signing and physical-device
+Status: Stage 5 foundation implemented and signed; physical-device install and
 acceptance remain.
 
 ## Decision
@@ -39,18 +39,22 @@ a bounded five-second failure path before opening browser media capture.
 
 ## Generate the Xcode project
 
-This laptop currently has Command Line Tools but not the full Xcode iOS SDK, so
-the checked-in source is generated with XcodeGen once Xcode is installed:
+This laptop has Xcode 26.6, the iOS 26.5 SDK and XcodeGen. The checked-in source
+can be regenerated and compiled with:
 
-1. Install current Xcode from the App Store and open it once.
-2. Run `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`.
-3. Install XcodeGen with `brew install xcodegen`.
-4. From the repository root, run `bash scripts/verify-ios-shell.sh`. This
+1. From the repository root, run `bash scripts/verify-ios-shell.sh`. This
    generates the Xcode project and performs an unsigned simulator compile.
-5. Open `ios/RESLU/RESLU.xcodeproj`.
-6. Select the RESLU target, choose Phillip's Apple Developer team and confirm
+2. Open `ios/RESLU/RESLU.xcodeproj`.
+3. Select the RESLU target, choose Phillip's Apple Developer team and confirm
    the bundle identifier `au.com.reslu.spec` is available.
-7. Connect the physical iPhone, trust the developer certificate and run.
+4. Connect and unlock the paired physical iPhone, then run.
+
+On 18 August 2026, CoreDevice reported Phillip's iPhone 15 Pro Max as paired
+with Developer Mode enabled. A generic iPhone Debug build compiled and signed
+successfully with team `3THNC3HJ63`, bundle `au.com.reslu.spec` and a profile
+containing that phone's UDID. The profile expires 25 August 2026. Installation
+could not start because the phone's CoreDevice tunnel was unavailable; connect
+and unlock the phone before repeating the install.
 
 No API secret belongs in the Xcode project. The user signs into the normal RESLU
 page once inside the app.
