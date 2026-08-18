@@ -14,6 +14,7 @@ const voice = read("ios/RESLU/RESLU/VoiceSessionCoordinator.swift");
 const nativeTransport = read("ios/RESLU/RESLU/NativeRealtimeTransport.swift");
 const nativeHTTP = read("ios/RESLU/RESLU/NativeRealtimeHTTPClient.swift");
 const nativeTools = read("ios/RESLU/RESLU/NativeRealtimeToolRouter.swift");
+const nativeLatency = read("ios/RESLU/RESLU/NativeRealtimeLatencyMetrics.swift");
 const nativeContinuity = read("ios/RESLU/RESLU/NativeVoiceContinuityMetrics.swift");
 const bridge = read("lib/native-voice-bridge.ts");
 const recovery = read("lib/realtime-call-recovery.ts");
@@ -113,6 +114,13 @@ test("the shell keeps canonical RESLU authentication, server SDP and production 
   assert.match(voice, /realtimeUsage\.observe\(event\)/);
   assert.match(voice, /openai_realtime_response_done_client_observed/);
   assert.match(nativeHTTP, /body\["voice_metrics"\] = voiceMetrics/);
+  assert.match(voice, /"turns": realtimeTransport\.voiceLatencyMetrics/);
+  assert.match(nativeLatency, /maximumTurns = 20/);
+  assert.match(nativeLatency, /speech_to_ack_ms/);
+  assert.match(nativeLatency, /queue_wait_ms/);
+  assert.match(nativeLatency, /agent_processing_ms/);
+  assert.match(nativeLatency, /interruption_to_buffer_cleared_ms/);
+  assert.doesNotMatch(nativeLatency, /"transcript"|"query"|"tool_call_id"|"response_id"/);
 });
 
 test("web and native exchange provider events while the browser path remains optional", () => {

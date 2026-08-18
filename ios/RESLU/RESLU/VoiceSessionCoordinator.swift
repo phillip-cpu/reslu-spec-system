@@ -289,7 +289,7 @@ final class VoiceSessionCoordinator: NSObject, ObservableObject {
         if appIsBackgrounded { continuity.didEndWhileBackground() }
         let nativeContinuity = continuity.payload
         if let callContext, callContext.usesNativeRealtime {
-            var voiceMetrics: [String: Any] = ["turns": []]
+            var voiceMetrics: [String: Any] = ["turns": realtimeTransport.voiceLatencyMetrics]
             if let usage = realtimeUsage.payload { voiceMetrics["usage"] = usage }
             realtimeHTTPClient.endCall(
                 conversationId: callContext.conversationId,
