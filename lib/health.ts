@@ -214,7 +214,7 @@ async function conversationTransportHealth(supabase: ServiceClient) {
     supabase.from("agent_tasks").select("claimed_at,updated_at,progress_updated_at").eq("status", "running"),
     supabase.from("agent_tasks").select("id", { count: "exact", head: true }).eq("status", "failed").gte("completed_at", failureCutoff),
     supabase.from("conversation_calls").select("id", { count: "exact", head: true }).eq("status", "active").lt("started_at", staleCallCutoff),
-    supabase.from("conversation_calls").select("realtime_voice_latency:metadata->realtime_voice_latency").gte("started_at", voiceCutoff).order("started_at", { ascending: false }).limit(50),
+    supabase.from("conversation_calls").select("realtime_voice_latency:metadata->realtime_voice_latency").gte("started_at", voiceCutoff).order("started_at", { ascending: false }).limit(1000),
   ]), Promise.all(REQUIRED_CONVERSATION_CAPABILITIES.map(async (capability) => {
     const { error } = await supabase.rpc(capability.rpc, capability.args);
     if (!error) return { key: capability.key, unavailable: false, queryError: false };
@@ -230,7 +230,8 @@ async function conversationTransportHealth(supabase: ServiceClient) {
   const oldestCreatedAt = oldestPending.data && typeof oldestPending.data.created_at === "string"
     ? Date.parse(oldestPending.data.created_at)
     : Number.NaN;
-  const voice = summarizeConversationVoiceHealth(voiceCalls.data ?? []);
+  const voiceRows = voiceCalls.data ?? [];
+  const voice = summarizeConversationVoiceHealth(voiceRows, voiceRows.length >= 1000);
   const runningTasksStuck = (runningTasks.data ?? []).filter((task) => {
     const freshestAt = task.progress_updated_at ?? task.updated_at ?? task.claimed_at;
     const freshestMs = typeof freshestAt === "string" ? Date.parse(freshestAt) : Number.NaN;

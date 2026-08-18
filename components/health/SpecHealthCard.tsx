@@ -62,8 +62,8 @@ export function SpecHealthCard({ summary }: { summary: SpecHealthSummary }) {
       <div className="mt-6 border-t border-[#dcd6cc] pt-5">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h4 className="text-body font-semibold text-nearblack">Aria &amp; Marco conversations</h4>
-            <p className="mt-1 text-caption text-charcoal/50">Queue, schema capability, durable-task, active-call and content-free voice timing diagnostics.</p>
+            <h4 className="text-body font-semibold text-nearblack">RESLU agent conversations</h4>
+            <p className="mt-1 text-caption text-charcoal/50">Queue, schema capability, durable-task, active-call, voice timing and model-usage diagnostics.</p>
           </div>
           <HealthPill
             level={conversations.level}
@@ -84,7 +84,31 @@ export function SpecHealthCard({ summary }: { summary: SpecHealthSummary }) {
           <div><dt className="label-caps text-charcoal/50">Average acknowledgement</dt><dd className="text-charcoal">{conversations.average_acknowledgement_ms == null ? "No sample" : `${conversations.average_acknowledgement_ms} ms`}</dd></div>
           <div><dt className="label-caps text-charcoal/50">Slowest interruption clear</dt><dd className="text-charcoal">{conversations.slowest_interruption_clear_ms == null ? "No sample" : `${conversations.slowest_interruption_clear_ms} ms`}</dd></div>
         </dl>
-        <p className="mt-3 text-caption text-charcoal/45">Targets: acknowledgement ≤1,000 ms and audible-output clear ≤250 ms. No transcript, prompt, file, tool argument or provider identifier is read for this card.</p>
+        <div className="mt-5 border-t border-[#dcd6cc] pt-4">
+          <p className="label-caps text-charcoal/50">Voice model usage · last 7 days</p>
+          {conversations.realtime_usage_by_model.length === 0 && conversations.transcription_usage_by_model.length === 0 ? (
+            <p className="mt-2 text-body text-charcoal/55">No token-usage samples yet. New calls will populate this automatically.</p>
+          ) : (
+            <div className="mt-3 space-y-3 text-body">
+              {conversations.realtime_usage_by_model.map((usage) => (
+                <div key={`realtime-${usage.model}`} className="grid gap-1 border-l-2 border-[#b29d80] pl-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                  <span className="font-medium text-nearblack">{usage.model}</span>
+                  <span className="text-charcoal/65">{usage.total_tokens.toLocaleString()} tokens</span>
+                  <span className="text-caption text-charcoal/50 sm:col-span-2">{usage.calls} calls · {usage.responses} responses · {usage.input_tokens.toLocaleString()} input ({usage.cached_tokens.toLocaleString()} cached) · {usage.output_tokens.toLocaleString()} output</span>
+                </div>
+              ))}
+              {conversations.transcription_usage_by_model.map((usage) => (
+                <div key={`transcription-${usage.model}`} className="grid gap-1 border-l-2 border-charcoal/20 pl-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                  <span className="font-medium text-nearblack">{usage.model} transcription</span>
+                  <span className="text-charcoal/65">{usage.total_tokens.toLocaleString()} tokens{usage.seconds > 0 ? ` · ${usage.seconds.toLocaleString()} sec` : ""}</span>
+                  <span className="text-caption text-charcoal/50 sm:col-span-2">{usage.calls} calls · {usage.transcriptions} transcriptions</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {conversations.voice_usage_truncated ? <p className="mt-2 text-caption text-terracotta">Showing the latest 1,000 calls; use a dedicated export for a complete high-volume period.</p> : null}
+        </div>
+        <p className="mt-3 text-caption text-charcoal/45">Targets: acknowledgement ≤1,000 ms and audible-output clear ≤250 ms. Usage is client-observed from OpenAI’s response.done and transcription completion events. No transcript, prompt, file, tool argument or response identifier is stored.</p>
       </div>
     </div>
   );
