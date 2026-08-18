@@ -79,6 +79,9 @@ test("direct human turns can operate Reslu and delegate while host and messaging
   assert.equal(decision("subagents", "human_request"), undefined);
   assert.equal(decision("web_search", "human_request"), undefined);
   assert.equal(decision("reslu-marco__delegate_reslu_agent_task", "human_request"), undefined);
+  assert.equal(decision("reslu-stuart__attach_stuart_source_invoice", "human_request"), undefined);
+  assert.equal(decision("reslu-stuart__create_stuart_xero_draft_bill", "human_request"), undefined);
+  assert.equal(decision("reslu-stuart__approve_xero_bill", "human_request")?.block, true);
   assert.equal(decision("reslu-marco__add_brain_note", "human_request")?.block, true);
   assert.equal(decision("message", "human_request")?.block, true);
   assert.equal(decision("exec", "human_request")?.block, true);
@@ -103,6 +106,8 @@ test("specialist consultations stay bounded to read-only advice", () => {
   assert.equal(decision("gmail_search_messages", "specialist_consultation"), undefined);
   assert.equal(decision("gmail_send_email", "specialist_consultation")?.block, true);
   assert.equal(decision("reslu-spec__update_project", "specialist_consultation")?.block, true);
+  assert.equal(decision("reslu-stuart__attach_stuart_source_invoice", "specialist_consultation")?.block, true);
+  assert.equal(decision("reslu-stuart__create_stuart_xero_draft_bill", "specialist_consultation")?.block, true);
   assert.equal(decision("sessions_spawn", "specialist_consultation")?.block, true);
   assert.equal(decision("exec", "specialist_consultation")?.block, true);
 });
