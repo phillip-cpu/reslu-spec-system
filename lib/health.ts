@@ -48,6 +48,11 @@ const REQUIRED_CONVERSATION_CAPABILITIES = [
     rpc: "rename_conversation_group",
     args: { p_conversation_id: null, p_title: null, p_client_action_id: null },
   },
+  {
+    key: "realtime_voice_priority_lane",
+    rpc: "claim_agent_realtime_voice_job",
+    args: { p_agent_slug: "__health_probe__" },
+  },
 ] as const;
 
 interface CronDef {

@@ -209,6 +209,21 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             conversation_agent_bridge.CLAIM_REQUEST_TIMEOUT_SECONDS,
         )
 
+    def test_voice_claim_uses_a_disjoint_service_rpc(self):
+        rest = conversation_agent_bridge.SupabaseRest(
+            "https://example.supabase.co",
+            "secret",
+        )
+        with mock.patch.object(rest, "request", return_value=[]) as request:
+            self.assertIsNone(rest.claim_voice("aria"))
+
+        self.assertEqual(request.call_args.args[1], "rpc/claim_agent_realtime_voice_job")
+        self.assertEqual(request.call_args.args[2], {"p_agent_slug": "aria"})
+        self.assertEqual(
+            request.call_args.kwargs["timeout_seconds"],
+            conversation_agent_bridge.CLAIM_REQUEST_TIMEOUT_SECONDS,
+        )
+
     @mock.patch.object(conversation_agent_bridge.http.client, "HTTPSConnection")
     def test_supabase_rest_reuses_one_tls_connection(self, https_connection):
         connection = https_connection.return_value
@@ -287,6 +302,29 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         calls_by_name = {call.kwargs["name"]: call for call in thread.call_args_list}
         self.assertEqual(set(calls_by_name), {"reslu-task-aria", "reslu-task-marco", "reslu-task-stuart"})
         self.assertTrue(all(call.kwargs["target"] is conversation_agent_bridge.task_worker_loop for call in thread.call_args_list))
+
+    def test_realtime_voice_has_call_scoped_workers_independent_from_chat(self):
+        with mock.patch.object(conversation_agent_bridge.threading, "Thread") as thread:
+            workers = conversation_agent_bridge.build_voice_workers(
+                "https://example.supabase.co",
+                "secret",
+            )
+
+        self.assertEqual(len(workers), 3)
+        calls_by_name = {call.kwargs["name"]: call for call in thread.call_args_list}
+        self.assertEqual(set(calls_by_name), {
+            "reslu-voice-aria",
+            "reslu-voice-marco",
+            "reslu-voice-stuart",
+        })
+        for slug in conversation_agent_bridge.AGENT_SLUGS:
+            call = calls_by_name[f"reslu-voice-{slug}"]
+            self.assertIs(call.kwargs["target"], conversation_agent_bridge.agent_worker_loop)
+            self.assertEqual(
+                call.kwargs["args"],
+                ("https://example.supabase.co", "secret", slug, True),
+            )
+            self.assertFalse(call.kwargs["daemon"])
 
     def test_strong_tasks_route_to_the_configured_capable_model(self):
         with mock.patch.dict(os.environ, {}, clear=True):

@@ -40,8 +40,13 @@ BRIDGE_HEALTH_CHANNEL = "reslu_conversation_bridge"
 BRIDGE_WORKER_NAMES = (
     "reslu-conversation-aria",
     "reslu-conversation-marco",
+    "reslu-conversation-stuart",
+    "reslu-voice-aria",
+    "reslu-voice-marco",
+    "reslu-voice-stuart",
     "reslu-task-aria",
     "reslu-task-marco",
+    "reslu-task-stuart",
     "reslu-conversation-push",
 )
 AGENT_STATUS_CHECK_SECONDS = 0.5
@@ -204,6 +209,15 @@ class SupabaseRest:
         result = self.request(
             "POST",
             "rpc/claim_agent_conversation_job",
+            {"p_agent_slug": slug},
+            timeout_seconds=CLAIM_REQUEST_TIMEOUT_SECONDS,
+        )
+        return result[0] if isinstance(result, list) and result else None
+
+    def claim_voice(self, slug: str) -> dict | None:
+        result = self.request(
+            "POST",
+            "rpc/claim_agent_realtime_voice_job",
             {"p_agent_slug": slug},
             timeout_seconds=CLAIM_REQUEST_TIMEOUT_SECONDS,
         )
@@ -1621,26 +1635,32 @@ def push_delivery_loop(base_url: str, service_key: str, app_url: str) -> None:
                     print(f"[conversation-push] could not schedule retry: {patch_error}", file=sys.stderr, flush=True)
 
 
-def agent_worker_loop(base_url: str, service_key: str, slug: str) -> None:
+def agent_worker_loop(
+    base_url: str,
+    service_key: str,
+    slug: str,
+    voice_only: bool = False,
+) -> None:
     """Drain one agent queue without letting another agent or poll hold it up."""
     rest = SupabaseRest(base_url, service_key)
+    lane = "voice" if voice_only else "conversation"
     while True:
         job = None
         try:
-            job = rest.claim(slug)
+            job = rest.claim_voice(slug) if voice_only else rest.claim(slug)
             if not job:
                 time.sleep(POLL_SECONDS)
                 continue
             started_at = time.monotonic()
-            print(f"[conversation-bridge] {slug}: claimed job {job['id']}", flush=True)
+            print(f"[conversation-bridge] {slug} {lane}: claimed job {job['id']}", flush=True)
             outcome = process_job(rest, job)
             elapsed = time.monotonic() - started_at
             print(
-                f"[conversation-bridge] {slug}: {outcome} job {job['id']} in {elapsed:.1f}s",
+                f"[conversation-bridge] {slug} {lane}: {outcome} job {job['id']} in {elapsed:.1f}s",
                 flush=True,
             )
         except Exception as exc:  # noqa: BLE001 - one bad turn must not kill this agent worker
-            print(f"[conversation-bridge] {slug}: {exc}", file=sys.stderr, flush=True)
+            print(f"[conversation-bridge] {slug} {lane}: {exc}", file=sys.stderr, flush=True)
             if job:
                 try:
                     if job_is_processing(rest, job["id"]):
@@ -1672,6 +1692,19 @@ def build_agent_workers(base_url: str, service_key: str) -> list[threading.Threa
             target=agent_worker_loop,
             args=(base_url, service_key, slug),
             name=f"reslu-conversation-{slug}",
+            daemon=False,
+        )
+        for slug in AGENT_SLUGS
+    ]
+
+
+def build_voice_workers(base_url: str, service_key: str) -> list[threading.Thread]:
+    """Give live calls a disjoint queue and their own call-scoped sessions."""
+    return [
+        threading.Thread(
+            target=agent_worker_loop,
+            args=(base_url, service_key, slug, True),
+            name=f"reslu-voice-{slug}",
             daemon=False,
         )
         for slug in AGENT_SLUGS
@@ -1866,7 +1899,11 @@ def main() -> int:
     else:
         print("[conversation-push] SPEC_APP_URL/NEXT_PUBLIC_APP_URL missing; delivery worker disabled", file=sys.stderr, flush=True)
     print("[conversation-bridge] listening for conversations and durable Aria/Marco/Stuart tasks", flush=True)
-    workers = [*build_agent_workers(base_url, service_key), *build_task_workers(base_url, service_key)]
+    workers = [
+        *build_agent_workers(base_url, service_key),
+        *build_voice_workers(base_url, service_key),
+        *build_task_workers(base_url, service_key),
+    ]
     for worker in workers:
         worker.start()
     monitored_workers = [*workers, *([push_worker] if push_worker else [])]
