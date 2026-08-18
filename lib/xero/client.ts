@@ -195,6 +195,18 @@ export async function xeroPostJson<T>(
   });
 }
 
+export async function xeroPutJson<T>(
+  connection: StoredXeroConnection,
+  path: string,
+  body: unknown
+): Promise<T> {
+  return xeroWrite<T>(connection, path, {
+    method: "PUT",
+    body: JSON.stringify(body),
+    contentType: "application/json",
+  });
+}
+
 export async function xeroPutBytes<T>(
   connection: StoredXeroConnection,
   path: string,
