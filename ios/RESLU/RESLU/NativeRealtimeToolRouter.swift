@@ -126,6 +126,11 @@ final class NativeRealtimeToolRouter {
             sendFailure(toolCallId: toolCallId, message: "I couldn’t understand that request. Please say it again.")
             return
         }
+        let targetAgent = specialist ? payload["target_agent_slug"] as? String : nil
+        if specialist && (!["aria", "marco", "stuart"].contains(targetAgent ?? "") || targetAgent == context.agentSlug) {
+            sendFailure(toolCallId: toolCallId, message: "I couldn’t identify a different RESLU specialist. Please say which agent you want.")
+            return
+        }
         if let previous = activeConsult {
             previous.task.cancel()
             cancelConsult(toolCallId: previous.id, endpoint: previous.endpoint)
@@ -141,6 +146,7 @@ final class NativeRealtimeToolRouter {
                 ]
                 if let responseId { body["response_id"] = responseId }
                 body[specialist ? "owner_agent_slug" : "agent_slug"] = context.agentSlug
+                if let targetAgent { body["target_agent_slug"] = targetAgent }
                 _ = try await client.json(
                     path: "/api/conversations/\(context.conversationId)/realtime/\(endpoint)",
                     method: "POST",
@@ -157,9 +163,13 @@ final class NativeRealtimeToolRouter {
                         guard !Task.isCancelled, isActiveConsult(toolCallId) else { return }
                         activeConsult = nil
                         notifyWeb(["type": "native-consult-completed", "tool_call_id": toolCallId])
+                        var output: [String: Any] = ["answer": answer]
+                        if specialist {
+                            output["consulted_agent"] = status["consulted_agent"] as? String ?? targetAgent
+                        }
                         sendFunctionOutput(
                             toolCallId: toolCallId,
-                            output: ["answer": answer],
+                            output: output,
                             instruction: specialist
                                 ? "Speak this specialist-informed answer as the owning RESLU agent. Add no facts or actions."
                                 : "Speak this existing RESLU agent answer faithfully. Add no facts or actions."

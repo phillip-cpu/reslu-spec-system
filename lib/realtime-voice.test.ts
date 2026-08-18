@@ -33,15 +33,24 @@ test("session forces substantive turns through the existing RESLU agent", () => 
   assert.equal(session.audio.input.transcription.model, "gpt-live-transcribe");
   assert.equal(session.audio.input.transcription.delay, "low");
   const tools = new Map(session.tools.map((tool) => [tool.name, tool]));
+  const specialistTool = tools.get("consult_reslu_specialist") as {
+    description: string;
+    parameters: { properties: { target_agent_slug: { enum: string[] } } };
+  } | undefined;
   assert.equal(tools.has("consult_reslu_agent"), true);
-  assert.match(tools.get("consult_reslu_specialist")?.description ?? "", /bounded second opinion/i);
-  assert.match(tools.get("consult_reslu_specialist")?.description ?? "", /must not perform consequential actions/i);
+  assert.match(specialistTool?.description ?? "", /bounded second opinion/i);
+  assert.match(specialistTool?.description ?? "", /must not perform consequential actions/i);
+  assert.deepEqual(
+    specialistTool?.parameters.properties.target_agent_slug.enum,
+    ["marco", "stuart"],
+  );
   assert.match(tools.get("start_reslu_task")?.description ?? "", /continues if speech is interrupted/i);
   assert.match(session.instructions, /do not possess RESLU memory/i);
   assert.match(session.instructions, /Never answer a substantive question yourself/i);
   assert.match(session.instructions, /immaculate, controlled and exceptionally professional/i);
   assert.match(session.instructions, /no visible personal side/i);
   assert.doesNotMatch(session.instructions, /I'm checking that now/);
+  assert.match(session.instructions, /Never claim that inter-agent consultation is unavailable/);
 });
 
 test("Stuart voice transport carries his understated Australian delivery", () => {
@@ -53,6 +62,10 @@ test("Stuart voice transport carries his understated Australian delivery", () =>
   assert.match(session.instructions, /financially disciplined/);
   assert.match(session.instructions, /deliberately dry, conservative, terse/i);
   assert.equal(session.audio.output.voice, "echo");
+  const specialistTool = session.tools.find((tool) => tool.name === "consult_reslu_specialist") as {
+    parameters: { properties: { target_agent_slug: { enum: string[] } } };
+  } | undefined;
+  assert.deepEqual(specialistTool?.parameters.properties.target_agent_slug.enum, ["aria", "marco"]);
 });
 
 test("Marco has a separate outgoing marketing delivery and voice", () => {

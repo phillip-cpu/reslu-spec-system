@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { otherResluAgent } from "./realtime-specialist-consult.ts";
+import { resluSpecialistAgents } from "./realtime-specialist-consult.ts";
 import type { AgentSlug } from "@/types/conversations";
 
 export const REALTIME_VOICES = [
@@ -59,8 +59,9 @@ export function realtimeSafetyIdentifier(userId: string): string {
 }
 
 export function buildRealtimeSession(agent: { slug: AgentSlug; display_name: string }, config: RealtimeConfig) {
-  const specialistSlug = otherResluAgent(agent.slug);
-  const specialistName = specialistSlug === "aria" ? "Aria" : "Marco";
+  const specialistSlugs = resluSpecialistAgents(agent.slug);
+  const specialistNames = specialistSlugs.map((slug) => slug === "aria" ? "Aria" : slug === "marco" ? "Marco" : "Stuart");
+  const specialistLanes = "Aria for studio coordination and client/admin work, Marco for commercial and marketing strategy, or Stuart for finance";
   return {
     type: "realtime",
     model: config.model,
@@ -74,7 +75,7 @@ export function buildRealtimeSession(agent: { slug: AgentSlug; display_name: str
       "You handle audio turn-taking only. You do not possess RESLU memory, calendar, project, finance, email or business tools.",
       "For every completed user turn, choose exactly one tool and include a faithful concise transcript of what the user asked.",
       "When the user asks you to create, prepare, research, review, compose, organize, update, or otherwise complete work that can continue independently, call start_reslu_task instead of consult_reslu_agent.",
-      `When the user explicitly asks for ${specialistName}'s input, or the question clearly needs ${specialistName}'s distinct specialist perspective, call consult_reslu_specialist. The visible agent remains the owner of the conversation.`,
+      `When the user explicitly asks for another RESLU agent's input, or the question clearly needs another lane, call consult_reslu_specialist and select ${specialistLanes}. The visible agent remains the owner of the conversation. Never claim that inter-agent consultation is unavailable.`,
       "Use model_tier strong only for genuinely complex, high-value or multi-step work; use standard for normal tasks and fast for simple mechanical work.",
       "Never answer a substantive question yourself and never claim a business action happened unless the tool output says so.",
       "After tool output arrives, speak its answer faithfully and naturally. Do not add facts, actions or recommendations.",
@@ -117,17 +118,22 @@ export function buildRealtimeSession(agent: { slug: AgentSlug; display_name: str
       {
         type: "function",
         name: "consult_reslu_specialist",
-        description: `Ask ${specialistName} for a bounded second opinion while ${agent.display_name} remains the visible owner. Use only for explicit cross-agent input or a clearly specialist question. This is advisory and must not perform consequential actions or start durable work.`,
+        description: `Ask ${specialistNames.join(" or ")} for a bounded second opinion while ${agent.display_name} remains the visible owner. Use only for explicit cross-agent input or a clearly specialist question. This is advisory and must not perform consequential actions or start durable work.`,
         parameters: {
           type: "object",
           additionalProperties: false,
           properties: {
             query: {
               type: "string",
-              description: `A faithful standalone question for ${specialistName}, including the user's names, dates and constraints.`,
+              description: "A faithful standalone question for the selected specialist, including the user's names, dates and constraints.",
+            },
+            target_agent_slug: {
+              type: "string",
+              enum: specialistSlugs,
+              description: `The specialist to consult: ${specialistNames.join(" or ")}. Never select the visible owner.`,
             },
           },
-          required: ["query"],
+          required: ["query", "target_agent_slug"],
         },
       },
       {

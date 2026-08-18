@@ -133,6 +133,9 @@ test("web and native exchange provider events while the browser path remains opt
   assert.match(workspace, /detail\.callId !== callIdRef\.current/);
   assert.match(nativeTools, /\/realtime\/\\\(endpoint\)/);
   assert.match(nativeTools, /\/realtime\/task/);
+  assert.match(nativeTools, /payload\["target_agent_slug"\]/);
+  assert.match(nativeTools, /targetAgent == context\.agentSlug/);
+  assert.match(nativeTools, /body\["target_agent_slug"\] = targetAgent/);
   assert.match(nativeTools, /cancelConsult\(toolCallId: activeConsult\.id/);
   assert.match(nativeTools, /guard !Task\.isCancelled, isActiveConsult\(toolCallId\)/);
   assert.match(nativeTools, /activeOutputAudioResponseId/);

@@ -48,6 +48,7 @@ import {
 } from "@/lib/native-voice-bridge";
 import {
   parseRealtimeConsultArguments,
+  parseRealtimeSpecialistArguments,
   parseRealtimeTaskArguments,
 } from "@/lib/realtime-tool-arguments";
 import { realtimeConsultPollDelay } from "@/lib/realtime-consult-poll";
@@ -227,6 +228,7 @@ interface RealtimeConsultStatusResponse {
   status?: "pending" | "done" | "failed" | "cancelled";
   answer?: string | null;
   error?: string | null;
+  consulted_agent?: AgentSlug | null;
   latency?: {
     queue_wait_ms?: number | null;
     agent_processing_ms?: number | null;
@@ -3459,7 +3461,9 @@ export function ConversationWorkspace({
     specialist = false,
   ) => {
     if (!selectedId || !callAgent?.agent_slug || !callIdRef.current || handledToolCallIdsRef.current.has(toolCallId)) return;
-    const parsedArguments = parseRealtimeConsultArguments(argumentsJson);
+    const parsedArguments = specialist
+      ? parseRealtimeSpecialistArguments(argumentsJson, callAgent.agent_slug)
+      : parseRealtimeConsultArguments(argumentsJson);
     if (!parsedArguments && deferInvalidArguments) return;
     handledToolCallIdsRef.current.add(toolCallId);
     const timing = beginRealtimeTurnTiming(toolCallId);
@@ -3470,6 +3474,9 @@ export function ConversationWorkspace({
       return;
     }
     const { query } = parsedArguments;
+    const targetAgent = specialist && "targetAgent" in parsedArguments
+      ? parsedArguments.targetAgent
+      : null;
 
     // A completed newer utterance is the point at which the prior consult is
     // genuinely superseded. Abort its local poll and cancel that exact job;
@@ -3494,7 +3501,7 @@ export function ConversationWorkspace({
         body: JSON.stringify({
           query,
           ...(specialist
-            ? { owner_agent_slug: callAgent.agent_slug }
+            ? { owner_agent_slug: callAgent.agent_slug, target_agent_slug: targetAgent }
             : { agent_slug: callAgent.agent_slug }),
           call_id: callIdRef.current,
           tool_call_id: toolCallId,
@@ -3540,6 +3547,7 @@ export function ConversationWorkspace({
               call_id: toolCallId,
               output: JSON.stringify({
                 answer: statusBody.answer,
+                ...(specialist ? { consulted_agent: statusBody.consulted_agent ?? targetAgent } : {}),
                 instruction: specialist
                   ? "Speak this specialist-informed answer as the owning RESLU agent. Add no new facts or actions."
                   : "Speak this existing RESLU agent answer faithfully. Add no new facts or actions.",
