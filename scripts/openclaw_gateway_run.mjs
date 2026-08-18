@@ -100,7 +100,51 @@ export function extractChatReply(message) {
   return parts.join("\n\n") || null;
 }
 
-export function extractDurableRunReply(history, inputMessage, acceptedAt) {
+const MAX_USAGE_TOKENS = 1_000_000_000;
+const MAX_USAGE_COST_USD = 1_000_000;
+const SAFE_RUNTIME_LABEL = /^[A-Za-z0-9._:/-]+$/;
+
+function boundedUsageInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= MAX_USAGE_TOKENS ? value : null;
+}
+
+export function safeOpenClawUsage(message) {
+  if (!message || typeof message !== "object" || Array.isArray(message)) return null;
+  const usage = message.usage;
+  const provider = typeof message.provider === "string" ? message.provider.trim() : "";
+  const model = typeof message.model === "string" ? message.model.trim() : "";
+  if (!provider || provider.length > 80 || !SAFE_RUNTIME_LABEL.test(provider)) return null;
+  if (!model || model.length > 160 || !SAFE_RUNTIME_LABEL.test(model)) return null;
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return null;
+  const inputTokens = boundedUsageInteger(usage.input);
+  const outputTokens = boundedUsageInteger(usage.output);
+  const cacheReadTokens = boundedUsageInteger(usage.cacheRead);
+  const cacheWriteTokens = boundedUsageInteger(usage.cacheWrite);
+  if ([inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens].includes(null)) return null;
+  const componentTotal = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
+  const reportedTotal = boundedUsageInteger(usage.totalTokens);
+  const totalTokens = reportedTotal ?? (componentTotal <= MAX_USAGE_TOKENS ? componentTotal : null);
+  if (totalTokens === null) return null;
+  const rawCost = usage.cost && typeof usage.cost === "object" && !Array.isArray(usage.cost)
+    ? usage.cost.total
+    : null;
+  const costUsd = typeof rawCost === "number" && Number.isFinite(rawCost) && rawCost >= 0 && rawCost <= MAX_USAGE_COST_USD
+    ? Math.round(rawCost * 100_000_000) / 100_000_000
+    : null;
+  return {
+    schema_version: 1,
+    provider,
+    model,
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_read_tokens: cacheReadTokens,
+    cache_write_tokens: cacheWriteTokens,
+    total_tokens: totalTokens,
+    cost_usd: costUsd,
+  };
+}
+
+export function extractDurableRunResult(history, inputMessage, acceptedAt) {
   if (!history || typeof history !== "object" || !Array.isArray(history.messages)) return null;
   const expected = typeof inputMessage === "string" ? inputMessage.trim() : "";
   const acceptedTimestamp = Number(acceptedAt);
@@ -120,10 +164,16 @@ export function extractDurableRunReply(history, inputMessage, acceptedAt) {
       if (userMessage?.role !== "user") continue;
       const userTimestamp = Number(userMessage.timestamp);
       if (!Number.isFinite(userTimestamp) || userTimestamp < earliestTimestamp) break;
-      return extractChatReply(userMessage) === expected ? reply : null;
+      return extractChatReply(userMessage) === expected
+        ? { reply, usage: safeOpenClawUsage(assistantMessage) }
+        : null;
     }
   }
   return null;
+}
+
+export function extractDurableRunReply(history, inputMessage, acceptedAt) {
+  return extractDurableRunResult(history, inputMessage, acceptedAt)?.reply ?? null;
 }
 
 export function safeAgentEvent(frame, expectedRunId) {
@@ -133,7 +183,9 @@ export function safeAgentEvent(frame, expectedRunId) {
   if (frame.event === "chat") {
     if (payload.state === "final") {
       const reply = extractChatReply(payload.message);
-      return reply ? { type: "final", reply } : { type: "error", message: "OpenClaw final event contained no reply" };
+      if (!reply) return { type: "error", message: "OpenClaw final event contained no reply" };
+      const usage = safeOpenClawUsage(payload.message);
+      return usage ? { type: "final", reply, usage } : { type: "final", reply };
     }
     if (payload.state === "aborted") return { type: "aborted", message: "OpenClaw run was cancelled" };
     if (payload.state === "error") return { type: "error", message: "OpenClaw run failed" };
@@ -293,12 +345,12 @@ export async function runGatewayAgent(input, options = {}) {
         return;
       }
       if (method === "chat.history") {
-        const reply = extractDurableRunReply(frame.payload, input.message, acceptedAt);
-        if (reply) {
+        const result = extractDurableRunResult(frame.payload, input.message, acceptedAt);
+        if (result) {
           terminal = true;
           clearHistoryReconcileTimer();
-          output({ type: "final", reply, source: "durable_history" });
-          resolveDone(reply);
+          output({ type: "final", ...result, source: "durable_history" });
+          resolveDone(result.reply);
           setTimeout(() => websocket.close(), 0);
         } else {
           scheduleHistoryReconcile(HISTORY_RECONCILE_INTERVAL_MS);

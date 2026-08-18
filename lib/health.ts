@@ -5,6 +5,7 @@ import {
   conversationTransportHasIncident,
   conversationTransportLevel,
   summarizeConversationVoiceHealth,
+  summarizeOpenClawUsage,
 } from "@/lib/conversation-health";
 import type { SpecHealthSummary } from "@/types/health-push";
 
@@ -237,6 +238,8 @@ async function conversationTransportHealth(supabase: ServiceClient) {
     supabase.from("agent_tasks").select("id", { count: "exact", head: true }).eq("status", "failed").gte("completed_at", failureCutoff),
     supabase.from("conversation_calls").select("id", { count: "exact", head: true }).eq("status", "active").lt("started_at", staleCallCutoff),
     supabase.from("conversation_calls").select("realtime_voice_latency:metadata->realtime_voice_latency").gte("started_at", voiceCutoff).order("started_at", { ascending: false }).limit(1000),
+    supabase.from("agent_conversation_jobs").select("openclaw_usage").gte("completed_at", voiceCutoff).not("openclaw_usage", "is", null).order("completed_at", { ascending: false }).limit(1000),
+    supabase.from("agent_tasks").select("openclaw_usage").gte("completed_at", voiceCutoff).not("openclaw_usage", "is", null).order("completed_at", { ascending: false }).limit(1000),
   ]), Promise.all(REQUIRED_CONVERSATION_CAPABILITIES.map(async (capability) => {
     const { error } = await supabase.rpc(capability.rpc, capability.args);
     if (!error) return { key: capability.key, unavailable: false, queryError: false };
@@ -248,12 +251,18 @@ async function conversationTransportHealth(supabase: ServiceClient) {
     // transport failure is a health-read error rather than evidence of absence.
     return { key: capability.key, unavailable: false, queryError: error.code !== "P0001" };
   }))]);
-  const [pending, oldestPending, stuckJobs, failedJobs, queuedTasks, runningTasks, failedTasks, staleCalls, voiceCalls] = results;
+  const [pending, oldestPending, stuckJobs, failedJobs, queuedTasks, runningTasks, failedTasks, staleCalls, voiceCalls, openclawJobs, openclawTasks] = results;
   const oldestCreatedAt = oldestPending.data && typeof oldestPending.data.created_at === "string"
     ? Date.parse(oldestPending.data.created_at)
     : Number.NaN;
   const voiceRows = voiceCalls.data ?? [];
   const voice = summarizeConversationVoiceHealth(voiceRows, voiceRows.length >= 1000);
+  const openclawJobRows = openclawJobs.data ?? [];
+  const openclawTaskRows = openclawTasks.data ?? [];
+  const openclaw = summarizeOpenClawUsage(
+    [...openclawJobRows, ...openclawTaskRows],
+    openclawJobRows.length >= 1000 || openclawTaskRows.length >= 1000,
+  );
   const runningTasksStuck = (runningTasks.data ?? []).filter((task) => {
     const freshestAt = task.progress_updated_at ?? task.updated_at ?? task.claimed_at;
     const freshestMs = typeof freshestAt === "string" ? Date.parse(freshestAt) : Number.NaN;
@@ -272,6 +281,7 @@ async function conversationTransportHealth(supabase: ServiceClient) {
     failed_tasks_24h: failedTasks.count ?? 0,
     active_calls_stale: staleCalls.count ?? 0,
     ...voice,
+    ...openclaw,
   };
   return {
     ...core,

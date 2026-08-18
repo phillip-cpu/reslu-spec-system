@@ -119,6 +119,33 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         second_values = rest.patch.call_args_list[1].args[2]
         self.assertEqual(second_values["progress_label"], "Drafting the response")
 
+    def test_gateway_final_persists_only_bounded_content_free_usage(self):
+        usage = {
+            "schema_version": 1,
+            "provider": "openai",
+            "model": "gpt-5.6-terra",
+            "input_tokens": 100,
+            "output_tokens": 5,
+            "cache_read_tokens": 20,
+            "cache_write_tokens": 0,
+            "total_tokens": 125,
+            "cost_usd": 0.001,
+        }
+        self.assertEqual(conversation_agent_bridge.bounded_openclaw_usage(usage), usage)
+        self.assertIsNone(conversation_agent_bridge.bounded_openclaw_usage({**usage, "prompt": "private"}))
+        self.assertIsNone(conversation_agent_bridge.bounded_openclaw_usage({**usage, "input_tokens": -1}))
+
+        rest = mock.Mock()
+        reporter = conversation_agent_bridge.gateway_progress_reporter(
+            rest,
+            "agent_conversation_jobs",
+            "job-usage",
+        )
+        reporter({"type": "final", "usage": usage})
+        reporter({"type": "final", "usage": usage})
+        self.assertEqual(rest.patch.call_count, 1)
+        self.assertEqual(rest.patch.call_args.args[2]["openclaw_usage"], usage)
+
     @mock.patch.object(conversation_agent_bridge, "invoke_agent_via_gateway")
     def test_enabled_gateway_keeps_canonical_agent_session_and_job_id(self, invoke_gateway):
         invoke_gateway.return_value = "Gateway answer"

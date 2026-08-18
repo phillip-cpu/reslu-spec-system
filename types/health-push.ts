@@ -124,6 +124,19 @@ export interface ConversationTransportHealth {
     input_audio_tokens: number;
     seconds: number;
   }[];
+  openclaw_usage_runs_observed: number;
+  openclaw_usage_truncated: boolean;
+  openclaw_usage_by_model: {
+    provider: string;
+    model: string;
+    runs: number;
+    total_tokens: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+    reported_cost_usd: number;
+  }[];
   operational_incident: boolean;
   level: HealthPillLevel;
 }

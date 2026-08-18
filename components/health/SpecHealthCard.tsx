@@ -85,6 +85,23 @@ export function SpecHealthCard({ summary }: { summary: SpecHealthSummary }) {
           <div><dt className="label-caps text-charcoal/50">Slowest interruption clear</dt><dd className="text-charcoal">{conversations.slowest_interruption_clear_ms == null ? "No sample" : `${conversations.slowest_interruption_clear_ms} ms`}</dd></div>
         </dl>
         <div className="mt-5 border-t border-[#dcd6cc] pt-4">
+          <p className="label-caps text-charcoal/50">OpenClaw agent usage · last 7 days</p>
+          {conversations.openclaw_usage_by_model.length === 0 ? (
+            <p className="mt-2 text-body text-charcoal/55">No measured agent runs yet. New chat, voice and background-task runs will populate this automatically.</p>
+          ) : (
+            <div className="mt-3 space-y-3 text-body">
+              {conversations.openclaw_usage_by_model.map((usage) => (
+                <div key={`openclaw-${usage.provider}-${usage.model}`} className="grid gap-1 border-l-2 border-[#79715f] pl-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                  <span className="font-medium text-nearblack">{usage.provider}/{usage.model}</span>
+                  <span className="text-charcoal/65">{usage.total_tokens.toLocaleString()} tokens</span>
+                  <span className="text-caption text-charcoal/50 sm:col-span-2">{usage.runs} runs · {usage.input_tokens.toLocaleString()} input · {usage.output_tokens.toLocaleString()} output · {usage.cache_read_tokens.toLocaleString()} cache read{usage.reported_cost_usd > 0 ? ` · $${usage.reported_cost_usd.toFixed(4)} reported` : ""}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {conversations.openclaw_usage_truncated ? <p className="mt-2 text-caption text-terracotta">Showing the latest 1,000 chat turns and 1,000 tasks; use a dedicated export for a complete high-volume period.</p> : null}
+        </div>
+        <div className="mt-5 border-t border-[#dcd6cc] pt-4">
           <p className="label-caps text-charcoal/50">Voice model usage · last 7 days</p>
           {conversations.realtime_usage_by_model.length === 0 && conversations.transcription_usage_by_model.length === 0 ? (
             <p className="mt-2 text-body text-charcoal/55">No token-usage samples yet. New calls will populate this automatically.</p>
@@ -108,7 +125,7 @@ export function SpecHealthCard({ summary }: { summary: SpecHealthSummary }) {
           )}
           {conversations.voice_usage_truncated ? <p className="mt-2 text-caption text-terracotta">Showing the latest 1,000 calls; use a dedicated export for a complete high-volume period.</p> : null}
         </div>
-        <p className="mt-3 text-caption text-charcoal/45">Targets: acknowledgement ≤1,000 ms and audible-output clear ≤250 ms. Usage is client-observed from OpenAI’s response.done and transcription completion events. No transcript, prompt, file, tool argument or provider identifier is stored.</p>
+        <p className="mt-3 text-caption text-charcoal/45">Targets: acknowledgement ≤1,000 ms and audible-output clear ≤250 ms. OpenClaw usage records only provider/model, bounded token counters and reported cost. Voice usage is client-observed from OpenAI response and transcription completion events. No transcript, prompt, reply, reasoning, file or tool argument is stored in either usage record.</p>
       </div>
     </div>
   );
