@@ -2,7 +2,12 @@
 
 MCP server wrapping the RESLU Spec System's REST API, so Aria (OpenClaw, running on the Mac mini) or any Claude agent can drive the system through native MCP tools instead of raw HTTP.
 
-Per BUILD-SPEC.md ("Agent control — Aria" / "Week 10 — Aria API layer"): every tool here is a thin `fetch()` against a route already documented in `docs/API.md` — there is no business logic in this package. If a tool's behaviour looks wrong, the bug is almost certainly in the API route, not here.
+Per BUILD-SPEC.md ("Agent control — Aria" / "Week 10 — Aria API layer"):
+business operations remain thin `fetch()` wrappers around routes documented in
+`docs/API.md`. The one deliberate local modality adapter is Meeting Mode: the
+MCP process downloads the short-lived private source, transcribes it on the Mac
+and returns only the transcript. Destination, lifecycle and filing rules remain
+canonical in the API and database.
 
 This package is **installed and run on Aria's Mac mini**, not in the main app's sandbox — it has its own `package.json` and is never imported by the Next.js app. It was written without the ability to `npm install` or execute it in this environment; correctness comes from careful reading against the `@modelcontextprotocol/sdk` 1.x API, not from a test run. Verify with a real `npm install && node src/index.mjs` on the mini before trusting it in production.
 
@@ -13,7 +18,19 @@ cd mcp
 npm install
 ```
 
-This installs `@modelcontextprotocol/sdk` and `@supabase/supabase-js` — the only two dependencies. No build step; `src/index.mjs` runs directly under Node (ESM, `"type": "module"` in `package.json`).
+This installs the Node dependencies. Meeting Mode also requires the private
+local transcription environment on the RESLU Mac:
+
+```bash
+bash install-local-whisper.sh
+```
+
+That creates an ignored `mcp/.venv-whisper`, installs the fully pinned
+`requirements-whisper.lock`, uses the Mac's existing `ffmpeg`, and preloads the
+selected MLX model into the ignored local cache. Audio is downloaded from its short-lived
+Supabase URL into a mode-0600 temporary file, transcribed on the Mac and deleted
+before the transcript is returned to Aria. The private URL is not returned to
+the model.
 
 Requires Node 18.17+ (for global `fetch`).
 
@@ -84,7 +101,7 @@ Every tool is a thin wrapper over an existing REST route — see `docs/API.md` f
 | `complete_followup_send` | `POST /api/aria-followups/[id]/complete` | Records sent/failed only after an explicit Office approval created the approved queue item. |
 | `get_lead_meeting_recording` | `GET /api/lead-meetings/[id]/transcription` | Fetches one private lead-meeting audio file and marks transcription processing. Local Whisper only. |
 | `complete_lead_meeting_transcription` | `PATCH /api/lead-meetings/[id]/transcription` | Saves transcript, summary, actions and decisions—or a failure note. Never writes lead notes or sends messages. |
-| `get_conversation_meeting_source` | `GET /api/meeting-minutes/[id]/draft` | Fetches one private Meeting Mode recording plus its visible destination snapshot for local-Whisper transcription. |
+| `get_conversation_meeting_source` | `GET /api/meeting-minutes/[id]/draft` | Fetches and transcribes one private Meeting Mode recording locally, returning the transcript plus visible destination snapshot without exposing the signed audio URL to the model. |
 | `complete_conversation_meeting_draft` | `PATCH /api/meeting-minutes/[id]/draft` | Saves the seven-section draft for human review. It cannot file or change the destination. |
 | `post_client_update` | `POST /api/projects/[id]/client-updates/posts` | Creates a **draft** — does not publish to the client portal. |
 | `draft_diary_entry` | `GET`/`POST /api/projects/[id]/client-updates/posts/[postId]/aria-draft` | Two modes: call without `title`/`body_richtext` to FETCH a draft's rough notes + photo captions; call WITH both to SUBMIT polished copy (sets `status: 'pending_approval'`). Never publishes — see `docs/ARIA.md`'s "Diary workflow" section. |

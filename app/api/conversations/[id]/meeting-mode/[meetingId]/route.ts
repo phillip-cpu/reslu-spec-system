@@ -98,7 +98,7 @@ async function queueMeetingDraftTask(
       title: "Prepare meeting minutes",
       objective: [
         `Prepare the staged Meeting Mode draft for meeting_minutes_id ${meeting.id}.`,
-        "Use get_conversation_meeting_source to fetch the private recording, transcribe it with local Whisper only, then call complete_conversation_meeting_draft with a factual structured draft.",
+        "Use get_conversation_meeting_source once. The tool transcribes the private recording locally and returns the verbatim transcript without exposing the signed audio URL. Then call complete_conversation_meeting_draft with that exact transcript and a factual structured draft.",
         "Capture summary, decisions, client requests, RESLU actions, client actions, open questions and important notes. Do not infer commitments, send anything, edit a lead/project or file the minutes. The user must review and approve the destination separately.",
       ].join(" "),
       requested_via: "system",
