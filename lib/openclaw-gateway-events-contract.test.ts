@@ -29,6 +29,8 @@ test("the bridge uses a loopback authenticated Gateway run with stable identity"
   assert.match(gateway, /request\("chat\.abort"/);
   assert.match(bridge, /idempotency_key=job\["id"\]/);
   assert.match(bridge, /openclaw_session_key\(conversation_id\)/);
+  assert.match(bridge, /openclaw_voice_session_key\(job\["conversation_id"\], realtime_call_id\)/);
+  assert.match(bridge, /reslu-call-v1-/);
 });
 
 test("member-visible activity exposes labels but no tool arguments or results", () => {
