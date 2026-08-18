@@ -489,8 +489,10 @@ Stage gate:
 
 ## Stage 6 - Meeting Mode and intelligent filing
 
-Status: implementation, migrations, production deployment and Mac-mini runtime
-update are complete; real client-meeting acceptance is pending.
+Status: implementation and database safeguards are deployed. A missing Mac-side
+Whisper runtime was found during acceptance preparation; the pinned local MCP
+transcription adapter is now the release candidate. Real client-meeting
+acceptance remains pending.
 
 Implemented in the core slice:
 
@@ -500,8 +502,11 @@ Implemented in the core slice:
   an unassigned fallback and no fuzzy-name auto-filing.
 - Explicit participant-consent gate, silent capture, pause/resume/finish,
   30-second private on-device audio/session checkpoints and recoverable upload.
-- Private Supabase source audio and local-Whisper transcription on the Mac mini;
-  full client meetings are not sent to OpenAI.
+- Private Supabase source audio and local-Whisper transcription on the Mac mini.
+  The MCP adapter validates the signed URL against the configured Supabase
+  origin, bounds the download, uses a mode-0600 temporary file, withholds the
+  URL from Aria and deletes the audio after success or failure. Full client
+  meetings are not sent to OpenAI.
 - Durable strong-model Aria drafting that continues after the capture screen
   closes, with seven editable minutes sections and the source transcript.
 - Optimistic draft versioning, destination revalidation, duplicate-event

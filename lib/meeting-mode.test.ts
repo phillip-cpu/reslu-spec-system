@@ -85,7 +85,7 @@ test("Meeting Mode stays local-Whisper, staged and explicitly filed", () => {
   assert.match(component, /Unassigned draft/);
   assert.match(component, /candidate\.client_event_id \? `\$\{destination\}:event:\$\{candidate\.client_event_id\}`/);
   assert.match(component, /candidates\.find\(\(candidate\) => destinationValue\(candidate\) === selectedDestination\)/);
-  assert.match(lifecycle, /transcribe it with local Whisper only/i);
+  assert.match(lifecycle, /tool transcribes the private recording locally/i);
   assert.match(lifecycle, /Only the recorder can control this meeting capture/);
   assert.match(lifecycle, /inspectStorageObjectHead/);
   assert.match(lifecycle, /sniffFileKind/);
