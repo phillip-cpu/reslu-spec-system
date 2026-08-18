@@ -3652,6 +3652,7 @@ export function ConversationWorkspace({
       const startBody = await start.json() as { error?: string };
       timing.consultAcceptedAt = performance.now();
       if (!start.ok) throw new Error(startBody.error ?? "Could not consult the RESLU agent");
+      startRealtimeProgressCue(toolCallId);
 
       while (!abortController.signal.aborted && callActiveRef.current) {
         const statusResponse = await fetch(
@@ -3735,7 +3736,7 @@ export function ConversationWorkspace({
       setCallError(reason instanceof Error ? reason.message : "The RESLU agent could not answer");
       setCallState("listening");
     }
-  }, [beginRealtimeTurnTiming, callAgent, cancelActiveRealtimeConsult, loadMessages, selectedId, sendRealtimeEvent, stopRealtimeProgressCue]);
+  }, [beginRealtimeTurnTiming, callAgent, cancelActiveRealtimeConsult, loadMessages, selectedId, sendRealtimeEvent, startRealtimeProgressCue, stopRealtimeProgressCue]);
 
   const runRealtimeTask = useCallback(async (
     toolCallId: string,
@@ -4004,11 +4005,9 @@ export function ConversationWorkspace({
       for (const output of event.native_handled ? [] : event.response.output ?? []) {
         if (output.type === "function_call" && output.name === "consult_reslu_agent" && output.call_id) {
           void runRealtimeConsult(output.call_id, responseId ?? null, output.arguments ?? "{}");
-          startRealtimeProgressCue(output.call_id);
         }
         if (output.type === "function_call" && output.name === "consult_reslu_specialist" && output.call_id) {
           void runRealtimeConsult(output.call_id, responseId ?? null, output.arguments ?? "{}", false, true);
-          startRealtimeProgressCue(output.call_id);
         }
         if (output.type === "function_call" && output.name === "start_reslu_task" && output.call_id) {
           void runRealtimeTask(output.call_id, responseId ?? null, output.arguments ?? "{}");
@@ -4026,7 +4025,7 @@ export function ConversationWorkspace({
       setCallError("The realtime call hit an error. Please try again.");
       setCallState("reconnecting");
     }
-  }, [interruptRealtimePlayback, runRealtimeConsult, runRealtimeMeetingMode, runRealtimeTask, sendRealtimeEvent, startRealtimeProgressCue, upsertCallTranscript]);
+  }, [interruptRealtimePlayback, runRealtimeConsult, runRealtimeMeetingMode, runRealtimeTask, sendRealtimeEvent, upsertCallTranscript]);
 
   nativeRealtimeEventHandlerRef.current = handleRealtimeEvent;
 

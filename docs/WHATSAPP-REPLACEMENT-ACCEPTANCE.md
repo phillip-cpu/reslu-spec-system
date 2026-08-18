@@ -348,11 +348,18 @@ the right RESLU context and compare processing/first-audio timing after rollout.
   acknowledgement state, cancellation and metrics code intact but no creator
   for the progress response in either the web or native iPhone tool router.
 - The repaired browser and native paths now create one response-id-scoped cue
-  only after the consult tool call completes, rotate distinct Aria/Marco/Stuart
-  wording, omit the retired checking phrase, hide the cue from transcripts and
-  clear it before canonical output. Twenty-three focused contracts, targeted
-  lint, TypeScript, the generic-iPhone native build and the 111-page webpack
-  production build pass.
+  only after the canonical consult request is accepted, rotate distinct
+  Aria/Marco/Stuart wording, omit the retired checking phrase, hide the cue from
+  transcripts and clear it before canonical output. Twenty-three focused
+  contracts, targeted lint, TypeScript, the generic-iPhone native build and the
+  111-page webpack production build pass.
+- A follow-up contract removed the remaining dependency on a provider
+  `response.done` event. Both browser and native code now request the cue at the
+  exact successful POST boundary, after RESLU has accepted the consult and
+  before its polling wait begins. Failed requests remain silent, interruption
+  still clears the cue, and canonical output still replaces it. Sixteen focused
+  browser/native contracts, all 444 library tests, targeted lint, TypeScript,
+  the unsigned generic-iPhone build and the complete 111-page webpack build pass.
 
 The code and build evidence removes the known silent-wait regression. Stage 3
 remains partial until a fresh physical call proves acknowledgement, contextual
