@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, FormEvent, PointerEvent as ReactPointerEvent, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { MeetingMode } from "@/components/conversations/MeetingMode";
 import Image from "next/image";
@@ -827,11 +827,13 @@ function NewConversation({ people, scope, onCreated, onClose }: {
 function ForwardMessageDialog({
   message,
   conversations,
+  returnFocusRef,
   onClose,
   onForwarded,
 }: {
   message: ConversationMessage;
   conversations: ConversationSummary[];
+  returnFocusRef: RefObject<HTMLElement | null>;
   onClose: () => void;
   onForwarded: (destinationIds: string[]) => void;
 }) {
@@ -841,7 +843,7 @@ function ForwardMessageDialog({
   const [error, setError] = useState<string | null>(null);
   const intentRef = useRef<{ signature: string; id: string } | null>(null);
   const forwardDialogRef = useRef<HTMLFormElement>(null);
-  useDialogFocusBoundary({ active: true, containerRef: forwardDialogRef, onEscape: onClose });
+  useDialogFocusBoundary({ active: true, containerRef: forwardDialogRef, returnFocusRef, onEscape: onClose });
   const visible = useMemo(() => {
     const term = filter.trim().toLowerCase();
     if (!term) return conversations;
@@ -1298,6 +1300,7 @@ export function ConversationWorkspace({
   const callDialogRef = useRef<HTMLDivElement>(null);
   const messageMenuRef = useRef<HTMLDivElement>(null);
   const messageMenuTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
+  const forwardDialogReturnFocusRef = useRef<HTMLButtonElement | null>(null);
   const draftAttachmentsRef = useRef<DraftAttachment[]>([]);
   const draftAttachmentsByConversationRef = useRef(new Map<string, DraftAttachment[]>());
   const draftAttachmentLoadSequenceRef = useRef(new Map<string, number>());
@@ -5063,6 +5066,7 @@ export function ConversationWorkspace({
                                 type="button"
                                 role="menuitem"
                                 onClick={() => {
+                                  forwardDialogReturnFocusRef.current = messageMenuTriggerRefs.current.get(message.id) ?? null;
                                   setMessageMenuId(null);
                                   setForwardingMessage(message);
                                 }}
@@ -5499,6 +5503,7 @@ export function ConversationWorkspace({
         <ForwardMessageDialog
           message={forwardingMessage}
           conversations={activeConversations}
+          returnFocusRef={forwardDialogReturnFocusRef}
           onClose={() => setForwardingMessage(null)}
           onForwarded={(destinationIds) => {
             setForwardingMessage(null);
