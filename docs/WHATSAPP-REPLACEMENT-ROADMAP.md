@@ -433,8 +433,8 @@ Stage gate:
 
 ## Stage 5 - iPhone background and in-car continuity
 
-Status: native foundation implemented; signing and physical-device acceptance
-pending.
+Status: native foundation implemented and signed; physical-device installation
+and acceptance pending.
 
 The PWA limit is now proven rather than assumed: foreground recovery is guarded
 by document visibility, and a web manifest cannot opt into the iOS audio session,
