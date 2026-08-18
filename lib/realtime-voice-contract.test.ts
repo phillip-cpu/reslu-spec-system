@@ -80,6 +80,29 @@ test("foreground recovery reuses the canonical call without replaying its start 
   assert.match(workspace, />\s*Reconnect\s*<\/button>/);
 });
 
+test("poor-network call control cannot leave the call UI waiting forever", () => {
+  assert.match(workspace, /CALL_CONTROL_REQUEST_TIMEOUT_MS = 8000/);
+  assert.match(workspace, /REALTIME_SESSION_REQUEST_TIMEOUT_MS = 15000/);
+  assert.match(
+    workspace,
+    /boundedFetch\(`\/api\/conversations\/\$\{conversationId\}\/calls`[\s\S]*?CALL_CONTROL_REQUEST_TIMEOUT_MS\)/,
+  );
+  assert.match(
+    workspace,
+    /boundedFetch\(`\/api\/conversations\/\$\{selectedId\}\/realtime\/session`[\s\S]*?REALTIME_SESSION_REQUEST_TIMEOUT_MS\)/,
+  );
+  assert.match(
+    workspace,
+    /savePendingConversationCallEnd\(pendingEnd\);[\s\S]*?await flushPendingCallEnds\(callId\)/,
+  );
+  assert.match(
+    workspace,
+    /Number\(right\.callId === requestedCallId\) - Number\(left\.callId === requestedCallId\)/,
+  );
+  assert.match(workspace, /if \(entry\.callId === requestedCallId\) break;/);
+  assert.match(workspace, /if \(saved\) window\.setTimeout\(\(\) => void flushPendingCallEnds\(\), 0\)/);
+});
+
 test("partial provider tool arguments wait for response.done fallback", () => {
   assert.match(workspace, /parseRealtimeConsultArguments\(argumentsJson\)/);
   assert.match(workspace, /parseRealtimeSpecialistArguments\(argumentsJson, callAgent\.agent_slug\)/);

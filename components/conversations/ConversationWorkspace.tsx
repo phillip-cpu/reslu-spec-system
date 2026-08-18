@@ -140,6 +140,8 @@ const MESSAGE_RECONCILIATION_TIMEOUT_MS = 4000;
 const ATTACHMENT_FINALIZE_REQUEST_TIMEOUT_MS = 6000;
 const CONVERSATION_READ_TIMEOUT_MS = 8000;
 const CONVERSATION_ACTION_TIMEOUT_MS = 15000;
+const CALL_CONTROL_REQUEST_TIMEOUT_MS = 8000;
+const REALTIME_SESSION_REQUEST_TIMEOUT_MS = 15000;
 const OFFLINE_CONVERSATION_NOTICE = "Offline — showing recent conversations saved on this device.";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -3296,7 +3298,7 @@ export function ConversationWorkspace({
       consult.abortController.abort();
       activeRealtimeConsultRef.current = null;
       if (selectedId && callAgent?.agent_slug) {
-        void fetch(`/api/conversations/${selectedId}/realtime/${consult.endpoint}`, {
+        void boundedFetch(`/api/conversations/${selectedId}/realtime/${consult.endpoint}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -3305,7 +3307,9 @@ export function ConversationWorkspace({
               ? { owner_agent_slug: callAgent.agent_slug }
               : { agent_slug: callAgent.agent_slug }),
           }),
-        }).catch(() => null);
+        }, CALL_CONTROL_REQUEST_TIMEOUT_MS)
+          .then((response) => response.text())
+          .catch(() => null);
       }
     }
   }, [callAgent, selectedId]);
@@ -3320,18 +3324,21 @@ export function ConversationWorkspace({
     if (!ownerProfileId || !navigator.onLine) return false;
     let requestedCallSaved = requestedCallId == null;
     let refreshedConversationId: string | null = null;
-    const pending = listPendingConversationCallEnds(ownerProfileId);
+    const pending = listPendingConversationCallEnds(ownerProfileId)
+      .sort((left, right) => Number(right.callId === requestedCallId) - Number(left.callId === requestedCallId));
     for (const entry of pending) {
       try {
-        const response = await fetch(`/api/conversations/${entry.conversationId}/calls`, {
+        const response = await boundedFetch(`/api/conversations/${entry.conversationId}/calls`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ call_id: entry.callId, voice_metrics: entry.voiceMetrics }),
-        });
+        }, CALL_CONTROL_REQUEST_TIMEOUT_MS);
+        await response.text();
         if (!response.ok) continue;
         removePendingConversationCallEnd(ownerProfileId, entry.callId);
         if (entry.callId === requestedCallId) requestedCallSaved = true;
         if (selectedIdRef.current === entry.conversationId) refreshedConversationId = entry.conversationId;
+        if (entry.callId === requestedCallId) break;
       } catch {
         // The durable device entry remains queued for the next online event.
       }
@@ -3356,14 +3363,17 @@ export function ConversationWorkspace({
     };
     try {
       savePendingConversationCallEnd(pendingEnd);
-      return await flushPendingCallEnds(callId);
+      const saved = await flushPendingCallEnds(callId);
+      if (saved) window.setTimeout(() => void flushPendingCallEnds(), 0);
+      return saved;
     } catch {
       try {
-        const response = await fetch(`/api/conversations/${conversationId}/calls`, {
+        const response = await boundedFetch(`/api/conversations/${conversationId}/calls`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ call_id: callId, voice_metrics: voiceMetrics }),
-        });
+        }, CALL_CONTROL_REQUEST_TIMEOUT_MS);
+        await response.text();
         if (!response.ok) return false;
         if (selectedIdRef.current === conversationId) await loadMessages(conversationId);
         return true;
@@ -4042,14 +4052,14 @@ export function ConversationWorkspace({
     const clientCallId = clientCallIdRef.current ?? crypto.randomUUID();
     callConversationIdRef.current = conversationId;
     clientCallIdRef.current = clientCallId;
-    const response = await fetch(`/api/conversations/${conversationId}/calls`, {
+    const response = await boundedFetch(`/api/conversations/${conversationId}/calls`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         presentation: window.innerWidth < 700 ? "driving" : "office",
         client_call_id: clientCallId,
       }),
-    });
+    }, CALL_CONTROL_REQUEST_TIMEOUT_MS);
     const body = await response.json();
     if (!response.ok) throw new Error(body.error ?? "Could not start call");
     callIdRef.current = body.call.id;
@@ -4122,11 +4132,11 @@ export function ConversationWorkspace({
     try {
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
-      const response = await fetch(`/api/conversations/${selectedId}/realtime/session`, {
+      const response = await boundedFetch(`/api/conversations/${selectedId}/realtime/session`, {
         method: "POST",
         headers: { "Content-Type": "application/sdp", "X-RESLU-Agent": callAgent.agent_slug },
         body: offer.sdp,
-      });
+      }, REALTIME_SESSION_REQUEST_TIMEOUT_MS);
       if (!response.ok) {
         let body: { error?: string; code?: string } = {};
         try { body = await response.json(); } catch { /* provider returned non-JSON */ }
