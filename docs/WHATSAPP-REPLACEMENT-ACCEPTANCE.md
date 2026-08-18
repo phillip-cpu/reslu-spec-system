@@ -1,6 +1,6 @@
 # RESLU WhatsApp replacement acceptance matrix
 
-Last updated: 12 August 2026 (ACST)
+Last updated: 18 August 2026 (ACST)
 
 This document records live acceptance evidence for
 `WHATSAPP-REPLACEMENT-ROADMAP.md`. A migration, merged pull request, green
@@ -25,7 +25,7 @@ build or plausible production row is not by itself a passed product gate.
 | 4. Native-feeling mobile and persistent desktop chat | **PARTIAL** | Persistent desktop messenger, mini-player, local-date separators, scroll-safe touch long-press actions, an in-app full-screen private photo viewer and guarded left-edge swipe-back are merged and deployed through production commit `74f66d1`. Mobile has a sticky call action and newest-message layout. | In an authenticated production desktop session keep one typed turn and one call alive while navigating project, lead and office routes. On iPhone, prove newest message and call action are reachable without scrolling history; long-press a message while stationary and while scrolling; open and close a private image without losing thread position; swipe back horizontally and prove vertical scrolling, sending and voice-note recording cannot trigger an accidental chat switch. |
 | 5. iPhone background and in-car continuity | **PENDING** | The native CallKit shell is merged on `main`. Browser foreground recovery and the screen wake-lock mitigation are deployed through `0b0f83e`; the latter prevents ordinary auto-lock but does not claim side-button lock continuity. The version-two shell is implemented on `agent/native-realtime-lock`: native libwebrtc owns microphone, speaker and the Realtime data channel; authenticated RESLU endpoints still own SDP, consultations, durable work and canonical Aria/Marco logic. Native CallKit mute/end remain authoritative, a lock-screen hang-up is synchronously device-queued before network suspension can occur, and provider events mirror back to the existing web UI. Final captions, task/consult refreshes and system call state have a bounded, call-id-scoped replay path after WebKit resumes. Xcode 26.6 compiled and code-signed the complete generic-iPhone target with checksum-pinned WebRTC 151, the Personal Team certificate and its managed profile. Migration 117 and its rollback verifier are live, providing bounded content-free continuity evidence while blocking direct client metadata mutation. | Finish enabling Developer Mode on the paired iPhone, install the signed native target, then pass a physical-device call across deliberate screen lock, mute, audio-route change and Wi-Fi/mobile handoff. No browser-only workaround qualifies. |
 | 6. Meeting Mode and intelligent filing | **PENDING** | Migration 103 and its rollback verifier passed production; silent capture, checkpointing, shared draft review, recorder-only capture/discard control, event-specific ambiguity detection, destination revalidation, explicit filing and audit safeguards are merged and deployed. The private recording namespace is database-confined and immutable after upload; the finish boundary verifies stored bytes before local Whisper receives the source. The Mac mini checkout was fast-forwarded to `c6258c9` and `ai.reslu.conversation-bridge` restarted healthy on 12 August. | Pass one real lead consultation, one active-project meeting and one ambiguous-destination meeting, including two nearby events for the same project. Prove the local-Whisper task completes, nothing files before approval, any destination correction requires renewed approval, and the canonical record agrees with its linked conversation item. |
-| 7. RESLU team intelligence | **PARTIAL** | Canonical Aria/Marco identities remain unchanged. Migration 116 is applied in production and its rollback verifier passed: the active-call-scoped advisory path has one visible owner, one other active specialist, no implicit group membership, serialized provider idempotency, atomic owner-authored completion and a member-readable audit row. PR #78 was merged as `45bc2ff`; its exact Vercel production deployment reached SUCCESS, and the Mac bridge was fast-forwarded to that commit and restarted with fresh Aria/Marco and push listeners. | Pass one real cross-domain voice scenario in each direction with correct lanes, one owner, visible specialist attribution, no duplicate action and an auditable record. |
+| 7. RESLU team intelligence | **PARTIAL** | Canonical Aria/Marco identities remain unchanged. Migration 116 and the guarded durable-delegation release are live. On 18 August, Aria→Marco and Marco→Aria each completed the same read-only Search Console lane-classification scenario: one canonical task, one same-thread result, original-agent authorship, explicit specialist attribution, no error and no duplicate. Existing natural production use also contains four completed Marco→Aria and two completed Stuart→Aria delegations. | Repeat the same cross-domain scenario through one real Aria voice call and one real Marco voice call, preserving the correct lane, visible owner, specialist attribution, one canonical answer and no duplicate action. |
 | 8. Hardening and no-WhatsApp pilot | **PENDING** | Production has RLS verifiers, bounded voice/Gateway metadata, content-free queue/task/call/latency diagnostics, session revocation, prompt-boundary hardening and approval-safe failed-task recovery through `74f66d1`. Automated accessibility contracts cover visible focus, reduced motion, 44 px controls, modal semantics and live announcements. Migration 115 and its verifier are live through `c6258c9`: members can export transcripts/bundles, only the recorder can export raw audio or explicitly delete source material, and filed minutes remain canonical. Proposed 30/365-day dates are visible but automatic purge remains disabled pending approval. PR #80 is deployed through `5d200d9`: the restarted bridge emitted content-free reports at `05:39:23Z` and `05:40:23Z`, each reporting all five workers active. | Safely test an isolated stopped worker/service and prove one deduplicated alert opens and resolves without interrupting production work. Induce/recover one isolated failed test task to prove alert dedupe/resolution and same-task requeue without private content; exercise a harmless prompt-injection fixture in a message, forwarded message and PDF and prove it cannot reveal a secret, change permissions, invoke an unrelated tool or authorize an action; complete the live keyboard, VoiceOver, Reduce Motion, dynamic text, contrast and physical touch-target matrix; prove another device cannot refresh after revocation and stops receiving push; approve or change the proposed retention periods before enabling automatic purge; complete the remaining security, poor-network and long-history matrices; then complete a two-week agreed-workflow pilot without opening WhatsApp and without an unresolved critical defect. |
 
 ## Production release state: 12 August 2026
@@ -156,6 +156,25 @@ and no required control is smaller than 44 px in either dimension.
 This proves the sub-one-second acknowledgement and post-call task-continuity
 parts of Stage 3. It does not prove the 250 ms interruption target because that
 release did not persist output-buffer-clear timing.
+
+## Stage 7 evidence: 18 August 2026 production trace
+
+- Aria delegated the bounded read-only cross-domain scenario to Marco; Marco
+  delegated the same scenario to Aria.
+- Both tasks were claimed within one second, completed without an error and
+  produced exactly one same-thread result.
+- Each idempotency key resolved to exactly one canonical task.
+- The result authored by Aria attributed Marco as specialist; the result
+  authored by Marco attributed Aria as specialist. No direct-chat membership
+  was silently changed.
+- Content-free result checks confirmed both concise answers distinguished the
+  commercial/marketing lane from the studio/operations lane.
+- The audit stream for the Aria→Marco task retained queued, created, started,
+  progress and completed events.
+
+This proves the durable chat collaboration path in both directions. Stage 7
+remains partial until the same owner/specialist invariants pass through physical
+Aria and Marco voice calls.
 
 ## Next physical acceptance session
 

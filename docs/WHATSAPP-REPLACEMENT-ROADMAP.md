@@ -495,11 +495,13 @@ Stage gate:
 
 ## Stage 7 - RESLU team intelligence
 
-Status: bounded owner/specialist consultation is deployed through production
-commit `45bc2ff`; migration 116 is production-verified and the Mac bridge is
-running the matching release. Live cross-domain acceptance remains pending.
+Status: bounded owner/specialist consultation and durable chat delegation are
+deployed. Production has completed the same read-only cross-domain acceptance
+scenario in both Aria→Marco and Marco→Aria directions with one canonical task,
+one owner-authored result, explicit specialist attribution and no duplicate.
+The corresponding physical voice-call acceptance remains pending.
 
-The first collaboration slice does not create a new agent layer. During a live
+The collaboration layer does not create replacement agents. During a live
 Aria or Marco call, Realtime may choose one dedicated specialist-consult tool.
 The server verifies the visible owner is a participant in the active call and
 routes exactly one advisory job to the other active Aria/Marco OpenClaw runtime.
@@ -508,8 +510,12 @@ consequential work through this advisory path, and returns one answer authored
 by the owning agent with visible specialist attribution. A dedicated audit row,
 provider idempotency lock, exact cancellation boundary and atomic completion
 preserve one owner, one specialist job and one canonical answer. Durable work
-continues through the existing owner-agent task path, whose runtime can use its
-existing subagent facilities without moving approval or publication authority.
+continues through the existing owner-agent task path. Direct chat and background
+tasks may create a bounded, idempotent specialist task through the guarded
+delegation tool; its result returns to the same canonical thread under the
+original visible owner with the specialist explicitly attributed. The runtime
+can still use its existing subagent facilities without moving approval or
+publication authority.
 
 Work:
 
