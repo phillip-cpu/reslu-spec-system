@@ -10,6 +10,7 @@ import {
   normalizeAgentTaskArtifactContent,
 } from "@/lib/agent-task-artifact";
 import { visibleAgentWorkTasks } from "@/lib/agent-work-visibility";
+import { boundedFetch } from "@/lib/bounded-request";
 import {
   CONVERSATION_DIRECT_UPLOAD_MAX_BYTES,
   conversationAttachmentKind,
@@ -133,6 +134,7 @@ type CallState = "connecting" | "listening" | "thinking" | "speaking" | "interru
 const MESSAGE_SEND_TIMEOUT_MS = 20000;
 const MESSAGE_RECONCILIATION_TIMEOUT_MS = 4000;
 const ATTACHMENT_FINALIZE_REQUEST_TIMEOUT_MS = 6000;
+const CONVERSATION_READ_TIMEOUT_MS = 8000;
 const OFFLINE_CONVERSATION_NOTICE = "Offline — showing recent conversations saved on this device.";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -1343,6 +1345,7 @@ export function ConversationWorkspace({
   const conversationListRequestRef = useRef(0);
   const messageRequestSequenceRef = useRef(0);
   const activeMessageRequestRef = useRef(new Map<string, number>());
+  const activeAgentTaskRequestRef = useRef(new Set<string>());
   const offlineMessageCacheHydratedRef = useRef(new Set<string>());
   const messageLongPressRef = useRef<{ timer: number; messageId: string; x: number; y: number } | null>(null);
   const swipeBackRef = useRef<{ pointerId: number; x: number; y: number; latestX: number; latestY: number } | null>(null);
@@ -1452,10 +1455,20 @@ export function ConversationWorkspace({
   }, [callTranscript]);
 
   const loadAgentTasks = useCallback(async (conversationId: string) => {
-    const response = await fetch(`/api/conversations/${conversationId}/tasks`, { cache: "no-store" });
-    const body = await response.json() as { tasks?: AgentTask[]; error?: string };
-    if (!response.ok) throw new Error(body.error ?? "Could not load background tasks");
-    if (selectedIdRef.current === conversationId) setAgentTasks(body.tasks ?? []);
+    if (activeAgentTaskRequestRef.current.has(conversationId)) return;
+    activeAgentTaskRequestRef.current.add(conversationId);
+    try {
+      const response = await boundedFetch(
+        `/api/conversations/${conversationId}/tasks`,
+        { cache: "no-store" },
+        CONVERSATION_READ_TIMEOUT_MS,
+      );
+      const body = await response.json() as { tasks?: AgentTask[]; error?: string };
+      if (!response.ok) throw new Error(body.error ?? "Could not load background tasks");
+      if (selectedIdRef.current === conversationId) setAgentTasks(body.tasks ?? []);
+    } finally {
+      activeAgentTaskRequestRef.current.delete(conversationId);
+    }
   }, []);
 
   const updateAgentTask = useCallback(async (
@@ -1594,7 +1607,11 @@ export function ConversationWorkspace({
       return signedInProfileId;
     };
     try {
-      const response = await fetch("/api/conversations", { cache: "no-store" });
+      const response = await boundedFetch(
+        "/api/conversations",
+        { cache: "no-store" },
+        CONVERSATION_READ_TIMEOUT_MS,
+      );
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Could not load conversations");
       if (conversationListRequestRef.current !== requestNumber) return;
@@ -1692,7 +1709,11 @@ export function ConversationWorkspace({
         parameters.set("before_id", options.before.id);
       }
       const query = parameters.size > 0 ? `?${parameters.toString()}` : "";
-      const response = await fetch(`/api/conversations/${conversationId}/messages${query}`, { cache: "no-store" });
+      const response = await boundedFetch(
+        `/api/conversations/${conversationId}/messages${query}`,
+        { cache: "no-store" },
+        CONVERSATION_READ_TIMEOUT_MS,
+      );
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Could not load messages");
       if (
