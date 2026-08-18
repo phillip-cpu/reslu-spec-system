@@ -374,6 +374,20 @@ the selected model, tools, memory, scope, agent identity, approval rules or
 canonical persistence. Physical post-release latency and contextual-follow-up
 acceptance remain required.
 
+A 19 August audit of the latest production calls confirmed the current shape
+more precisely: interruption mute/output clear was already 0-1 ms, OpenAI audio
+generation after the final RESLU answer was about 0.8-1.0 seconds, queue wait
+was normally below 1.3 seconds, and the latest successful OpenClaw runs took
+roughly 17-32 seconds. It also exposed a regression: the client retained all of
+the progress-cue cancellation and metrics machinery, but no browser or native
+path actually created a cue. The repair starts one separately identified,
+agent-specific acknowledgement only after OpenAI has completed the consult tool
+call. Aria, Marco and Stuart rotate distinct short lines; the retired “I’m
+checking that now” phrase is absent. The cue is excluded from the transcript,
+can be interrupted independently, and is cleared before the canonical answer.
+This fixes the long silent wait without moving substantive answers, memory,
+tools or business actions out of the existing RESLU agent runtime.
+
 Foreground call-recovery candidate: a dropped WebRTC peer or data channel now
 reconnects to a fresh OpenAI audio session while retaining the existing RESLU
 call id, canonical conversation and any active Aria/Marco consult or durable

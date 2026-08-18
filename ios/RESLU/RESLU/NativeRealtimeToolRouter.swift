@@ -19,6 +19,8 @@ final class NativeRealtimeToolRouter {
     private var activeConsult: (id: String, endpoint: String, task: Task<Void, Never>)?
     private var activeResponseId: String?
     private var activeOutputAudioResponseId: String?
+    private var progressCueId: String?
+    private var progressCueResponseId: String?
 
     init(
         client: NativeRealtimeHTTPClient,
@@ -44,6 +46,16 @@ final class NativeRealtimeToolRouter {
         guard let type = event["type"] as? String else { return }
         if type == "response.created", let response = event["response"] as? [String: Any] {
             activeResponseId = response["id"] as? String
+            if let metadata = response["metadata"] as? [String: Any],
+               metadata["reslu_kind"] as? String == "reslu_progress" {
+                if metadata["reslu_cue_id"] as? String == progressCueId {
+                    progressCueResponseId = activeResponseId
+                } else if let activeResponseId {
+                    send(["type": "response.cancel", "response_id": activeResponseId])
+                    send(["type": "output_audio_buffer.clear"])
+                    self.activeResponseId = nil
+                }
+            }
             return
         }
         if type == "output_audio_buffer.started" {
@@ -66,6 +78,8 @@ final class NativeRealtimeToolRouter {
             }
             activeResponseId = nil
             activeOutputAudioResponseId = nil
+            progressCueId = nil
+            progressCueResponseId = nil
             return
         }
         if type == "response.function_call_arguments.done" {
@@ -81,12 +95,18 @@ final class NativeRealtimeToolRouter {
         let responseId = response["id"] as? String
         if responseId == activeResponseId { activeResponseId = nil }
         for output in response["output"] as? [[String: Any]] ?? [] where output["type"] as? String == "function_call" {
+            let toolCallId = output["call_id"] as? String
             route(
                 name: output["name"] as? String,
-                toolCallId: output["call_id"] as? String,
+                toolCallId: toolCallId,
                 responseId: responseId,
                 arguments: output["arguments"] as? String
             )
+            if let toolCallId,
+               ["consult_reslu_agent", "consult_reslu_specialist"].contains(output["name"] as? String ?? ""),
+               activeConsult?.id == toolCallId {
+                startProgressCue(toolCallId: toolCallId)
+            }
         }
     }
 
@@ -199,6 +219,44 @@ final class NativeRealtimeToolRouter {
         activeConsult?.id == toolCallId
     }
 
+    private func progressAcknowledgement() -> String {
+        let phrases: [String]
+        switch context.agentSlug {
+        case "marco": phrases = ["On it.", "I’ll get into that.", "I’ll work through it."]
+        case "stuart": phrases = ["Right.", "I’ll deal with that.", "Understood."]
+        default: phrases = ["I’ll take care of that.", "I’ll pull that together.", "Leave that with me."]
+        }
+        return phrases[max(0, handledToolCallIds.count - 1) % phrases.count]
+    }
+
+    private func startProgressCue(toolCallId: String) {
+        guard activeConsult?.id == toolCallId, progressCueId == nil else { return }
+        let cueId = UUID().uuidString
+        progressCueId = cueId
+        let acknowledgement = progressAcknowledgement()
+        send([
+            "type": "response.create",
+            "response": [
+                "metadata": ["reslu_kind": "reslu_progress", "reslu_cue_id": cueId],
+                "output_modalities": ["audio"],
+                "tool_choice": "none",
+                "instructions": "Say exactly: \(acknowledgement) Do not add any other words.",
+            ],
+        ])
+    }
+
+    private func stopProgressCue() {
+        guard progressCueId != nil else { return }
+        if let progressCueResponseId, activeResponseId == progressCueResponseId {
+            send(["type": "response.cancel", "response_id": progressCueResponseId])
+            activeResponseId = nil
+        }
+        send(["type": "output_audio_buffer.clear"])
+        if activeOutputAudioResponseId == progressCueResponseId { activeOutputAudioResponseId = nil }
+        progressCueId = nil
+        self.progressCueResponseId = nil
+    }
+
     private func cancelConsult(toolCallId: String, endpoint: String) {
         Task { [client, context] in
             let ownerKey = endpoint == "specialist" ? "owner_agent_slug" : "agent_slug"
@@ -263,6 +321,7 @@ final class NativeRealtimeToolRouter {
     }
 
     private func sendFunctionOutput(toolCallId: String, output: [String: Any], instruction: String) {
+        stopProgressCue()
         let data = (try? JSONSerialization.data(withJSONObject: output)) ?? Data("{}".utf8)
         let encoded = String(data: data, encoding: .utf8) ?? "{}"
         send([

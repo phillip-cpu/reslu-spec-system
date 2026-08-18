@@ -71,7 +71,11 @@ import {
   requestCallScreenWakeLock,
   type CallScreenWakeLock,
 } from "@/lib/call-screen-wake-lock";
-import { realtimeProgressCueId } from "@/lib/realtime-progress";
+import {
+  REALTIME_PROGRESS_KIND,
+  realtimeProgressAcknowledgement,
+  realtimeProgressCueId,
+} from "@/lib/realtime-progress";
 import {
   CONVERSATION_MESSAGE_REACTIONS,
   type ConversationMessageReactionValue,
@@ -3487,6 +3491,41 @@ export function ConversationWorkspace({
     activeRealtimeProgressCueRef.current = null;
   }, [sendRealtimeEvent]);
 
+  const startRealtimeProgressCue = useCallback((toolCallId: string) => {
+    const timing = realtimeTurnTimingsRef.current.get(toolCallId);
+    const consult = activeRealtimeConsultRef.current;
+    if (
+      !timing
+      || !callAgent?.agent_slug
+      || consult?.toolCallId !== toolCallId
+      || activeRealtimeProgressCueRef.current
+      || cancelledToolCallIdsRef.current.has(toolCallId)
+    ) return;
+    const cueId = crypto.randomUUID();
+    const requestedAt = performance.now();
+    const acknowledgement = realtimeProgressAcknowledgement(callAgent.agent_slug, timing.turn);
+    timing.progressRequestedAt = requestedAt;
+    activeRealtimeProgressCueRef.current = {
+      cueId,
+      toolCallId,
+      responseId: null,
+      speechStoppedAt: timing.speechStoppedAt ?? requestedAt,
+      requestedAt,
+      audioAt: null,
+      done: false,
+      timerId: null,
+    };
+    sendRealtimeEvent({
+      type: "response.create",
+      response: {
+        metadata: { reslu_kind: REALTIME_PROGRESS_KIND, reslu_cue_id: cueId },
+        output_modalities: ["audio"],
+        tool_choice: "none",
+        instructions: `Say exactly: ${JSON.stringify(acknowledgement)} Do not add any other words.`,
+      },
+    });
+  }, [callAgent, sendRealtimeEvent]);
+
   const runRealtimeConsult = useCallback(async (
     toolCallId: string,
     responseId: string | null,
@@ -3897,9 +3936,11 @@ export function ConversationWorkspace({
       for (const output of event.native_handled ? [] : event.response.output ?? []) {
         if (output.type === "function_call" && output.name === "consult_reslu_agent" && output.call_id) {
           void runRealtimeConsult(output.call_id, responseId ?? null, output.arguments ?? "{}");
+          startRealtimeProgressCue(output.call_id);
         }
         if (output.type === "function_call" && output.name === "consult_reslu_specialist" && output.call_id) {
           void runRealtimeConsult(output.call_id, responseId ?? null, output.arguments ?? "{}", false, true);
+          startRealtimeProgressCue(output.call_id);
         }
         if (output.type === "function_call" && output.name === "start_reslu_task" && output.call_id) {
           void runRealtimeTask(output.call_id, responseId ?? null, output.arguments ?? "{}");
@@ -3917,7 +3958,7 @@ export function ConversationWorkspace({
       setCallError("The realtime call hit an error. Please try again.");
       setCallState("reconnecting");
     }
-  }, [interruptRealtimePlayback, runRealtimeConsult, runRealtimeMeetingMode, runRealtimeTask, sendRealtimeEvent, upsertCallTranscript]);
+  }, [interruptRealtimePlayback, runRealtimeConsult, runRealtimeMeetingMode, runRealtimeTask, sendRealtimeEvent, startRealtimeProgressCue, upsertCallTranscript]);
 
   nativeRealtimeEventHandlerRef.current = handleRealtimeEvent;
 

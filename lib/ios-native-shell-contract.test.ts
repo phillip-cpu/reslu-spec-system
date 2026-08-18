@@ -151,6 +151,10 @@ test("web and native exchange provider events while the browser path remains opt
   assert.match(nativeTools, /guard !Task\.isCancelled, isActiveConsult\(toolCallId\)/);
   assert.match(nativeTools, /activeOutputAudioResponseId/);
   assert.match(nativeTools, /output_audio_buffer\.clear/);
+  assert.match(nativeTools, /reslu_progress/);
+  assert.match(nativeTools, /startProgressCue\(toolCallId:/);
+  assert.match(nativeTools, /stopProgressCue\(\)/);
+  assert.doesNotMatch(nativeTools, /checking that now/i);
   assert.match(nativeTools, /conversation\.item\.create/);
   assert.match(nativeTools, /response\.create/);
 });
