@@ -686,6 +686,33 @@ does not make a tool-using OpenClaw response instantaneous; production voice
 telemetry after rollout must prove queue improvement, and the physical iPhone
 matrix must still prove the perceived call experience.
 
+## Stage 3 canonical-runtime benchmark: 19 August 2026
+
+- No completed call had landed after the priority-lane production release, so
+  post-release queue improvement remains ungraded rather than being inferred
+  from older calls.
+- A fixed, tool-free, isolated Aria request on the current
+  `openai/gpt-5.6-terra`/minimal runtime returned exactly `READY`. OpenClaw
+  reported 12,854 ms inside the agent and 15,350 ms wall time for five output
+  tokens, with 26,996 input tokens, an 18,743-character system prompt,
+  8,918 characters of skill declarations and 19,789 characters of tool
+  schemas.
+- The new utility then reproduced the same fixed prompt at 9,815 ms agent time
+  and 12,276 ms wall time with 26,999 input tokens and five output tokens.
+- An isolated per-agent code-mode candidate retained 26,895 input tokens and
+  took 14,470 ms wall time. It did not materially shrink this Codex-backed
+  harness, so it was rejected and the live agents were not changed.
+- `scripts/openclaw_voice_runtime_benchmark.py` now makes this comparison
+  repeatable without accepting an arbitrary prompt. It permits only known
+  agents, a bounded model identifier/run count/timeout, uses a fixed instruction
+  that prohibits tools and business actions, requires the exact `READY`
+  response, and emits only content-free timing/token/prompt-size totals.
+
+This proves the remaining fixed latency is largely canonical runtime/model
+overhead even without tool work. The same agent, model, memory and tool policy
+remain live for the agreed one-week quality trial; no faster-but-weaker model
+has been substituted.
+
 ## Next physical acceptance session
 
 Run these in order and record the exact device, build/deployment, timestamps and
