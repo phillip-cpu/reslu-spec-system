@@ -2014,14 +2014,27 @@ const TOOLS = [
   {
     name: "create_stuart_xero_draft_bill",
     description:
-      "Create an ACCPAY bill in Xero with status DRAFT from one already-verified Spec supplier invoice and attach its source document. Requires an explicit Xero expense account code. Refuses duplicates, ambiguous suppliers, statements, missing source files and unverified dates. It cannot approve or pay the bill.",
+      "Create an ACCPAY bill in Xero with status DRAFT from one already-verified Spec supplier invoice and attach its source document. Requires either one explicit Xero expense account code or a complete human-confirmed account mapping for every supplier source line. Refuses duplicates, partial mappings, ambiguous suppliers, statements, missing source files and unverified dates. It cannot approve or pay the bill.",
     inputSchema: {
       type: "object",
       properties: {
         invoice_id: { type: "string", description: "Spec supplier invoices.id; never a statement document" },
-        account_code: { type: "string", description: "Human-confirmed Xero expense account code" },
+        account_code: { type: "string", description: "Human-confirmed Xero expense account code when every line uses the same code" },
+        line_account_codes: {
+          type: "array",
+          description: "Complete human-confirmed mapping when supplier lines use different Xero accounts; omit account_code",
+          items: {
+            type: "object",
+            properties: {
+              line_sort: { type: "integer", minimum: 0 },
+              account_code: { type: "string", pattern: "^\\d{3,10}$" },
+            },
+            required: ["line_sort", "account_code"],
+            additionalProperties: false,
+          },
+        },
       },
-      required: ["invoice_id", "account_code"],
+      required: ["invoice_id"],
       additionalProperties: false,
     },
     handler: async (body) => apiFetch("/api/stuart/xero-draft-bills", { method: "POST", body: JSON.stringify(body) }),

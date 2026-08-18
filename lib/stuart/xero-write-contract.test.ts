@@ -23,6 +23,8 @@ test("draft bill path requires source evidence, exact contacts and idempotency",
   assert.match(draftSource, /stuart_xero_draft_bills/);
   assert.match(draftSource, /live Xero supplier bill already uses this invoice number/i);
   assert.match(draftSource, /Spec invoice total does not match the attached original/i);
+  assert.match(draftSource, /resolveLineAccountCodes/);
+  assert.match(mcpSource, /line_account_codes/);
 });
 
 test("source invoice attachment is traceable, fingerprinted and does not write to Xero", () => {
