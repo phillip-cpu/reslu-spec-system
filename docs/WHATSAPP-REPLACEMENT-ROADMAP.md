@@ -360,6 +360,20 @@ session. This does not change the selected model, agent identity, tool access,
 memory, canonical history or approval boundaries. Physical before/after voice
 timing remains required.
 
+The next bounded-context repair removes a second source of repeated prompt
+growth inside those call-scoped sessions. The first voice turn still receives
+the complete 16-message canonical history window. Every later turn in the same
+call receives only the canonical delta beginning at the previous voice turn;
+the current request is supplied once through its dedicated structured field.
+If the call or triggering message cannot be proven inside the bounded window,
+the bridge fails back to the complete history instead of guessing. A
+content-free seven-day production-shape audit found that 116 of 145 voice turns
+were same-call continuations; against those real row shapes this reduces the
+history envelope from 2,146 rows to 580 rows, or 73 percent, without changing
+the selected model, tools, memory, scope, agent identity, approval rules or
+canonical persistence. Physical post-release latency and contextual-follow-up
+acceptance remain required.
+
 Foreground call-recovery candidate: a dropped WebRTC peer or data channel now
 reconnects to a fresh OpenAI audio session while retaining the existing RESLU
 call id, canonical conversation and any active Aria/Marco consult or durable
