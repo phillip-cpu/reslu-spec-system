@@ -334,6 +334,30 @@ This is bounded content and live-runtime evidence, not a physical latency pass. 
 next real iPhone call must prove that contextual follow-ups still answer from
 the right RESLU context and compare processing/first-audio timing after rollout.
 
+## Stage 3 progress-cue repair: 19 August 2026
+
+- A content-free production audit covered 41 calls from the latest seven days.
+  In the latest fully spoken driving call, average queue wait was 587 ms and
+  average agent processing was 21,526 ms; its three completed turns took
+  16,807-31,574 ms inside the agent. Final OpenAI audio began 780-919 ms after
+  the answer response request.
+- The same production evidence recorded genuine interruption mute/output clear
+  in 0-1 ms. This supports the server-observed interruption path but does not
+  replace a physical perceptual barge-in test.
+- The newest calls had no acknowledgement sample. Source inspection found the
+  acknowledgement state, cancellation and metrics code intact but no creator
+  for the progress response in either the web or native iPhone tool router.
+- The repaired browser and native paths now create one response-id-scoped cue
+  only after the consult tool call completes, rotate distinct Aria/Marco/Stuart
+  wording, omit the retired checking phrase, hide the cue from transcripts and
+  clear it before canonical output. Twenty-three focused contracts, targeted
+  lint, TypeScript, the generic-iPhone native build and the 111-page webpack
+  production build pass.
+
+The code and build evidence removes the known silent-wait regression. Stage 3
+remains partial until a fresh physical call proves acknowledgement, contextual
+follow-up, genuine audible interruption and non-duplicated canonical output.
+
 ## Stage 7 evidence: 18 August 2026 production trace
 
 - Aria delegated the bounded read-only cross-domain scenario to Marco; Marco
