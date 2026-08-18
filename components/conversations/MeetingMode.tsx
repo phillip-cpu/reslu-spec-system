@@ -699,7 +699,7 @@ export function MeetingMode({
     <section className="mt-6 rounded-xl border border-[#d4cbbd] bg-[#faf7f0] p-4 md:p-5" aria-labelledby="meeting-source-privacy-title">
       <h3 id="meeting-source-privacy-title" className="text-subhead font-semibold">Source privacy</h3>
       <p className="mt-2 text-caption leading-relaxed text-charcoal/60">
-        Filed structured minutes remain the business record. The proposed deletion dates are {retentionDateLabel(meeting.recording_retain_until)} for raw audio and {retentionDateLabel(meeting.transcript_retain_until)} for the source transcript. Automatic purging remains off until RESLU approves the policy; the recorder can delete either source now.
+        Filed structured minutes remain the business record. Under the studio policy, the scheduled source-retention dates are {retentionDateLabel(meeting.recording_retain_until)} for raw audio and {retentionDateLabel(meeting.transcript_retain_until)} for the source transcript. Automatic deletion is governed in Settings; the recorder can export or explicitly delete retained source now.
       </p>
       <div className="mt-4 flex flex-wrap gap-2">
         {transcriptAvailable && <a href={`/api/conversations/${conversationId}/meeting-mode/${meeting.id}/source?kind=transcript`} target="_blank" rel="noreferrer" className="min-h-11 rounded-xl border border-nearblack px-4 py-3 text-caption font-semibold">Export transcript</a>}

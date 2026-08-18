@@ -78,6 +78,11 @@ const MONITORED_CRONS: CronDef[] = [
     label: "Aria weekly synthesis",
     expectedIntervalHours: 168,
   },
+  {
+    key: "meeting_source_retention",
+    label: "Meeting source retention",
+    expectedIntervalHours: 24,
+  },
 ];
 
 type JobRunStatus = "succeeded" | "degraded" | "failed";
@@ -138,6 +143,18 @@ async function cronExecution(supabase: ServiceClient, key: string): Promise<Cron
     };
   }
   return latestJobExecution(supabase, key);
+}
+
+async function monitoredCrons(supabase: ServiceClient): Promise<CronDef[]> {
+  const { data, error } = await supabase
+    .from("meeting_source_retention_policy")
+    .select("enabled")
+    .eq("singleton", true)
+    .maybeSingle();
+  if (error || !data?.enabled) {
+    return MONITORED_CRONS.filter((definition) => definition.key !== "meeting_source_retention");
+  }
+  return MONITORED_CRONS;
 }
 
 function cronExecutionLevel(execution: CronExecution, expectedIntervalHours: number) {
@@ -259,9 +276,10 @@ async function conversationTransportHealth(supabase: ServiceClient) {
 }
 
 export async function computeSpecHealth(supabase: ServiceClient): Promise<SpecHealthSummary> {
+  const cronDefinitions = await monitoredCrons(supabase);
   const [crons, failedEmailSends7d, stuckAriaQueue, needsAriaBacklog, conversationTransport] = await Promise.all([
     Promise.all(
-      MONITORED_CRONS.map(async (def) => {
+      cronDefinitions.map(async (def) => {
         const execution = await cronExecution(supabase, def.key);
         return {
           key: def.key,

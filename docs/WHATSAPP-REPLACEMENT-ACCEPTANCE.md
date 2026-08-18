@@ -640,6 +640,29 @@ This closes the two known production function-validator errors. It does not
 close the remaining physical-device, accessibility, retention, network,
 long-history or two-week pilot gates.
 
+## Stage 8 retention-governance candidate: 19 August 2026
+
+- A singleton, RLS-protected studio policy stores the proposed raw-audio and
+  source-transcript periods. It is disabled by default and cannot delete source
+  merely by being deployed.
+- Settings shows the exact number of already-eligible recordings and
+  transcripts before activation. Only an admin can save the periods or enable
+  or disable the policy; enabling requires a distinct, explicit confirmation
+  and every policy transition is audited.
+- New captures inherit the current periods, while existing displayed dates do
+  not move when the policy changes. Filed summaries, decisions, actions and
+  links remain canonical regardless of source retention.
+- The daily worker requires `CRON_SECRET`, reads the enabled policy, processes
+  bounded batches, removes private Storage audio before atomically finalizing
+  the database scrub and records content-free Health results. Its finalizer is
+  service-role-only, terminal-state-only, due-date-bound and idempotent.
+- The rollback verifier proves least-privilege grants, configured dates, both
+  source finalizers, idempotence and audit events without retaining test data.
+
+This candidate does not approve the irreversible policy. Stage 8 retention
+remains pending until an admin explicitly enables the agreed periods and a
+scheduled production run is observed without deleting canonical minutes.
+
 ## Next physical acceptance session
 
 Run these in order and record the exact device, build/deployment, timestamps and

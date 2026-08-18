@@ -69,6 +69,10 @@
       "schedule": "*/10 * * * *"
     },
     {
+      "path": "/api/meeting-retention/purge",
+      "schedule": "20 18 * * *"
+    },
+    {
       "path": "/api/stuart/review",
       "schedule": "0 20 * * *"
     },
