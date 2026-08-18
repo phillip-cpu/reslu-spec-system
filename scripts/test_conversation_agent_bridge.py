@@ -572,6 +572,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
                     "metadata": {
                         "source": "voice",
                         "transport": "openai_realtime_webrtc",
+                        "realtime_call_id": "123e4567-e89b-42d3-a456-426614174000",
                     },
                 }]
 
@@ -590,6 +591,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
                     "metadata": {
                         "source": "voice",
                         "transport": "openai_realtime_webrtc",
+                        "realtime_call_id": "123e4567-e89b-42d3-a456-426614174000",
                     },
                     "attachments": [
                         {"id": "later", "status": "ready", "created_at": "2026-08-11T00:00:02Z"},
@@ -598,7 +600,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
                     ],
                 }]
 
-        voice, attachments, body, forwarded, specialist = conversation_agent_bridge.triggering_message_context(
+        voice, attachments, body, forwarded, specialist, call_id = conversation_agent_bridge.triggering_message_context(
             FakeRest(),
             "conversation-1",
             "message-1",
@@ -609,6 +611,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         self.assertEqual(body, "")
         self.assertFalse(forwarded)
         self.assertFalse(specialist)
+        self.assertEqual(call_id, "123e4567-e89b-42d3-a456-426614174000")
 
     def test_materialized_private_file_is_size_checked_hashed_and_non_executable(self):
         class FakeRest:
@@ -766,6 +769,15 @@ class ConversationAgentBridgeTests(unittest.TestCase):
                 "d5442b38-d5ee-4650-93be-9e5953dbf401"
             ),
             "reslu-conversation-v2-d5442b38-d5ee-4650-93be-9e5953dbf401",
+        )
+
+    def test_realtime_voice_has_a_call_scoped_openclaw_session_key(self):
+        self.assertEqual(
+            conversation_agent_bridge.openclaw_voice_session_key(
+                "d5442b38-d5ee-4650-93be-9e5953dbf401",
+                "123e4567-e89b-42d3-a456-426614174000",
+            ),
+            "reslu-call-v1-123e4567-e89b-42d3-a456-426614174000",
         )
 
     @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
@@ -1039,7 +1051,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         ), mock.patch.object(
             conversation_agent_bridge,
             "triggering_message_context",
-            return_value=(False, [attachment], "Please inspect this.", False, False),
+            return_value=(False, [attachment], "Please inspect this.", False, False, None),
         ), mock.patch.object(
             conversation_agent_bridge,
             "job_is_processing",
@@ -1087,7 +1099,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         ) as history, mock.patch.object(
             conversation_agent_bridge,
             "triggering_message_context",
-            return_value=(True, [], "What is on my list?", False, False),
+            return_value=(True, [], "What is on my list?", False, False, "123e4567-e89b-42d3-a456-426614174000"),
         ), mock.patch.object(
             conversation_agent_bridge,
             "attachment_staging_parent",
@@ -1111,6 +1123,10 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         self.assertEqual(invoke.call_args.kwargs["thinking_level"], "minimal")
         self.assertEqual(invoke.call_args.kwargs["model"], "openai/gpt-5.6-terra")
         self.assertTrue(invoke.call_args.kwargs["realtime_voice"])
+        self.assertEqual(
+            invoke.call_args.kwargs["session_key"],
+            "reslu-call-v1-123e4567-e89b-42d3-a456-426614174000",
+        )
 
     def test_specialist_consultation_is_advisory_and_completes_as_owner(self):
         rest = mock.Mock()
@@ -1137,7 +1153,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         with mock.patch.object(
             conversation_agent_bridge,
             "triggering_message_context",
-            return_value=(True, [], "Ask Marco for his commercial view.", False, True),
+            return_value=(True, [], "Ask Marco for his commercial view.", False, True, "123e4567-e89b-42d3-a456-426614174000"),
         ), mock.patch.object(
             conversation_agent_bridge,
             "agent_identity",

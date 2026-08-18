@@ -58,6 +58,7 @@ REALTIME_VOICE_MODEL_DEFAULT = "openai/gpt-5.6-terra"
 OPENCLAW_SESSION_VERSION_DEFAULT = "v2"
 OPENCLAW_GATEWAY_EVENTS_DEFAULT = True
 OPENCLAW_GATEWAY_RUN_SCRIPT = Path(__file__).with_name("openclaw_gateway_run.mjs")
+UUID_PATTERN = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}"
 OPENCLAW_THINKING_LEVELS = {
     "off",
     "minimal",
@@ -638,7 +639,7 @@ def triggering_message_context(
     rest: SupabaseRest,
     conversation_id: str,
     message_id: str,
-) -> tuple[bool, list[dict], str, bool, bool]:
+) -> tuple[bool, list[dict], str, bool, bool, str | None]:
     """Fetch voice transport metadata and newest-message files together."""
     rows = rest.rows(
         "conversation_messages",
@@ -682,7 +683,21 @@ def triggering_message_context(
         isinstance(metadata, dict)
         and metadata.get("consultation_kind") == "agent_specialist"
     )
-    return is_realtime_voice, attachments, body, is_forwarded, is_specialist_consultation
+    realtime_call_id = (
+        str(metadata.get("realtime_call_id"))
+        if is_realtime_voice
+        and isinstance(metadata, dict)
+        and re.fullmatch(UUID_PATTERN, str(metadata.get("realtime_call_id") or ""))
+        else None
+    )
+    return (
+        is_realtime_voice,
+        attachments,
+        body,
+        is_forwarded,
+        is_specialist_consultation,
+        realtime_call_id,
+    )
 
 
 def realtime_voice_thinking_level() -> str:
@@ -789,6 +804,13 @@ def openclaw_session_key(conversation_id: str) -> str:
     ).strip()
     version = configured if re.fullmatch(r"[A-Za-z0-9_-]{1,20}", configured) else OPENCLAW_SESSION_VERSION_DEFAULT
     return f"reslu-conversation-{version}-{conversation_id}"
+
+
+def openclaw_voice_session_key(conversation_id: str, call_id: str | None) -> str:
+    """Bound voice context to one call while keeping reconnects conversational."""
+    if call_id and re.fullmatch(UUID_PATTERN, call_id):
+        return f"reslu-call-v1-{call_id}"
+    return f"reslu-call-v1-conversation-{conversation_id}"
 
 
 def openclaw_task_session_key(task_id: str) -> str:
@@ -992,6 +1014,7 @@ def invoke_agent(
     realtime_voice: bool = False,
     scope_context: dict | None = None,
     prior_attachment_recall: list[dict] | None = None,
+    session_key: str | None = None,
 ) -> str | None:
     attachment_descriptors = []
     native_image_attachments = []
@@ -1088,12 +1111,13 @@ def invoke_agent(
         f"{history_context_json}\n"
         "END_UNTRUSTED_CONVERSATION_HISTORY_JSON"
     )
+    resolved_session_key = session_key or openclaw_session_key(conversation_id)
     if openclaw_gateway_events_enabled():
         try:
             return invoke_agent_via_gateway(
                 prompt=prompt,
                 agent_id=openclaw_agent_id(agent["slug"]),
-                session_key=openclaw_session_key(conversation_id),
+                session_key=resolved_session_key,
                 idempotency_key=idempotency_key or f"reslu-conversation-{time.time_ns()}",
                 timeout_seconds=AGENT_PROCESS_TIMEOUT_SECONDS,
                 should_continue=should_continue,
@@ -1112,7 +1136,7 @@ def invoke_agent(
             )
     command = [
         "openclaw", "agent", "--agent", openclaw_agent_id(agent["slug"]),
-        "--session-key", openclaw_session_key(conversation_id),
+        "--session-key", resolved_session_key,
     ]
     if thinking_level:
         command.extend(["--thinking", thinking_level])
@@ -1688,6 +1712,7 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
         newest_message,
         newest_message_is_forwarded,
         is_specialist_consultation,
+        realtime_call_id,
     ) = triggering_message_context(
         rest,
         job["conversation_id"],
@@ -1737,6 +1762,11 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
             realtime_voice=is_realtime_voice,
             scope_context=scope_context,
             prior_attachment_recall=prior_attachment_recall,
+            session_key=(
+                openclaw_voice_session_key(job["conversation_id"], realtime_call_id)
+                if is_realtime_voice
+                else None
+            ),
         )
     if reply is None:
         return "cancelled"

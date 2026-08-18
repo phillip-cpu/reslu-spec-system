@@ -348,6 +348,18 @@ task-cancellation path; the task card now requires a deliberate second “Stop
 task” action so a single or displaced mobile tap cannot terminate background
 work.
 
+A later seven-day production audit isolated the remaining synchronous latency:
+queue pickup was commonly below one second, but recent agent runs commonly took
+17-35 seconds. The long-lived OpenClaw conversation sessions had grown to about
+61k-74k tokens while the bridge also replayed bounded canonical history. A
+fresh isolated `gpt-5.6-terra` minimal-thinking run completed in 11.8 seconds.
+The current candidate therefore scopes only realtime voice sessions to the
+canonical call id: reconnects and turns within one call remain conversational,
+the next call starts bounded, and typed chat retains its durable conversation
+session. This does not change the selected model, agent identity, tool access,
+memory, canonical history or approval boundaries. Physical before/after voice
+timing remains required.
+
 Foreground call-recovery candidate: a dropped WebRTC peer or data channel now
 reconnects to a fresh OpenAI audio session while retaining the existing RESLU
 call id, canonical conversation and any active Aria/Marco consult or durable
