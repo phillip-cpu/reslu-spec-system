@@ -2012,6 +2012,23 @@ const TOOLS = [
     handler: async (body) => apiFetch("/api/stuart/source-invoice-attachment", { method: "POST", body: JSON.stringify(body) }),
   },
   {
+    name: "create_stuart_xero_supplier_contact",
+    description:
+      "Create one verified Xero contact for a source-backed supplier after exact human approval. Requires the legal name and valid Australian ABN to match the attached original, searches Xero for name/ABN duplicates, records an audit, and performs provider readback. It never stores bank details, approves a bill or makes a payment. Xero marks the contact as a supplier after the subsequent DRAFT ACCPAY bill.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        invoice_id: { type: "string", description: "Exact source-backed Spec supplier invoices.id" },
+        legal_name: { type: "string", minLength: 2, maxLength: 255, description: "Exact legal supplier name from the attached original" },
+        abn: { type: "string", minLength: 11, maxLength: 20, description: "Australian ABN shown on the attached original" },
+        human_confirmed: { type: "boolean", description: "Must be true only after the human explicitly approves this exact legal name and ABN" },
+      },
+      required: ["invoice_id", "legal_name", "abn", "human_confirmed"],
+      additionalProperties: false,
+    },
+    handler: async (body) => apiFetch("/api/stuart/xero-suppliers", { method: "POST", body: JSON.stringify(body) }),
+  },
+  {
     name: "create_stuart_xero_draft_bill",
     description:
       "Create an ACCPAY bill in Xero with status DRAFT from one already-verified Spec supplier invoice and attach its source document. Requires either one explicit Xero expense account code or a complete human-confirmed account mapping for every supplier source line. Refuses duplicates, partial mappings, ambiguous suppliers, statements, missing source files and unverified dates. It cannot approve or pay the bill.",
@@ -2331,6 +2348,7 @@ const STUART_ALLOWED_TOOLS = new Set([
   "get_stuart_invoice_evidence",
   "run_stuart_finance_review",
   "attach_stuart_source_invoice",
+  "create_stuart_xero_supplier_contact",
   "create_stuart_xero_draft_bill",
   "search_stuart_xero_contacts",
   "reconcile_stuart_supplier_statement",

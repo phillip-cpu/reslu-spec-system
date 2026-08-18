@@ -59,6 +59,7 @@ const TARGET_KEYS: Record<string, { type: string; keys: string[] }> = {
   complete_diagnostic: { type: "health_diagnostic", keys: ["id"] },
   run_stuart_finance_review: { type: "finance_review", keys: ["request_id"] },
   attach_stuart_source_invoice: { type: "invoice", keys: ["invoice_id"] },
+  create_stuart_xero_supplier_contact: { type: "invoice", keys: ["invoice_id"] },
   create_stuart_xero_draft_bill: { type: "invoice", keys: ["invoice_id"] },
   reconcile_stuart_supplier_statement: { type: "supplier_statement", keys: ["supplier", "statement_date"] },
   delegate_reslu_agent_task: { type: "conversation", keys: ["conversation_id"] },

@@ -11,8 +11,6 @@ export interface DraftBillInput {
   lineAccountCodes?: LineAccountCodeInput[];
 }
 
-const REQUIRED_SCOPES = ["accounting.invoices", "accounting.contacts.read"] as const;
-
 function safeFilename(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 120) || "supplier-invoice";
 }
@@ -31,8 +29,10 @@ function evidenceContainsAmount(text: string, amount: number): boolean {
 export async function createStuartXeroDraftBill(input: DraftBillInput) {
   const connection = await getActiveXeroConnection();
   if (!connection) throw new Error("Xero is not connected");
-  const missingScopes = REQUIRED_SCOPES.filter((scope) => !connection.scopes.includes(scope));
-  if (missingScopes.length) throw new Error("Reconnect Xero to grant Stuart draft-bill access");
+  if (!connection.scopes.includes("accounting.invoices")
+    || !connection.scopes.some((scope) => scope === "accounting.contacts.read" || scope === "accounting.contacts")) {
+    throw new Error("Reconnect Xero to grant Stuart draft-bill access");
+  }
 
   const service = createServiceRoleClient();
   const { data: invoice, error } = await service

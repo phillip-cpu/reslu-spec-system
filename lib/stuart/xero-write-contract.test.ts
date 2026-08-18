@@ -10,6 +10,8 @@ const briefRoute = readFileSync(new URL("../../app/api/stuart/brief/route.ts", i
 const mcpSource = readFileSync(new URL("../../mcp/src/index.mjs", import.meta.url), "utf8");
 const oauthSource = readFileSync(new URL("../xero/oauth.ts", import.meta.url), "utf8");
 const contactSearchSource = readFileSync(new URL("./xero-contacts.ts", import.meta.url), "utf8");
+const supplierContactSource = readFileSync(new URL("./xero-supplier-contacts.ts", import.meta.url), "utf8");
+const supplierContactRoute = readFileSync(new URL("../../app/api/stuart/xero-suppliers/route.ts", import.meta.url), "utf8");
 
 test("Stuart creates only draft ACCPAY bills and never payments", () => {
   assert.match(draftSource, /Type: "ACCPAY"/);
@@ -58,6 +60,8 @@ test("OAuth requests invoice and attachment writes but payment reads only", () =
   assert.match(oauthSource, /"accounting\.invoices"/);
   assert.match(oauthSource, /"accounting\.attachments"/);
   assert.match(oauthSource, /"accounting\.payments\.read"/);
+  assert.match(oauthSource, /"accounting\.contacts"/);
+  assert.doesNotMatch(oauthSource, /"accounting\.contacts\.read"/);
   assert.doesNotMatch(oauthSource, /"accounting\.payments"\s*,/);
 });
 
@@ -65,4 +69,19 @@ test("Stuart can resolve supplier contacts through a read-only bounded search", 
   assert.match(contactSearchSource, /xeroGet/);
   assert.doesNotMatch(contactSearchSource, /xeroPostJson|xeroPutBytes/);
   assert.match(mcpSource, /search_stuart_xero_contacts/);
+});
+
+test("supplier contact creation is source-backed, approved, duplicate-safe and excludes bank details", () => {
+  assert.match(supplierContactSource, /input\.humanConfirmed !== true/);
+  assert.match(supplierContactSource, /invoice\.supplier.*legalName/);
+  assert.match(supplierContactSource, /evidenceHasName/);
+  assert.match(supplierContactSource, /evidenceHasAbn/);
+  assert.match(supplierContactSource, /where: `Name/);
+  assert.match(supplierContactSource, /where: `TaxNumber/);
+  assert.match(supplierContactSource, /xeroPutJson/);
+  assert.match(supplierContactSource, /api\.xro\/2\.0\/Contacts\/\$\{xeroContactId\}/);
+  assert.doesNotMatch(supplierContactSource, /BankAccountDetails|BankAccountNumber|BSB/);
+  assert.match(supplierContactRoute, /body\.human_confirmed !== true/);
+  assert.match(mcpSource, /create_stuart_xero_supplier_contact/);
+  assert.match(mcpSource, /never stores bank details/i);
 });

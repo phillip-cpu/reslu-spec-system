@@ -19,7 +19,7 @@ export async function searchStuartXeroContacts(query: string): Promise<{
 
   const connection = await getActiveXeroConnection();
   if (!connection) throw new Error("Xero is not connected");
-  if (!connection.scopes.includes("accounting.contacts.read")) {
+  if (!connection.scopes.some((scope) => scope === "accounting.contacts.read" || scope === "accounting.contacts")) {
     throw new Error("Reconnect Xero to grant Stuart contact-read access");
   }
 
