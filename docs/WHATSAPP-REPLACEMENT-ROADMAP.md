@@ -381,9 +381,9 @@ was normally below 1.3 seconds, and the latest successful OpenClaw runs took
 roughly 17-32 seconds. It also exposed a regression: the client retained all of
 the progress-cue cancellation and metrics machinery, but no browser or native
 path actually created a cue. The repair starts one separately identified,
-agent-specific acknowledgement only after OpenAI has completed the consult tool
-call. Aria, Marco and Stuart rotate distinct short lines; the retired “I’m
-checking that now” phrase is absent. The cue is excluded from the transcript,
+agent-specific acknowledgement only after RESLU has accepted the canonical
+consult request. Aria, Marco and Stuart rotate distinct short lines; the retired
+“I’m checking that now” phrase is absent. The cue is excluded from the transcript,
 can be interrupted independently, and is cleared before the canonical answer.
 This fixes the long silent wait without moving substantive answers, memory,
 tools or business actions out of the existing RESLU agent runtime.
@@ -668,15 +668,17 @@ Final product gate:
 ## Current next action
 
 The production database and deployment gates are complete through migration
-116 and production commit `45bc2ff`. The exact production deployment reached
-READY, the Mac bridge checkout is at that commit, and its launchd service was
-restarted on 12 August 2026. Run the Stage 7 live cross-agent checks: ask Aria
-for Marco's commercial view, then ask Marco for Aria's operational view. Each
-turn must retain one visible owner, one attributed specialist consultation, one
-canonical answer and no duplicate action.
+117 and production commit `66a1e35`. The authenticated typed-turn half of the
+Stage 4 desktop gate now passes across project, lead and Office navigation.
+Repeat that route sequence during one real voice call, then run the Stage 7
+voice collaboration checks: ask Aria for Marco's commercial view, Marco for
+Aria's operational view and Stuart for either specialist's non-finance input.
+Each turn must retain one visible owner, one attributed specialist consultation,
+one canonical answer and no duplicate action.
 
-Repeat the iPhone voice acceptance call. Require a Gateway run id
-and visible safe progress before waiting for Aria's answer; interrupt one answer,
+When the paired iPhone is connected and unlocked, install the signed native
+target and run the Stage 3/5 acceptance call. Require a Gateway run id and
+visible safe progress before waiting for Aria's answer; interrupt one answer,
 start one durable task, end the call, and confirm that the durable task keeps
 working. Require saved content-free timing metadata for the call. Do not close
 Stage 3 until acknowledgement is below one second, interruption is under 250 ms,
