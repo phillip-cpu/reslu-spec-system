@@ -371,6 +371,34 @@ This closes automatic terminal recovery for abandoned task/call runtime state.
 The physical-device, accessibility, retention, network, long-history and
 two-week pilot gates remain open.
 
+## Stage 8 health-runner recovery: 18 August 2026 production trace
+
+- Production showed a fresh Mac heartbeat and a healthy five-worker
+  conversation bridge, but one diagnostics request had remained `running`
+  since 17 August.
+- The installed heartbeat and diagnostics launch agents were alive; process
+  inspection found both held inside Spec HTTP requests with no curl timeout.
+  The diagnostic queue also had no claim timestamp or terminal lease.
+- Migration `20260818111114` adds an atomic service-only claim, preserves fresh
+  work and terminally fails a claim abandoned for more than ten minutes. It
+  never automatically repeats a repair.
+- The matching Mac scripts bound authentication, Spec requests, local restart,
+  WhatsApp verification and macOS update checks so launchd can resume its next
+  interval after an unhealthy dependency.
+- The rollback-only production verifier passed under the existing
+  single-active-diagnostic invariant. The migration terminally recovered the
+  31-hour-old claim with a safe retry message and migration history records it
+  as applied.
+- The reviewed repository scripts and installed Mac copies had identical
+  SHA-256 hashes. After restarting only the heartbeat and diagnostics launch
+  agents, both exited zero, the response files advanced, production reported a
+  heartbeat age of 49 seconds and the diagnostic queue contained zero pending
+  or running rows.
+
+This closes terminal recovery and finite runtime for the health runner. The
+remaining Stage 8 physical accessibility, revocation, retention, poor-network,
+long-history and two-week pilot gates stay open.
+
 ## Stage 8 prompt-injection drill: 18 August 2026 production trace
 
 - The live OpenClaw configuration loaded `reslu-conversation-guard` from the

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
-import type { PendingDiagnosticsResponse } from "@/types/health-push";
+import type { HealthDiagnostic, PendingDiagnosticsResponse } from "@/types/health-push";
 
 export const runtime = "nodejs";
 
@@ -12,14 +12,10 @@ export const runtime = "nodejs";
  * auth as the other mini-facing routes (see POST
  * /api/health/heartbeat's own comment).
  *
- * Returns every 'pending' row, oldest-requested first, and atomically
- * flips them to 'running' as it returns them — this is the "claim"
- * step (health_diagnostics.status supports pending|running|done|failed
- * per migration 053): a second poll a few seconds later (the mini's
- * own loop, docs/MINI-HEALTH-HANDOFF.md) won't pick the same row up
- * again and double-run repairs on it. There is exactly one mini in
- * this system, so no cross-worker race is expected in practice — the
- * status transition exists for correctness/auditability regardless.
+ * Atomically claims at most five pending rows, oldest first. The database
+ * also terminally fails any claim abandoned for more than ten minutes.
+ * Abandoned repairs are never replayed automatically because a runner may
+ * have changed local state before it disappeared.
  */
 export async function GET() {
   const supabase = await createClient();
@@ -32,29 +28,17 @@ export async function GET() {
 
   const service = createServiceRoleClient();
 
-  const { data: pending, error } = await service
-    .from("health_diagnostics")
-    .select("*")
-    .eq("status", "pending")
-    .order("requested_at", { ascending: true });
+  const { data: pending, error } = await service.rpc(
+    "claim_pending_health_diagnostics",
+    { p_limit: 5 }
+  );
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const rows = pending ?? [];
-  if (rows.length > 0) {
-    await service
-      .from("health_diagnostics")
-      .update({ status: "running" })
-      .in(
-        "id",
-        rows.map((r) => r.id)
-      );
-  }
-
   const response: PendingDiagnosticsResponse = {
-    diagnostics: rows.map((r) => ({ ...r, status: "running" })),
+    diagnostics: (pending ?? []).map((row: HealthDiagnostic) => ({ ...row, status: "running" as const })),
   };
   return NextResponse.json(response);
 }
