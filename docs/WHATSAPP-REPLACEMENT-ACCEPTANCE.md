@@ -20,7 +20,7 @@ build or plausible production row is not by itself a passed product gate.
 | Stage | Status | Direct evidence | Evidence still required |
 | --- | --- | --- | --- |
 | 1. Photo and PDF messaging | **PARTIAL** | A clean production JPEG and PDF each uploaded once, became `ready`, bound to one canonical message and produced one completed agent job. The actual files were inspected independently and Aria described both accurately. On 18 August, zero-attachment follow-ups recovered the exact PDF fixture id and the earlier photo's red harness/waterfront setting from bounded prior inspection context. | Repeat the prior-file follow-up through the physical iPhone UI, then exercise camera capture, library selection, PDF selection, retry, chat switching and signed-link recovery. |
-| 2. Trustworthy everyday messaging | **PARTIAL** | Migrations 093-098 and matching verifiers were applied successfully; exactly-once, drafts, unread, push, preferences, search and quoted-reply paths have focused automated coverage. A production audit found seven successful push sends and no failed job among the latest 27 deliveries. The stacked client keeps history fetches bounded to 100 messages and lets the browser skip layout/paint for off-screen rows without removing them from search or accessibility. | Subscribe a second device, then complete the two-device online/offline/reconnect matrix, receive a real lock-screen message notification, open its exact unread message, restore text plus attachment drafts in their original conversations, after migration 109 is live record/cancel/send/play/forward one iPhone voice note, after migration 110 is live find one uploaded and one forwarded file by filename and open their exact messages, and scroll a production thread with at least 2,000 mixed text/photo/file rows without a visible jump or stalled composer. |
+| 2. Trustworthy everyday messaging | **PARTIAL** | Migrations 093-098 and matching verifiers were applied successfully; exactly-once, drafts, unread, push, preferences, search and quoted-reply paths have focused automated coverage. A production audit found seven successful push sends and no failed job among the latest 27 deliveries. The stacked client keeps history fetches bounded to 100 messages and lets the browser skip layout/paint for off-screen rows without removing them from search or accessibility. On 18 August, the largest production thread paged all 370 canonical rows as 100+100+100+70 with no omission or duplicate; behavioral client tests merged 20 pages into 2,000 unique ordered rows and preserved the visible anchor across every insertion. | Subscribe a second device, then complete the two-device online/offline/reconnect matrix, receive a real lock-screen message notification, open its exact unread message, restore text plus attachment drafts in their original conversations, after migration 109 is live record/cancel/send/play/forward one iPhone voice note, after migration 110 is live find one uploaded and one forwarded file by filename and open their exact messages, and physically scroll a production thread with at least 2,000 mixed text/photo/file rows without a visible jump or stalled composer. |
 | 3. Natural low-latency voice | **PARTIAL** | Latest driving call acknowledged in 904 ms, began its short spoken result in 3,499 ms and started a Gateway-backed durable task that continued after hang-up. The authoritative interruption-buffer metric is now deployed. | Run a fresh iPhone call and prove output clears within 250 ms after genuine barge-in. Complete the full contextual-question, interruption, subject-change, cross-agent consultation and voice-ended call gate without stale audio or duplicate canonical output. |
 | 4. Native-feeling mobile and persistent desktop chat | **PARTIAL** | Persistent desktop messenger, mini-player, local-date separators, scroll-safe touch long-press actions, an in-app full-screen private photo viewer and guarded left-edge swipe-back are merged and deployed through production commit `74f66d1`. Mobile has a sticky call action and newest-message layout. | In an authenticated production desktop session keep one typed turn and one call alive while navigating project, lead and office routes. On iPhone, prove newest message and call action are reachable without scrolling history; long-press a message while stationary and while scrolling; open and close a private image without losing thread position; swipe back horizontally and prove vertical scrolling, sending and voice-note recording cannot trigger an accidental chat switch. |
 | 5. iPhone background and in-car continuity | **PENDING** | The native CallKit shell is merged on `main`. Browser foreground recovery and the screen wake-lock mitigation are deployed through `0b0f83e`; the latter prevents ordinary auto-lock but does not claim side-button lock continuity. The version-two shell is implemented on `agent/native-realtime-lock`: native libwebrtc owns microphone, speaker and the Realtime data channel; authenticated RESLU endpoints still own SDP, consultations, durable work and canonical Aria/Marco logic. Native CallKit mute/end remain authoritative, a lock-screen hang-up is synchronously device-queued before network suspension can occur, and provider events mirror back to the existing web UI. Final captions, task/consult refreshes and system call state have a bounded, call-id-scoped replay path after WebKit resumes. Xcode 26.6 compiled and code-signed the complete generic-iPhone target with checksum-pinned WebRTC 151, the Personal Team certificate and its managed profile. Migration 117 and its rollback verifier are live, providing bounded content-free continuity evidence while blocking direct client metadata mutation. | Finish enabling Developer Mode on the paired iPhone, install the signed native target, then pass a physical-device call across deliberate screen lock, mute, audio-route change and Wi-Fi/mobile handoff. No browser-only workaround qualifies. |
@@ -146,6 +146,29 @@ This proves the durable delivery worker can reach the currently subscribed
 device. It does not prove a lock-screen tap opens the exact unread message, and
 it cannot prove two-device unread/reconnect agreement until another device is
 subscribed.
+
+## Stage 2 long-history candidate: 18 August 2026
+
+- Production conversation `228973db-12e7-4fae-945f-cd1e3334092a` contained
+  370 non-deleted canonical messages spanning 9-18 August.
+- The deployed composite `(created_at, id)` cursor returned four bounded pages
+  of 100, 100, 100 and 70 rows. A combined audit returned 370 fetched rows,
+  370 distinct ids and 370 canonical rows, with the fetched oldest and newest
+  timestamps matching the conversation bounds.
+- Timeline merge and viewport-anchor calculations are now explicit pure
+  functions rather than inline UI arithmetic. Behavioral coverage merges 20
+  keyset pages into 2,000 unique chronological messages, handles overlapping
+  canonical updates and preserves the visible anchor across 19 older-page
+  insertions with varying measured heights.
+- Seven focused timeline tests, targeted ESLint, TypeScript and the complete
+  111-page webpack production build pass. Local Turbopack could not bind its
+  sandbox-only internal port, so the exact Vercel production build remains the
+  authoritative Turbopack gate for this release.
+
+This proves production keyset completeness at the largest available real thread
+and client ordering/anchor invariants at 2,000 rows. It does not prove physical
+paint/composer responsiveness for 2,000 mixed text/photo/file rows; that device
+exercise remains open and Stage 2 stays partial.
 
 ## Stage 8 accessibility candidate: 12 August 2026
 
