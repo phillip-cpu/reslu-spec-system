@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { isStuartUser } from "@/lib/stuart/access";
+import { extractVerifiedInvoiceIdentity } from "@/lib/stuart/invoice-identity-evidence";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -54,6 +55,7 @@ export async function GET(request: NextRequest) {
       const readableEvidence = Boolean(evidenceText.trim());
       const fingerprintVerified = SHA256.test(attachment.content_sha256 ?? "");
       const stored = Boolean(attachment.storage_ref);
+      const identity = extractVerifiedInvoiceIdentity(evidenceText, invoice.supplier);
       return {
         email_attachment_id: attachment.id,
         filename: attachment.filename,
@@ -63,6 +65,11 @@ export async function GET(request: NextRequest) {
         fingerprint_verified: fingerprintVerified,
         readable_evidence: readableEvidence,
         amount_tokens: tokens.slice(0, 40),
+        supplier_identity: {
+          spec_legal_name: invoice.supplier,
+          legal_name_present_in_source: identity.supplier_name_present,
+          verified_abn_candidates: identity.verified_abn_candidates,
+        },
         invoice_total_present: Number.isFinite(invoiceTotal) && amounts.includes(Math.round(invoiceTotal * 100) / 100),
         attached_to_invoice: Boolean(invoice.storage_path && invoice.storage_path === attachment.storage_ref),
         eligible_for_attachment: !["rejected", "voided"].includes(invoice.status) && stored && fingerprintVerified && readableEvidence,
@@ -75,6 +82,6 @@ export async function GET(request: NextRequest) {
     blocker: ["rejected", "voided"].includes(invoice.status)
       ? `The Spec invoice is ${invoice.status}; correct or replace that record before any Xero draft.`
       : null,
-    authority: "Read-only evidence inspection. No Spec or Xero record was changed.",
+    authority: "Read-only bounded evidence inspection. Returns totals and verified supplier identity only; never raw document text or bank details. No Spec or Xero record was changed.",
   });
 }

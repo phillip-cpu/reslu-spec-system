@@ -12,6 +12,7 @@ const oauthSource = readFileSync(new URL("../xero/oauth.ts", import.meta.url), "
 const contactSearchSource = readFileSync(new URL("./xero-contacts.ts", import.meta.url), "utf8");
 const supplierContactSource = readFileSync(new URL("./xero-supplier-contacts.ts", import.meta.url), "utf8");
 const supplierContactRoute = readFileSync(new URL("../../app/api/stuart/xero-suppliers/route.ts", import.meta.url), "utf8");
+const invoiceEvidenceRoute = readFileSync(new URL("../../app/api/stuart/invoice-evidence/route.ts", import.meta.url), "utf8");
 
 test("Stuart creates only draft ACCPAY bills and never payments", () => {
   assert.match(draftSource, /Type: "ACCPAY"/);
@@ -37,6 +38,14 @@ test("source invoice attachment is traceable, fingerprinted and does not write t
   assert.doesNotMatch(sourceAttachment, /xeroPostJson|xeroPutBytes|api\.xro/);
   assert.match(mcpSource, /attach_stuart_source_invoice/);
   assert.match(mcpSource, /get_stuart_invoice_evidence/);
+});
+
+test("bounded invoice evidence returns verified supplier identity without raw text or bank details", () => {
+  assert.match(invoiceEvidenceRoute, /extractVerifiedInvoiceIdentity/);
+  assert.match(invoiceEvidenceRoute, /verified_abn_candidates/);
+  assert.match(invoiceEvidenceRoute, /legal_name_present_in_source/);
+  assert.doesNotMatch(invoiceEvidenceRoute, /extracted_text:\s*evidenceText/);
+  assert.match(mcpSource, /never returns raw document text or bank details/i);
 });
 
 test("Accounts automation never reuses a rejected or voided invoice", () => {
