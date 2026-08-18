@@ -39,6 +39,59 @@ test("a completed request returns normally before the deadline", async () => {
   }
 });
 
+test("a response body that stalls after headers is still bounded", async () => {
+  const originalFetch = globalThis.fetch;
+  let observedAbort = false;
+  globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+    const stream = new ReadableStream({
+      start(controller) {
+        init?.signal?.addEventListener("abort", () => {
+          observedAbort = true;
+          controller.error(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      },
+    });
+    return Promise.resolve(new Response(stream, { status: 200 }));
+  }) as typeof fetch;
+
+  try {
+    const response = await boundedFetch("https://example.test/stalled-body", {}, 5);
+    assert.equal(response.status, 200);
+    await assert.rejects(() => response.text(), BoundedRequestTimeoutError);
+    assert.equal(observedAbort, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("caller cancellation remains active while reading a response body", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+    const stream = new ReadableStream({
+      start(controller) {
+        init?.signal?.addEventListener("abort", () => {
+          controller.error(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      },
+    });
+    return Promise.resolve(new Response(stream, { status: 200 }));
+  }) as typeof fetch;
+  const caller = new AbortController();
+
+  try {
+    const response = await boundedFetch(
+      "https://example.test/cancelled-body",
+      { signal: caller.signal },
+      1_000,
+    );
+    const pending = response.text();
+    caller.abort();
+    await assert.rejects(() => pending, { name: "AbortError" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("an existing caller signal still cancels the bounded request", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
