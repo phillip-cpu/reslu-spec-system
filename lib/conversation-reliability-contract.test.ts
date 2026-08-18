@@ -121,6 +121,14 @@ test("slow polling responses cannot overwrite a newer conversation or message sn
   assert.match(workspace, /activeMessageRequestRef\.current\.delete\(conversationId\)/);
 });
 
+test("poor-network reads are bounded and agent-work polling stays single-flight", () => {
+  assert.match(workspace, /boundedFetch\([\s\S]*"\/api\/conversations"[\s\S]*CONVERSATION_READ_TIMEOUT_MS/);
+  assert.match(workspace, /boundedFetch\([\s\S]*messages\$\{query\}[\s\S]*CONVERSATION_READ_TIMEOUT_MS/);
+  assert.match(workspace, /activeAgentTaskRequestRef\.current\.has\(conversationId\)/);
+  assert.match(workspace, /activeAgentTaskRequestRef\.current\.add\(conversationId\)/);
+  assert.match(workspace, /activeAgentTaskRequestRef\.current\.delete\(conversationId\)/);
+});
+
 test("permanent send failures do not offer an endless retry loop", () => {
   assert.match(workspace, /pending\.retryable && \(/);
   assert.match(workspace, /copyOutboxEntry/);
