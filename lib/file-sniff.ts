@@ -225,19 +225,37 @@ function storageResponseByteSize(response: Response): number | null {
 export async function inspectStorageObjectHead(
   supabase: SupabaseClient,
   bucket: string,
-  path: string
+  path: string,
+  timeoutMs = 8_000,
 ): Promise<StorageObjectHeadInspection | null> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 60);
-    if (error || !data?.signedUrl) return null;
+    return await Promise.race([
+      (async () => {
+        const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 60);
+        if (error || !data?.signedUrl) return null;
 
-    const res = await fetch(data.signedUrl, { headers: { Range: "bytes=0-15" } });
-    if (res.status !== 200 && res.status !== 206) return null;
+        const res = await fetch(data.signedUrl, {
+          headers: { Range: "bytes=0-15" },
+          signal: controller.signal,
+        });
+        if (res.status !== 200 && res.status !== 206) return null;
 
-    const bytes = await responsePrefix(res, 16);
-    return bytes ? { bytes, byteSize: storageResponseByteSize(res) } : null;
+        const bytes = await responsePrefix(res, 16);
+        return bytes ? { bytes, byteSize: storageResponseByteSize(res) } : null;
+      })(),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          reject(new Error("Private storage inspection timed out"));
+        }, timeoutMs);
+      }),
+    ]);
   } catch {
     return null;
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 
