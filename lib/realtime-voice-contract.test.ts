@@ -49,6 +49,13 @@ test("WebRTC call path performs immediate barge-in and suppresses cancelled late
   assert.match(workspace, /realtimeActiveRef\.current\) \{/);
 });
 
+test("Safari invalid-constraint startup failures close WebRTC and recover through legacy voice", () => {
+  assert.match(workspace, /peer\.addTrack\(microphoneTrack\)/);
+  assert.doesNotMatch(workspace, /peer\.addTrack\(track, stream\)/);
+  assert.match(workspace, /channel\.close\(\);[\s\S]*peer\.close\(\);[\s\S]*audio\.srcObject = null;[\s\S]*throw reason/);
+  assert.match(workspace, /if \(shouldFallbackToLegacyVoice\(error\)\) \{[\s\S]*await startLegacyCall\(callIdRef\.current \?\? undefined\)/);
+});
+
 test("VAD speech start interrupts audio without cancelling an unfinished agent consult", () => {
   const speechStarted = workspace.match(
     /if \(event\.type === "input_audio_buffer\.speech_started"\) \{([\s\S]*?)\n    \}/
