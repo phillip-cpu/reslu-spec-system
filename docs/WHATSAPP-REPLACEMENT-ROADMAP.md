@@ -618,6 +618,13 @@ reconnecting state and an uncertain task outcome directs the user to Agent work
 instead of replaying potentially accepted work. Physical handoff, packet-loss
 and lock-screen acceptance is still required before this stage can pass.
 
+Long-history polling now retains the existing accumulated message, participant,
+agent-activity and pinned-message snapshots when the latest page is unchanged.
+It also suppresses redundant IndexedDB rewrites of the same newest 100-message
+offline cache. Canonical edits and new messages still replace or extend the
+ordered collection. The physical 2,000-row mixed-media responsiveness gate is
+still required.
+
 The bridge process already uses launchd `RunAtLoad`, `KeepAlive` and a bounded
 restart throttle. Push delivery has a six-attempt exponential retry budget.
 The bridge now also emits one content-free health report per minute for its
