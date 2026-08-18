@@ -237,11 +237,19 @@ class SupabaseRest:
         )
         return result[0] if isinstance(result, list) and result else None
 
-    def complete_agent_consultation(self, job_id: str, body: str) -> str:
+    def complete_agent_consultation(
+        self,
+        job_id: str,
+        body: str,
+        openclaw_usage: dict | None = None,
+    ) -> str:
+        arguments: dict[str, object] = {"p_job_id": job_id, "p_body": body}
+        if openclaw_usage is not None:
+            arguments["p_openclaw_usage"] = openclaw_usage
         result = self.request(
             "POST",
             "rpc/complete_conversation_agent_consultation",
-            {"p_job_id": job_id, "p_body": body},
+            arguments,
         )
         if not isinstance(result, str) or not result:
             raise RuntimeError("specialist consultation completion returned no message id")
@@ -1466,6 +1474,7 @@ def gateway_progress_reporter(
     row_id: str,
     *,
     task_id: str | None = None,
+    usage_capture: dict[str, dict] | None = None,
 ) -> Callable[[dict], None]:
     """Persist bounded metadata-only progress without storing tool arguments."""
     state: dict[str, object] = {"label": None, "run_id": None, "usage_recorded": False}
@@ -1475,6 +1484,10 @@ def gateway_progress_reporter(
         run_id = event.get("run_id") if event.get("type") == "accepted" else None
         safe_run_id = str(run_id)[:160] if isinstance(run_id, str) and run_id else None
         usage = bounded_openclaw_usage(event.get("usage")) if event.get("type") == "final" else None
+        if usage is not None and usage_capture is not None:
+            # The canonical completion PATCH/RPC consumes this even if the
+            # best-effort progress write below experiences a transient error.
+            usage_capture["value"] = usage
         if safe_run_id:
             # Retain this in memory even if one progress PATCH has a transient
             # network failure; the next safe event retries the run-id write.
@@ -1549,11 +1562,13 @@ def process_task(rest: SupabaseRest, task: dict) -> str:
     if not task_should_continue(rest, task["id"]):
         return "cancelled"
     insert_task_event(rest, task["id"], "started", f"{agent['display_name']} started working")
+    usage_capture: dict[str, dict] = {}
     report_progress = gateway_progress_reporter(
         rest,
         "agent_tasks",
         task["id"],
         task_id=task["id"],
+        usage_capture=usage_capture,
     )
     result = invoke_task_agent(
         agent,
@@ -1576,14 +1591,17 @@ def process_task(rest: SupabaseRest, task: dict) -> str:
 
     awaiting_approval = result["status"] == "awaiting_approval"
     completed_at = None if awaiting_approval else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    rest.patch("agent_tasks", task["id"], {
+    completion_values: dict[str, object] = {
         "status": "awaiting_approval" if awaiting_approval else "completed",
         "approval_state": "pending" if awaiting_approval else task.get("approval_state", "none"),
         "result_summary": result["summary"],
         "model_name": task_model_override(task["model_tier"]) or f"{agent['slug']}-default",
         "completed_at": completed_at,
         "error": None,
-    })
+    }
+    if usage_capture.get("value") is not None:
+        completion_values["openclaw_usage"] = usage_capture["value"]
+    rest.patch("agent_tasks", task["id"], completion_values)
     if not awaiting_approval and task.get("approval_state") == "approved":
         rest.patch_where(
             "agent_task_artifacts",
@@ -1866,7 +1884,13 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
         materialized = materialize_attachments(rest, attachments, Path(temporary_directory))
         if not job_is_processing(rest, job["id"]):
             return "cancelled"
-        report_progress = gateway_progress_reporter(rest, "agent_conversation_jobs", job["id"])
+        usage_capture: dict[str, dict] = {}
+        report_progress = gateway_progress_reporter(
+            rest,
+            "agent_conversation_jobs",
+            job["id"],
+            usage_capture=usage_capture,
+        )
         reply = invoke_agent(
             agent,
             history,
@@ -1900,7 +1924,7 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
     if not job_is_processing(rest, job["id"]):
         return "cancelled"
     if consultation:
-        rest.complete_agent_consultation(job["id"], reply)
+        rest.complete_agent_consultation(job["id"], reply, usage_capture.get("value"))
     else:
         rest.insert(
             "conversation_messages",
@@ -1911,10 +1935,17 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
                 "metadata": {"source": "agent_runtime", "job_id": job["id"]},
             },
         )
+        completion_values: dict[str, object] = {
+            "status": "done",
+            "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "error": None,
+        }
+        if usage_capture.get("value") is not None:
+            completion_values["openclaw_usage"] = usage_capture["value"]
         rest.patch(
             "agent_conversation_jobs",
             job["id"],
-            {"status": "done", "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "error": None},
+            completion_values,
         )
     return "done"
 

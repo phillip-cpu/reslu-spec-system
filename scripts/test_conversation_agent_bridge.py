@@ -146,6 +146,31 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         self.assertEqual(rest.patch.call_count, 1)
         self.assertEqual(rest.patch.call_args.args[2]["openclaw_usage"], usage)
 
+    def test_gateway_usage_capture_survives_a_progress_patch_failure(self):
+        usage = {
+            "schema_version": 1,
+            "provider": "openai",
+            "model": "gpt-5.6-terra",
+            "input_tokens": 100,
+            "output_tokens": 5,
+            "cache_read_tokens": 20,
+            "cache_write_tokens": 0,
+            "total_tokens": 125,
+            "cost_usd": 0.001,
+        }
+        rest = mock.Mock()
+        rest.patch.side_effect = RuntimeError("temporary database failure")
+        capture = {}
+        reporter = conversation_agent_bridge.gateway_progress_reporter(
+            rest,
+            "agent_conversation_jobs",
+            "job-usage",
+            usage_capture=capture,
+        )
+        with mock.patch("builtins.print"):
+            reporter({"type": "final", "usage": usage})
+        self.assertEqual(capture["value"], usage)
+
     @mock.patch.object(conversation_agent_bridge, "invoke_agent_via_gateway")
     def test_enabled_gateway_keeps_canonical_agent_session_and_job_id(self, invoke_gateway):
         invoke_gateway.return_value = "Gateway answer"
@@ -1131,6 +1156,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
 
     def test_process_job_uses_and_cleans_workspace_staging(self):
         rest = mock.Mock()
+        rest.patch.side_effect = [RuntimeError("temporary progress write failure"), None]
         rest.download_storage.return_value = b"synthetic-image"
         job = {
             "id": "job-1",
@@ -1153,6 +1179,17 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             observed_path = Path(materialized[0]["local_path"])
             observed_thinking_level = kwargs["thinking_level"]
             self.assertTrue(observed_path.is_file())
+            kwargs["on_progress"]({"type": "final", "usage": {
+                "schema_version": 1,
+                "provider": "openai",
+                "model": "gpt-5.6-terra",
+                "input_tokens": 100,
+                "output_tokens": 5,
+                "cache_read_tokens": 20,
+                "cache_write_tokens": 0,
+                "total_tokens": 125,
+                "cost_usd": 0.001,
+            }})
             return "I read it."
 
         with tempfile.TemporaryDirectory() as workspace, mock.patch.dict(
@@ -1181,7 +1218,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             conversation_agent_bridge,
             "invoke_agent",
             side_effect=answer,
-        ):
+        ), mock.patch("builtins.print"):
             self.assertEqual(conversation_agent_bridge.process_job(rest, job), "done")
             consultation_lookup.assert_not_called()
             self.assertIsNotNone(observed_path)
@@ -1196,7 +1233,10 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             )
 
         rest.insert.assert_called_once()
-        rest.patch.assert_called_once()
+        self.assertEqual(rest.patch.call_count, 2)
+        completion = rest.patch.call_args_list[-1].args[2]
+        self.assertEqual(completion["status"], "done")
+        self.assertEqual(completion["openclaw_usage"]["total_tokens"], 125)
 
     def test_process_job_applies_fast_model_only_to_realtime_voice(self):
         rest = mock.Mock()
@@ -1298,12 +1338,15 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             conversation_agent_bridge,
             "invoke_agent",
             side_effect=answer,
+        ), mock.patch(
+            "builtins.print",
         ):
             self.assertEqual(conversation_agent_bridge.process_job(rest, job), "done")
 
         rest.complete_agent_consultation.assert_called_once_with(
             "specialist-job-1",
             "Marco's bounded advice.",
+            None,
         )
         rest.insert.assert_not_called()
         rest.patch.assert_not_called()
