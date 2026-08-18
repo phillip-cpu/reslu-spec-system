@@ -128,8 +128,13 @@ long histories retain every canonical row for search and accessibility while
 merge/order and viewport-anchor algorithms now have behavioral coverage at
 2,000 rows; production keyset pagination returned the largest real 370-message
 thread in four complete, distinct pages. Physical 2,000-row mixed-media paint
-and composer responsiveness remain an acceptance gate. Migration 105 adds
-author-owned 15-minute message edits
+and composer responsiveness remain an acceptance gate.
+Attachment setup and reload-time draft recovery now use fifteen-second
+request/body deadlines; the existing independent storage probe still recovers
+bytes when an iPhone loses only the upload response. The composer explicitly
+states that typing can continue while a genuine transfer runs. Physical
+camera/library/PDF transfer and retry acceptance remains required.
+Migration 105 adds author-owned 15-minute message edits
 with multi-device conflict detection, plus a recoverable delete that leaves a
 truthful tombstone, keeps original text private to its author for 30 days and
 immediately blocks deleted attachments. Restore changes history without

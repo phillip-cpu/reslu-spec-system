@@ -172,6 +172,25 @@ and client ordering/anchor invariants at 2,000 rows. It does not prove physical
 paint/composer responsiveness for 2,000 mixed text/photo/file rows; that device
 exercise remains open and Stage 2 stays partial.
 
+## Stage 1/2 attachment control recovery candidate: 19 August 2026
+
+- The actual direct and signed storage transfers retain the existing
+  byte-verification recovery path, so a lost iPhone upload response can still be
+  reconciled without transferring the file twice.
+- The signed-upload setup request and reload-time draft recovery request now
+  have fifteen-second deadlines that remain active while reading their response
+  bodies. A stalled connection therefore reaches an explicit retryable state
+  instead of leaving the composer on `Uploading…` indefinitely before any
+  transfer or recovery probe starts.
+- While bytes are genuinely transferring, the attachment card now states that
+  typing can continue. Sending remains guarded until every selected file is
+  either ready, retried or deliberately removed.
+- Focused attachment, upload-recovery and bounded-request contracts, TypeScript
+  and targeted ESLint pass.
+
+This closes two known unbounded attachment-control requests. It is not the
+physical camera/library/PDF weak-network gate, so Stages 1 and 2 remain partial.
+
 ## Stage 2 lost-confirmation hardening: 18 August 2026
 
 - An authenticated, conversation-member-only lookup now resolves a device's
