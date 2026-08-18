@@ -12,6 +12,7 @@ protocol NativeRealtimeTransportDelegate: AnyObject {
 final class NativeRealtimeTransport: NSObject {
     private let client: NativeRealtimeHTTPClient
     private let continuity: NativeVoiceContinuityMetrics
+    private let latencyMetrics = NativeRealtimeLatencyMetrics()
     private weak var delegate: NativeRealtimeTransportDelegate?
     private let factory: RTCPeerConnectionFactory
     private var peer: RTCPeerConnection?
@@ -52,6 +53,7 @@ final class NativeRealtimeTransport: NSObject {
             return
         }
         stop()
+        latencyMetrics.reset()
         stopped = false
         reconnectAttempts = 0
         RTCAudioSession.sharedInstance().isAudioEnabled = true
@@ -94,6 +96,7 @@ final class NativeRealtimeTransport: NSObject {
                 self.router = NativeRealtimeToolRouter(
                     client: client,
                     context: context,
+                    latencyMetrics: latencyMetrics,
                     send: { [weak self] event in self?.send(event) },
                     notifyWeb: { [weak self] event in self?.delegate?.nativeRealtimeDidReceive(event: event) }
                 )
@@ -180,6 +183,10 @@ final class NativeRealtimeTransport: NSObject {
     func setMuted(_ muted: Bool) {
         self.muted = muted
         audioTrack?.isEnabled = !muted
+    }
+
+    var voiceLatencyMetrics: [[String: Any]] {
+        latencyMetrics.payload
     }
 
     func send(_ event: [String: Any]) {
