@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { authorizedConversationAgent, conversationParticipants } from "@/lib/conversation-access";
 import { consultStatus } from "@/lib/realtime-consult";
 import {
-  otherResluAgent,
   parseRealtimeSpecialistConsultRequest,
 } from "@/lib/realtime-specialist-consult";
 import { millisecondsBetween } from "@/lib/realtime-voice-metrics";
@@ -51,7 +50,7 @@ export async function POST(request: NextRequest, context: Context) {
 
   const access = await authorizedOwner(id, body.ownerAgentSlug);
   if (access.error) return access.error;
-  const specialistSlug = otherResluAgent(body.ownerAgentSlug);
+  const specialistSlug = body.targetAgentSlug;
   const { data, error } = await access.supabase.rpc("start_conversation_agent_consultation", {
     p_conversation_id: id,
     p_owner_agent_slug: body.ownerAgentSlug,
@@ -124,7 +123,7 @@ export async function GET(request: NextRequest, context: Context) {
     answer: status === "done" ? reply?.body ?? null : null,
     error: status === "failed" ? job?.error ?? "Specialist consultation failed" : null,
     owner_agent: resolvedOwnerSlug,
-    consulted_agent: specialist?.slug ?? otherResluAgent(resolvedOwnerSlug),
+    consulted_agent: specialist?.slug ?? null,
     side_effects_may_have_completed: status === "cancelled",
     latency: {
       queue_wait_ms: millisecondsBetween(job?.created_at, job?.claimed_at),

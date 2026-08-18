@@ -406,6 +406,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         self.assertIn('"task_id":"task-123"', prompt)
         self.assertIn('"conversation_id":"conversation-123"', prompt)
         self.assertIn("delegate_reslu_agent_task", prompt)
+        self.assertIn("never claim that inter-agent delegation is unavailable", prompt)
         self.assertEqual(result["status"], "completed")
 
     def test_task_cancellation_is_separate_from_call_or_conversation_state(self):

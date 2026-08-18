@@ -53,7 +53,7 @@ test("VAD speech start interrupts audio without cancelling an unfinished agent c
   const speechStarted = workspace.match(
     /if \(event\.type === "input_audio_buffer\.speech_started"\) \{([\s\S]*?)\n    \}/
   )?.[1] ?? "";
-  assert.match(speechStarted, /interruptRealtimePlayback\(performance\.now\(\)\)/);
+  assert.match(speechStarted, /interruptRealtimePlayback\(performance\.now\(\)(?:,[^)]*)?\)/);
   assert.doesNotMatch(speechStarted, /cancelActiveRealtime(?:Turn|Consult)\(\)/);
   assert.match(workspace, /if \(activeRealtimeConsultRef\.current\) cancelActiveRealtimeConsult\(\)/);
 });
@@ -75,6 +75,7 @@ test("foreground recovery reuses the canonical call without replaying its start 
 
 test("partial provider tool arguments wait for response.done fallback", () => {
   assert.match(workspace, /parseRealtimeConsultArguments\(argumentsJson\)/);
+  assert.match(workspace, /parseRealtimeSpecialistArguments\(argumentsJson, callAgent\.agent_slug\)/);
   assert.match(workspace, /parseRealtimeTaskArguments\(argumentsJson\)/);
   assert.match(workspace, /if \(!parsedArguments && deferInvalidArguments\) return/);
   assert.match(workspace, /response\.function_call_arguments\.done[\s\S]*runRealtimeConsult\([^\n]+, true\)/);

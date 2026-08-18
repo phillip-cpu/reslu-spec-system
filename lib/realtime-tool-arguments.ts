@@ -1,5 +1,11 @@
+import type { AgentSlug } from "@/types/conversations";
+
 export interface RealtimeConsultArguments {
   query: string;
+}
+
+export interface RealtimeSpecialistArguments extends RealtimeConsultArguments {
+  targetAgent: AgentSlug;
 }
 
 export interface RealtimeTaskArguments {
@@ -29,6 +35,20 @@ export function parseRealtimeConsultArguments(argumentsJson: string): RealtimeCo
   const parsed = parseObject(argumentsJson);
   const query = cleanText(parsed?.query, 20_000);
   return query ? { query } : null;
+}
+
+export function parseRealtimeSpecialistArguments(
+  argumentsJson: string,
+  ownerAgent: AgentSlug,
+): RealtimeSpecialistArguments | null {
+  const parsed = parseObject(argumentsJson);
+  const query = cleanText(parsed?.query, 20_000);
+  const targetAgent = parsed?.target_agent_slug === "aria"
+    || parsed?.target_agent_slug === "marco"
+    || parsed?.target_agent_slug === "stuart"
+    ? parsed.target_agent_slug
+    : null;
+  return query && targetAgent && targetAgent !== ownerAgent ? { query, targetAgent } : null;
 }
 
 export function parseRealtimeTaskArguments(argumentsJson: string): RealtimeTaskArguments | null {

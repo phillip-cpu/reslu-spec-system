@@ -520,9 +520,9 @@ one owner-authored result, explicit specialist attribution and no duplicate.
 The corresponding physical voice-call acceptance remains pending.
 
 The collaboration layer does not create replacement agents. During a live
-Aria or Marco call, Realtime may choose one dedicated specialist-consult tool.
+Aria, Marco or Stuart call, Realtime may choose one dedicated specialist-consult tool.
 The server verifies the visible owner is a participant in the active call and
-routes exactly one advisory job to the other active Aria/Marco OpenClaw runtime.
+routes exactly one advisory job to either of the other active RESLU OpenClaw runtimes.
 The specialist is not silently added to a direct conversation, cannot perform
 consequential work through this advisory path, and returns one answer authored
 by the owning agent with visible specialist attribution. A dedicated audit row,
@@ -537,7 +537,7 @@ publication authority.
 
 Work:
 
-- Distinct Aria and Marco identity, voice, avatar, lane and permissions.
+- Distinct Aria, Marco and Stuart identity, voice, avatar, lane and permissions.
 - Visible listening, thinking, speaking, consulting and preparing states.
 - One owning agent can consult another without duplicated actions.
 - Proactive briefings with priority, quiet hours, snooze and suppression.
