@@ -102,6 +102,19 @@ test("a hung iPhone signed-upload response cannot block finalisation forever", (
   assert.match(uploadRecovery, /recoverable/);
 });
 
+test("attachment setup and draft recovery cannot wait forever on weak networks", () => {
+  assert.match(workspace, /ATTACHMENT_CONTROL_REQUEST_TIMEOUT_MS = 15000/);
+  assert.match(
+    workspace,
+    /boundedFetch\([\s\S]*attachments\/upload-url[\s\S]*ATTACHMENT_CONTROL_REQUEST_TIMEOUT_MS/,
+  );
+  assert.match(
+    workspace,
+    /boundedFetch\([\s\S]*attachments\?drafts=1[\s\S]*ATTACHMENT_CONTROL_REQUEST_TIMEOUT_MS/,
+  );
+  assert.match(workspace, /Uploading — you can keep typing/);
+});
+
 test("large phone photos are resized before their signed upload", () => {
   assert.match(workspace, /prepareConversationImageForUpload/);
   assert.match(workspace, /image\/heic,image\/heif,\.heic,\.heif/);

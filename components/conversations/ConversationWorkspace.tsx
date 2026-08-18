@@ -143,6 +143,7 @@ type CallState = "connecting" | "listening" | "thinking" | "speaking" | "interru
 const MESSAGE_SEND_TIMEOUT_MS = 20000;
 const MESSAGE_RECONCILIATION_TIMEOUT_MS = 4000;
 const ATTACHMENT_FINALIZE_REQUEST_TIMEOUT_MS = 6000;
+const ATTACHMENT_CONTROL_REQUEST_TIMEOUT_MS = 15000;
 const CONVERSATION_READ_TIMEOUT_MS = 8000;
 const CONVERSATION_ACTION_TIMEOUT_MS = 15000;
 const CALL_CONTROL_REQUEST_TIMEOUT_MS = 8000;
@@ -2855,19 +2856,23 @@ export function ConversationWorkspace({
         return;
       }
 
-      const urlResponse = await fetch(`/api/conversations/${conversationId}/attachments/upload-url`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          filename: file.name,
-          mime_type: draft.mimeType,
-          byte_size: file.size,
-          ...(draft.voiceNoteDurationMs != null ? {
-            voice_note: true,
-            duration_ms: draft.voiceNoteDurationMs,
-          } : {}),
-        }),
-      });
+      const urlResponse = await boundedFetch(
+        `/api/conversations/${conversationId}/attachments/upload-url`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: file.name,
+            mime_type: draft.mimeType,
+            byte_size: file.size,
+            ...(draft.voiceNoteDurationMs != null ? {
+              voice_note: true,
+              duration_ms: draft.voiceNoteDurationMs,
+            } : {}),
+          }),
+        },
+        ATTACHMENT_CONTROL_REQUEST_TIMEOUT_MS,
+      );
       const urlBody = await urlResponse.json();
       if (!urlResponse.ok) throw new Error(urlBody.error ?? "Could not start upload");
       stagedAttachmentId = urlBody.attachment_id;
@@ -2978,9 +2983,11 @@ export function ConversationWorkspace({
     const requestNumber = (draftAttachmentLoadSequenceRef.current.get(conversationId) ?? 0) + 1;
     draftAttachmentLoadSequenceRef.current.set(conversationId, requestNumber);
     try {
-      const response = await fetch(`/api/conversations/${conversationId}/attachments?drafts=1`, {
-        cache: "no-store",
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${conversationId}/attachments?drafts=1`,
+        { cache: "no-store" },
+        ATTACHMENT_CONTROL_REQUEST_TIMEOUT_MS,
+      );
       const body = await response.json() as { attachments?: ConversationAttachment[]; error?: string };
       if (!response.ok) throw new Error(body.error ?? "Could not restore attachment drafts");
       if (draftAttachmentLoadSequenceRef.current.get(conversationId) !== requestNumber) return;
@@ -5417,7 +5424,7 @@ export function ConversationWorkspace({
                             {item.status === "preparing"
                               ? "Preparing…"
                               : item.status === "uploading"
-                                ? item.voiceNoteDurationMs != null ? "Uploading voice note…" : "Uploading…"
+                                ? item.voiceNoteDurationMs != null ? "Uploading voice note — you can keep typing" : "Uploading — you can keep typing"
                                 : item.status === "error"
                                   ? item.error
                                   : item.voiceNoteDurationMs != null
