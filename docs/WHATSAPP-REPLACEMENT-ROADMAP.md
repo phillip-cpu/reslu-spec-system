@@ -668,9 +668,11 @@ Final product gate:
 ## Current next action
 
 The production database and deployment gates are complete through migration
-117 and production commit `66a1e35`. The authenticated typed-turn half of the
-Stage 4 desktop gate now passes across project, lead and Office navigation.
-Repeat that route sequence during one real voice call, then run the Stage 7
+117 and production commit `c600cb3`. The authenticated typed-turn half of the
+Stage 4 desktop gate now passes across project, lead and Office navigation. An
+authenticated Safari voice smoke also reaches `LISTENING` after the
+invalid-constraint recovery release. Repeat the route sequence during one real
+voice call, then run the Stage 7
 voice collaboration checks: ask Aria for Marco's commercial view, Marco for
 Aria's operational view and Stuart for either specialist's non-finance input.
 Each turn must retain one visible owner, one attributed specialist consultation,
