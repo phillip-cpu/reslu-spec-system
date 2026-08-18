@@ -17,7 +17,7 @@
 // Supabase/Next imports" convention.
 // ============================================================
 
-import { lineCost, roundMoney } from "./estimate";
+import { lineCost, roundMoney } from "./estimate.ts";
 import type { CostLine, CostSectionWithLines } from "@/types";
 import type {
   EstimateSnapshot,

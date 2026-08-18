@@ -15,12 +15,12 @@ test("health inspects modern conversation queues, tasks, calls and bounded timin
   assert.match(health, /from\("agent_tasks"\)/);
   assert.match(health, /from\("conversation_calls"\)/);
   assert.match(health, /select\("realtime_voice_latency:metadata->realtime_voice_latency"\)/);
-  assert.match(health, /\.limit\(50\)/);
+  assert.match(health, /\.limit\(1000\)/);
   assert.match(health, /summarizeConversationVoiceHealth/);
   assert.match(health, /forward_conversation_message/);
   assert.match(health, /rename_conversation_group/);
   assert.match(card, /Unavailable messaging features/);
-  assert.match(card, /Aria &amp; Marco conversations/);
+  assert.match(card, /RESLU agent conversations/);
   assert.match(card, /Average acknowledgement/);
   assert.match(card, /Slowest interruption clear/);
 });

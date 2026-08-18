@@ -108,7 +108,7 @@ export function SpecHealthCard({ summary }: { summary: SpecHealthSummary }) {
           )}
           {conversations.voice_usage_truncated ? <p className="mt-2 text-caption text-terracotta">Showing the latest 1,000 calls; use a dedicated export for a complete high-volume period.</p> : null}
         </div>
-        <p className="mt-3 text-caption text-charcoal/45">Targets: acknowledgement ≤1,000 ms and audible-output clear ≤250 ms. Usage is client-observed from OpenAI’s response.done and transcription completion events. No transcript, prompt, file, tool argument or response identifier is stored.</p>
+        <p className="mt-3 text-caption text-charcoal/45">Targets: acknowledgement ≤1,000 ms and audible-output clear ≤250 ms. Usage is client-observed from OpenAI’s response.done and transcription completion events. No transcript, prompt, file, tool argument or provider identifier is stored.</p>
       </div>
     </div>
   );

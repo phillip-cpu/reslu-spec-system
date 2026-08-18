@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculateProjectFinancialPosition } from "./project-financial-position";
+import { calculateProjectFinancialPosition } from "./project-financial-position.ts";
 
 test("separates approved costs, issued invoices, receipts and outstanding invoices", () => {
   const result = calculateProjectFinancialPosition({
