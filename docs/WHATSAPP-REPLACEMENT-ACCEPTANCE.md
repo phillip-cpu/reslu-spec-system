@@ -663,6 +663,29 @@ This candidate does not approve the irreversible policy. Stage 8 retention
 remains pending until an admin explicitly enables the agreed periods and a
 scheduled production run is observed without deleting canonical minutes.
 
+## Stage 3 Realtime priority-lane candidate: 19 August 2026
+
+- The latest seven production days contained 13 calls and 52 measured turns.
+  Acknowledgement averaged 1,147 ms and interruption clearing peaked at 3 ms,
+  while queue wait averaged 3,808 ms, agent processing averaged 20,756 ms and
+  the slowest complete turn reached 94,283 ms. The remaining lag is therefore
+  primarily backend work, not audio interruption or interface paint.
+- Realtime turns already use call-scoped OpenClaw sessions, so they now have a
+  dedicated service-only queue claim and one serial voice worker per canonical
+  agent. Ordinary typed chat explicitly excludes those rows. Both lanes use one
+  atomic `FOR UPDATE SKIP LOCKED` claim and cannot select the same job.
+- Bridge Health now requires all Aria, Marco and Stuart chat, voice and task
+  workers plus push delivery. A stopped specialist or voice lane can no longer
+  hide behind the earlier five-worker subset.
+- The rollback verifier creates one voice and one typed message, proves the
+  matching workers claim exactly their own row, verifies least privilege and
+  retains no synthetic message, job or status change.
+
+This candidate removes typed-chat head-of-line blocking from live calls. It
+does not make a tool-using OpenClaw response instantaneous; production voice
+telemetry after rollout must prove queue improvement, and the physical iPhone
+matrix must still prove the perceived call experience.
+
 ## Next physical acceptance session
 
 Run these in order and record the exact device, build/deployment, timestamps and
