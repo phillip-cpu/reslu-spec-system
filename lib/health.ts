@@ -211,7 +211,7 @@ async function conversationTransportHealth(supabase: ServiceClient) {
     supabase.from("agent_conversation_jobs").select("id", { count: "exact", head: true }).eq("status", "processing").lt("claimed_at", stuckJobCutoff),
     supabase.from("agent_conversation_jobs").select("id", { count: "exact", head: true }).eq("status", "failed").gte("completed_at", failureCutoff),
     supabase.from("agent_tasks").select("id", { count: "exact", head: true }).eq("status", "queued"),
-    supabase.from("agent_tasks").select("id", { count: "exact", head: true }).eq("status", "running").lt("claimed_at", stuckTaskCutoff),
+    supabase.from("agent_tasks").select("claimed_at,updated_at,progress_updated_at").eq("status", "running"),
     supabase.from("agent_tasks").select("id", { count: "exact", head: true }).eq("status", "failed").gte("completed_at", failureCutoff),
     supabase.from("conversation_calls").select("id", { count: "exact", head: true }).eq("status", "active").lt("started_at", staleCallCutoff),
     supabase.from("conversation_calls").select("realtime_voice_latency:metadata->realtime_voice_latency").gte("started_at", voiceCutoff).order("started_at", { ascending: false }).limit(50),
@@ -226,11 +226,16 @@ async function conversationTransportHealth(supabase: ServiceClient) {
     // transport failure is a health-read error rather than evidence of absence.
     return { key: capability.key, unavailable: false, queryError: error.code !== "P0001" };
   }))]);
-  const [pending, oldestPending, stuckJobs, failedJobs, queuedTasks, stuckTasks, failedTasks, staleCalls, voiceCalls] = results;
+  const [pending, oldestPending, stuckJobs, failedJobs, queuedTasks, runningTasks, failedTasks, staleCalls, voiceCalls] = results;
   const oldestCreatedAt = oldestPending.data && typeof oldestPending.data.created_at === "string"
     ? Date.parse(oldestPending.data.created_at)
     : Number.NaN;
   const voice = summarizeConversationVoiceHealth(voiceCalls.data ?? []);
+  const runningTasksStuck = (runningTasks.data ?? []).filter((task) => {
+    const freshestAt = task.progress_updated_at ?? task.updated_at ?? task.claimed_at;
+    const freshestMs = typeof freshestAt === "string" ? Date.parse(freshestAt) : Number.NaN;
+    return Number.isFinite(freshestMs) && freshestMs < Date.parse(stuckTaskCutoff);
+  }).length;
   const core = {
     query_errors: results.filter((result) => result.error).length
       + capabilityProbes.filter((probe) => probe.queryError).length,
@@ -240,7 +245,7 @@ async function conversationTransportHealth(supabase: ServiceClient) {
     processing_jobs_stuck: stuckJobs.count ?? 0,
     failed_jobs_24h: failedJobs.count ?? 0,
     queued_tasks: queuedTasks.count ?? 0,
-    running_tasks_stuck: stuckTasks.count ?? 0,
+    running_tasks_stuck: runningTasksStuck,
     failed_tasks_24h: failedTasks.count ?? 0,
     active_calls_stale: staleCalls.count ?? 0,
     ...voice,

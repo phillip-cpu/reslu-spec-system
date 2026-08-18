@@ -70,6 +70,12 @@ export async function GET(request: NextRequest) {
   const incidents: string[] = [];
   const resolved: string[] = [];
 
+  // Reconcile rows abandoned by a killed/restarted worker before measuring
+  // health. This is terminal recovery only: no task is automatically requeued
+  // and existing approval-safe retry rules remain authoritative.
+  const { data: runtimeRecovery, error: runtimeRecoveryError } = await service
+    .rpc("reconcile_stale_conversation_runtime");
+
   // ---- 1. Mini heartbeat silence + openclaw_up ----
   const { data: latestHeartbeat } = await service
     .from("health_heartbeats")
@@ -232,5 +238,11 @@ export async function GET(request: NextRequest) {
     resolved.push(taskKind);
   }
 
-  return NextResponse.json({ ok: true, incidents, resolved });
+  return NextResponse.json({
+    ok: true,
+    incidents,
+    resolved,
+    runtime_recovery: runtimeRecoveryError ? null : runtimeRecovery?.[0] ?? null,
+    runtime_recovery_available: !runtimeRecoveryError,
+  });
 }

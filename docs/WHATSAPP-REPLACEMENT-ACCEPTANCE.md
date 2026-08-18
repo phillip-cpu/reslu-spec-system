@@ -348,6 +348,29 @@ This closes the isolated failed-task alert, deduplication and safe same-task
 recovery requirement. Stage 8 remains pending on the security, accessibility,
 retention, network, long-history and two-week pilot gates listed above.
 
+## Stage 8 abandoned-runtime recovery: 18 August 2026 production trace
+
+- The authenticated Health view showed three running tasks and eight active
+  calls abandoned while OpenClaw and all five conversation workers remained up.
+  A production catalog check also found the one-active-call-per-starter index
+  missing.
+- The service-only watchdog reconciled one cancellation-requested task to
+  `cancelled`, two abandoned tasks to `failed`, eight calls to `dropped`, and
+  wrote eight content-free call records. There were no unfinished consult jobs
+  to cancel.
+- Recovery never requeued work or replayed a side effect. Failed tasks remain
+  available through the existing requester-only, approval-safe retry path.
+- Production now reports zero stuck tasks and zero stale active calls, and the
+  unique partial index exists again. The rollback-only verifier passed; an
+  immediate second watchdog run returned zero changes, proving idempotency.
+- Recovered failures remain visible in the rolling 24-hour failed-task metric
+  instead of being silently cleared. Fresh progress timestamps prevent a
+  legitimately long-running task from being misclassified as stuck.
+
+This closes automatic terminal recovery for abandoned task/call runtime state.
+The physical-device, accessibility, retention, network, long-history and
+two-week pilot gates remain open.
+
 ## Stage 8 prompt-injection drill: 18 August 2026 production trace
 
 - The live OpenClaw configuration loaded `reslu-conversation-guard` from the
