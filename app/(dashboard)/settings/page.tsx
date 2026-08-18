@@ -16,6 +16,7 @@ import { CpdDefaultsSettings } from "@/components/settings/CpdDefaultsSettings";
 import { EmailSignaturesSettings } from "@/components/settings/EmailSignaturesSettings";
 import { PushSettings } from "@/components/settings/PushSettings";
 import { SessionSecuritySettings } from "@/components/settings/SessionSecuritySettings";
+import { MeetingRetentionSettings } from "@/components/settings/MeetingRetentionSettings";
 import { XeroIntegrationSettings } from "@/components/settings/XeroIntegrationSettings";
 import { SettingsGroup, SettingsJumpNav } from "@/components/settings/SettingsGroup";
 import { getSignaturePeople } from "@/lib/email-signatures";
@@ -413,6 +414,14 @@ export default async function SettingsPage({
             Revoke old RESLU logins if a phone, tablet or browser is no longer under your control.
           </p>
           <SessionSecuritySettings />
+        </section>
+
+        <section>
+          <h2 className="mb-1 text-subhead text-nearblack">Meeting source retention</h2>
+          <p className="mb-4 text-body text-charcoal/60">
+            Review how long Meeting Mode keeps raw audio and source transcripts. Automatic deletion stays off until an admin approves the displayed periods and the currently eligible source count.
+          </p>
+          <MeetingRetentionSettings canEdit={isAdmin} />
         </section>
 
         </SettingsGroup>
