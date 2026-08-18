@@ -319,8 +319,18 @@ prove contextual follow-up, reconnection, interruption and canonical output.
 - Sixty-four bridge tests pass, including first-turn context, same-call delta,
   future-turn exclusion, out-of-window fallback, call-scoped session identity,
   cancellation and existing model/tool boundaries.
+- PR #133 merged as production commit `70a084d`. Its exact Vercel deployment
+  `dpl_8KKK21Xy45fNRpHbbdfkppoqCEwd` reached Ready and owns
+  `spec.reslu.com.au`; the live login returned 200 and the protected
+  conversations route redirected to login when unauthenticated.
+- The delta was merged surgically into the newer dirty Mac runtime without
+  overwriting its unrelated operational changes. The combined file passed
+  Python compilation and focused first-turn, continuation and fallback checks,
+  then launchd restarted it as PID 87275. Its authenticated health row advanced
+  after restart with status `ok`, a valid session and all five conversation,
+  task and push workers active.
 
-This is bounded content and code evidence, not a physical latency pass. The
+This is bounded content and live-runtime evidence, not a physical latency pass. The
 next real iPhone call must prove that contextual follow-ups still answer from
 the right RESLU context and compare processing/first-audio timing after rollout.
 
