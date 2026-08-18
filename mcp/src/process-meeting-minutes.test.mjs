@@ -16,8 +16,8 @@ test("deterministically fetches, transcribes and stages one matching meeting", a
       NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon",
       SPEC_URL: "https://spec.example.com",
       ARIA_EMAIL: "aria@example.com",
-      ARIA_PASSWORD: "password",
     },
+    passwordProvider: async () => "keychain-password",
     fetchImpl: async (url, init = {}) => {
       requests.push({ url, init });
       if (url.includes("/auth/v1/token")) return jsonResponse({ access_token: "aria-token" });
@@ -29,6 +29,7 @@ test("deterministically fetches, transcribes and stages one matching meeting", a
 
   assert.equal(result.status, "completed");
   assert.equal(requests.length, 3);
+  assert.equal(JSON.parse(requests[0].init.body).password, "keychain-password");
   const patch = JSON.parse(requests[2].init.body);
   assert.equal(patch.status, "structure");
   assert.equal(patch.transcript, "Exact transcript.");

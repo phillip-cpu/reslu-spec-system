@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 
+import { execFile } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { transcribePrivateMeetingSource } from "./local-whisper.mjs";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const execFileAsync = promisify(execFile);
 
 function requiredEnvironment(name, env) {
   const value = env[name]?.trim();
@@ -20,12 +23,30 @@ async function responseJson(response, label) {
   return body;
 }
 
-async function ariaAccessToken(fetchImpl, env) {
+async function ariaPassword(env, passwordProvider) {
+  const configured = (env.RESLU_AGENT_PASSWORD || env.ARIA_PASSWORD || "").trim();
+  if (configured) return configured;
+  if (passwordProvider) return passwordProvider();
+  const account = (env.RESLU_ARIA_KEYCHAIN_ACCOUNT || env.USER || "vale").trim();
+  const service = (env.RESLU_ARIA_KEYCHAIN_SERVICE || "reslu-aria-supabase-password").trim();
+  try {
+    const { stdout } = await execFileAsync("/usr/bin/security", [
+      "find-generic-password", "-a", account, "-s", service, "-w",
+    ], { encoding: "utf8", timeout: 10_000, maxBuffer: 16_384 });
+    const password = stdout.trim();
+    if (password) return password;
+  } catch {
+    // Report a bounded credential error below; never include Keychain output.
+  }
+  throw new Error("Aria credentials are required");
+}
+
+async function ariaAccessToken(fetchImpl, env, passwordProvider) {
   const supabaseUrl = requiredEnvironment("NEXT_PUBLIC_SUPABASE_URL", env).replace(/\/$/, "");
   const anonKey = requiredEnvironment("NEXT_PUBLIC_SUPABASE_ANON_KEY", env);
   const email = (env.RESLU_AGENT_EMAIL || env.ARIA_EMAIL || "").trim();
-  const password = (env.RESLU_AGENT_PASSWORD || env.ARIA_PASSWORD || "").trim();
-  if (!email || !password) throw new Error("Aria credentials are required");
+  if (!email) throw new Error("Aria credentials are required");
+  const password = await ariaPassword(env, passwordProvider);
   const response = await fetchImpl(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
     method: "POST",
     headers: { apikey: anonKey, "Content-Type": "application/json" },
@@ -37,7 +58,9 @@ async function ariaAccessToken(fetchImpl, env) {
 }
 
 async function specRequest(fetchImpl, env, token, path, options = {}) {
-  const specUrl = requiredEnvironment("SPEC_URL", env).replace(/\/$/, "");
+  const configuredUrl = env.SPEC_URL || env.SPEC_APP_URL || env.NEXT_PUBLIC_APP_URL;
+  if (!configuredUrl?.trim()) throw new Error("SPEC_URL, SPEC_APP_URL or NEXT_PUBLIC_APP_URL is required");
+  const specUrl = configuredUrl.trim().replace(/\/$/, "");
   const response = await fetchImpl(`${specUrl}${path}`, {
     ...options,
     headers: {
@@ -53,7 +76,7 @@ export async function processMeetingMinutes(meetingId, options = {}) {
   if (!UUID_PATTERN.test(meetingId)) throw new Error("A valid meeting_minutes_id is required");
   const env = options.env || process.env;
   const fetchImpl = options.fetchImpl || fetch;
-  const token = await ariaAccessToken(fetchImpl, env);
+  const token = await ariaAccessToken(fetchImpl, env, options.passwordProvider);
   const path = `/api/meeting-minutes/${encodeURIComponent(meetingId)}/draft`;
   let source;
   try {
