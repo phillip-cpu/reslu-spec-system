@@ -54,9 +54,14 @@ second inspection. PR #27 is now deployed and the restarted bridge stages each
 file privately inside the selected OpenClaw workspace, uses it in place, and
 cleans it up after the turn. A synthetic image benchmark on the production host
 completed in 4.5 seconds with native image input and no tool call, versus about
-30 seconds and three avoidable calls in the original real-image trace. This
-still requires the clean iPhone photo/PDF acceptance test before Stage 1 can
-close; the old 74-second trace is not evidence of the post-fix result.
+30 seconds and three avoidable calls in the original real-image trace. PR #119
+now gives each agent a bounded untrusted recall envelope for the 12 latest
+previously inspected attachments without reopening private bytes. Production
+zero-attachment follow-ups recovered the old photo's red harness/waterfront
+setting and a matching PDF's exact fixture id. This closes the backend
+prior-file recall gap. Stage 1 still requires the physical iPhone picker,
+retry, chat-switch and signed-link recovery matrix before it can close; the old
+74-second trace is not evidence of the post-fix picker result.
 
 Work:
 

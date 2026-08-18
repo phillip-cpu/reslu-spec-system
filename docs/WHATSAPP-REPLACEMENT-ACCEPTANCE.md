@@ -19,7 +19,7 @@ build or plausible production row is not by itself a passed product gate.
 
 | Stage | Status | Direct evidence | Evidence still required |
 | --- | --- | --- | --- |
-| 1. Photo and PDF messaging | **PARTIAL** | A clean production JPEG and PDF each uploaded once, became `ready`, bound to one canonical message and produced one completed agent job. The actual files were inspected independently and Aria described both accurately. | From the same Aria thread on iPhone, ask one explicit follow-up about each file and verify the answer uses the prior attachment without re-upload. Exercise camera capture, library selection, PDF selection, retry, chat switching and signed-link recovery. |
+| 1. Photo and PDF messaging | **PARTIAL** | A clean production JPEG and PDF each uploaded once, became `ready`, bound to one canonical message and produced one completed agent job. The actual files were inspected independently and Aria described both accurately. On 18 August, zero-attachment follow-ups recovered the exact PDF fixture id and the earlier photo's red harness/waterfront setting from bounded prior inspection context. | Repeat the prior-file follow-up through the physical iPhone UI, then exercise camera capture, library selection, PDF selection, retry, chat switching and signed-link recovery. |
 | 2. Trustworthy everyday messaging | **PARTIAL** | Migrations 093-098 and matching verifiers were applied successfully; exactly-once, drafts, unread, push, preferences, search and quoted-reply paths have focused automated coverage. A production audit found seven successful push sends and no failed job among the latest 27 deliveries. The stacked client keeps history fetches bounded to 100 messages and lets the browser skip layout/paint for off-screen rows without removing them from search or accessibility. | Subscribe a second device, then complete the two-device online/offline/reconnect matrix, receive a real lock-screen message notification, open its exact unread message, restore text plus attachment drafts in their original conversations, after migration 109 is live record/cancel/send/play/forward one iPhone voice note, after migration 110 is live find one uploaded and one forwarded file by filename and open their exact messages, and scroll a production thread with at least 2,000 mixed text/photo/file rows without a visible jump or stalled composer. |
 | 3. Natural low-latency voice | **PARTIAL** | Latest driving call acknowledged in 904 ms, began its short spoken result in 3,499 ms and started a Gateway-backed durable task that continued after hang-up. The authoritative interruption-buffer metric is now deployed. | Run a fresh iPhone call and prove output clears within 250 ms after genuine barge-in. Complete the full contextual-question, interruption, subject-change, cross-agent consultation and voice-ended call gate without stale audio or duplicate canonical output. |
 | 4. Native-feeling mobile and persistent desktop chat | **PARTIAL** | Persistent desktop messenger, mini-player, local-date separators, scroll-safe touch long-press actions, an in-app full-screen private photo viewer and guarded left-edge swipe-back are merged and deployed through production commit `74f66d1`. Mobile has a sticky call action and newest-message layout. | In an authenticated production desktop session keep one typed turn and one call alive while navigating project, lead and office routes. On iPhone, prove newest message and call action are reachable without scrolling history; long-press a message while stationary and while scrolling; open and close a private image without losing thread position; swipe back horizontally and prove vertical scrolling, sending and voice-note recording cannot trigger an accidental chat switch. |
@@ -103,6 +103,32 @@ This is deployment evidence only; it does not promote any live stage gate.
 
 The next user message after the PDF was only `Hello`, so it cannot prove the
 required attachment-context follow-up. Stage 1 therefore remains partial.
+
+## Stage 1 prior-attachment recall: 18 August 2026 production trace
+
+- The first controlled follow-up exposed a real asymmetry: the recent PDF
+  answer recovered `RESLU-STAGE8-PDF-20260818`, but the older photo answer
+  truthfully reported that the image had fallen outside the bounded recent
+  conversation window. Both follow-up messages contained zero attachments.
+- PR #119 is merged as `81812cb`. It adds a bounded recall envelope for the 12
+  latest previously inspected private attachments. The envelope carries only
+  attachment metadata, the original human message and the exact completed
+  agent response; it does not reopen or retransmit file bytes and remains
+  explicitly untrusted prompt data.
+- The merged release passed 60 branch bridge tests. It was then merged into the
+  newer live Mac bridge without overwriting parallel operational improvements;
+  the combined runtime passed 66 tests and restarted healthy under launchd.
+- The exact Vercel production deployment
+  `https://reslu-spec-system-ivwjc66rw-reslu.vercel.app` reached `Ready` and
+  owns `spec.reslu.com.au`.
+- Post-release message `a3a9ff64-2171-4cab-a85a-06dd18df1a98` created job
+  `47330574-cf4f-4eb4-a715-5abab6273f1a`. It completed without error in about
+  19 seconds, with zero follow-up attachments and one canonical Aria response:
+  the harness was red and the dog was on a waterfront path.
+
+This proves the server/agent prior-inspection path for both photo and PDF. It
+does not replace the remaining physical iPhone picker, retry, chat-switching
+and signed-link recovery matrix, so Stage 1 remains partial.
 
 ## Stage 2 evidence: 12 August 2026 production audit
 
