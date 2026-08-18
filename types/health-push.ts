@@ -39,6 +39,8 @@ export interface HealthDiagnostic {
   id: string;
   requested_by: string | null;
   requested_at: string;
+  claimed_at: string | null;
+  claim_attempts: number;
   status: HealthDiagnosticStatus;
   report: string | null;
   completed_at: string | null;
