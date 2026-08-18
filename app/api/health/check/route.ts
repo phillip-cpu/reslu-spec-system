@@ -8,6 +8,10 @@ import {
   channelReportSilenceThresholdHours,
   channelReportIsSilent,
 } from "@/lib/health";
+import {
+  conversationTaskTransportHasIncident,
+  conversationTurnTransportHasIncident,
+} from "@/lib/conversation-health";
 
 export const runtime = "nodejs";
 
@@ -183,11 +187,14 @@ export async function GET(request: NextRequest) {
   }
 
   // ---- 4. Canonical Aria/Marco conversation transport ----
-  // One deduped incident covers actual stuck/failed work and stale calls. Voice
-  // latency misses remain visible warnings on /health but do not page anyone.
+  // Chat turns/calls/capabilities keep the original incident lifecycle. Durable
+  // background tasks alert independently: a failed chat turn must not mask a
+  // newly failed task, and recovering that task must be able to resolve its own
+  // alert even while an unrelated turn incident remains open. Voice latency
+  // misses remain visible warnings on /health but do not page anyone.
   const conversationKind = "conversation_transport";
   const conversationHealth = specHealth.conversation_transport;
-  if (conversationHealth.operational_incident) {
+  if (conversationTurnTransportHasIncident(conversationHealth)) {
     const { deduped } = await notifyAdminsOnce(
       conversationKind,
       "RESLU conversations need attention",
@@ -195,8 +202,6 @@ export async function GET(request: NextRequest) {
         `${conversationHealth.pending_jobs} queued`,
         `${conversationHealth.processing_jobs_stuck} stuck turns`,
         `${conversationHealth.failed_jobs_24h} failed turns`,
-        `${conversationHealth.running_tasks_stuck} stuck tasks`,
-        `${conversationHealth.failed_tasks_24h} failed tasks`,
         `${conversationHealth.active_calls_stale} stale calls`,
         `${conversationHealth.unavailable_capabilities.length} unavailable messaging capabilities`,
         `${conversationHealth.query_errors} health-read errors`,
@@ -207,6 +212,24 @@ export async function GET(request: NextRequest) {
   } else {
     await resolveOpenIncident(conversationKind);
     resolved.push(conversationKind);
+  }
+
+  const taskKind = "conversation_tasks";
+  if (conversationTaskTransportHasIncident(conversationHealth)) {
+    const { deduped } = await notifyAdminsOnce(
+      taskKind,
+      "RESLU background work needs attention",
+      [
+        `${conversationHealth.queued_tasks} queued tasks`,
+        `${conversationHealth.running_tasks_stuck} stuck tasks`,
+        `${conversationHealth.failed_tasks_24h} failed tasks`,
+      ].join(" · "),
+      "/health"
+    );
+    if (!deduped) incidents.push(taskKind);
+  } else {
+    await resolveOpenIncident(taskKind);
+    resolved.push(taskKind);
   }
 
   return NextResponse.json({ ok: true, incidents, resolved });

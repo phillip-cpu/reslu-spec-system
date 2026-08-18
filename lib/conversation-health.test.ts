@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   conversationCapabilityUnavailable,
+  conversationTaskTransportHasIncident,
   conversationTransportHasIncident,
   conversationTransportLevel,
+  conversationTurnTransportHasIncident,
   summarizeConversationVoiceHealth,
 } from "./conversation-health.ts";
 
@@ -47,6 +49,19 @@ test("operational failures are incidents while latency misses are warnings", () 
   assert.equal(conversationTransportLevel({ ...healthy, processing_jobs_stuck: 1 }), "red");
   assert.equal(conversationTransportHasIncident({ ...healthy, failed_tasks_24h: 1 }), true);
   assert.equal(conversationTransportHasIncident({ ...healthy, unavailable_capabilities: ["message_forwarding"] }), true);
+});
+
+test("durable task incidents open and recover independently from chat transport", () => {
+  const failedTask = { ...healthy, failed_tasks_24h: 1 };
+  const failedTurn = { ...healthy, failed_jobs_24h: 1 };
+
+  assert.equal(conversationTaskTransportHasIncident(failedTask), true);
+  assert.equal(conversationTurnTransportHasIncident(failedTask), false);
+  assert.equal(conversationTransportHasIncident(failedTask), true);
+
+  assert.equal(conversationTaskTransportHasIncident(failedTurn), false);
+  assert.equal(conversationTurnTransportHasIncident(failedTurn), true);
+  assert.equal(conversationTransportHasIncident(failedTurn), true);
 });
 
 test("schema capability probes distinguish missing RPCs from their safe argument guard", () => {
