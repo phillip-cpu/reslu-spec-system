@@ -5550,7 +5550,7 @@ export function ConversationWorkspace({
 
       {(callOpening || callId || callError) && callAgent && (
         <div ref={callDialogRef} tabIndex={-1} role={callModal ? "dialog" : "region"} aria-modal={callModal ? true : undefined} aria-labelledby="active-call-agent" className={clsx(
-          "visible pointer-events-auto fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[70] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col overflow-hidden bg-nearblack text-white",
+          "conversation-dark visible pointer-events-auto fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[70] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col overflow-hidden bg-nearblack text-white",
           drawer && callCompact && "md:inset-auto md:bottom-5 md:right-5 md:h-auto md:w-[26rem] md:max-w-[calc(100vw-2.5rem)] md:rounded-2xl md:border md:border-white/15 md:shadow-[0_20px_70px_rgba(20,18,15,0.45)]",
         )}>
           <header className="flex shrink-0 items-center gap-3 border-b border-white/10 px-3 pb-3 pt-[calc(env(safe-area-inset-top)+0.75rem)] md:px-6 md:py-4">
