@@ -68,6 +68,10 @@ import {
   type ConversationMessageReactionValue,
 } from "@/lib/conversation-message-engagement";
 import {
+  conversationMenuTargetIndex,
+  type ConversationMenuNavigationKey,
+} from "@/lib/conversation-menu-keyboard";
+import {
   CONVERSATION_MESSAGE_LONG_PRESS_MS,
   conversationDayKey,
   conversationDayLabel,
@@ -1246,6 +1250,8 @@ export function ConversationWorkspace({
   const messageSearchDialogRef = useRef<HTMLDivElement>(null);
   const mediaViewerDialogRef = useRef<HTMLDivElement>(null);
   const callDialogRef = useRef<HTMLDivElement>(null);
+  const messageMenuRef = useRef<HTMLDivElement>(null);
+  const messageMenuTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
   const draftAttachmentsRef = useRef<DraftAttachment[]>([]);
   const draftAttachmentsByConversationRef = useRef(new Map<string, DraftAttachment[]>());
   const draftAttachmentLoadSequenceRef = useRef(new Map<string, number>());
@@ -1328,6 +1334,38 @@ export function ConversationWorkspace({
     active: callModal,
     containerRef: callDialogRef,
   });
+
+  useEffect(() => {
+    if (!messageMenuId) return;
+    const openMessageId = messageMenuId;
+    const menu = messageMenuRef.current;
+    const trigger = messageMenuTriggerRefs.current.get(openMessageId) ?? null;
+    const firstItem = menu?.querySelector<HTMLElement>('[role="menuitem"]') ?? null;
+    const focusFrame = window.requestAnimationFrame(() => firstItem?.focus());
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setMessageMenuId(null);
+      window.requestAnimationFrame(() => messageMenuTriggerRefs.current.get(openMessageId)?.focus());
+    }
+
+    function onPointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (menu?.contains(target) || trigger?.contains(target)) return;
+      setMessageMenuId(null);
+    }
+
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [messageMenuId]);
 
   const cancelMessageLongPress = useCallback(() => {
     if (messageLongPressRef.current) window.clearTimeout(messageLongPressRef.current.timer);
@@ -4778,6 +4816,10 @@ export function ConversationWorkspace({
                           <span className={clsx("text-caption font-semibold", own ? "text-white" : "text-nearblack")}>{message.author.display_name}</span>
                           <span className={clsx("conversation-meta", own ? "text-white/60" : "text-charcoal/55")}>{timeLabel(message.created_at)}</span>
                           <button
+                            ref={(node) => {
+                              if (node) messageMenuTriggerRefs.current.set(message.id, node);
+                              else messageMenuTriggerRefs.current.delete(message.id);
+                            }}
                             type="button"
                             onClick={() => setMessageMenuId((current) => current === message.id ? null : message.id)}
                             aria-label={`Actions for message from ${message.author.display_name}`}
@@ -4789,7 +4831,25 @@ export function ConversationWorkspace({
                           </button>
                         </div>
                         {messageMenuId === message.id && (
-                          <div role="menu" className="absolute right-2 top-10 z-20 w-48 overflow-hidden rounded-xl border border-[#d4cbbd] bg-white py-1 text-caption text-nearblack shadow-2xl">
+                          <div
+                            ref={messageMenuRef}
+                            role="menu"
+                            aria-label={`Actions for message from ${message.author.display_name}`}
+                            onKeyDown={(event) => {
+                              if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+                              const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+                              const currentIndex = items.indexOf(document.activeElement as HTMLElement);
+                              const targetIndex = conversationMenuTargetIndex(
+                                event.key as ConversationMenuNavigationKey,
+                                currentIndex,
+                                items.length,
+                              );
+                              if (targetIndex === null) return;
+                              event.preventDefault();
+                              items[targetIndex]?.focus();
+                            }}
+                            className="absolute right-2 top-10 z-20 w-48 overflow-hidden rounded-xl border border-[#d4cbbd] bg-white py-1 text-caption text-nearblack shadow-2xl"
+                          >
                             {!pending && !message.deleted_at && (
                               <div className="flex items-center justify-between border-b border-[#eee8de] px-2 py-2" aria-label="React to message">
                                 {CONVERSATION_MESSAGE_REACTIONS.map((reaction) => (
