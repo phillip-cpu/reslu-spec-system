@@ -170,6 +170,25 @@ and client ordering/anchor invariants at 2,000 rows. It does not prove physical
 paint/composer responsiveness for 2,000 mixed text/photo/file rows; that device
 exercise remains open and Stage 2 stays partial.
 
+## Stage 2 lost-confirmation hardening: 18 August 2026
+
+- An authenticated, conversation-member-only lookup now resolves a device's
+  `client_message_id` to the canonical message id for that same signed-in
+  author. It does not expose message content or another participant's send.
+- When a POST response is lost after the idempotent database write commits, the
+  device performs up to three canonical checks within a four-second bound. A
+  confirmed send clears the IndexedDB outbox and refreshes the thread instead
+  of showing a false `Not sent` state or asking Phillip to retry it.
+- If the lookup cannot confirm delivery, the existing visible retryable state
+  remains unchanged; the same client id still makes every later retry
+  exact-once.
+- Twenty-five focused outbox, reliability and long-history tests, targeted
+  ESLint, TypeScript and the complete 111-page webpack production build pass.
+
+This closes the known lost-success-response ambiguity in the browser. The
+physical airplane-mode reconnect and two-device agreement exercise remains
+open, so Stage 2 stays partial.
+
 ## Stage 8 accessibility candidate: 12 August 2026
 
 Automated code contracts now protect the complete stacked conversation surface:

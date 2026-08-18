@@ -200,6 +200,29 @@ export async function GET(request: NextRequest, context: Context) {
 
   const participantResult = await conversationParticipants(supabase, id, user.id);
   if (participantResult.error) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
+
+  const clientMessageId = request.nextUrl.searchParams.get("client_message_id");
+  if (clientMessageId && !UUID_PATTERN.test(clientMessageId)) {
+    return NextResponse.json({ error: "Invalid client message id" }, { status: 400 });
+  }
+  if (clientMessageId) {
+    // A mobile connection can lose the POST response after Postgres has
+    // already committed the message. Resolve that ambiguity against the
+    // canonical row so the device can clear its outbox without duplicating
+    // the send or asking the user to retry a message that was delivered.
+    const { data: canonicalMessage, error: canonicalMessageError } = await supabase
+      .from("conversation_messages")
+      .select("id")
+      .eq("conversation_id", id)
+      .eq("author_profile_id", user.id)
+      .eq("client_message_id", clientMessageId)
+      .maybeSingle();
+    if (canonicalMessageError) {
+      return NextResponse.json({ error: canonicalMessageError.message }, { status: 500 });
+    }
+    return NextResponse.json({ canonical_message_id: canonicalMessage?.id ?? null });
+  }
+
   const [agentActivity, pinnedMessages] = await Promise.all([
     activeAgentActivity(supabase, id, participantResult.participants),
     pinnedConversationMessages(supabase, id, participantResult.participants),

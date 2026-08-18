@@ -107,6 +107,7 @@ import type {
 
 type CallState = "connecting" | "listening" | "thinking" | "speaking" | "interrupted" | "reconnecting";
 const MESSAGE_SEND_TIMEOUT_MS = 20000;
+const MESSAGE_RECONCILIATION_TIMEOUT_MS = 4000;
 const ATTACHMENT_FINALIZE_REQUEST_TIMEOUT_MS = 6000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -1763,6 +1764,44 @@ export function ConversationWorkspace({
     } catch (reason) {
       const offline = !navigator.onLine;
       const timedOut = reason instanceof DOMException && reason.name === "AbortError";
+      if (!offline) {
+        const reconciliationController = new AbortController();
+        const reconciliationTimeout = window.setTimeout(
+          () => reconciliationController.abort(),
+          MESSAGE_RECONCILIATION_TIMEOUT_MS
+        );
+        let canonicalMessageId: string | null = null;
+        try {
+          for (let attempt = 0; attempt < 3 && !canonicalMessageId; attempt += 1) {
+            const reconciliationResponse = await fetch(
+              `/api/conversations/${entry.conversationId}/messages?client_message_id=${entry.clientMessageId}`,
+              { cache: "no-store", signal: reconciliationController.signal }
+            );
+            const reconciliation = await reconciliationResponse.json().catch(() => ({}));
+            if (reconciliationResponse.ok && typeof reconciliation.canonical_message_id === "string") {
+              canonicalMessageId = reconciliation.canonical_message_id;
+              break;
+            }
+            if (attempt < 2) {
+              await new Promise((resolve) => window.setTimeout(resolve, (attempt + 1) * 250));
+            }
+          }
+        } catch {
+          // The canonical lookup is a bounded recovery attempt. Preserve the
+          // original retryable failure if the network is still unavailable.
+        } finally {
+          window.clearTimeout(reconciliationTimeout);
+        }
+        if (canonicalMessageId) {
+          await discardOutboxEntry(entry.clientMessageId).catch(() => null);
+          if (selectedIdRef.current === entry.conversationId) {
+            shouldStickToBottomRef.current = true;
+            void loadMessages(entry.conversationId, { latest: true });
+          }
+          void loadConversations({ preserveError: true });
+          return;
+        }
+      }
       await persistOutboxEntry({
         ...entry,
         status: offline ? "queued" : "failed",
@@ -1773,7 +1812,7 @@ export function ConversationWorkspace({
       window.clearTimeout(timeout);
       outboxInFlightRef.current.delete(entry.clientMessageId);
     }
-  }, [discardOutboxEntry, loadConversations, persistOutboxEntry]);
+  }, [discardOutboxEntry, loadConversations, loadMessages, persistOutboxEntry]);
 
   const flushOutbox = useCallback(async () => {
     const ownerProfileId = currentUserIdRef.current;
