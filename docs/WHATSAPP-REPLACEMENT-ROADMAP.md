@@ -668,12 +668,12 @@ Final product gate:
 ## Current next action
 
 The production database and deployment gates are complete through migration
-117 and production commit `c600cb3`. The authenticated typed-turn half of the
-Stage 4 desktop gate now passes across project, lead and Office navigation. An
-authenticated Safari voice smoke also reaches `LISTENING` after the
-invalid-constraint recovery release. Repeat the route sequence during one real
-voice call, then run the Stage 7
-voice collaboration checks: ask Aria for Marco's commercial view, Marco for
+117 plus corrective migration
+`20260818171137_restore_single_active_call_creation`. Authenticated typed turns
+and one live Aria call now both survive in-app project, lead and Office
+navigation. The call remained `LISTENING`, ended with one canonical call record
+and left no active row. Run the Stage 7 voice collaboration checks next: ask
+Aria for Marco's commercial view, Marco for
 Aria's operational view and Stuart for either specialist's non-finance input.
 Each turn must retain one visible owner, one attributed specialist consultation,
 one canonical answer and no duplicate action.
