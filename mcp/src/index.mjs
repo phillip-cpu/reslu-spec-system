@@ -2015,6 +2015,27 @@ const TOOLS = [
     handler: async (body) => apiFetch("/api/stuart/source-invoice-attachment", { method: "POST", body: JSON.stringify(body) }),
   },
   {
+    name: "stage_stuart_company_expense_invoice",
+    description:
+      "Stage one source-backed Accounts mailbox invoice in Spec as a company expense such as rent, utilities, software or insurance after the human explicitly confirms the category. It may link an existing recurring commitment. It never assigns a renovation project, creates a Xero bill, approves, pays or changes bank details.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        email_id: { type: "string", description: "Exact source emails.id from the Accounts mailbox" },
+        category: {
+          type: "string",
+          enum: ["wages", "superannuation", "rent", "marketing", "entertainment", "software", "insurance", "utilities", "professional_fees", "vehicles", "other"],
+          description: "Human-confirmed company expense category",
+        },
+        recurring_commitment_id: { type: "string", description: "Optional finance_recurring_commitments.id when already known" },
+        human_confirmed: { type: "boolean", description: "Must be true only after the human confirms this is a company expense and approves the category" },
+      },
+      required: ["email_id", "category", "human_confirmed"],
+      additionalProperties: false,
+    },
+    handler: async (body) => apiFetch("/api/stuart/company-expense-invoices", { method: "POST", body: JSON.stringify(body) }),
+  },
+  {
     name: "create_stuart_xero_supplier_contact",
     description:
       "Create one verified Xero contact for a source-backed supplier after exact human approval. Requires the legal name and valid Australian ABN to match the attached original, searches Xero for name/ABN duplicates, records an audit, and performs provider readback. It never stores bank details, approves a bill or makes a payment. Xero marks the contact as a supplier after the subsequent DRAFT ACCPAY bill.",
@@ -2351,6 +2372,7 @@ const STUART_ALLOWED_TOOLS = new Set([
   "get_stuart_invoice_evidence",
   "run_stuart_finance_review",
   "attach_stuart_source_invoice",
+  "stage_stuart_company_expense_invoice",
   "create_stuart_xero_supplier_contact",
   "create_stuart_xero_draft_bill",
   "search_stuart_xero_contacts",
