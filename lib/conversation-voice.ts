@@ -27,16 +27,25 @@ export function speechRecognitionErrorMessage(error: string): string {
   }
 }
 
+const RECOVERABLE_REALTIME_ERROR_CODES = new Set([
+  "realtime_provider_error",
+  "realtime_provider_unavailable",
+]);
+
 /**
- * Safari can reject an otherwise minimal WebRTC microphone or SDP setup with
- * an OverconstrainedError whose only useful detail is "Invalid constraint".
- * The legacy Safari speech path is slower, but it is a working recovery path
- * and is preferable to leaving the call screen interrupted.
+ * Recover with browser speech when the preferred realtime transport cannot
+ * start. This covers Safari constraint failures as well as bounded session
+ * timeouts and explicit provider failures. Permission errors remain fatal so
+ * RESLU can show the user the correct microphone instructions.
  */
 export function shouldFallbackToLegacyVoice(reason: unknown): boolean {
   if (!reason || typeof reason !== "object") return false;
-  const candidate = reason as { name?: unknown; message?: unknown };
+  const candidate = reason as { name?: unknown; message?: unknown; code?: unknown };
   const name = typeof candidate.name === "string" ? candidate.name.toLowerCase() : "";
   const message = typeof candidate.message === "string" ? candidate.message.toLowerCase() : "";
-  return name === "overconstrainederror" || message.includes("invalid constraint");
+  const code = typeof candidate.code === "string" ? candidate.code.toLowerCase() : "";
+  return name === "overconstrainederror"
+    || name === "boundedrequesttimeouterror"
+    || message.includes("invalid constraint")
+    || RECOVERABLE_REALTIME_ERROR_CODES.has(code);
 }
