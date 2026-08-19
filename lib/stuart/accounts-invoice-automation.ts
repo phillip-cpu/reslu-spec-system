@@ -20,6 +20,11 @@ function number(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function normalizedCurrency(value: unknown): string | null {
+  const currency = text(value).toUpperCase();
+  return /^[A-Z]{3}$/.test(currency) ? currency : null;
+}
+
 async function recordFinding(emailId: string, title: string, detail: string, evidence: JsonRecord) {
   const service = createServiceRoleClient();
   await service.from("stuart_finance_findings").upsert({
@@ -55,6 +60,7 @@ export async function processAccountsInvoice(emailId: string): Promise<{ outcome
   const exGst = number(candidate?.amount_ex_gst);
   const gst = number(candidate?.gst);
   const total = number(candidate?.total);
+  const extractedCurrency = normalizedCurrency(candidate?.currency);
   const attachments = (email.email_attachments ?? []) as Array<{ id: string; filename: string | null; mime: string | null; storage_ref: string | null; content_sha256: string | null }>;
   const sourceFiles = attachments.filter((a) => a.storage_ref && INVOICE_FILE.test(a.filename ?? ""));
 
@@ -69,17 +75,18 @@ export async function processAccountsInvoice(emailId: string): Promise<{ outcome
     return { outcome: "manual_review", reason };
   }
 
-  const { data: existingRows } = await service.from("invoices").select("id")
+  const { data: existingRows } = await service.from("invoices").select("id,currency_code")
     .eq("source_email_id", emailId).not("status", "in", "(rejected,voided)").order("created_at", { ascending: true }).limit(1);
   const existing = existingRows?.[0];
   let invoiceId = existing?.id as string | undefined;
+  let currencyCode = normalizedCurrency(existing?.currency_code) ?? extractedCurrency;
   if (!invoiceId) {
     const { data: matches } = await service.from("email_entity_matches")
       .select("entity_id,confidence,status").eq("email_id", emailId).eq("entity_type", "project").eq("status", "matched").gte("confidence", 0.9);
     const projectIds = [...new Set((matches ?? []).map((m) => m.entity_id).filter(Boolean))] as string[];
     if (projectIds.length !== 1) {
-      const reason = "No single high-confidence Spec project match was found.";
-      await recordFinding(emailId, "Accounts invoice needs a project", reason, { candidate_projects: projectIds });
+      const reason = "No single high-confidence Spec project match was found. A human may instead confirm and stage it as a company expense such as rent or utilities.";
+      await recordFinding(emailId, "Accounts invoice needs a project or company category", reason, { candidate_projects: projectIds });
       return { outcome: "manual_review", reason };
     }
 
@@ -95,6 +102,7 @@ export async function processAccountsInvoice(emailId: string): Promise<{ outcome
 
     const { data: invoice, error: insertError } = await service.from("invoices").insert({
       project_id: projectIds[0], supplier, invoice_number: invoiceNumber, invoice_date: invoiceDate,
+      currency_code: extractedCurrency,
       amount_ex_gst: exGst, gst: gst ?? Math.round((total - exGst) * 100) / 100, total,
       storage_path: storagePath, status: "unmatched", created_by: profile.id,
       source: "stuart", source_email_id: emailId,
@@ -103,6 +111,18 @@ export async function processAccountsInvoice(emailId: string): Promise<{ outcome
     }).select("id").single();
     if (insertError || !invoice) throw new Error(insertError?.message ?? "Spec invoice could not be staged");
     invoiceId = invoice.id;
+    currencyCode = extractedCurrency;
+  }
+
+  if (!currencyCode) {
+    const reason = "The source currency is unresolved. Confirm AUD, USD or another ISO currency before any Xero draft is created.";
+    await recordFinding(emailId, "Invoice currency needs confirmation", reason, { supplier, spec_invoice_id: invoiceId });
+    return { outcome: "manual_review", invoice_id: invoiceId, reason };
+  }
+  if (currencyCode !== "AUD") {
+    const reason = `The invoice is ${currencyCode}. It is preserved in Spec, but Stuart cannot create a non-AUD Xero draft yet.`;
+    await recordFinding(emailId, "Foreign-currency invoice needs manual Xero review", reason, { supplier, currency: currencyCode, spec_invoice_id: invoiceId });
+    return { outcome: "manual_review", invoice_id: invoiceId, reason };
   }
 
   const { data: history } = await service.from("xero_invoices").select("contact_name,raw_json")

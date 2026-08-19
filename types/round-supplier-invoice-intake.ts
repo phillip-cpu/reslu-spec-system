@@ -31,6 +31,7 @@ export interface SupplierInvoiceExtracted {
   abn?: string | null;
   invoice_number?: string;
   invoice_date?: string | null;
+  currency?: string | null;
   total_inc_gst?: number;
   gst?: number;
   /** Free text — which line items Aria thinks this invoice covers, and why. */

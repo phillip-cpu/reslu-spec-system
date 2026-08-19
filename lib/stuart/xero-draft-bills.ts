@@ -37,12 +37,16 @@ export async function createStuartXeroDraftBill(input: DraftBillInput) {
   const service = createServiceRoleClient();
   const { data: invoice, error } = await service
     .from("invoices")
-    .select("id,supplier,invoice_number,invoice_date,amount_ex_gst,gst,total,storage_path,status,supplier_invoice_lines(description,quantity,unit_price_ex_gst,amount_ex_gst,sort)")
+    .select("id,supplier,invoice_number,invoice_date,currency_code,amount_ex_gst,gst,total,storage_path,status,supplier_invoice_lines(description,quantity,unit_price_ex_gst,amount_ex_gst,sort)")
     .eq("id", input.invoiceId)
     .single();
   if (error || !invoice) throw new Error(error?.message ?? "Supplier invoice was not found");
   if (invoice.status === "rejected" || invoice.status === "voided") throw new Error("Rejected or voided invoices cannot be sent to Xero");
   if (!invoice.invoice_date) throw new Error("Invoice date must be verified before creating a Xero draft");
+  if (!invoice.currency_code) throw new Error("Invoice currency must be verified before creating a Xero draft");
+  if (invoice.currency_code !== "AUD") {
+    throw new Error(`Non-AUD Xero drafts are not enabled; preserve this invoice as ${invoice.currency_code} in Spec for review`);
+  }
   if (!invoice.storage_path) throw new Error("The original supplier invoice must be attached before creating a Xero draft");
 
   const { data: sourceEvidence, error: sourceEvidenceError } = await service

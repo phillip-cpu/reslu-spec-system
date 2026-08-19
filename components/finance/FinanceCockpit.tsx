@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FinanceCashCurve } from "./FinanceCashCurve";
 import { FinanceRecurringCommitmentsPanel } from "./FinanceRecurringCommitmentsPanel";
+import { FinanceCompanyInvoicesPanel } from "./FinanceCompanyInvoicesPanel";
 import {
   adelaideToday,
   dollarsInputToMinor,
@@ -12,7 +13,7 @@ import {
 } from "@/lib/finance/presentation";
 import type { FinanceCockpitResponse, FinanceProjectionPeriod } from "@/types/finance";
 
-type CockpitTab = "cash" | "commitments" | "projects";
+type CockpitTab = "cash" | "commitments" | "bills" | "projects";
 
 function MetricCard({
   label,
@@ -237,6 +238,7 @@ export function FinanceCockpit() {
           {[
             ["cash", "Cash timeline"],
             ["commitments", "Planned outgoings"],
+            ["bills", "Company bills"],
             ["projects", "Projects"],
           ].map(([key, label]) => (
             <button
@@ -276,6 +278,8 @@ export function FinanceCockpit() {
           canEdit={data.can_edit_forecast}
           onChanged={() => void loadCockpit()}
         />
+      ) : activeTab === "bills" ? (
+        <FinanceCompanyInvoicesPanel />
       ) : activeTab === "projects" ? (
         <section className="border border-charcoal/20 bg-offwhite" aria-labelledby="finance-projects-heading">
           <div className="border-b border-charcoal/20 p-5 md:p-7">

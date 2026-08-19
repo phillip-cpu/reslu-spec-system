@@ -29,6 +29,8 @@ test("draft bill path requires source evidence, exact contacts and idempotency",
   assert.match(draftSource, /Spec invoice total does not match the attached original/i);
   assert.match(draftSource, /resolveLineAccountCodes/);
   assert.match(mcpSource, /line_account_codes/);
+  assert.match(draftSource, /Invoice currency must be verified/);
+  assert.match(draftSource, /Non-AUD Xero drafts are not enabled/);
 });
 
 test("source invoice attachment is traceable, fingerprinted and does not write to Xero", () => {
@@ -50,6 +52,8 @@ test("bounded invoice evidence returns verified supplier identity without raw te
 
 test("Accounts automation never reuses a rejected or voided invoice", () => {
   assert.match(accountsAutomation, /\.not\("status", "in", "\(rejected,voided\)"\)/);
+  assert.match(accountsAutomation, /currency_code: extractedCurrency/);
+  assert.match(accountsAutomation, /Foreign-currency invoice needs manual Xero review/);
 });
 
 test("Stuart's finance brief uses the bounded response by default", () => {
