@@ -2015,6 +2015,18 @@ const TOOLS = [
     handler: async (body) => apiFetch("/api/stuart/source-invoice-attachment", { method: "POST", body: JSON.stringify(body) }),
   },
   {
+    name: "process_stuart_supplier_invoice",
+    description:
+      "Process one exact Accounts mailbox email as a supplier invoice. A verified invoice can be staged in Spec even when no job is known; it becomes unallocated and remains visible for later classification. If currency is AUD, one exact Xero supplier exists and one safe account mapping is available, this may create a Xero DRAFT with the source attached. It rejects statements and likely quotes/order acknowledgements, never approves or pays, and never guesses foreign currency or an account code.",
+    inputSchema: {
+      type: "object",
+      properties: { email_id: { type: "string", description: "Exact source emails.id from the Accounts mailbox" } },
+      required: ["email_id"],
+      additionalProperties: false,
+    },
+    handler: async ({ email_id }) => apiFetch("/api/stuart/accounts-invoices", { method: "POST", body: JSON.stringify({ email_id }) }),
+  },
+  {
     name: "stage_stuart_company_expense_invoice",
     description:
       "Stage one source-backed Accounts mailbox invoice in Spec as a company expense such as rent, utilities, software or insurance after the human explicitly confirms the category. It may link an existing recurring commitment. It never assigns a renovation project, creates a Xero bill, approves, pays or changes bank details.",
@@ -2034,6 +2046,29 @@ const TOOLS = [
       additionalProperties: false,
     },
     handler: async (body) => apiFetch("/api/stuart/company-expense-invoices", { method: "POST", body: JSON.stringify(body) }),
+  },
+  {
+    name: "classify_stuart_unallocated_invoice",
+    description:
+      "After the human decides where an unallocated supplier invoice belongs, classify it as either one exact Spec project or a company expense category. Requires explicit human confirmation, writes an audit event, and does not alter, approve or pay any existing Xero draft.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        invoice_id: { type: "string", description: "Unallocated Spec invoices.id" },
+        scope: { type: "string", enum: ["project", "company"] },
+        project_id: { type: "string", description: "Required only for a human-confirmed project classification" },
+        category: {
+          type: "string",
+          enum: ["wages", "superannuation", "rent", "marketing", "entertainment", "software", "insurance", "utilities", "professional_fees", "vehicles", "other"],
+          description: "Required only for a human-confirmed company classification",
+        },
+        recurring_commitment_id: { type: "string", description: "Optional existing recurring commitment for a company bill" },
+        human_confirmed: { type: "boolean", description: "Must be true only after the human confirms the destination" },
+      },
+      required: ["invoice_id", "scope", "human_confirmed"],
+      additionalProperties: false,
+    },
+    handler: async (body) => apiFetch("/api/stuart/unallocated-invoices/classify", { method: "POST", body: JSON.stringify(body) }),
   },
   {
     name: "create_stuart_xero_supplier_contact",
@@ -2372,7 +2407,9 @@ const STUART_ALLOWED_TOOLS = new Set([
   "get_stuart_invoice_evidence",
   "run_stuart_finance_review",
   "attach_stuart_source_invoice",
+  "process_stuart_supplier_invoice",
   "stage_stuart_company_expense_invoice",
+  "classify_stuart_unallocated_invoice",
   "create_stuart_xero_supplier_contact",
   "create_stuart_xero_draft_bill",
   "search_stuart_xero_contacts",

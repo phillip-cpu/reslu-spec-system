@@ -7,6 +7,7 @@ type JsonRecord = Record<string, unknown>;
 
 const ACCOUNTS_MAILBOX = "accounts@reslu.com.au";
 const STATEMENT_WORD = /\b(statement|account summary|aged payables?)\b/i;
+const NON_INVOICE_WORD = /\b(sales[\s-]*order|order (?:acknowledg(?:e)?ment|confirmation)|quote|estimate|pro[\s-]*forma)\b/i;
 const INVOICE_FILE = /\.(pdf|png|jpe?g)$/i;
 
 export type AutomationOutcome = "draft_created" | "manual_review" | "already_processed";
@@ -69,6 +70,12 @@ export async function processAccountsInvoice(emailId: string): Promise<{ outcome
     await recordFinding(emailId, "Supplier statement needs reconciliation", reason, { filenames: sourceFiles.map((a) => a.filename) });
     return { outcome: "manual_review", reason };
   }
+  const documentEvidence = `${email.subject ?? ""} ${sourceFiles.map((a) => a.filename).join(" ")} ${text(candidate?.source_quote)}`;
+  if (NON_INVOICE_WORD.test(documentEvidence)) {
+    const reason = "The source appears to be an order acknowledgement, quote, estimate or pro-forma document rather than a supplier invoice.";
+    await recordFinding(emailId, "Document type needs invoice confirmation", reason, { filenames: sourceFiles.map((a) => a.filename) });
+    return { outcome: "manual_review", reason };
+  }
   if (!supplier || !invoiceNumber || !/^\d{4}-\d{2}-\d{2}$/.test(invoiceDate) || exGst === null || total === null || sourceFiles.length !== 1) {
     const reason = "Invoice fields or the original attachment are incomplete or ambiguous.";
     await recordFinding(emailId, "Accounts invoice needs manual review", reason, { supplier, invoice_number: invoiceNumber, invoice_date: invoiceDate, attachment_count: sourceFiles.length });
@@ -84,30 +91,38 @@ export async function processAccountsInvoice(emailId: string): Promise<{ outcome
     const { data: matches } = await service.from("email_entity_matches")
       .select("entity_id,confidence,status").eq("email_id", emailId).eq("entity_type", "project").eq("status", "matched").gte("confidence", 0.9);
     const projectIds = [...new Set((matches ?? []).map((m) => m.entity_id).filter(Boolean))] as string[];
-    if (projectIds.length !== 1) {
-      const reason = "No single high-confidence Spec project match was found. A human may instead confirm and stage it as a company expense such as rent or utilities.";
-      await recordFinding(emailId, "Accounts invoice needs a project or company category", reason, { candidate_projects: projectIds });
-      return { outcome: "manual_review", reason };
-    }
+    const projectId = projectIds.length === 1 ? projectIds[0] : null;
 
     const { data: profile } = await service.from("profiles").select("id").eq("email", ACCOUNTS_MAILBOX).single();
     if (!profile) throw new Error("Stuart profile was not found");
     const source = sourceFiles[0];
     const { data: blob, error: downloadError } = await service.storage.from(ASSET_BUCKET).download(source.storage_ref!);
     if (downloadError || !blob) throw new Error("Original invoice attachment could not be loaded");
-    const storagePath = `projects/${projectIds[0]}/invoices/stuart-${emailId}-${slugFilename(source.filename ?? "invoice.pdf")}`;
+    const storagePath = projectId
+      ? `projects/${projectId}/invoices/stuart-${emailId}-${slugFilename(source.filename ?? "invoice.pdf")}`
+      : `company/unallocated-invoices/stuart-${emailId}-${slugFilename(source.filename ?? "invoice.pdf")}`;
     const bytes = new Uint8Array(await blob.arrayBuffer());
     const { error: uploadError } = await service.storage.from(ASSET_BUCKET).upload(storagePath, bytes, { contentType: source.mime ?? blob.type ?? "application/pdf", upsert: false });
     if (uploadError && !/already exists/i.test(uploadError.message)) throw new Error(uploadError.message);
 
     const { data: invoice, error: insertError } = await service.from("invoices").insert({
-      project_id: projectIds[0], supplier, invoice_number: invoiceNumber, invoice_date: invoiceDate,
+      project_id: projectId,
+      expense_scope: projectId ? "project" : "unallocated",
+      supplier, invoice_number: invoiceNumber, invoice_date: invoiceDate,
       currency_code: extractedCurrency,
       amount_ex_gst: exGst, gst: gst ?? Math.round((total - exGst) * 100) / 100, total,
       storage_path: storagePath, status: "unmatched", created_by: profile.id,
       source: "stuart", source_email_id: emailId,
-      extracted: { ...candidate, automation: "accounts_mailbox", attachment_sha256: source.content_sha256 },
-      confidence_note: "Automatically staged by Stuart from accounts@reslu.com.au; Xero creation remains DRAFT-only.",
+      extracted: {
+        ...candidate,
+        automation: "accounts_mailbox",
+        allocation_state: projectId ? "project_matched" : "unallocated",
+        candidate_projects: projectIds,
+        attachment_sha256: source.content_sha256,
+      },
+      confidence_note: projectId
+        ? "Automatically staged by Stuart from accounts@reslu.com.au with one high-confidence project match; Xero creation remains DRAFT-only."
+        : "Verified supplier invoice staged without a job. It must be classified as project or company expense later; Xero creation remains DRAFT-only.",
     }).select("id").single();
     if (insertError || !invoice) throw new Error(insertError?.message ?? "Spec invoice could not be staged");
     invoiceId = invoice.id;

@@ -18,8 +18,8 @@ export async function GET() {
   if (!permission.allowed) return NextResponse.json({ error: "Company invoice access denied" }, { status: 403 });
 
   const { data, error } = await supabase.from("invoices")
-    .select("id,supplier,invoice_number,invoice_date,currency_code,amount_ex_gst,gst,total,status,company_expense_category,recurring_commitment_id,created_at,finance_recurring_commitments(name)")
-    .eq("expense_scope", "company")
+    .select("id,expense_scope,supplier,invoice_number,invoice_date,currency_code,amount_ex_gst,gst,total,status,company_expense_category,recurring_commitment_id,created_at,finance_recurring_commitments(name)")
+    .in("expense_scope", ["company", "unallocated"])
     .order("invoice_date", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false })
     .limit(100);

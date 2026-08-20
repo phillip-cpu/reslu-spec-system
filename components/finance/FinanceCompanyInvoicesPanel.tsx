@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 type CompanyInvoice = {
   id: string;
+  expense_scope: "company" | "unallocated";
   supplier: string;
   invoice_number: string;
   invoice_date: string | null;
@@ -12,7 +13,7 @@ type CompanyInvoice = {
   gst: number;
   total: number;
   status: string;
-  company_expense_category: string;
+  company_expense_category: string | null;
   recurring_commitment_id: string | null;
   finance_recurring_commitments: { name: string } | null;
 };
@@ -57,7 +58,7 @@ export function FinanceCompanyInvoicesPanel() {
         <p className="label-caps">Company expenses</p>
         <h2 id="company-bills-heading" className="mt-2 font-display text-section text-nearblack">Office and recurring bills</h2>
         <p className="mt-2 max-w-2xl text-body text-charcoal/60">
-          Rent, utilities, software and other company overheads live here without affecting a renovation project. Stuart can stage a source-backed bill after you confirm its company category.
+          Every verified supplier invoice can be captured before its job is known. Unallocated bills stay visible here until you tell Stuart which project they belong to or confirm that they are a company expense.
         </p>
       </div>
       {error && <div role="alert" className="border-b border-red-700/30 bg-red-50 p-4 text-body text-red-800">{error}</div>}
@@ -69,13 +70,13 @@ export function FinanceCompanyInvoicesPanel() {
               <tr key={invoice.id} className="text-body hover:bg-cream">
                 <td className="px-5 py-4 text-nearblack">{invoice.supplier}</td>
                 <td className="px-5 py-4"><span className="block text-nearblack">{invoice.invoice_number}</span><span className="mt-1 block text-caption text-charcoal/45">{invoice.invoice_date ?? "Date unresolved"}</span></td>
-                <td className="px-5 py-4">{label(invoice.company_expense_category)}</td>
+                <td className="px-5 py-4">{invoice.expense_scope === "unallocated" ? "Unallocated — job or company pending" : label(invoice.company_expense_category ?? "other")}</td>
                 <td className="px-5 py-4">{invoice.finance_recurring_commitments?.name ?? "Not linked"}</td>
                 <td className="px-5 py-4 text-right text-nearblack">{money(Number(invoice.total), invoice.currency_code)}</td>
                 <td className="px-5 py-4"><span className="border border-charcoal/25 px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em]">{invoice.status}</span></td>
               </tr>
             ))}
-            {!loading && invoices.length === 0 && <tr><td colSpan={6} className="px-5 py-12 text-center text-body text-charcoal/50">No company bills have been staged yet.</td></tr>}
+            {!loading && invoices.length === 0 && <tr><td colSpan={6} className="px-5 py-12 text-center text-body text-charcoal/50">No company or unallocated bills have been staged yet.</td></tr>}
             {loading && <tr><td colSpan={6} className="px-5 py-12 text-center text-body text-charcoal/50">Loading company bills…</td></tr>}
           </tbody>
         </table>
