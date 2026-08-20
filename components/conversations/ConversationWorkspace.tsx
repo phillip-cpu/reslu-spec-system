@@ -59,10 +59,12 @@ import {
 import {
   nativeRealtimeTransportAvailable,
   nativeVoiceBridgeAvailable,
+  nativeVoiceBridgeRequiresRealtimeUpgrade,
   postNativeVoiceBridgeEvent,
   prepareNativeRealtimeSession,
   prepareNativeVoiceSession,
 } from "@/lib/native-voice-bridge";
+import { monitorMicrophoneHealth, type MicrophoneHealthMonitor } from "@/lib/microphone-health";
 import {
   parseRealtimeConsultArguments,
   parseRealtimeSpecialistArguments,
@@ -139,7 +141,7 @@ import type {
   ConversationsResponse,
 } from "@/types/conversations";
 
-type CallState = "connecting" | "listening" | "thinking" | "speaking" | "interrupted" | "reconnecting";
+type CallState = "connecting" | "checking microphone" | "listening" | "thinking" | "speaking" | "interrupted" | "reconnecting";
 const MESSAGE_SEND_TIMEOUT_MS = 20000;
 const MESSAGE_RECONCILIATION_TIMEOUT_MS = 4000;
 const ATTACHMENT_FINALIZE_REQUEST_TIMEOUT_MS = 6000;
@@ -1343,6 +1345,8 @@ export function ConversationWorkspace({
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const microphoneStreamRef = useRef<MediaStream | null>(null);
+  const microphoneHealthMonitorRef = useRef<MicrophoneHealthMonitor | null>(null);
+  const providerSpeechTimerRef = useRef<number | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const interactionActiveRef = useRef(active);
   const realtimeActiveRef = useRef(false);
@@ -3441,6 +3445,12 @@ export function ConversationWorkspace({
     peerConnectionRef.current = null;
     microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
     microphoneStreamRef.current = null;
+    microphoneHealthMonitorRef.current?.stop();
+    microphoneHealthMonitorRef.current = null;
+    if (providerSpeechTimerRef.current != null) {
+      window.clearTimeout(providerSpeechTimerRef.current);
+      providerSpeechTimerRef.current = null;
+    }
     if (remoteAudioRef.current) {
       remoteAudioRef.current.pause();
       remoteAudioRef.current.srcObject = null;
@@ -3930,6 +3940,12 @@ export function ConversationWorkspace({
       addRealtimeResponseUsage(realtimeUsageRef.current, event.response.usage);
     }
     if (event.type === "input_audio_buffer.speech_started") {
+      if (providerSpeechTimerRef.current != null) {
+        window.clearTimeout(providerSpeechTimerRef.current);
+        providerSpeechTimerRef.current = null;
+      }
+      setCallError(null);
+      setCallState("listening");
       interruptRealtimePlayback(performance.now(), event.native_handled === true);
       setInterim("");
       return;
@@ -4180,7 +4196,28 @@ export function ConversationWorkspace({
       realtimeReconnectInFlightRef.current = false;
       setCallOpening(false);
       setCallError(null);
-      setCallState(activeRealtimeConsultRef.current ? "thinking" : "listening");
+      if (activeRealtimeConsultRef.current) {
+        setCallState("thinking");
+        return;
+      }
+      microphoneHealthMonitorRef.current?.stop();
+      microphoneHealthMonitorRef.current = monitorMicrophoneHealth(stream, {
+        onActivity: () => {
+          if (generation !== realtimeConnectionGenerationRef.current || !callActiveRef.current) return;
+          setCallState("listening");
+          if (providerSpeechTimerRef.current != null) window.clearTimeout(providerSpeechTimerRef.current);
+          providerSpeechTimerRef.current = window.setTimeout(() => {
+            providerSpeechTimerRef.current = null;
+            if (generation !== realtimeConnectionGenerationRef.current || !callActiveRef.current) return;
+            setCallError("Your microphone is working, but the voice service is not receiving speech. Tap Try again to reconnect the audio.");
+          }, 6_000);
+        },
+        onSilence: () => {
+          if (generation !== realtimeConnectionGenerationRef.current || !callActiveRef.current) return;
+          setCallError("No microphone sound was detected. Check microphone access for RESLU, then tap Try again.");
+        },
+      });
+      setCallState(microphoneHealthMonitorRef.current ? "checking microphone" : "listening");
     };
     channel.onmessage = (message) => {
       if (generation !== realtimeConnectionGenerationRef.current) return;
@@ -4480,6 +4517,9 @@ export function ConversationWorkspace({
     messages.forEach((message) => spokenIdsRef.current.add(message.id));
 
     try {
+      if (nativeVoiceBridgeRequiresRealtimeUpgrade()) {
+        throw new Error("This RESLU iPhone app needs the latest voice update. Reinstall the current app build, then try the call again.");
+      }
       if (nativeRealtimeTransportAvailable()) {
         const activeCallId = await createCallRecord();
         callIdRef.current = activeCallId;
@@ -5697,7 +5737,7 @@ export function ConversationWorkspace({
               >
                 <span className="shrink-0 text-caption font-semibold uppercase tracking-[0.14em] text-sand">Captions</span>
                 <span className="min-w-0 flex-1 truncate text-caption text-white/45">
-                  {interim || latestCallTranscript?.text || (callState === "connecting" ? "Connecting…" : "Optional live transcript")}
+                  {interim || latestCallTranscript?.text || (callState === "connecting" ? "Connecting…" : callState === "checking microphone" ? "Say something to test your microphone…" : "Optional live transcript")}
                 </span>
                 <span aria-hidden className="shrink-0 text-white/45">{callTranscriptExpanded ? "⌄" : "⌃"}</span>
               </button>
