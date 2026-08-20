@@ -5,7 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const migration = readFileSync(resolve(root, "supabase/migrations/20260819213843_company_expense_invoices.sql"), "utf8");
+const migration = readFileSync(resolve(root, "supabase/migrations/20260819220252_company_expense_invoices.sql"), "utf8");
 const stager = readFileSync(resolve(root, "lib/stuart/company-expense-invoices.ts"), "utf8");
 const route = readFileSync(resolve(root, "app/api/stuart/company-expense-invoices/route.ts"), "utf8");
 const financeRoute = readFileSync(resolve(root, "app/api/finance/company-invoices/route.ts"), "utf8");
@@ -33,7 +33,7 @@ test("Stuart requires human classification and only stages source-backed Account
 
 test("Finance exposes company bills only behind the company-finance capability", () => {
   assert.match(financeRoute, /hasFinanceCapability\(supabase, "finance\.view_company"\)/);
-  assert.match(financeRoute, /\.eq\("expense_scope", "company"\)/);
+  assert.match(financeRoute, /\.in\("expense_scope", \["company", "unallocated"\]\)/);
   assert.match(financePanel, /Office and recurring bills/);
   assert.match(financePanel, /currency unresolved/);
 });

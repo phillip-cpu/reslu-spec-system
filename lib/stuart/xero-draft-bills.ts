@@ -30,14 +30,15 @@ export async function createStuartXeroDraftBill(input: DraftBillInput) {
   const connection = await getActiveXeroConnection();
   if (!connection) throw new Error("Xero is not connected");
   if (!connection.scopes.includes("accounting.invoices")
+    || !connection.scopes.includes("accounting.attachments")
     || !connection.scopes.some((scope) => scope === "accounting.contacts.read" || scope === "accounting.contacts")) {
-    throw new Error("Reconnect Xero to grant Stuart draft-bill access");
+    throw new Error("Reconnect Xero to grant Stuart draft-bill and attachment access");
   }
 
   const service = createServiceRoleClient();
   const { data: invoice, error } = await service
     .from("invoices")
-    .select("id,supplier,invoice_number,invoice_date,currency_code,amount_ex_gst,gst,total,storage_path,status,supplier_invoice_lines(description,quantity,unit_price_ex_gst,amount_ex_gst,sort)")
+    .select("id,source_email_id,supplier,invoice_number,invoice_date,currency_code,amount_ex_gst,gst,total,storage_path,status,supplier_invoice_lines(description,quantity,unit_price_ex_gst,amount_ex_gst,sort)")
     .eq("id", input.invoiceId)
     .single();
   if (error || !invoice) throw new Error(error?.message ?? "Supplier invoice was not found");
@@ -49,13 +50,14 @@ export async function createStuartXeroDraftBill(input: DraftBillInput) {
   }
   if (!invoice.storage_path) throw new Error("The original supplier invoice must be attached before creating a Xero draft");
 
+  if (!invoice.source_email_id) throw new Error("The supplier invoice has no traceable source email");
   const { data: sourceEvidence, error: sourceEvidenceError } = await service
     .from("email_attachments")
     .select("extracted_text")
-    .eq("storage_ref", invoice.storage_path)
-    .single();
-  if (sourceEvidenceError || !sourceEvidence?.extracted_text) throw new Error("The attached original has no readable verification evidence");
-  if (!evidenceContainsAmount(sourceEvidence.extracted_text, Number(invoice.total))) {
+    .eq("email_id", invoice.source_email_id)
+    .not("extracted_text", "is", null);
+  if (sourceEvidenceError || !sourceEvidence?.length) throw new Error("The attached original has no readable verification evidence");
+  if (!sourceEvidence.some((item) => evidenceContainsAmount(item.extracted_text ?? "", Number(invoice.total)))) {
     throw new Error("The Spec invoice total does not match the attached original; correct the record before creating a Xero draft");
   }
 
@@ -129,24 +131,22 @@ export async function createStuartXeroDraftBill(input: DraftBillInput) {
     .eq("id", reserved.id);
   if (createdAuditError) throw new Error("Draft created, but its audit record could not be updated");
 
-  if (connection.scopes.includes("accounting.attachments")) {
-    const { data: file, error: downloadError } = await service.storage.from(ASSET_BUCKET).download(invoice.storage_path);
-    if (downloadError || !file) throw new Error("Draft created, but the source attachment could not be loaded");
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const filename = `${safeFilename(invoice.supplier)}-${safeFilename(invoice.invoice_number)}.pdf`;
-    await xeroPutBytes(connection, `api.xro/2.0/Invoices/${xeroInvoiceId}/Attachments/${encodeURIComponent(filename)}`, bytes, file.type || "application/pdf");
-  }
+  const { data: file, error: downloadError } = await service.storage.from(ASSET_BUCKET).download(invoice.storage_path);
+  if (downloadError || !file) throw new Error("Draft created, but the source attachment could not be loaded");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const filename = `${safeFilename(invoice.supplier)}-${safeFilename(invoice.invoice_number)}.pdf`;
+  await xeroPutBytes(connection, `api.xro/2.0/Invoices/${xeroInvoiceId}/Attachments/${encodeURIComponent(filename)}`, bytes, file.type || "application/pdf");
 
   await service
     .from("stuart_xero_draft_bills")
-    .update({ status: "complete", attachment_uploaded: connection.scopes.includes("accounting.attachments"), updated_at: new Date().toISOString() })
+    .update({ status: "complete", attachment_uploaded: true, updated_at: new Date().toISOString() })
     .eq("id", reserved.id);
 
   return {
     invoice_id: invoice.id,
     xero_invoice_id: xeroInvoiceId,
     status: "DRAFT" as const,
-    attachment_uploaded: connection.scopes.includes("accounting.attachments"),
+    attachment_uploaded: true,
     human_action: "Review and approve the draft bill inside Xero; Stuart cannot approve or pay it.",
   };
   } catch (error) {
