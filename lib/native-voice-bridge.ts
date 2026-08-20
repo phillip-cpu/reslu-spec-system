@@ -56,6 +56,10 @@ export function nativeRealtimeTransportAvailable() {
   return capabilities?.version === 2 && capabilities.nativeRealtimeTransport === true;
 }
 
+export function nativeVoiceBridgeRequiresRealtimeUpgrade() {
+  return nativeVoiceBridgeAvailable() && !nativeRealtimeTransportAvailable();
+}
+
 /**
  * Posts lifecycle or native Realtime events to the optional RESLU iOS shell.
  * Safari and the PWA do not expose this handler, so the web call is unchanged.
