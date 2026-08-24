@@ -17,12 +17,15 @@ test("agent workspace is a first-class view in RESLU Messages", () => {
   assert.match(operatingWorkspace, /Nothing needs your approval/);
 });
 
-test("assignment messages are validated, owned and correlated through the runtime", () => {
+test("assignment messages are validated, safely routed and correlated through the runtime", () => {
   const route = read("app/api/conversations/[id]/messages/route.ts");
+  const operatingWorkspace = read("components/conversations/AgentOperatingWorkspace.tsx");
   const bridge = read("scripts/conversation_agent_bridge.py");
   assert.match(route, /agent_task_id/);
   assert.match(route, /Assignment not found/);
   assert.match(route, /linkedTaskOwner/);
+  assert.doesNotMatch(route, /Assignment owner is not in this conversation/);
+  assert.match(operatingWorkspace, /target_agent_slugs: \[agent\.agent_slug\]/);
   assert.match(bridge, /triggering_message_agent_task_id/);
   assert.match(bridge, /"agent_task_id": linked_agent_task_id/);
   assert.match(bridge, /\[Assignment:/);

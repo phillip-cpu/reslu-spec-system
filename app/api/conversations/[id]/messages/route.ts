@@ -425,9 +425,6 @@ export async function POST(request: NextRequest, context: Context) {
       || new RegExp(`(?:^|\\s)@?${agent.display_name}(?:\\s|[,.!?]|$)`, "i").test(messageBody);
   });
   const linkedTaskOwner = linkedTask ? agents.find((agent) => agent.id === linkedTask.owner_agent_id) ?? null : null;
-  if (linkedTask && !linkedTaskOwner) {
-    return NextResponse.json({ error: "Assignment owner is not in this conversation" }, { status: 409 });
-  }
   const targetAgents = linkedTaskOwner
     ? [linkedTaskOwner]
     : agents.length === 1 && participantResult.participants.length === 2 && explicitTargets.size === 0
