@@ -54,7 +54,7 @@ import {
   splitAriaAuthorityArgs,
 } from "./aria-authority.mjs";
 import { transcribePrivateMeetingSource } from "./local-whisper.mjs";
-import { resolveBoardTaskUpdate, verifyBoardTaskUpdate } from "./project-board.mjs";
+import { resolveBoardGroupUpdate, resolveBoardTaskUpdate, verifyBoardGroupUpdate, verifyBoardTaskUpdate } from "./project-board.mjs";
 
 // ------------------------------------------------------------
 // Environment
@@ -989,6 +989,39 @@ const TOOLS = [
       });
       const readback = await apiFetch(`/api/projects/${project_id}/board`);
       return { task: verifyBoardTaskUpdate(readback, resolved.task.id, resolved.patch), verified: true };
+    },
+  },
+  {
+    name: "update_board_group",
+    description:
+      "Edit or reorder an existing project work-board phase group, then verify by readback. Use this when the named thing is a group heading such as 'Plasterboard, Flushing & Cornice', not a card. For 'move Plasterboard under Rough-in', pass group_name='Plasterboard' and move_after_group_name='Rough-in'.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project UUID" },
+        group_id: { type: "string", description: "Existing board_groups UUID; preferred" },
+        group_name: { type: "string", description: "Unambiguous current phase-group name" },
+        expected_updated_at: { type: "string", description: "Exact group.updated_at from get_project_board" },
+        name: { type: "string", description: "New group name" },
+        sort: { type: "number", description: "Explicit sort value; normally prefer a relative move" },
+        move_after_group_id: { type: "string" },
+        move_after_group_name: { type: "string", description: "Place immediately after this group" },
+        move_before_group_id: { type: "string" },
+        move_before_group_name: { type: "string", description: "Place immediately before this group" },
+      },
+      required: ["project_id", "expected_updated_at"],
+      additionalProperties: false,
+    },
+    handler: async ({ project_id, ...input }) => {
+      const board = await apiFetch(`/api/projects/${project_id}/board`);
+      const resolved = resolveBoardGroupUpdate(board, input);
+      if (resolved.noOp) return { group: resolved.group, verified: true, unchanged: true };
+      await apiFetch(`/api/board-groups/${resolved.group.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ ...resolved.patch, expected_updated_at: input.expected_updated_at }),
+      });
+      const readback = await apiFetch(`/api/projects/${project_id}/board`);
+      return { group: verifyBoardGroupUpdate(readback, resolved.group.id, resolved.patch), verified: true };
     },
   },
   // ------------------------------------------------------------
