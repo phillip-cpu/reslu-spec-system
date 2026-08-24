@@ -47,14 +47,15 @@ test("saved estimate converts to cent-exact contribution identities", () => {
   assert.deepEqual(
     result.map((item) => [item.description, item.plannedMinor]),
     [
-      ["Calculated line", 240_000],
-      ["Lump sum", 180_000],
-      ["FF&E - FA", 125_055],
-      ["Approved variations", 50_000],
+      ["Calculated line", 264_000],
+      ["Lump sum", 198_000],
+      ["FF&E - FA", 137_561],
+      ["Approved variations", 55_000],
     ]
   );
   assert.equal(new Set(result.map((item) => item.contributionKey)).size, result.length);
   assert.ok(result.every((item) => item.plannedDate === null));
+  assert.ok(result.every((item) => item.sourceTrace?.cash_basis === "gross_inc_gst"));
 });
 
 test("shadow timing overrides are isolated and typo-safe", () => {

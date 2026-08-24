@@ -314,7 +314,14 @@ function InvoiceRow({
     supplier: invoice.supplier,
     invoice_number: invoice.invoice_number,
     invoice_date: invoice.invoice_date ?? "",
+    due_date: invoice.due_date ?? "",
     amount_ex_gst: String(invoice.amount_ex_gst),
+  });
+  const [paymentDrafts, setPaymentDrafts] = useState({
+    due_date: invoice.due_date ?? "",
+    payment_status: invoice.payment_status,
+    amount_paid: String(invoice.amount_paid),
+    paid_at: invoice.paid_at ?? "",
   });
   // r24 — "Aria · needs approval": source='aria' AND not yet in a
   // terminal state (migration 052's own comment on invoices.source is
@@ -329,6 +336,7 @@ function InvoiceRow({
       supplier: fieldDrafts.supplier.trim(),
       invoice_number: fieldDrafts.invoice_number.trim(),
       invoice_date: fieldDrafts.invoice_date || null,
+      due_date: fieldDrafts.due_date || null,
       amount_ex_gst: amountNum,
     });
     setEditingFields(false);
@@ -485,7 +493,7 @@ function InvoiceRow({
                 </div>
                 {editingFields ? (
                   <div className="space-y-2">
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
                       <label className="block">
                         <span className="label-caps mb-1 block !text-charcoal/50">Supplier</span>
                         <input
@@ -521,6 +529,15 @@ function InvoiceRow({
                           className="w-full border border-[#c9c2b4] bg-cream px-2 py-1 text-body focus:border-nearblack focus:outline-none"
                         />
                       </label>
+                      <label className="block">
+                        <span className="label-caps mb-1 block !text-charcoal/50">Due date</span>
+                        <input
+                          type="date"
+                          value={fieldDrafts.due_date}
+                          onChange={(e) => setFieldDrafts((d) => ({ ...d, due_date: e.target.value }))}
+                          className="w-full border border-[#c9c2b4] bg-cream px-2 py-1 text-body focus:border-nearblack focus:outline-none"
+                        />
+                      </label>
                     </div>
                     <div className="flex gap-2">
                       <button
@@ -547,6 +564,53 @@ function InvoiceRow({
                   </p>
                 )}
               </div>
+
+              {invoice.status === "approved" && (
+                <div className="space-y-2 border border-[#dcd6cc] bg-nearwhite p-3">
+                  <p className="label-caps">Supplier cash payment</p>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                    <label className="block">
+                      <span className="label-caps mb-1 block !text-charcoal/50">Due date</span>
+                      <input type="date" value={paymentDrafts.due_date}
+                        onChange={(e) => setPaymentDrafts((d) => ({ ...d, due_date: e.target.value }))}
+                        className="w-full border border-[#c9c2b4] bg-cream px-2 py-1 text-body focus:border-nearblack focus:outline-none" />
+                    </label>
+                    <label className="block">
+                      <span className="label-caps mb-1 block !text-charcoal/50">Payment status</span>
+                      <select value={paymentDrafts.payment_status}
+                        onChange={(e) => setPaymentDrafts((d) => ({ ...d, payment_status: e.target.value as typeof d.payment_status }))}
+                        className="w-full border border-[#c9c2b4] bg-cream px-2 py-1 text-body focus:border-nearblack focus:outline-none">
+                        <option value="unpaid">Unpaid</option>
+                        <option value="part_paid">Part paid</option>
+                        <option value="paid">Paid</option>
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="label-caps mb-1 block !text-charcoal/50">Gross paid inc GST</span>
+                      <input type="number" min="0" max={invoice.total} step="0.01" value={paymentDrafts.amount_paid}
+                        onChange={(e) => setPaymentDrafts((d) => ({ ...d, amount_paid: e.target.value }))}
+                        className="w-full border border-[#c9c2b4] bg-cream px-2 py-1 text-body focus:border-nearblack focus:outline-none" />
+                    </label>
+                    <label className="block">
+                      <span className="label-caps mb-1 block !text-charcoal/50">Latest payment date</span>
+                      <input type="date" value={paymentDrafts.paid_at}
+                        onChange={(e) => setPaymentDrafts((d) => ({ ...d, paid_at: e.target.value }))}
+                        className="w-full border border-[#c9c2b4] bg-cream px-2 py-1 text-body focus:border-nearblack focus:outline-none" />
+                    </label>
+                  </div>
+                  <button type="button" disabled={busy}
+                    onClick={() => onSaveFields({
+                      due_date: paymentDrafts.due_date || null,
+                      payment_status: paymentDrafts.payment_status,
+                      amount_paid: Number(paymentDrafts.amount_paid),
+                      paid_at: paymentDrafts.paid_at || null,
+                    })}
+                    className="border border-nearblack px-3 py-1 text-caption text-nearblack hover:bg-nearblack hover:text-white disabled:opacity-40">
+                    Save cash status
+                  </button>
+                  <p className="text-caption text-charcoal/50">Approval records the cost. Only payment status records cash leaving the bank.</p>
+                </div>
+              )}
 
               {invoice.library_cost_applied && (
                 <p className="text-caption text-charcoal/50">Library product cost was updated from this invoice.</p>

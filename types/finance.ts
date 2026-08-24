@@ -335,6 +335,7 @@ export interface FinanceCockpitResponse {
     xero_cash_as_of: string | null;
     xero_invoice_actuals: number;
     xero_matched_invoices: number;
+    xero_matched_supplier_bills: number;
     xero_unmatched_invoices: number;
     calculated_at: string;
   };
@@ -345,6 +346,7 @@ export interface FinanceCockpitResponse {
     active_recurring_commitments: number;
     connected_client_claims: number;
     connected_projects: number;
+    reconciled_supplier_invoices: number;
   };
   client_claims_summary: {
     contracted_minor: number;

@@ -7715,6 +7715,25 @@ or estimate is seeded, while manual links are never overwritten. Sections
 without a dependable match remain in `unknownTimingMinor`; they are never
 assigned a fabricated date or silently converted to zero.
 
+Supplier cost outflows are reconciled before projection. Saved estimates are
+converted from ex-GST costing to gross inc-GST cash. Approved supplier invoice
+allocations replace the corresponding estimate cost-line or FF&E-category slice,
+while preserving the invoice due date and paid date as separate cash states.
+Unmatched allocations remain explicit actual outflows.
+
+### Supplier invoice cash state (migration `20260824084559`)
+
+`PATCH /api/invoices/:id` accepts `due_date`, `payment_status`, `amount_paid`
+and `paid_at`. These are the only fields that remain editable after an invoice
+is approved. `amount_paid` is gross inc GST. `unpaid` requires zero paid and no
+payment date; `part_paid` requires an amount between zero and total plus a date;
+`paid` requires the gross invoice total plus a date.
+
+The company cockpit reports reconciled supplier-invoice and matched-Xero-bill
+counts. Xero ACCPAY matching requires normalised invoice number and supplier
+name; matched bills overlay RESLU allocations rather than becoming duplicate
+outflows.
+
 ### Finance UI routes
 
 - `/finance` - executive shadow cockpit, weekly cash drill-down, project

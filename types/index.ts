@@ -582,6 +582,7 @@ export interface MeasurementGroupWithRows extends MeasurementGroup {
 
 export type InvoiceMatchType = "cost_line" | "item" | "item_component";
 export type InvoiceStatus = "unmatched" | "proposed" | "approved" | "rejected" | "voided";
+export type SupplierInvoicePaymentStatus = "unpaid" | "part_paid" | "paid";
 
 /**
  * Schema-only this release (BUILD-SPEC.md "Invoice pipeline — AI-updated
@@ -594,9 +595,15 @@ export interface Invoice {
   supplier: string;
   invoice_number: string;
   invoice_date: string | null;
+  due_date: string | null;
   amount_ex_gst: number;
   gst: number;
   total: number;
+  payment_status: SupplierInvoicePaymentStatus;
+  /** Gross cash paid including GST. */
+  amount_paid: number;
+  /** Latest recorded payment date. */
+  paid_at: string | null;
   storage_path: string | null;
   proposed_match_type: InvoiceMatchType | null;
   proposed_match_id: string | null;
@@ -828,6 +835,7 @@ export interface CreateInvoiceInput {
   supplier: string;
   invoice_number: string;
   invoice_date?: string | null;
+  due_date?: string | null;
   amount_ex_gst: number;
   gst?: number;
   total?: number;
@@ -848,9 +856,13 @@ export interface PatchInvoiceInput {
   supplier?: string;
   invoice_number?: string;
   invoice_date?: string | null;
+  due_date?: string | null;
   amount_ex_gst?: number;
   gst?: number;
   total?: number;
+  payment_status?: SupplierInvoicePaymentStatus;
+  amount_paid?: number;
+  paid_at?: string | null;
   proposed_match_type?: InvoiceMatchType | null;
   proposed_match_id?: string | null;
   confidence_note?: string | null;

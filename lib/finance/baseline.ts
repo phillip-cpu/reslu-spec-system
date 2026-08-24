@@ -37,6 +37,11 @@ function dollarsToMinor(value: number): number {
   return minor;
 }
 
+/** Estimate snapshots are stored ex GST; a cash forecast must use bank cash. */
+function exGstDollarsToGrossMinor(value: number): number {
+  return dollarsToMinor(value * 1.1);
+}
+
 function lineCost(line: SnapshotLine): number {
   const calculated = finiteNumber(line.qty) * finiteNumber(line.rate_ex_gst);
   const explicit = line.cost_ex_gst;
@@ -69,7 +74,8 @@ export function buildEstimatePlanContributions(input: {
 
   for (const section of input.snapshot.sections ?? []) {
     for (const line of section.lines ?? []) {
-      const plannedMinor = dollarsToMinor(lineCost(line));
+      const netMinor = dollarsToMinor(lineCost(line));
+      const plannedMinor = exGstDollarsToGrossMinor(lineCost(line));
       if (plannedMinor <= 0) continue;
       const contributionKey = `project:${input.projectId}|cost_line:${line.id}|scope:base`;
       const override = overrides[contributionKey] ?? null;
@@ -87,6 +93,9 @@ export function buildEstimatePlanContributions(input: {
           source_type: "estimate_cost_line",
           source_record_id: line.id,
           source_version_id: input.estimateVersionId,
+          cash_basis: "gross_inc_gst",
+          net_minor: netMinor,
+          tax_minor: plannedMinor - netMinor,
           section_id: section.id,
           section_name: section.name,
           timing_source: override
@@ -100,7 +109,8 @@ export function buildEstimatePlanContributions(input: {
   }
 
   for (const category of input.snapshot.ffe?.categories ?? []) {
-    const plannedMinor = dollarsToMinor(finiteNumber(category.total));
+    const netMinor = dollarsToMinor(finiteNumber(category.total));
+    const plannedMinor = exGstDollarsToGrossMinor(finiteNumber(category.total));
     if (plannedMinor <= 0) continue;
     const contributionKey = `project:${input.projectId}|ffe_category:${category.category}|scope:base`;
     const override = overrides[contributionKey] ?? null;
@@ -117,13 +127,19 @@ export function buildEstimatePlanContributions(input: {
       sourceTrace: {
         source_type: "estimate_ffe_category",
         source_version_id: input.estimateVersionId,
+        cash_basis: "gross_inc_gst",
+        net_minor: netMinor,
+        tax_minor: plannedMinor - netMinor,
         category: category.category,
         timing_source: override ? "shadow_override" : "unmapped",
       },
     });
   }
 
-  const variationMinor = dollarsToMinor(
+  const variationNetMinor = dollarsToMinor(
+    finiteNumber(input.snapshot.rollup?.approvedVariationsExGst)
+  );
+  const variationMinor = exGstDollarsToGrossMinor(
     finiteNumber(input.snapshot.rollup?.approvedVariationsExGst)
   );
   if (variationMinor > 0) {
@@ -140,6 +156,9 @@ export function buildEstimatePlanContributions(input: {
       sourceTrace: {
         source_type: "estimate_approved_variations",
         source_version_id: input.estimateVersionId,
+        cash_basis: "gross_inc_gst",
+        net_minor: variationNetMinor,
+        tax_minor: variationMinor - variationNetMinor,
         timing_source: override ? "shadow_override" : "unmapped",
       },
     });

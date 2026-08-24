@@ -15,6 +15,10 @@ import { generateRecurringContributions } from "@/lib/finance/recurrence";
 import { isIsoDate } from "@/lib/finance/readiness";
 import { buildSectionForecastDates } from "@/lib/finance/schedule-cost-timing";
 import { includesConstructionCosts } from "@/lib/finance/construction-cost-eligibility";
+import {
+  reconcileSupplierInvoiceActuals,
+  type SupplierCashInvoice,
+} from "@/lib/finance/supplier-actuals";
 import { applyXeroInvoiceActuals, type CachedXeroInvoice, type CachedXeroPayment } from "@/lib/finance/xero-actuals";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { hasXeroAccess } from "@/lib/xero/access";
@@ -60,6 +64,8 @@ type ForecastLineRow = {
   description: string;
   dimension: Record<string, unknown> | null;
   planned_net_minor: number | string;
+  planned_tax_minor: number | string | null;
+  planned_gross_minor: number | string | null;
   committed_net_minor: number | string;
   actual_accrued_net_minor: number | string;
   actual_paid_net_minor: number | string;
@@ -98,6 +104,13 @@ function safeMinor(value: number | string, label: string): number {
   return parsed;
 }
 
+function grossMinorFromNet(value: number | string, label: string): number {
+  const net = safeMinor(value, label);
+  const gross = Math.round(net * 1.1);
+  if (!Number.isSafeInteger(gross)) throw new Error(`${label} gross is outside safe minor-unit range`);
+  return gross;
+}
+
 function toContribution(
   line: ForecastLineRow,
   projectName: string,
@@ -112,13 +125,12 @@ function toContribution(
     contributionKey: line.contribution_key,
     direction: line.direction,
     description: line.description,
-    plannedMinor: safeMinor(line.planned_net_minor, `${line.id}.planned`),
-    committedMinor: safeMinor(line.committed_net_minor, `${line.id}.committed`),
-    actualAccruedMinor: safeMinor(
-      line.actual_accrued_net_minor,
-      `${line.id}.actual_accrued`
-    ),
-    actualPaidMinor: safeMinor(line.actual_paid_net_minor, `${line.id}.actual_paid`),
+    plannedMinor: line.planned_gross_minor === null
+      ? grossMinorFromNet(line.planned_net_minor, `${line.id}.planned`)
+      : safeMinor(line.planned_gross_minor, `${line.id}.planned_gross`),
+    committedMinor: grossMinorFromNet(line.committed_net_minor, `${line.id}.committed`),
+    actualAccruedMinor: grossMinorFromNet(line.actual_accrued_net_minor, `${line.id}.actual_accrued`),
+    actualPaidMinor: grossMinorFromNet(line.actual_paid_net_minor, `${line.id}.actual_paid`),
     plannedDate: scheduleDate ?? line.planned_date,
     committedDate: line.committed_date,
     actualDueDate: line.actual_due_date,
@@ -134,6 +146,8 @@ function toContribution(
       source_version_id: line.source_version_id,
       dimension: line.dimension ?? {},
       timing_source: scheduleDate ? "construction_schedule" : "baseline",
+      cash_basis: "gross_inc_gst",
+      net_minor: safeMinor(line.planned_net_minor, `${line.id}.planned_net_trace`),
     },
   };
 }
@@ -264,7 +278,7 @@ export async function GET(request: NextRequest) {
     const { data, error } = await supabase
       .from("finance_forecast_lines")
       .select(
-        "id,baseline_id,project_id,contribution_key,direction,source_type,source_record_id,source_version_id,description,dimension,planned_net_minor,committed_net_minor,actual_accrued_net_minor,actual_paid_net_minor,planned_date,committed_date,actual_due_date,actual_paid_date,confidence"
+        "id,baseline_id,project_id,contribution_key,direction,source_type,source_record_id,source_version_id,description,dimension,planned_net_minor,planned_tax_minor,planned_gross_minor,committed_net_minor,actual_accrued_net_minor,actual_paid_net_minor,planned_date,committed_date,actual_due_date,actual_paid_date,confidence"
       )
       .in("baseline_id", baselineIds);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -301,6 +315,8 @@ export async function GET(request: NextRequest) {
   let estimateVersions: EstimateVersionRow[] = [];
   let costSections: CostSectionForecastRow[] = [];
   let contractVariations: ClientContractVariation[] = [];
+  let supplierInvoices: SupplierCashInvoice[] = [];
+  let itemCategories: Record<string, string> = {};
   if (companyProjectIds.length > 0) {
     const [
       scheduleResult,
@@ -310,6 +326,8 @@ export async function GET(request: NextRequest) {
       estimateResult,
       costSectionResult,
       contractVariationResult,
+      supplierInvoiceResult,
+      itemResult,
     ] = await Promise.all([
       supabase
         .from("client_payment_schedule")
@@ -348,6 +366,16 @@ export async function GET(request: NextRequest) {
         .in("project_id", companyProjectIds)
         .eq("status", "active")
         .is("deleted_at", null),
+      supabase
+        .from("invoices")
+        .select("id,project_id,supplier,invoice_number,invoice_date,due_date,amount_ex_gst,gst,total,status,payment_status,amount_paid,paid_at,proposed_match_type,proposed_match_id,invoice_allocations(id,match_type,match_id,amount_ex_gst)")
+        .in("project_id", companyProjectIds)
+        .eq("status", "approved"),
+      supabase
+        .from("items")
+        .select("id,category")
+        .in("project_id", companyProjectIds)
+        .is("deleted_at", null),
     ]);
     const companyReadError =
       scheduleResult.error ??
@@ -357,7 +385,7 @@ export async function GET(request: NextRequest) {
       estimateResult.error ??
       costSectionResult.error;
       // keep the first read error deterministic across all company sources
-    const allCompanyReadError = companyReadError ?? contractVariationResult.error;
+    const allCompanyReadError = companyReadError ?? contractVariationResult.error ?? supplierInvoiceResult.error ?? itemResult.error;
     if (allCompanyReadError) {
       return NextResponse.json({ error: allCompanyReadError.message }, { status: 500 });
     }
@@ -368,6 +396,10 @@ export async function GET(request: NextRequest) {
     estimateVersions = (estimateResult.data ?? []) as unknown as EstimateVersionRow[];
     costSections = (costSectionResult.data ?? []) as CostSectionForecastRow[];
     contractVariations = (contractVariationResult.data ?? []) as ClientContractVariation[];
+    supplierInvoices = (supplierInvoiceResult.data ?? []) as unknown as SupplierCashInvoice[];
+    itemCategories = Object.fromEntries(
+      (itemResult.data ?? []).map((item) => [item.id, item.category || "Uncategorised"])
+    );
   }
 
   try {
@@ -446,10 +478,15 @@ export async function GET(request: NextRequest) {
         });
       }
     }
-    const projectContributions = [
+    const plannedProjectContributions = [
       ...eligibleBaselineContributions,
       ...connectedEstimateContributions,
     ];
+    const supplierReconciliation = reconcileSupplierInvoiceActuals({
+      contributions: plannedProjectContributions,
+      invoices: supplierInvoices,
+      itemCategories,
+    });
     const recurringCommitments = ((rawRecurring ?? []) as Record<string, unknown>[]).map(
       (row) => ({ ...row, amount_minor: safeMinor(row.amount_minor as number | string, `${String(row.id)}.amount`) }) as unknown as FinanceRecurringCommitment
     );
@@ -466,12 +503,24 @@ export async function GET(request: NextRequest) {
       contractVariations,
     });
     const xeroActuals = applyXeroInvoiceActuals({
-      contributions: clientClaimPortfolio.contributions,
+      contributions: [
+        ...supplierReconciliation.contributions,
+        ...clientClaimPortfolio.contributions,
+      ],
       clientInvoices,
+      supplierInvoices,
       xeroInvoices,
       xeroPayments,
     });
-    const clientClaimContributions = xeroActuals.contributions;
+    const reconciledCashContributions = xeroActuals.contributions;
+    const clientClaimContributions = reconciledCashContributions.filter(
+      (contribution) =>
+        contribution.sourceTrace?.source_type === "client_claim" ||
+        (contribution.sourceTrace?.source_type === "xero_invoice" && contribution.direction === "inflow")
+    );
+    const projectContributions = reconciledCashContributions.filter(
+      (contribution) => contribution.direction === "outflow"
+    );
     const reconciledClientClaims = clientClaimContributions.filter(
       (contribution) => contribution.sourceTrace?.source_type === "client_claim"
     );
@@ -484,8 +533,7 @@ export async function GET(request: NextRequest) {
       0
     );
     const contributions = [
-      ...projectContributions,
-      ...clientClaimContributions,
+      ...reconciledCashContributions,
       ...recurringContributions,
     ];
     const xeroCashMinor = xeroCashSnapshot
@@ -591,6 +639,7 @@ export async function GET(request: NextRequest) {
         xero_cash_as_of: xeroCashSnapshot?.as_of_date ?? null,
         xero_invoice_actuals: xeroActuals.includedInvoices,
         xero_matched_invoices: xeroActuals.matchedClientInvoices,
+        xero_matched_supplier_bills: xeroActuals.matchedSupplierInvoices,
         xero_unmatched_invoices: xeroActuals.unmatchedInvoices,
         calculated_at: new Date().toISOString(),
       },
@@ -605,6 +654,7 @@ export async function GET(request: NextRequest) {
         active_recurring_commitments: recurringCommitments.length,
         connected_client_claims: clientClaimPortfolio.contributions.length,
         connected_projects: clientClaimPortfolio.summary.projectCount,
+        reconciled_supplier_invoices: supplierReconciliation.includedInvoices,
       },
       client_claims_summary: {
         contracted_minor: clientClaimPortfolio.summary.contractedMinor,

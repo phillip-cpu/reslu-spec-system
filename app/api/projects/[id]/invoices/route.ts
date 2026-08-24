@@ -19,6 +19,12 @@ const STATUSES: InvoiceStatus[] = ["unmatched", "proposed", "approved", "rejecte
 const MATCH_TYPES: InvoiceMatchType[] = ["cost_line", "item", "item_component"];
 const SOURCES: InvoiceSource[] = ["manual", "aria", "stuart"];
 
+function validDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+}
+
 /**
  * GET /api/projects/[id]/invoices?status=
  * Admin-only, financial (BUILD-SPEC.md "Invoice pipeline" +
@@ -152,6 +158,7 @@ export async function POST(
       "supplier",
       "invoice_number",
       "invoice_date",
+      "due_date",
       "amount_ex_gst",
       "gst",
       "total",
@@ -306,6 +313,11 @@ export async function POST(
 
   const invoice_date =
     typeof body.invoice_date === "string" && body.invoice_date ? body.invoice_date : null;
+  const due_date =
+    typeof body.due_date === "string" && body.due_date ? body.due_date : null;
+  if (due_date && !validDate(due_date)) {
+    return NextResponse.json({ error: "due_date must be an ISO calendar date" }, { status: 400 });
+  }
   const confidence_note =
     typeof body.confidence_note === "string" && body.confidence_note ? body.confidence_note : null;
 
@@ -396,6 +408,7 @@ export async function POST(
     supplier,
     invoice_number,
     invoice_date,
+    due_date,
     amount_ex_gst,
     gst,
     total,
