@@ -32,6 +32,7 @@ type MessageInput = {
   attachment_ids?: unknown;
   client_message_id?: unknown;
   reply_to_id?: unknown;
+  agent_task_id?: unknown;
 };
 type MessageRow = Omit<ConversationMessage, "attachments" | "author" | "reactions" | "pinned_at" | "pinned_by"> & {
   conversation_attachments?: ConversationAttachment[];
@@ -379,12 +380,31 @@ export async function POST(request: NextRequest, context: Context) {
   if (replyToId && !UUID_PATTERN.test(replyToId)) {
     return NextResponse.json({ error: "Invalid reply target" }, { status: 400 });
   }
+  if (body.agent_task_id != null && typeof body.agent_task_id !== "string") {
+    return NextResponse.json({ error: "Invalid assignment" }, { status: 400 });
+  }
+  const agentTaskId = body.agent_task_id == null ? null : body.agent_task_id.trim();
+  if (agentTaskId && !UUID_PATTERN.test(agentTaskId)) {
+    return NextResponse.json({ error: "Invalid assignment" }, { status: 400 });
+  }
 
   const participantResult = await conversationParticipants(supabase, id, user.id);
   const self = participantResult.participants.find((participant) => participant.type === "human" && participant.id === user.id);
   if (!self) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
 
   const agents = participantResult.participants.filter((participant) => participant.type === "agent");
+  let linkedTask: { id: string; title: string; owner_agent_id: string } | null = null;
+  if (agentTaskId) {
+    const { data: task, error: taskError } = await supabase
+      .from("agent_tasks")
+      .select("id,title,owner_agent_id")
+      .eq("id", agentTaskId)
+      .eq("conversation_id", id)
+      .maybeSingle();
+    if (taskError) return NextResponse.json({ error: taskError.message }, { status: 500 });
+    if (!task) return NextResponse.json({ error: "Assignment not found" }, { status: 404 });
+    linkedTask = task;
+  }
   let replyTargetAgentId: string | null = null;
   if (replyToId) {
     const { data: replyTarget, error: replyTargetError } = await supabase
@@ -404,9 +424,15 @@ export async function POST(request: NextRequest, context: Context) {
       || explicitTargets.has(slug)
       || new RegExp(`(?:^|\\s)@?${agent.display_name}(?:\\s|[,.!?]|$)`, "i").test(messageBody);
   });
-  const targetAgents = agents.length === 1 && participantResult.participants.length === 2 && explicitTargets.size === 0
-    ? agents
-    : mentionedTargets;
+  const linkedTaskOwner = linkedTask ? agents.find((agent) => agent.id === linkedTask.owner_agent_id) ?? null : null;
+  if (linkedTask && !linkedTaskOwner) {
+    return NextResponse.json({ error: "Assignment owner is not in this conversation" }, { status: 409 });
+  }
+  const targetAgents = linkedTaskOwner
+    ? [linkedTaskOwner]
+    : agents.length === 1 && participantResult.participants.length === 2 && explicitTargets.size === 0
+      ? agents
+      : mentionedTargets;
   if (body.source === "voice" && targetAgents.length > 0) {
     // A newer spoken turn supersedes unfinished speech. The Mac bridge
     // checks this state before publishing output, so a late reply cannot
@@ -432,6 +458,7 @@ export async function POST(request: NextRequest, context: Context) {
     source: body.source === "voice" ? "voice" : body.source === "voice_note" ? "voice_note" : "text",
     target_agent_slugs: targetAgents.map((agent) => agent.agent_slug),
     ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
+    ...(linkedTask ? { agent_task_id: linkedTask.id, agent_task_title: linkedTask.title } : {}),
   };
   const messageResult = await supabase.rpc("create_conversation_message_idempotent", {
     p_conversation_id: id,

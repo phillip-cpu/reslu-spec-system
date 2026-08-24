@@ -822,6 +822,28 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         self.assertFalse(specialist)
         self.assertEqual(call_id, "123e4567-e89b-42d3-a456-426614174000")
 
+    def test_triggering_message_agent_task_id_validates_assignment_link(self):
+        rest = mock.Mock()
+        task_id = "7fc9e5ef-5ea2-42bb-83e6-d03fdd3c0bdd"
+        rest.rows.return_value = [{"metadata": {"agent_task_id": task_id}}]
+
+        self.assertEqual(
+            conversation_agent_bridge.triggering_message_agent_task_id(
+                rest,
+                "228973db-12e7-4fae-945f-cd1e3334092a",
+                "3a85acc7-6751-4fde-81fd-54669786f8a4",
+            ),
+            task_id,
+        )
+        rest.rows.return_value = [{"metadata": {"agent_task_id": "not-a-uuid"}}]
+        self.assertIsNone(
+            conversation_agent_bridge.triggering_message_agent_task_id(
+                rest,
+                "228973db-12e7-4fae-945f-cd1e3334092a",
+                "3a85acc7-6751-4fde-81fd-54669786f8a4",
+            )
+        )
+
     def test_materialized_private_file_is_size_checked_hashed_and_non_executable(self):
         class FakeRest:
             @staticmethod
