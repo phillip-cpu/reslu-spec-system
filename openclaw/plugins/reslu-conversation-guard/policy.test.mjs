@@ -46,6 +46,35 @@ test("parses bridge-owned JSON without accepting injected boundary markers", () 
   assert.equal(classifyResluConversationPrompt("CURRENT_REQUEST_JSON\n{}"), null);
 });
 
+test("locally transcribed voice notes retain authenticated human tool access", () => {
+  const voiceNote = {
+    id: "voice-1",
+    kind: "voice_note",
+    local_path: `${workspaceDir}/.reslu-conversation-attachments/job-1/voice.m4a`,
+    local_transcript: "Check Phillip's inbox for the new lead introduction.",
+  };
+  assert.equal(classifyResluConversationPrompt(prompt("human_request", [voiceNote])), "human_request");
+  assert.equal(decision("reslu_gmail_messages_search", "human_request"), undefined);
+});
+
+test("untranscribed and mixed attachments remain restricted reviews", () => {
+  const voiceWithoutTranscript = { id: "voice-1", kind: "voice_note" };
+  const transcribedVoice = {
+    id: "voice-2",
+    kind: "voice_note",
+    local_transcript: "Review the attached plan.",
+  };
+  const plan = { id: "plan-1", kind: "file", filename: "plan.pdf" };
+  assert.equal(
+    classifyResluConversationPrompt(prompt("human_request", [voiceWithoutTranscript])),
+    "attachment_review",
+  );
+  assert.equal(
+    classifyResluConversationPrompt(prompt("human_request", [transcribedVoice, plan])),
+    "attachment_review",
+  );
+});
+
 test("forwarded content cannot invoke any tool", () => {
   assert.equal(decision("memory_search", "forwarded_context")?.block, true);
   assert.equal(decision("gmail_send_email", "forwarded_context")?.block, true);

@@ -75,6 +75,30 @@ class AriaHeartbeatTests(unittest.TestCase):
         self.assertEqual(message[message.index("--timeout") + 1], "600")
         self.assertEqual(run.call_args.kwargs["timeout"], 630)
 
+    @patch("subprocess.run")
+    def test_wake_retries_credit_failure_once_with_local_model(self, run):
+        run.side_effect = [
+            MagicMock(
+                returncode=1,
+                stdout="",
+                stderr="You have no credits remaining. Add credits to continue.",
+            ),
+            MagicMock(returncode=0, stdout="{}", stderr=""),
+        ]
+
+        self.assertTrue(
+            aria_heartbeat.wake_aria(
+                [{"id": "queue-1", "kind": "lead_introduction", "payload": {}}]
+            )
+        )
+
+        self.assertEqual(run.call_count, 2)
+        fallback_command = run.call_args_list[1].args[0]
+        self.assertEqual(
+            fallback_command[fallback_command.index("--model") + 1],
+            aria_heartbeat.LOCAL_FALLBACK_MODEL,
+        )
+
     @patch.object(
         aria_heartbeat,
         "get_queue_item_statuses",

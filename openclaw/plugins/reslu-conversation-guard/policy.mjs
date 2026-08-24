@@ -187,7 +187,21 @@ export function classifyResluConversationPrompt(prompt) {
     return null;
   }
   if (request.kind === "forwarded_context") return "forwarded_context";
-  if (attachments.length > 0) return "attachment_review";
+  // Voice notes are transcribed locally by the trusted conversation bridge.
+  // Once that transcript is present it is the authenticated human request,
+  // not an untrusted file-review turn. Treating it as attachment_review blocks
+  // every business tool (including Gmail) and makes ordinary spoken requests
+  // impossible to complete. Mixed turns still stay attachment-scoped because
+  // every non-transcribed attachment must be inspected as untrusted evidence.
+  const attachmentsRequiringReview = attachments.filter((attachment) => {
+    if (!attachment || typeof attachment !== "object" || Array.isArray(attachment)) return true;
+    return !(
+      attachment.kind === "voice_note"
+      && typeof attachment.local_transcript === "string"
+      && attachment.local_transcript.trim().length > 0
+    );
+  });
+  if (attachmentsRequiringReview.length > 0) return "attachment_review";
   return request.kind;
 }
 

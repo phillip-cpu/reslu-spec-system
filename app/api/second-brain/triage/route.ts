@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { triageEmails, NON_ACTIONABLE_LABELS, type TriageInput } from "@/lib/second-brain/triage";
-import { buildEmailReplyQueueItem } from "@/lib/second-brain/reply-routing";
+import {
+  buildEmailReplyQueueItem,
+  buildLeadIntroductionQueueItem,
+} from "@/lib/second-brain/reply-routing";
 
 export const runtime = "nodejs";
 
@@ -88,13 +91,16 @@ export async function GET(request: NextRequest) {
         console.error("triage: no result returned for email", email.id);
         continue;
       }
-      const replyQueueItem = buildEmailReplyQueueItem(email, result.reply_requested);
-      if (replyQueueItem) {
+      const queueItems = [
+        buildEmailReplyQueueItem(email, result.reply_requested),
+        buildLeadIntroductionQueueItem(email, result.lead_introduction),
+      ].filter((item) => item !== null);
+      if (queueItems.length > 0) {
         const { error: queueError } = await supabase
           .from("aria_queue")
-          .upsert(replyQueueItem, { onConflict: "dedupe_key", ignoreDuplicates: true });
+          .upsert(queueItems, { onConflict: "dedupe_key", ignoreDuplicates: true });
         if (queueError) {
-          console.error("triage: reply queue failed for email", email.id, queueError.message);
+          console.error("triage: action queue failed for email", email.id, queueError.message);
           continue;
         }
       }
