@@ -70,6 +70,21 @@ export function suggestSchedulePhaseId(
   return scored[0].id;
 }
 
+/** Uses the contract template's explicit Timeline anchor first, then retains
+ * the existing fuzzy suggestion as a fallback for an admin-renamed phase. */
+export function resolveTemplateSchedulePhaseId(
+  phaseName: string | null | undefined,
+  claimLabel: string,
+  phases: ClientSchedulePhase[]
+): string | null {
+  if (phaseName) {
+    const normalized = phaseName.trim().toLocaleLowerCase();
+    const exact = phases.find((phase) => phase.name.trim().toLocaleLowerCase() === normalized);
+    if (exact) return exact.id;
+  }
+  return suggestSchedulePhaseId(claimLabel, phases);
+}
+
 export function dateDistanceDays(from: string, to: string): number {
   return Math.round(
     (new Date(`${to}T00:00:00Z`).getTime() - new Date(`${from}T00:00:00Z`).getTime()) /

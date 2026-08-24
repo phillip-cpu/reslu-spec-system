@@ -34,3 +34,23 @@ test("policy responses fail closed on malformed entries", () => {
   assert.throws(() => policyMapFromResponse({ schema_version: "aria-authority-v1", tools: [{ tool_name: "x", risk_tier: "R9" }] }), /Invalid/);
   assert.equal(policyMapFromResponse({ schema_version: "aria-authority-v1", tools: [{ tool_name: "x", risk_tier: "R0" }] }).get("x").risk_tier, "R0");
 });
+
+test("R1 project updates expose no redundant approval requirement", () => {
+  const projectTool = {
+    name: "update_project",
+    description: "Update reversible project details",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        expected_updated_at: { type: "string" },
+        address: { type: "string" },
+      },
+      required: ["project_id", "expected_updated_at"],
+      additionalProperties: false,
+    },
+  };
+  const decorated = decorateAriaTool(projectTool, { risk_tier: "R1", action_class: "prepare" });
+  assert.match(decorated.description, /No approval is needed/);
+  assert.deepEqual(decorated.inputSchema.required, ["project_id", "expected_updated_at", "_authority"]);
+});

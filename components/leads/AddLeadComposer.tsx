@@ -1,7 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import type { CreateLeadInput, LeadSource } from "@/types";
+import type { CreateLeadInput, LeadSource, ProjectSubtype, ProjectType } from "@/types";
+import {
+  PROJECT_SUBTYPE_LABELS,
+  PROJECT_TYPE_LABELS,
+  PROJECT_TYPES,
+  SINGLE_ROOM_PROJECT_SUBTYPES,
+} from "@/lib/project-templates";
 
 /**
  * Add-lead composer — BUILD-SPEC.md "Add-lead composer (name, first
@@ -22,6 +28,8 @@ export function AddLeadComposer({
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [location, setLocation] = useState("");
+  const [projectType, setProjectType] = useState<ProjectType | "">("");
+  const [projectSubtype, setProjectSubtype] = useState<ProjectSubtype | null>(null);
   const [constructionValue, setConstructionValue] = useState("");
   const [designValue, setDesignValue] = useState("");
   const [saving, setSaving] = useState(false);
@@ -43,6 +51,8 @@ export function AddLeadComposer({
         email: email.trim() || null,
         phone: phone.trim() || null,
         location: location.trim() || null,
+        project_type_code: projectType || null,
+        project_subtype: projectType === "single_room_renovation" ? projectSubtype : null,
         construction_value: constructionValue ? Number(constructionValue) : null,
         design_value: designValue ? Number(designValue) : null,
       });
@@ -93,6 +103,38 @@ export function AddLeadComposer({
             <option value="DIRECT">DIRECT</option>
           </select>
         </label>
+        <label className="block">
+          <span className="label-caps mb-1 block !text-charcoal/50">Project type</span>
+          <select
+            value={projectType}
+            onChange={(e) => {
+              setProjectType(e.target.value as ProjectType | "");
+              setProjectSubtype(null);
+            }}
+            className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
+          >
+            <option value="">Not confirmed</option>
+            {PROJECT_TYPES.map((value) => (
+              <option key={value} value={value}>{PROJECT_TYPE_LABELS[value]}</option>
+            ))}
+          </select>
+        </label>
+        {projectType === "single_room_renovation" && (
+          <label className="block">
+            <span className="label-caps mb-1 block !text-charcoal/50">Room type</span>
+            <select
+              value={projectSubtype ?? ""}
+              onChange={(e) => setProjectSubtype((e.target.value || null) as ProjectSubtype | null)}
+              required
+              className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
+            >
+              <option value="">Select room</option>
+              {SINGLE_ROOM_PROJECT_SUBTYPES.map((value) => (
+                <option key={value} value={value}>{PROJECT_SUBTYPE_LABELS[value]}</option>
+              ))}
+            </select>
+          </label>
+        )}
         <label className="block">
           <span className="label-caps mb-1 block !text-charcoal/50">Location</span>
           <input

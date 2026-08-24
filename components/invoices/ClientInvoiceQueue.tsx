@@ -5,10 +5,17 @@ import clsx from "clsx";
 import {
   addCalendarDays,
   plannedClaimTimingState,
+  resolveTemplateSchedulePhaseId,
   resolveClaimForecastDate,
-  suggestSchedulePhaseId,
 } from "@/lib/client-claim-schedule";
 import { FINANCIAL_SUMMARY_CHANGED_EVENT } from "@/lib/project-financial-position";
+import {
+  DEFAULT_PROJECT_TYPE,
+  FALLBACK_PROJECT_PAYMENT_STAGE_TEMPLATES,
+  PROJECT_TYPE_LABELS,
+  isProjectType,
+  type ProjectType,
+} from "@/lib/project-templates";
 import type {
   ClientApprovedVariation,
   ClientBillingProfile,
@@ -56,6 +63,7 @@ interface Props {
   projectClientName: string;
   projectClientEmail: string | null;
   projectAddress: string | null;
+  projectType: ProjectType | null;
   /** Server-computed (process.env.STRIPE_SECRET_KEY presence) — gates
    * whether "Create payment link" is even offered per row, same
    * "booleans computed server-side, never the raw env exposed"
@@ -81,6 +89,7 @@ export function ClientInvoiceQueue({
   projectClientName,
   projectClientEmail,
   projectAddress,
+  projectType,
   stripeConfigured,
 }: Props) {
   const [invoices, setInvoices] = useState<ClientInvoice[]>([]);
@@ -158,6 +167,7 @@ export function ClientInvoiceQueue({
         schedule={paymentSchedule.filter((stage) => !stage.contract_variation_id)}
         phases={schedulePhases}
         variations={approvedVariations}
+        projectType={projectType}
         onSaved={refreshFinancialSummary}
         onError={setError}
       />
@@ -355,20 +365,13 @@ const DESIGN_STAGES = [
   ["Final documentation package", 10],
 ] as const;
 
-const CONSTRUCTION_STAGES = [
-  ["Deposit", 30],
-  ["Demo", 20],
-  ["First fix", 20],
-  ["Tiling", 20],
-  ["Practical completion", 10],
-] as const;
-
 function BillingSetup({
   projectId,
   profile,
   schedule,
   phases,
   variations,
+  projectType,
   onSaved,
   onError,
 }: {
@@ -377,6 +380,7 @@ function BillingSetup({
   schedule: ClientPaymentScheduleItem[];
   phases: ClientSchedulePhase[];
   variations: ClientApprovedVariation[];
+  projectType: ProjectType | null;
   onSaved: () => void;
   onError: (message: string | null) => void;
 }) {
@@ -401,19 +405,22 @@ function BillingSetup({
 
   function applyPreset(type: "design" | "construction") {
     const total = Number(contractAmount) || 0;
-    const preset = type === "design" ? DESIGN_STAGES : CONSTRUCTION_STAGES;
+    const resolvedProjectType = isProjectType(projectType) ? projectType : DEFAULT_PROJECT_TYPE;
+    const preset = type === "design"
+      ? DESIGN_STAGES.map(([label, percentage]) => ({ label, percentage, phaseName: null }))
+      : FALLBACK_PROJECT_PAYMENT_STAGE_TEMPLATES[resolvedProjectType];
     setContractType(type);
     setContractLabel(type === "design" ? "Design package" : "Construction package");
     setDueDays(type === "design" ? "14" : "7");
     setStages(
-      preset.map(([label, percentage], index) => ({
+      preset.map(({ label, percentage, phaseName }, index) => ({
         label,
         percentage: String(percentage),
         amount_inc_gst: (Math.round(total * percentage) / 100).toFixed(2),
         milestone_date: "",
         trigger_type: index === 0 ? "contract_signed" : "schedule_phase",
         schedule_phase_id:
-          index === 0 ? "" : suggestSchedulePhaseId(label, phases) ?? "",
+          index === 0 ? "" : resolveTemplateSchedulePhaseId(phaseName, label, phases) ?? "",
         linked: false,
       }))
     );
@@ -557,7 +564,7 @@ function BillingSetup({
           Use RESLU design stages
         </button>
         <button type="button" onClick={() => applyPreset("construction")} className="border border-[#c9c2b4] px-3 py-1.5 text-caption">
-          Use RESLU construction stages
+          Use {PROJECT_TYPE_LABELS[isProjectType(projectType) ? projectType : DEFAULT_PROJECT_TYPE]} stages
         </button>
         <button
           type="button"
@@ -580,6 +587,12 @@ function BillingSetup({
           + Add custom stage
         </button>
       </div>
+
+      {contractType === "construction" && (
+        <p className="text-caption text-charcoal/55">
+          Construction percentages are editable starting assumptions. Joinery stays visible as its own major milestone; replace its illustrative percentage with the signed, cost-loaded package value before saving.
+        </p>
+      )}
 
       <div className="space-y-3">
         {stages.map((stage, index) => (

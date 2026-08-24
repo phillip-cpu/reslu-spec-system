@@ -7708,8 +7708,11 @@ transaction. Published rows cannot be updated or deleted.
 
 Runs deterministic `finance-shadow-v1` without persisting anything. It
 uses a saved estimate version and optional request-only timing overrides.
-Because the current estimate schema has no cost-line-to-phase mapping,
-unmapped amounts are returned as `unknownTimingMinor`; they are never
+Estimate sections can link to a Timeline phase through `forecast_phase_id`;
+the phase end date becomes that section's forecast cash-out date. Standard
+estimate sections are aligned automatically when the type-specific Timeline
+or estimate is seeded, while manual links are never overwritten. Sections
+without a dependable match remain in `unknownTimingMinor`; they are never
 assigned a fabricated date or silently converted to zero.
 
 ### Finance UI routes

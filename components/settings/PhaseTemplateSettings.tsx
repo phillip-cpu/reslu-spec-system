@@ -1,10 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import type { AppSettingsPhaseTemplateRow } from "@/types/phase-fix-a";
+import {
+  PROJECT_TYPES,
+  PROJECT_TYPE_LABELS,
+  type ProjectType,
+} from "@/lib/project-templates";
+import type {
+  AppSettingsPhaseTemplateRow,
+  AppSettingsProjectPhaseTemplates,
+} from "@/types/phase-fix-a";
 
 interface Props {
-  initialTemplate: AppSettingsPhaseTemplateRow[];
+  initialTemplates: AppSettingsProjectPhaseTemplates;
   canEdit: boolean;
 }
 
@@ -25,29 +33,33 @@ interface Props {
  * (BUILD-SPEC.md's "seed on first visit" model is per-project and
  * one-time).
  */
-export function PhaseTemplateSettings({ initialTemplate, canEdit }: Props) {
-  const [rows, setRows] = useState<AppSettingsPhaseTemplateRow[]>(initialTemplate);
+export function PhaseTemplateSettings({ initialTemplates, canEdit }: Props) {
+  const [templates, setTemplates] = useState<AppSettingsProjectPhaseTemplates>(initialTemplates);
+  const [activeType, setActiveType] = useState<ProjectType>("whole_home_renovation");
   const [name, setName] = useState("");
   const [kind, setKind] = useState<"phase" | "umbrella">("phase");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function save(next: AppSettingsPhaseTemplateRow[]) {
+  const rows = templates[activeType];
+
+  async function save(nextRows: AppSettingsPhaseTemplateRow[]) {
     setSaving(true);
     setError(null);
-    const prev = rows;
-    setRows(next);
+    const prev = templates;
+    const next = { ...templates, [activeType]: nextRows };
+    setTemplates(next);
     try {
       const res = await fetch("/api/settings/phase-template", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ template: next }),
+        body: JSON.stringify({ templates: next }),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? "Could not save");
-      const { template } = await res.json();
-      setRows(template);
+      const { templates: saved } = await res.json();
+      setTemplates(saved);
     } catch (err) {
-      setRows(prev);
+      setTemplates(prev);
       setError(err instanceof Error ? err.message : "Could not save");
     } finally {
       setSaving(false);
@@ -74,10 +86,6 @@ export function PhaseTemplateSettings({ initialTemplate, canEdit }: Props) {
 
   function remove(index: number) {
     const row = rows[index];
-    if (row.kind === "umbrella") {
-      setError("The umbrella phase can't be removed — rename it instead if needed.");
-      return;
-    }
     if (!confirm(`Remove "${row.name}" from the default phase template?`)) return;
     save(rows.filter((_, i) => i !== index));
   }
@@ -91,12 +99,39 @@ export function PhaseTemplateSettings({ initialTemplate, canEdit }: Props) {
   }
 
   return (
-    <div className="max-w-2xl space-y-4">
+    <div className="max-w-3xl space-y-4">
       {error && (
         <p className="border border-red-700/40 bg-red-50 px-3 py-2 text-body text-red-700">
           {error}
         </p>
       )}
+
+      <div className="flex flex-wrap gap-2" role="tablist" aria-label="Project type template">
+        {PROJECT_TYPES.map((projectType) => (
+          <button
+            key={projectType}
+            type="button"
+            role="tab"
+            aria-selected={activeType === projectType}
+            onClick={() => {
+              setActiveType(projectType);
+              setError(null);
+            }}
+            className={`border px-3 py-2 text-caption transition-colors ${
+              activeType === projectType
+                ? "border-nearblack bg-nearblack text-white"
+                : "border-[#c9c2b4] bg-nearwhite text-charcoal hover:border-nearblack"
+            }`}
+          >
+            {PROJECT_TYPE_LABELS[projectType]}
+          </button>
+        ))}
+      </div>
+
+      <p className="text-caption text-charcoal/60">
+        Used only when an empty Timeline is first opened. Editing or changing a project type never
+        overwrites an established Timeline.
+      </p>
 
       <div className="divide-y divide-[#e5e0d6] border border-[#dcd6cc] bg-offwhite">
         {rows.map((row, index) => (

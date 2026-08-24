@@ -26,6 +26,7 @@ yarn-error.log*
 /logs/
 **/__pycache__/
 *.bak
+/mcp/.whisper-cache/
 
 # env files
 .env

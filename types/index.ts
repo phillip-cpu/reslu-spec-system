@@ -34,6 +34,12 @@ export type ProjectStage =
   | "handover"
   | "complete"
   | "on_hold";
+export type ProjectType =
+  | "new_build"
+  | "whole_home_renovation"
+  | "extension"
+  | "single_room_renovation";
+export type ProjectSubtype = "kitchen" | "bathroom" | "ensuite" | "laundry" | "other";
 
 export interface Project {
   id: string;
@@ -42,6 +48,8 @@ export interface Project {
   address: string | null;
   status: ProjectStatus;
   project_stage: ProjectStage;
+  project_type: ProjectType | null;
+  project_subtype: ProjectSubtype | null;
   budget: number | null;
   // Estimate trade markup as a fraction (e.g. 0.15 = 15%) — migration
   // 007_estimating.sql; not null default 0.
@@ -304,6 +312,8 @@ export interface CreateProjectInput {
   address?: string;
   monday_board_id?: string;
   budget?: number;
+  project_type: ProjectType;
+  project_subtype?: ProjectSubtype | null;
 }
 
 export interface CreateItemInput {
@@ -1253,6 +1263,11 @@ export interface Lead {
   // offline conversion import matches booked studio visits back to
   // the ad click via gclid (RESLU-Spec-Lead-Intake.md).
   project_type: string | null;
+  // Internal, checked classification used to choose the project's
+  // Timeline and contract payment templates. Kept separate from the
+  // verbatim website answer above.
+  project_type_code: ProjectType | null;
+  project_subtype: ProjectSubtype | null;
   message: string | null;
   page: string | null;
   gclid: string | null;
@@ -1310,6 +1325,8 @@ export interface CreateLeadInput {
   construction_start?: string | null;
   construction_end?: string | null;
   notes?: string | null;
+  project_type_code?: ProjectType | null;
+  project_subtype?: ProjectSubtype | null;
 }
 
 /** body accepted by PATCH /api/leads/[id]. Includes every editable
@@ -1338,6 +1355,8 @@ export interface PatchLeadInput {
   construction_start?: string | null;
   construction_end?: string | null;
   notes?: string | null;
+  project_type_code?: ProjectType | null;
+  project_subtype?: ProjectSubtype | null;
 }
 
 /** body accepted by POST /api/leads/[id]/stage. */

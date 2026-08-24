@@ -36,7 +36,7 @@ Extract every price fact, lead-time fact, job/project mention, item/product ment
 - Attachments may arrive in two forms. An <attachment_text> block is text already recovered from a PDF by pdftotext/OCR: read it as primary source evidence and copy source_quote values verbatim from it, but do NOT add it to attachment_transcriptions because it is already stored. A binary <attachment> image/PDF is a vision attachment: transcribe the relevant text/prices/lead-times into attachment_transcriptions, one entry per binary attachment (identified by attachment_id), so facts sourced from it can be verified later.
 - Never invent a project/job name, item name, price, or lead time that isn't genuinely present in the text or attachment. If nothing extractable is present, return empty arrays — do not force a fact to justify calling the tool.
 - confidence is your overall confidence (0.0-1.0) in this extraction as a whole, not per-fact.
-- Currency defaults to AUD unless the text says otherwise. gst_inclusive should be your best read of whether the stated price includes GST — if genuinely ambiguous, use null rather than guessing.
+- Currency defaults to AUD only when the source has no contrary currency marker. Preserve the supplier invoice currency as an uppercase ISO 4217 code (for example AUD or USD); a dollar sign by itself is not proof of AUD when the supplier or document identifies another country/currency. gst_inclusive should be your best read of whether the stated price includes GST — if genuinely ambiguous, use null rather than guessing.
 - When the message or attachment is an invoice, tax invoice, credit note, or payment request issued by a supplier/trade, populate supplier_invoice. This is only a review candidate: never infer that it is approved or paid. Do not also turn the invoice total into a price_fact; price_facts are product/service price intelligence, while supplier_invoice records the financial document itself.
 - A delivery or pickup address is evidence about where goods moved, not necessarily which project should bear the cost. In particular, delivery to RESLU Studio must not be treated as proof that the purchase is a Reslu Studio overhead. Preserve the address or customer job reference in job_hints, but do not invent a project assignment when the invoice has no reliable job name, job number, or other project evidence.
 
@@ -82,6 +82,7 @@ const EXTRACTION_TOOL: ClaudeTool = {
               abn: { type: ["string", "null"] },
               invoice_number: { type: ["string", "null"] },
               invoice_date: { type: ["string", "null"] },
+              currency_code: { type: "string", pattern: "^[A-Z]{3}$" },
               amount_ex_gst: { type: ["number", "null"] },
               gst: { type: ["number", "null"] },
               total: { type: "number" },
@@ -94,6 +95,7 @@ const EXTRACTION_TOOL: ClaudeTool = {
               "abn",
               "invoice_number",
               "invoice_date",
+              "currency_code",
               "amount_ex_gst",
               "gst",
               "total",
@@ -200,6 +202,7 @@ export type ExtractionResult = {
     abn: string | null;
     invoice_number: string | null;
     invoice_date: string | null;
+    currency_code: string;
     amount_ex_gst: number | null;
     gst: number | null;
     total: number;

@@ -4,6 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import { buildDashboardSummary } from "@/lib/leads";
 import { LEAD_STAGES, type CreateLeadInput, type Lead, type LeadStage } from "@/types";
 import { reportError } from "@/lib/report-error";
+import { isProjectType, normaliseProjectSubtype } from "@/lib/project-templates";
 import {
   DEFAULT_PHILLIP_PHONE,
   formatVisitDate,
@@ -187,6 +188,15 @@ export async function POST(request: NextRequest) {
   if (body.source && !["META", "DIRECT", "WEBSITE"].includes(body.source)) {
     return NextResponse.json({ error: `Invalid source: ${body.source}` }, { status: 400 });
   }
+  if (body.project_type_code != null && !isProjectType(body.project_type_code)) {
+    return NextResponse.json({ error: "Invalid project type" }, { status: 400 });
+  }
+  const projectSubtype = body.project_type_code
+    ? normaliseProjectSubtype(body.project_type_code, body.project_subtype)
+    : null;
+  if (body.project_type_code === "single_room_renovation" && !projectSubtype) {
+    return NextResponse.json({ error: "Room type is required for a single-room renovation" }, { status: 400 });
+  }
 
   const numericFields: (keyof CreateLeadInput)[] = ["construction_value", "design_value"];
   for (const f of numericFields) {
@@ -215,6 +225,8 @@ export async function POST(request: NextRequest) {
     construction_start: body.construction_start || null,
     construction_end: body.construction_end || null,
     notes: body.notes?.trim() || null,
+    project_type_code: body.project_type_code ?? null,
+    project_subtype: projectSubtype,
     created_by: info.userId,
   };
 

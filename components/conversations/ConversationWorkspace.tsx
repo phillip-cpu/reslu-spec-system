@@ -66,6 +66,7 @@ import {
   conversationDayLabel,
   conversationLongPressMoved,
 } from "@/lib/conversation-timeline";
+import { conversationTextParts, insertConversationLink } from "@/lib/conversation-links";
 import {
   canStartConversationSwipeBack,
   conversationSwipeBackProgress,
@@ -260,6 +261,13 @@ interface DraftAttachment {
   voiceNoteDurationMs: number | null;
 }
 
+interface ComposerLinkDraft {
+  label: string;
+  url: string;
+  selectionStart: number;
+  selectionEnd: number;
+}
+
 interface ConversationTimelineItem {
   message: ConversationMessage;
   pending: PendingConversationMessage | null;
@@ -271,6 +279,20 @@ interface MessageSearchState {
   loading: boolean;
   error: string | null;
   hasSearched: boolean;
+}
+
+function ConversationMessageText({ body }: { body: string }) {
+  return conversationTextParts(body).map((part, index) => part.type === "link" ? (
+    <a
+      key={`${index}:${part.href}`}
+      href={part.href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="underline decoration-current/45 underline-offset-2 hover:decoration-current"
+    >
+      {part.text}
+    </a>
+  ) : <Fragment key={index}>{part.text}</Fragment>);
 }
 
 function Avatar({ participant, large = false }: { participant: ConversationParticipant; large?: boolean }) {
@@ -1200,6 +1222,7 @@ export function ConversationWorkspace({
   const [messageMutationId, setMessageMutationId] = useState<string | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<ConversationMessage | null>(null);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [composerLink, setComposerLink] = useState<ComposerLinkDraft | null>(null);
   const [draftAttachments, setDraftAttachments] = useState<DraftAttachment[]>([]);
   const [voiceNoteRecording, setVoiceNoteRecording] = useState(false);
   const [attachmentDropActive, setAttachmentDropActive] = useState(false);
@@ -4173,6 +4196,46 @@ export function ConversationWorkspace({
     void queueDraftMessage(selectedId, draft, attachments, replyingTo);
   }
 
+  function openComposerLink() {
+    const input = composerInputRef.current;
+    const selectionStart = input?.selectionStart ?? draft.length;
+    const selectionEnd = input?.selectionEnd ?? selectionStart;
+    setAttachmentMenuOpen(false);
+    setComposerLink({
+      label: draft.slice(selectionStart, selectionEnd),
+      url: "",
+      selectionStart,
+      selectionEnd,
+    });
+  }
+
+  function addComposerLink() {
+    if (!selectedId || !composerLink) return;
+    const insertion = insertConversationLink(
+      draft,
+      composerLink.selectionStart,
+      composerLink.selectionEnd,
+      composerLink.label,
+      composerLink.url,
+    );
+    if (!insertion) {
+      setError("Enter a valid web address, such as https://example.com.");
+      return;
+    }
+    if (insertion.text.length > 20000) {
+      setError("The link would make this message too long.");
+      return;
+    }
+    updateDraft(selectedId, insertion.text);
+    setComposerLink(null);
+    setError(null);
+    window.setTimeout(() => {
+      const input = composerInputRef.current;
+      input?.focus();
+      input?.setSelectionRange(insertion.cursor, insertion.cursor);
+    }, 0);
+  }
+
   if (loading) return <div className={clsx("flex items-center justify-center text-body text-charcoal/50", drawer ? "h-full" : "h-[70vh]")}>Loading conversations…</div>;
 
   return (
@@ -4426,7 +4489,13 @@ export function ConversationWorkspace({
             </header>
 
             {visibleAgentTasks.length > 0 && (
-              <section className="w-full min-w-0 max-w-full shrink-0 overflow-hidden border-b border-[#d4cbbd] bg-[#eee9df] md:px-4 md:py-2.5" aria-label="Agent work">
+              <section
+                className={clsx(
+                  "relative w-full min-w-0 max-w-full shrink-0 overflow-hidden border-b border-[#d4cbbd] bg-[#eee9df] md:px-4 md:py-2.5",
+                  drawer && "md:z-20 md:overflow-visible md:py-1.5",
+                )}
+                aria-label="Agent work"
+              >
                 <button
                   type="button"
                   onClick={() => setAgentWorkExpanded((expanded) => !expanded)}
@@ -4457,12 +4526,13 @@ export function ConversationWorkspace({
                 <div
                   id="conversation-agent-work-details"
                   className={clsx(
-                    "max-h-[46vh] min-w-0 max-w-full grid-cols-1 gap-3 overflow-y-auto px-3 pb-3 md:flex md:max-h-52 md:snap-x md:overflow-x-auto md:overflow-y-hidden md:px-0 md:pb-1",
+                    "max-h-[46vh] min-w-0 max-w-full grid-cols-1 gap-3 overflow-y-auto px-3 pb-3 md:max-h-52 md:snap-x md:overflow-x-auto md:overflow-y-hidden md:px-0 md:pb-1",
+                    drawer && "md:absolute md:left-4 md:right-4 md:top-full md:z-30 md:grid-cols-1 md:overflow-y-auto md:rounded-xl md:border md:border-[#d4cbbd] md:bg-[#eee9df] md:p-3 md:shadow-2xl",
                     agentWorkExpanded ? "grid md:flex" : "hidden",
                   )}
                 >
                   {visibleAgentTasks.map((task) => (
-                    <div key={task.id} className="min-w-0 max-w-full md:w-80 md:shrink-0 md:snap-start">
+                    <div key={task.id} className={clsx("min-w-0 max-w-full", drawer ? "md:w-full md:shrink-0" : "md:w-80 md:shrink-0 md:snap-start")}>
                       <AgentTaskCard task={task} compact canRetry={task.requested_by === selfParticipant?.id && task.retry_count < 3} onAction={handleTaskAction} />
                     </div>
                   ))}
@@ -4764,7 +4834,7 @@ export function ConversationWorkspace({
                             <p className="mt-2 text-[9px] uppercase tracking-widest text-white/40">Editing changes the message history; it does not resend the request.</p>
                           </div>
                         ) : !voiceNoteAttachment ? (
-                          <p className={clsx("mt-2 whitespace-pre-wrap break-words text-[16px] leading-[1.55] md:text-[15px]", message.deleted_at && "italic opacity-60")}>{message.body}</p>
+                          <p className={clsx("mt-2 whitespace-pre-wrap break-words text-[16px] leading-[1.55] md:text-[15px]", message.deleted_at && "italic opacity-60")}><ConversationMessageText body={message.body} /></p>
                         ) : null}
                         {!message.deleted_at && (message.attachments ?? []).length > 0 && (
                           <div className={clsx("mt-3 grid gap-2", message.attachments.length > 1 && "grid-cols-2")}>
@@ -5018,6 +5088,45 @@ export function ConversationWorkspace({
                     Retry or remove failed files before sending, so nothing is silently left behind.
                   </p>
                 )}
+                {composerLink && (
+                  <div className="border-b border-[#e3ddd2] bg-[#faf7f0] p-3" aria-label="Add hyperlink">
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <label className="text-[10px] font-semibold uppercase tracking-widest text-charcoal/55">
+                        Link text
+                        <input
+                          autoFocus={Boolean(composerLink.label)}
+                          value={composerLink.label}
+                          onChange={(event) => setComposerLink((current) => current ? { ...current, label: event.target.value } : null)}
+                          placeholder="What the link should say"
+                          className="mt-1.5 h-11 w-full rounded-lg border border-[#d4cbbd] bg-white px-3 text-[16px] font-normal normal-case tracking-normal text-nearblack outline-none focus:border-nearblack"
+                        />
+                      </label>
+                      <label className="text-[10px] font-semibold uppercase tracking-widest text-charcoal/55">
+                        Web address
+                        <input
+                          autoFocus={!composerLink.label}
+                          inputMode="url"
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          value={composerLink.url}
+                          onChange={(event) => setComposerLink((current) => current ? { ...current, url: event.target.value } : null)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              addComposerLink();
+                            }
+                          }}
+                          placeholder="https://example.com"
+                          className="mt-1.5 h-11 w-full rounded-lg border border-[#d4cbbd] bg-white px-3 text-[16px] font-normal normal-case tracking-normal text-nearblack outline-none focus:border-nearblack"
+                        />
+                      </label>
+                    </div>
+                    <div className="mt-2 flex justify-end gap-2">
+                      <button type="button" onClick={() => setComposerLink(null)} className="min-h-11 rounded-lg px-4 text-caption text-charcoal/65 hover:bg-[#eee8de]">Cancel</button>
+                      <button type="button" onClick={addComposerLink} disabled={!composerLink.url.trim()} className="min-h-11 rounded-lg bg-nearblack px-4 text-caption font-semibold text-white disabled:opacity-30">Insert link</button>
+                    </div>
+                  </div>
+                )}
                 <textarea
                   ref={composerInputRef}
                   value={draft}
@@ -5040,7 +5149,8 @@ export function ConversationWorkspace({
                   className="max-h-36 min-h-12 w-full resize-none rounded-t-2xl bg-transparent px-4 pb-2 pt-3 text-[16px] outline-none disabled:opacity-60 md:text-body"
                 />
                 <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
-                  <div className={clsx("relative", voiceNoteRecording && "hidden")}>
+                  <div className={clsx("flex items-center gap-1.5", voiceNoteRecording && "hidden")}>
+                    <div className="relative">
                     <button
                       type="button"
                       disabled={sending}
@@ -5061,6 +5171,20 @@ export function ConversationWorkspace({
                         </button>
                       </div>
                     )}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={sending}
+                      onClick={openComposerLink}
+                      aria-label="Add hyperlink"
+                      aria-expanded={Boolean(composerLink)}
+                      className="flex h-11 w-11 items-center justify-center rounded-full border border-[#d7d0c5] text-nearblack hover:bg-[#f1ece3] disabled:opacity-40"
+                    >
+                      <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" strokeWidth="1.8">
+                        <path d="M10.2 13.8a4 4 0 0 0 5.7 0l2.1-2.1A4 4 0 0 0 12.3 6l-1.2 1.2" />
+                        <path d="M13.8 10.2a4 4 0 0 0-5.7 0L6 12.3A4 4 0 0 0 11.7 18l1.2-1.2" />
+                      </svg>
+                    </button>
                   </div>
                   <VoiceNoteRecorder
                     conversationId={selectedConversation.id}

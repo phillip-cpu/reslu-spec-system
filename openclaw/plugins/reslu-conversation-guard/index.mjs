@@ -4,7 +4,7 @@ import {
   evaluateResluConversationTool,
   isResluConversationSession,
 } from "./policy.mjs";
-import { createReadonlyGoogleTools } from "./google-readonly.mjs";
+import { createMarcoGmailSendTool, createReadonlyGoogleTools } from "./google-readonly.mjs";
 import { clearBridgeEnvelope, loadBridgeEnvelope, persistBridgeEnvelope } from "./envelope.mjs";
 
 export default definePluginEntry({
@@ -13,6 +13,19 @@ export default definePluginEntry({
   description: "Enforces the trusted tool boundary for untrusted RESLU conversation content.",
   register(api) {
     const runs = new Map();
+
+    const persistValidatedRun = (event, context) => {
+      if (!isResluConversationSession(context.sessionKey)) return null;
+      const mode = classifyResluConversationPrompt(event.prompt);
+      if (!mode || !context.runId || !context.workspaceDir) return null;
+      const state = { mode, workspaceDir: context.workspaceDir };
+      runs.set(context.runId, state);
+      if (!persistBridgeEnvelope({ sessionKey: context.sessionKey, runId: context.runId, ...state })) {
+        runs.delete(context.runId);
+        return null;
+      }
+      return state;
+    };
 
     api.registerTool(
       (context) => createReadonlyGoogleTools(context),
@@ -26,25 +39,26 @@ export default definePluginEntry({
       },
     );
 
+    api.registerTool(
+      (context) => createMarcoGmailSendTool(context),
+      { names: ["reslu_gmail_messages_send"] },
+    );
+
+    // The Codex app-server harness does not currently emit before_agent_run,
+    // but it does pass through model resolution before exposing MCP tools.
+    // Validate and persist the same fail-closed envelope at that earlier,
+    // runtime-neutral boundary. Native harnesses retain the blocking gate below.
+    api.on("before_model_resolve", (event, context) => {
+      persistValidatedRun(event, context);
+    }, { priority: 1000 });
+
     api.on("before_agent_run", (event, context) => {
       if (!isResluConversationSession(context.sessionKey)) return { outcome: "pass" };
-      const mode = classifyResluConversationPrompt(event.prompt);
-      if (!mode || !context.runId || !context.workspaceDir) {
+      if (!persistValidatedRun(event, context)) {
         return {
           outcome: "block",
           reason: "RESLU conversation envelope was missing or invalid",
           message: "RESLU could not verify this conversation request. Please retry.",
-          category: "reslu_conversation_boundary",
-        };
-      }
-      const state = { mode, workspaceDir: context.workspaceDir };
-      runs.set(context.runId, state);
-      if (!persistBridgeEnvelope({ sessionKey: context.sessionKey, runId: context.runId, ...state })) {
-        runs.delete(context.runId);
-        return {
-          outcome: "block",
-          reason: "RESLU conversation envelope could not be persisted",
-          message: "RESLU could not secure this conversation request. Please retry.",
           category: "reslu_conversation_boundary",
         };
       }

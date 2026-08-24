@@ -3,6 +3,8 @@ import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { sectionRollup } from "@/lib/estimate";
 import type { CostSectionWithLines } from "@/types";
+import { alignUnmappedCostSectionsToTimeline } from "@/lib/finance/project-phase-alignment";
+import { seedPhaseTemplateIfEmpty } from "@/lib/phase-seed";
 
 /**
  * POST /api/projects/[id]/estimate/init
@@ -140,6 +142,18 @@ export async function POST(
     { project_id: projectId, name: "Floor Areas", sort: 1 },
     { project_id: projectId, name: "Tiling Areas", sort: 2 },
   ]);
+
+  // Ensure the project's type-specific Timeline exists, then place each
+  // standard estimate trade into its matching phase. Finance already uses a
+  // linked phase's end date as the section's forecast cash-out date.
+  await seedPhaseTemplateIfEmpty(supabase, projectId);
+  const phaseUpdates = await alignUnmappedCostSectionsToTimeline(supabase, projectId);
+  const forecastPhaseBySection = new Map(
+    phaseUpdates.map((update) => [update.id, update.forecast_phase_id])
+  );
+  for (const section of createdSections) {
+    section.forecast_phase_id = forecastPhaseBySection.get(section.id) ?? section.forecast_phase_id;
+  }
 
   return NextResponse.json({ sections: createdSections }, { status: 201 });
 }

@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildGmailRawMessage,
+  createMarcoGmailSendTool,
   createReadonlyGoogleTools,
   normalizeCalendarRequest,
   normalizeGmailMessageId,
+  normalizeGmailSendRequest,
   normalizeGmailSearchRequest,
   normalizeMailbox,
   resolveGoogleAuthInput,
+  resolveGoogleIntegrationWorkspace,
+  resolveGmailSender,
   resolveStagedAttachmentPath,
 } from "./google-readonly.mjs";
 
@@ -40,7 +45,13 @@ test("gmail searches are bounded and default to recent inbox mail", () => {
     q: "from:client@example.com",
     maxResults: 10,
   });
+  assert.deepEqual(normalizeGmailSearchRequest({ mailbox: "phillip", limit: 15 }), {
+    mailbox: "phillip",
+    q: "in:inbox newer_than:30d",
+    maxResults: 10,
+  });
   assert.throws(() => normalizeGmailSearchRequest({ query: "x".repeat(301) }), /300/);
+  assert.throws(() => normalizeGmailSearchRequest({ limit: 0 }), /at least 1/);
   assert.throws(() => normalizeMailbox("accounts"), /one of/);
 });
 
@@ -48,6 +59,47 @@ test("gmail detail reads accept only opaque provider IDs", () => {
   assert.equal(normalizeGmailMessageId("18f_aBc-123"), "18f_aBc-123");
   assert.throws(() => normalizeGmailMessageId("../../token.json"), /invalid/);
   assert.throws(() => normalizeGmailMessageId("id\nnext"), /invalid/);
+});
+
+test("agent workspaces resolve fixed Google integrations from the shared workspace", () => {
+  assert.equal(resolveGoogleIntegrationWorkspace("/Users/vale/.openclaw/workspace"), "/Users/vale/.openclaw/workspace");
+  assert.equal(resolveGoogleIntegrationWorkspace("/Users/vale/.openclaw/workspace-marco"), "/Users/vale/.openclaw/workspace");
+  assert.throws(() => resolveGoogleIntegrationWorkspace("/private/tmp"), /unavailable/);
+});
+
+test("Marco Gmail send requests are bounded and reject header injection", () => {
+  assert.deepEqual(normalizeGmailSendRequest({
+    to: "Client@Example.com",
+    subject: "Approved subject",
+    body: "Approved body\nSecond line",
+    idempotency_key: "approval-123",
+  }), {
+    to: "client@example.com",
+    subject: "Approved subject",
+    body: "Approved body\nSecond line",
+    idempotencyKey: "approval-123",
+  });
+  assert.throws(() => normalizeGmailSendRequest({
+    to: "client@example.com\nBcc: attacker@example.com",
+    subject: "Subject",
+    body: "Body",
+    idempotency_key: "approval-123",
+  }), /one line/);
+  assert.equal(resolveGmailSender("/Users/vale/.openclaw/workspace-marco").email, "marco@reslu.com.au");
+  assert.throws(() => resolveGmailSender("/Users/vale/.openclaw/workspace"), /unavailable/);
+});
+
+test("Marco messages are encoded as plain-text MIME with a stable Message-ID", () => {
+  const raw = buildGmailRawMessage(
+    { name: "Marco Santoro", email: "marco@reslu.com.au" },
+    { to: "client@example.com", subject: "West Lakes Shore", body: "Hello", idempotencyKey: "approval-123" },
+    "abc@reslu.com.au",
+  );
+  const decoded = Buffer.from(raw.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+  assert.match(decoded, /From: Marco Santoro <marco@reslu\.com\.au>/);
+  assert.match(decoded, /To: client@example\.com/);
+  assert.match(decoded, /Message-ID: <abc@reslu\.com\.au>/);
+  assert.match(decoded, /Content-Type: text\/plain; charset=UTF-8/);
 });
 
 test("OAuth loader supports both authorized-user and existing legacy token shapes", () => {
@@ -87,4 +139,22 @@ test("registered adapters expose only the four fixed read-only tools", () => {
     assert.match(tool.description, /Read-only/);
     assert.equal(typeof tool.execute, "function");
   }
+});
+
+test("Marco send adapter is separate, scoped and reports the verified operation", async () => {
+  const tool = createMarcoGmailSendTool(
+    { workspaceDir: "/Users/vale/.openclaw/workspace-marco" },
+    { sendMessage: async (workspace, params) => ({ status: "verified_in_sent", workspace, to: params.to, message_id: "m1" }) },
+  );
+  assert.equal(tool.name, "reslu_gmail_messages_send");
+  assert.equal(tool.parameters.additionalProperties, false);
+  assert.deepEqual(tool.parameters.required, ["to", "subject", "body", "idempotency_key"]);
+  const result = await tool.execute("call-1", {
+    to: "client@example.com",
+    subject: "Subject",
+    body: "Body",
+    idempotency_key: "approval-123",
+  });
+  assert.equal(result.details.status, "verified_in_sent");
+  assert.equal(result.details.workspace, "/Users/vale/.openclaw/workspace-marco");
 });

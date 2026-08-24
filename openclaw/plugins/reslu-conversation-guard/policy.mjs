@@ -54,12 +54,85 @@ const HUMAN_AGENT_COORDINATION_TOOLS = new Set([
   "sessions_yield",
   "subagents",
 ]);
-const HUMAN_OPERATION_PREFIXES = ["reslu-spec__", "gsc__"];
+// MCP tools use double underscores in OpenClaw's native tool surface and dots
+// in the Codex app-server surface. Accept both representations so the same
+// authenticated human authority envelope survives a model-runtime change.
+const HUMAN_OPERATION_PREFIXES = [
+  "reslu-spec__",
+  "reslu-spec.",
+  "gsc__",
+  "gsc.",
+  "gads__",
+  "gads.",
+  "meta-ads__",
+  "meta-ads.",
+  "reslu-site__",
+  "reslu-site.",
+  // Codex app-server exposes bundled MCP calls with an `mcp__` prefix and
+  // normalizes hyphens in server ids to underscores.
+  "mcp__reslu_spec__",
+  "mcp__gsc__",
+  "mcp__gads__",
+  "mcp__meta_ads__",
+  "mcp__reslu_site__",
+];
 const HUMAN_TYPED_SPECIALIST_TOOLS = new Set([
+  "reslu-marco__add_brain_note",
+  "reslu-marco.add_brain_note",
+  "mcp__reslu_marco__add_brain_note",
+  "reslu-marco__index_rebuild",
+  "reslu-marco.index_rebuild",
+  "mcp__reslu_marco__index_rebuild",
   "reslu-marco__delegate_reslu_agent_task",
   "reslu-stuart__delegate_reslu_agent_task",
 ]);
-const HUMAN_RESEARCH_TOOLS = new Set(["web_search", "web_fetch"]);
+// Stuart's only direct-human finance writes are purpose-built, server-guarded
+// workflow steps: link already-ingested source evidence, create a verified
+// supplier contact without bank details, and create a Xero DRAFT.
+// Keep this exact-name allowlist narrow; it must not become a general
+// `reslu-stuart__` prefix because payments, approvals and master-data writes
+// must remain structurally unavailable.
+const HUMAN_STUART_OPERATION_TOOLS = new Set([
+  "reslu-stuart__attach_stuart_source_invoice",
+  "reslu-stuart__create_stuart_xero_supplier_contact",
+  "reslu-stuart__create_stuart_xero_draft_bill",
+]);
+// Marco may author and publish RESLU content through the authenticated Sanity
+// MCP connection. Keep this list explicit so destructive draft/version discard,
+// project administration, CORS changes, and unrestricted CLI execution remain
+// unavailable from a direct conversation.
+const HUMAN_SANITY_OPERATION_TOOLS = new Set([
+  "sanity__create_documents",
+  "sanity__create_release",
+  "sanity__create_version",
+  "sanity__dataset_assets_upload",
+  "sanity__generate_image",
+  "sanity__get_document",
+  "sanity__get_schema",
+  "sanity__list_datasets",
+  "sanity__list_projects",
+  "sanity__list_releases",
+  "sanity__list_workspace_schemas",
+  "sanity__patch_documents",
+  "sanity__publish_documents",
+  "sanity__query_documents",
+  "sanity__resources_list",
+  "sanity__resources_read",
+  "sanity__semantic_search",
+  "sanity__transform_image",
+  "sanity__whoami",
+]);
+// Authenticated direct human requests may use the bounded research surfaces.
+// Browser remains unavailable to forwarded content, attachments and specialist
+// consultations because those modes return before this allowlist is reached.
+const HUMAN_RESEARCH_TOOLS = new Set(["web_search", "web_fetch", "browser"]);
+const HUMAN_GMAIL_OPERATION_TOOLS = new Set(["reslu_gmail_messages_send"]);
+const HUMAN_MARCO_OFFICE_TOOLS = new Set([
+  "reslu-lifecycle__create_office_task",
+  "reslu-lifecycle.create_office_task",
+  "reslu_lifecycle.create_office_task",
+  "mcp__reslu_lifecycle__create_office_task",
+]);
 const ARIA_SKILL_DIRS = new Set([
   "aria-operating-loop",
   "aria-continuous-education",
@@ -211,6 +284,10 @@ export function evaluateResluConversationTool(event, context, runState) {
   if (state.mode === "human_request" && (
     HUMAN_AGENT_COORDINATION_TOOLS.has(toolName)
     || HUMAN_TYPED_SPECIALIST_TOOLS.has(toolName)
+    || HUMAN_STUART_OPERATION_TOOLS.has(toolName)
+    || HUMAN_SANITY_OPERATION_TOOLS.has(toolName)
+    || HUMAN_GMAIL_OPERATION_TOOLS.has(toolName)
+    || HUMAN_MARCO_OFFICE_TOOLS.has(toolName)
     || HUMAN_RESEARCH_TOOLS.has(toolName)
     || HUMAN_OPERATION_PREFIXES.some((prefix) => toolName.startsWith(prefix))
   )) {

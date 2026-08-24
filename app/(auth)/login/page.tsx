@@ -92,6 +92,17 @@ export default function LoginPage() {
         <p className="text-caption text-center text-charcoal/60">
           Accounts are created by an administrator. There is no self sign-up.
         </p>
+
+        <p className="text-caption text-center text-charcoal/60">
+          <a
+            href="https://www.reslu.com.au/privacy"
+            target="_blank"
+            rel="noreferrer"
+            className="underline underline-offset-2 hover:text-charcoal"
+          >
+            Privacy Policy
+          </a>
+        </p>
       </form>
     </div>
   );

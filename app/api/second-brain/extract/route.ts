@@ -5,6 +5,7 @@ import {
   invoiceCandidateDedupeKey,
   isUsableSupplierInvoiceCandidate,
 } from "@/lib/invoice-candidates";
+import { prepareCompanyOverheadIntake } from "@/lib/finance/company-overhead-intake";
 import { extractEmail, type ExtractionAttachment } from "@/lib/second-brain/extraction";
 
 export const runtime = "nodejs";
@@ -51,7 +52,7 @@ export async function GET(request: NextRequest) {
 
   const { data: emails, error } = await supabase
     .from("emails")
-    .select("id,from_addr,subject,clean_text,ingested_mailboxes")
+    .select("id,from_addr,subject,clean_text,triage_label,matched_project_id,ingested_mailboxes")
     .eq("status", "triaged")
     .order("received_at", { ascending: true })
     .limit(BATCH_SIZE);
@@ -78,6 +79,32 @@ export async function GET(request: NextRequest) {
         .map((mailbox: string) => mailbox.toLowerCase())
         .includes("accounts@reslu.com.au");
       if (isUsableSupplierInvoiceCandidate(result.supplier_invoice) && !isAccountsInvoice) {
+        const sourceAttachment = (attachments ?? []).find((attachment) =>
+          attachment.mime?.toLowerCase() === "application/pdf" ||
+          attachment.filename?.toLowerCase().endsWith(".pdf")
+        );
+        const overheadDecision = sourceAttachment
+          ? prepareCompanyOverheadIntake({
+              source_email_id: email.id,
+              source_attachment_id: sourceAttachment.id,
+              ingested_mailboxes: email.ingested_mailboxes ?? [],
+              triage_label: email.triage_label,
+              matched_project_id: email.matched_project_id,
+              supplier: result.supplier_invoice?.supplier,
+              invoice_date: result.supplier_invoice?.invoice_date,
+              amount_ex_gst: result.supplier_invoice?.amount_ex_gst,
+              gst: result.supplier_invoice?.gst,
+              total: result.supplier_invoice?.total,
+              currency_code: result.supplier_invoice?.currency_code,
+              job_hints: result.supplier_invoice?.job_hints,
+              job_mentions: result.job_mentions?.map((mention) => mention.text) ?? [],
+              subject: email.subject,
+              line_hints: result.supplier_invoice?.line_hints,
+              attachment_filename: sourceAttachment.filename,
+              attachment_mime: sourceAttachment.mime,
+            })
+          : null;
+        const overheadIntake = overheadDecision?.eligible ? overheadDecision.intake : null;
         const { error: queueError } = await supabase.from("aria_queue").upsert(
           {
             kind: "invoice_candidate",
@@ -87,14 +114,18 @@ export async function GET(request: NextRequest) {
             ),
             source: "second-brain-extraction",
             payload: {
-              action: "review_supplier_invoice",
+              action: overheadIntake
+                ? "prepare_company_overhead_finance_intake_approval"
+                : "review_supplier_invoice",
               source_email_id: email.id,
               from_addr: email.from_addr,
               subject: email.subject,
               candidate: result.supplier_invoice,
+              company_overhead_intake: overheadIntake,
               xero_url: xeroUrl ?? null,
-              instruction:
-                "Match this invoice candidate to the correct RESLU project and specification context, then call propose_supplier_invoice. A delivery or pickup address alone, including RESLU Studio, is not proof of the cost project. If reliable project evidence is absent, propose it as unmatched for Phillip to assign manually. Do not approve, apply, mark paid, or alter project financials.",
+              instruction: overheadIntake
+                ? "This source-backed supplier invoice has no explicit project evidence. Treat RESLU, RESLU Developments and RESLU Studio as company identity/address hints, not job proof. Create a bounded durable Aria task whose visible draft artifact routes the source to accounts@reslu.com.au and includes an authority_request for commit_company_overhead_finance_intake with company_overhead_intake as the exact tool_args. The task must remain awaiting_approval until Phillip approves the exact artifact. Do not create a Spec project invoice, Cockpit row, Xero bill or email send before that approval. The approved commit creates a one-time Cockpit draft and an internal accounts-routing result; it does not send email."
+                : "Match this invoice candidate to the correct RESLU project and specification context, then call propose_supplier_invoice. A delivery, billing or company address alone, including RESLU Studio or RESLU Developments, is not proof of the cost project. If reliable project evidence is absent but the deterministic company-overhead packet is incomplete, request the missing evidence instead of assigning a project. Do not approve, apply, mark paid, or alter project financials.",
             },
           },
           { onConflict: "dedupe_key", ignoreDuplicates: true }

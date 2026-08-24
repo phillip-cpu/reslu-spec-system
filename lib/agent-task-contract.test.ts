@@ -57,6 +57,8 @@ test("agent work stays compact by default and the composer does not trigger iPho
   assert.match(workspace, /max-w-full flex-1 flex-col overflow-x-hidden/);
   assert.match(workspace, /aria-controls="conversation-agent-work-details"/);
   assert.match(workspace, /agentWorkExpanded \? "grid md:flex" : "hidden"/);
+  assert.doesNotMatch(workspace, /pb-3 md:flex md:max-h-52/);
+  assert.match(workspace, /drawer && "md:absolute md:left-4 md:right-4 md:top-full/);
   assert.match(workspace, /block truncate text-\[14px\]/);
   assert.match(workspace, /text-\[16px\].*md:text-body/);
   const artifact = read("lib/agent-task-artifact.ts");

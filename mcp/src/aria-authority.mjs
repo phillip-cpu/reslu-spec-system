@@ -4,7 +4,7 @@ export const FALLBACK_ARIA_READ_TOOLS = new Set([
   "list_site_captures", "get_conversation_meeting_source", "list_contacts",
   "list_pending_plan_analyses", "list_office_tasks", "list_design_phases",
   "get_bookings_overdue", "get_ordering_attention", "get_organic_action", "get_proposal",
-  "get_email", "search", "get_project_health", "get_context_snapshot",
+  "get_email", "search", "search_second_brain", "get_project_health", "get_context_snapshot",
   "get_materials_needing_aria", "get_stuart_finance_brief",
   "list_learning_candidates",
 ]);

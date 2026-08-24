@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import type { CreateCostSectionInput } from "@/types";
+import { alignUnmappedCostSectionsToTimeline } from "@/lib/finance/project-phase-alignment";
 
 /**
  * POST /api/projects/[id]/estimate/sections
@@ -56,6 +57,10 @@ export async function POST(
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  const updates = await alignUnmappedCostSectionsToTimeline(supabase, projectId);
+  const aligned = updates.find((update) => update.id === section.id);
+  if (aligned) section.forecast_phase_id = aligned.forecast_phase_id;
 
   return NextResponse.json(
     { section: { ...section, lines: [], rollup: { costExGst: 0, quotedExGst: 0, actualExGst: 0, variance: null } } },

@@ -52,6 +52,18 @@ test("Gateway agent params use native bounded images and an agent-qualified sess
   }), /Invalid image attachment/);
 });
 
+test("null image attachments mean no attachments", () => {
+  const input = validateRunInput({
+    message: "Check the account",
+    agentId: "marco",
+    sessionKey: "reslu-conversation-v2-123",
+    idempotencyKey: "job-text-123",
+    timeoutSeconds: 180,
+    attachments: null,
+  });
+  assert.deepEqual(input.attachments, []);
+});
+
 test("Gateway events expose lifecycle and safe tool labels without arguments or results", () => {
   const tool = safeAgentEvent({
     type: "event",
