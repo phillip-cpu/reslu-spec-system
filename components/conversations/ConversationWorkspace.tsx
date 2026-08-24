@@ -2,6 +2,7 @@
 
 import { Fragment, FormEvent, PointerEvent as ReactPointerEvent, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
+import { AgentOperatingWorkspace } from "@/components/conversations/AgentOperatingWorkspace";
 import { MeetingMode } from "@/components/conversations/MeetingMode";
 import Image from "next/image";
 import { initials } from "@/lib/conversations";
@@ -1291,6 +1292,7 @@ export function ConversationWorkspace({
   const [callTranscriptExpanded, setCallTranscriptExpanded] = useState(false);
   const [agentTasks, setAgentTasks] = useState<AgentTask[]>([]);
   const [agentWorkExpanded, setAgentWorkExpanded] = useState(false);
+  const [agentWorkspaceOpen, setAgentWorkspaceOpen] = useState(false);
   const [meetingModeOpen, setMeetingModeOpen] = useState(false);
   const [meetingSourceCallId, setMeetingSourceCallId] = useState<string | null>(null);
   const [meetingMinutesId, setMeetingMinutesId] = useState<string | null>(null);
@@ -2588,6 +2590,7 @@ export function ConversationWorkspace({
     setEditingMessageId(null);
     setEditingMessageBody("");
     setAgentWorkExpanded(false);
+    setAgentWorkspaceOpen(false);
     messageSearchRequestRef.current += 1;
     if (selectedId) activeMessageRequestRef.current.delete(selectedId);
     if (conversationId) activeMessageRequestRef.current.delete(conversationId);
@@ -4790,6 +4793,37 @@ export function ConversationWorkspace({
                 </p>
               </div>
               {callAgent && (
+                <div className="hidden shrink-0 border border-[#c9b998] sm:flex" aria-label="Conversation view">
+                  <button
+                    type="button"
+                    onClick={() => setAgentWorkspaceOpen(false)}
+                    aria-pressed={!agentWorkspaceOpen}
+                    className={clsx("min-h-11 px-3 text-caption", !agentWorkspaceOpen ? "bg-nearblack text-white" : "text-charcoal hover:bg-[#e9e2d6]")}
+                  >
+                    Chat
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAgentWorkspaceOpen(true)}
+                    aria-pressed={agentWorkspaceOpen}
+                    className={clsx("min-h-11 border-l border-[#c9b998] px-3 text-caption", agentWorkspaceOpen ? "bg-nearblack text-white" : "text-charcoal hover:bg-[#e9e2d6]")}
+                  >
+                    Work{agentTasks.length > 0 ? ` ${agentTasks.length}` : ""}
+                  </button>
+                </div>
+              )}
+              {callAgent && (
+                <button
+                  type="button"
+                  onClick={() => setAgentWorkspaceOpen((open) => !open)}
+                  aria-label={agentWorkspaceOpen ? "Open chat" : "Open agent assignments"}
+                  aria-pressed={agentWorkspaceOpen}
+                  className={clsx("flex h-11 w-11 shrink-0 items-center justify-center border border-[#c9b998] text-caption font-semibold sm:hidden", agentWorkspaceOpen ? "bg-nearblack text-white" : "text-nearblack")}
+                >
+                  {agentWorkspaceOpen ? "CH" : "WK"}
+                </button>
+              )}
+              {callAgent && (
                 <button disabled={voiceNoteRecording} onClick={() => void startCall()} aria-label={`Call ${callAgent.display_name}`} className="flex h-11 shrink-0 items-center justify-center gap-2 border border-nearblack px-3 text-nearblack hover:bg-nearblack hover:text-white disabled:opacity-35 md:px-4">
                   <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M7.2 3.5 9.5 8l-2.2 1.7a15.4 15.4 0 0 0 7 7l1.7-2.2 4.5 2.3-.7 3.2c-.2.8-.9 1.4-1.8 1.4A15.5 15.5 0 0 1 2.6 6c0-.9.6-1.6 1.4-1.8l3.2-.7Z" />
@@ -4883,6 +4917,27 @@ export function ConversationWorkspace({
                 )}
               </div>
             </header>
+
+            {agentWorkspaceOpen && (
+              <div className="absolute inset-x-0 bottom-0 top-16 z-[9] min-h-0 overflow-hidden bg-[#f5f1e8] md:top-20">
+                <AgentOperatingWorkspace
+                  conversationId={selectedConversation.id}
+                  conversationTitle={selectedConversation.display_title}
+                  agent={callAgent}
+                  tasks={agentTasks}
+                  messages={messages}
+                  agentActivity={agentActivity}
+                  selfParticipant={selfParticipant}
+                  onTaskAction={handleTaskAction}
+                  onRefresh={async () => {
+                    await Promise.all([
+                      loadAgentTasks(selectedConversation.id),
+                      loadMessages(selectedConversation.id, { latest: true }),
+                    ]);
+                  }}
+                />
+              </div>
+            )}
 
             {visibleAgentTasks.length > 0 && (
               <section className="w-full min-w-0 max-w-full shrink-0 overflow-hidden border-b border-[#d4cbbd] bg-[#eee9df] md:px-4 md:py-2.5" aria-label="Agent work">

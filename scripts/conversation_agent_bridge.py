@@ -533,6 +533,13 @@ def conversation_history(
         if isinstance(metadata, dict) and metadata.get("source") == "agent_consultation":
             consulted_slug = str(metadata.get("consulted_agent_slug") or "specialist").title()
             lines.append(f"  [Owning agent response informed by {consulted_slug}]")
+        if isinstance(metadata, dict) and re.fullmatch(UUID_PATTERN, str(metadata.get("agent_task_id") or "")):
+            assignment_title = re.sub(
+                r"\s+",
+                " ",
+                str(metadata.get("agent_task_title") or "Current assignment"),
+            ).strip()[:200]
+            lines.append(f"  [Assignment: {assignment_title} | {metadata['agent_task_id']}]")
         lines.append(f"[{row['created_at']}] {author}: {row['body']}")
         for attachment in attachments_by_message.get(row["id"], []):
             metadata = attachment.get("metadata")
@@ -768,6 +775,29 @@ def triggering_message_context(
         is_specialist_consultation,
         realtime_call_id,
     )
+
+
+def triggering_message_agent_task_id(
+    rest: SupabaseRest,
+    conversation_id: str,
+    message_id: str,
+) -> str | None:
+    """Return a validated assignment link for reply correlation."""
+    rows = rest.rows(
+        "conversation_messages",
+        {
+            "select": "id,metadata",
+            "id": f"eq.{message_id}",
+            "conversation_id": f"eq.{conversation_id}",
+            "limit": "1",
+        },
+        timeout_seconds=JOB_STATUS_REQUEST_TIMEOUT_SECONDS,
+    )
+    if not isinstance(rows, list) or not rows:
+        return None
+    metadata = rows[0].get("metadata")
+    candidate = metadata.get("agent_task_id") if isinstance(metadata, dict) else None
+    return str(candidate) if re.fullmatch(UUID_PATTERN, str(candidate or "")) else None
 
 
 def realtime_voice_thinking_level() -> str:
@@ -1907,6 +1937,11 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
         job["conversation_id"],
         job["triggering_message_id"],
     )
+    linked_agent_task_id = triggering_message_agent_task_id(
+        rest,
+        job["conversation_id"],
+        job["triggering_message_id"],
+    )
     agent = agent_identity(rest, job["agent_id"])
     consultation = (
         agent_consultation_for_job(rest, job["id"])
@@ -1984,7 +2019,11 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
                 "conversation_id": job["conversation_id"],
                 "author_agent_id": job["agent_id"],
                 "body": reply,
-                "metadata": {"source": "agent_runtime", "job_id": job["id"]},
+                "metadata": {
+                    "source": "agent_runtime",
+                    "job_id": job["id"],
+                    **({"agent_task_id": linked_agent_task_id} if linked_agent_task_id else {}),
+                },
             },
         )
         completion_values: dict[str, object] = {
