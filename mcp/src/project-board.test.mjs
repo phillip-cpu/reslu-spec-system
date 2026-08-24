@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolveBoardTaskUpdate, verifyBoardTaskUpdate } from "./project-board.mjs";
+import { resolveBoardGroupUpdate, resolveBoardTaskUpdate, verifyBoardGroupUpdate, verifyBoardTaskUpdate } from "./project-board.mjs";
 
 const board = {
   columns: [
@@ -8,6 +8,15 @@ const board = {
     { id: "c2", name: "In Progress", tasks: [] },
   ],
   groups: [{ id: "g1", name: "Site Setup" }, { id: "g2", name: "Rough In" }],
+};
+
+const groupBoard = {
+  columns: [],
+  groups: [
+    { id: "g1", name: "Rough-in", sort: 2000, updated_at: "v1" },
+    { id: "g2", name: "Waterproofing & Tiling", sort: 3000, updated_at: "v2" },
+    { id: "g3", name: "Plasterboard, Flushing & Cornice", sort: 6000, updated_at: "v3" },
+  ],
 };
 
 test("resolves an existing card and moves it under Rough In without creating anything", () => {
@@ -37,4 +46,16 @@ test("verifies authoritative readback", () => {
   const moved = { ...board, columns: [{ ...board.columns[0], tasks: [] }, { ...board.columns[1], tasks: [{ ...board.columns[0].tasks[0], column_id: "c2" }] }] };
   assert.equal(verifyBoardTaskUpdate(moved, "t1", { column_id: "c2" }).column_id, "c2");
   assert.throws(() => verifyBoardTaskUpdate(board, "t1", { column_id: "c2" }), /mismatch/);
+});
+
+test("moves a phase group directly after Rough-in using the available sort gap", () => {
+  const plan = resolveBoardGroupUpdate(groupBoard, { group_name: "Plasterboard", move_after_group_name: "Rough-in", expected_updated_at: "v3" });
+  assert.equal(plan.group.id, "g3");
+  assert.deepEqual(plan.patch, { sort: 2500 });
+  const readback = { ...groupBoard, groups: groupBoard.groups.map((group) => group.id === "g3" ? { ...group, sort: 2500 } : group) };
+  assert.equal(verifyBoardGroupUpdate(readback, "g3", plan.patch).sort, 2500);
+});
+
+test("fails closed on stale group versions", () => {
+  assert.throws(() => resolveBoardGroupUpdate(groupBoard, { group_id: "g3", move_after_group_name: "Rough-in", expected_updated_at: "old" }), /changed since/);
 });

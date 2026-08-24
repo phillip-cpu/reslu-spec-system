@@ -66,3 +66,49 @@ export function verifyBoardTaskUpdate(board, taskId, patch) {
   }
   return task;
 }
+
+export function resolveBoardGroupUpdate(board, input = {}) {
+  if (!board || !Array.isArray(board.groups)) throw new Error("Invalid project board response");
+  const groups = board.groups;
+  const group = resolveNamed(groups, input.group_id, input.group_name, "group");
+  if (!group) throw new Error("Provide an existing group_id or unambiguous group_name");
+  if (!input.expected_updated_at || input.expected_updated_at !== group.updated_at) {
+    throw new Error("Board group changed since it was read; refresh the board before editing");
+  }
+  const relativeKeys = [input.move_after_group_id, input.move_after_group_name, input.move_before_group_id, input.move_before_group_name].filter(Boolean);
+  if (relativeKeys.length > 1 || (relativeKeys.length && input.sort !== undefined)) {
+    throw new Error("Choose exactly one relative move or an explicit sort value");
+  }
+  const patch = {};
+  if (Object.prototype.hasOwnProperty.call(input, "name")) patch.name = input.name;
+  if (input.sort !== undefined) patch.sort = Number(input.sort);
+
+  const after = resolveNamed(groups.filter((row) => row.id !== group.id), input.move_after_group_id, input.move_after_group_name, "move_after_group");
+  const before = resolveNamed(groups.filter((row) => row.id !== group.id), input.move_before_group_id, input.move_before_group_name, "move_before_group");
+  if (after || before) {
+    const ordered = groups.filter((row) => row.id !== group.id).sort((a, b) => Number(a.sort) - Number(b.sort) || a.id.localeCompare(b.id));
+    const anchor = after ?? before;
+    const index = ordered.findIndex((row) => row.id === anchor.id);
+    const previous = after ? anchor : ordered[index - 1];
+    const next = after ? ordered[index + 1] : anchor;
+    if (previous && next && Number(next.sort) <= Number(previous.sort) + 1) {
+      throw new Error("Adjacent groups have no safe sort gap; reorder them in the board UI first");
+    }
+    patch.sort = previous && next
+      ? Math.floor((Number(previous.sort) + Number(next.sort)) / 2)
+      : previous
+        ? Number(previous.sort) + 1000
+        : Number(next.sort) - 1000;
+  }
+  const changedPatch = Object.fromEntries(Object.entries(patch).filter(([key, value]) => group[key] !== value));
+  return { group, patch: changedPatch, noOp: Object.keys(changedPatch).length === 0 };
+}
+
+export function verifyBoardGroupUpdate(board, groupId, patch) {
+  const group = (board.groups ?? []).find((row) => row.id === groupId);
+  if (!group) throw new Error("Updated board group was not found during readback");
+  for (const [key, value] of Object.entries(patch)) {
+    if (group[key] !== value) throw new Error(`Board group readback mismatch for ${key}`);
+  }
+  return group;
+}
