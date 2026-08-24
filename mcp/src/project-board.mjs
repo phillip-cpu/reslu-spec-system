@@ -23,6 +23,20 @@ function allTasks(board) {
   return (board.columns ?? []).flatMap((column) => column.tasks ?? []);
 }
 
+export function compactProjectBoard(board, taskQuery) {
+  if (!board || !Array.isArray(board.columns) || !Array.isArray(board.groups)) throw new Error("Invalid project board response");
+  return {
+    columns: board.columns.map((column) => ({
+      id: column.id, name: column.name, sort: column.sort, task_count: (column.tasks ?? []).length,
+      tasks: (column.tasks ?? []).filter((task) => taskQuery && normalized(task.title).includes(normalized(taskQuery))).map((task) => ({
+        id: task.id, title: task.title, column_id: task.column_id, phase_group_id: task.phase_group_id,
+        description: task.description, due_date: task.due_date, due_time: task.due_time, updated_at: task.updated_at,
+      })),
+    })),
+    groups: board.groups.map((group) => ({ id: group.id, name: group.name, sort: group.sort, phase_id: group.phase_id, updated_at: group.updated_at })),
+  };
+}
+
 export function resolveBoardTaskUpdate(board, input = {}) {
   if (!board || !Array.isArray(board.columns) || !Array.isArray(board.groups)) {
     throw new Error("Invalid project board response");

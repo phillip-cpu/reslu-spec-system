@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolveBoardGroupUpdate, resolveBoardTaskUpdate, verifyBoardGroupUpdate, verifyBoardTaskUpdate } from "./project-board.mjs";
+import { compactProjectBoard, resolveBoardGroupUpdate, resolveBoardTaskUpdate, verifyBoardGroupUpdate, verifyBoardTaskUpdate } from "./project-board.mjs";
 
 const board = {
   columns: [
@@ -58,4 +58,11 @@ test("moves a phase group directly after Rough-in using the available sort gap",
 
 test("fails closed on stale group versions", () => {
   assert.throws(() => resolveBoardGroupUpdate(groupBoard, { group_id: "g3", move_after_group_name: "Rough-in", expected_updated_at: "old" }), /changed since/);
+});
+
+test("compacts project boards to the fields Aria needs for safe edits", () => {
+  const compact = compactProjectBoard({ ...groupBoard, columns: board.columns, team: [{ id: "private" }] }, "plasterboard");
+  assert.equal("team" in compact, false);
+  assert.deepEqual(Object.keys(compact.groups[0]), ["id", "name", "sort", "phase_id", "updated_at"]);
+  assert.equal(compact.columns[0].tasks[0].updated_at, "v1");
 });

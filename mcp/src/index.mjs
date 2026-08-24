@@ -54,7 +54,7 @@ import {
   splitAriaAuthorityArgs,
 } from "./aria-authority.mjs";
 import { transcribePrivateMeetingSource } from "./local-whisper.mjs";
-import { resolveBoardGroupUpdate, resolveBoardTaskUpdate, verifyBoardGroupUpdate, verifyBoardTaskUpdate } from "./project-board.mjs";
+import { compactProjectBoard, resolveBoardGroupUpdate, resolveBoardTaskUpdate, verifyBoardGroupUpdate, verifyBoardTaskUpdate } from "./project-board.mjs";
 
 // ------------------------------------------------------------
 // Environment
@@ -752,6 +752,7 @@ const TOOLS = [
       type: "object",
       properties: {
         project_id: { type: "string", description: "Project UUID" },
+        task_query: { type: "string", description: "Optional card-title filter. Omit for a concise phase-group/status overview." },
       },
       required: ["project_id"],
       additionalProperties: false,
@@ -954,7 +955,7 @@ const TOOLS = [
       required: ["project_id"],
       additionalProperties: false,
     },
-    handler: async ({ project_id }) => apiFetch(`/api/projects/${project_id}/board`),
+    handler: async ({ project_id, task_query }) => compactProjectBoard(await apiFetch(`/api/projects/${project_id}/board`), task_query),
   },
   {
     name: "update_board_task",
