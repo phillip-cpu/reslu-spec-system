@@ -33,6 +33,7 @@ const TARGET_KEYS: Record<string, { type: string; keys: string[] }> = {
   complete_lead_meeting_transcription: { type: "meeting_recording", keys: ["recording_id"] },
   complete_conversation_meeting_draft: { type: "meeting", keys: ["meeting_id"] },
   create_board_task: { type: "project", keys: ["project_id"] },
+  update_board_task: { type: "board_task", keys: ["task_id", "task_title"] },
   submit_plan_analysis: { type: "project_file", keys: ["file_id"] },
   draft_sow_section: { type: "sow_section", keys: ["section_id"] },
   create_client_event: { type: "project", keys: ["project_id"] },

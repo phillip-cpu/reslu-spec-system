@@ -38,6 +38,7 @@ import type { BookVisitInput, BoardTaskCockpit } from "@/types/board-cockpit";
  * the start<=end validation, hence needing a real type here.
  */
 export type PatchBoardTaskV33Input = PatchBoardTaskInputV2 & {
+  expected_updated_at?: string;
   kind?: "task" | "milestone";
   booking_date?: string | null;
   booking_end_date?: string | null;

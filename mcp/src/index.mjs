@@ -54,6 +54,7 @@ import {
   splitAriaAuthorityArgs,
 } from "./aria-authority.mjs";
 import { transcribePrivateMeetingSource } from "./local-whisper.mjs";
+import { resolveBoardTaskUpdate, verifyBoardTaskUpdate } from "./project-board.mjs";
 
 // ------------------------------------------------------------
 // Environment
@@ -940,6 +941,55 @@ const TOOLS = [
         method: "POST",
         body: JSON.stringify(body),
       }),
+  },
+  {
+    name: "get_project_board",
+    description:
+      "Read a project's current work board, including existing cards, status columns and phase groups. Use this before editing or moving a card so you update the existing task rather than creating a duplicate. Phase groups such as 'Rough In' are separate from status columns such as 'In Progress'.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project UUID" },
+      },
+      required: ["project_id"],
+      additionalProperties: false,
+    },
+    handler: async ({ project_id }) => apiFetch(`/api/projects/${project_id}/board`),
+  },
+  {
+    name: "update_board_task",
+    description:
+      "Edit or move an existing project work-board card, then verify it by authoritative readback. Read the board first. Use phase_group_name (for example 'Rough In') to move between project phases and target_column_name for status lanes. Never use create_board_task as a substitute when the card already exists.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project UUID" },
+        task_id: { type: "string", description: "Existing board_tasks UUID; preferred after get_project_board" },
+        task_title: { type: "string", description: "Existing title lookup only when task_id is unavailable; must match exactly one card" },
+        expected_updated_at: { type: "string", description: "Exact updated_at returned by get_project_board; stale edits fail with 409" },
+        target_column_id: { type: "string", description: "Target status-column UUID" },
+        target_column_name: { type: "string", description: "Target status-column name, e.g. In Progress" },
+        phase_group_id: { type: "string", description: "Target phase-group UUID" },
+        phase_group_name: { type: "string", description: "Target phase-group name, e.g. Rough In" },
+        title: { type: "string" },
+        description: { type: "string" },
+        due_date: { type: ["string", "null"] },
+        due_time: { type: ["string", "null"] },
+      },
+      required: ["project_id", "expected_updated_at"],
+      additionalProperties: false,
+    },
+    handler: async ({ project_id, ...input }) => {
+      const board = await apiFetch(`/api/projects/${project_id}/board`);
+      const resolved = resolveBoardTaskUpdate(board, input);
+      if (resolved.noOp) return { task: resolved.task, verified: true, unchanged: true };
+      await apiFetch(`/api/board-tasks/${resolved.task.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ ...resolved.patch, expected_updated_at: input.expected_updated_at }),
+      });
+      const readback = await apiFetch(`/api/projects/${project_id}/board`);
+      return { task: verifyBoardTaskUpdate(readback, resolved.task.id, resolved.patch), verified: true };
+    },
   },
   // ------------------------------------------------------------
   // Phase 12a-A — SOW completion + Aria plan analysis + takeoff assist
