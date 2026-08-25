@@ -187,7 +187,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         self.assertEqual(invoke_gateway.call_args.kwargs["agent_id"], "main")
         self.assertEqual(
             invoke_gateway.call_args.kwargs["session_key"],
-            "reslu-conversation-v2-conversation-123",
+            conversation_agent_bridge.openclaw_session_key("conversation-123"),
         )
         self.assertEqual(invoke_gateway.call_args.kwargs["idempotency_key"], "job-123")
         self.assertEqual(invoke_gateway.call_args.kwargs["model"], "openai/gpt-5.6-terra")
@@ -994,13 +994,133 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             "A legacy reply.",
         )
 
-    def test_reslu_conversation_has_stable_openclaw_session_key(self):
+    def test_reslu_conversation_rolls_context_daily_while_retaining_thread_identity(self):
         self.assertEqual(
             conversation_agent_bridge.openclaw_session_key(
-                "d5442b38-d5ee-4650-93be-9e5953dbf401"
+                "d5442b38-d5ee-4650-93be-9e5953dbf401",
+                datetime(2026, 8, 25, 1, 0, tzinfo=timezone.utc),
             ),
-            "reslu-conversation-v2-d5442b38-d5ee-4650-93be-9e5953dbf401",
+            "reslu-conversation-v3-20260825-d5442b38-d5ee-4650-93be-9e5953dbf401",
         )
+
+    def test_marco_completion_contract_creates_a_bounded_continuation(self):
+        result = conversation_agent_bridge.parse_conversation_result(
+            json.dumps({
+                "message": "I completed the audit and am continuing with the repair.",
+                "completion_state": "continuation_required",
+                "continuation": {
+                    "title": "Repair the campaign-to-page message match",
+                    "objective": "Use prior research, update the authorised assets and verify the live result.",
+                    "model_tier": "strong",
+                },
+            }),
+            "Fix the campaign",
+        )
+
+        self.assertEqual(result["completion_state"], "continuation_required")
+        self.assertEqual(result["continuation"]["model_tier"], "strong")
+        self.assertNotIn("completion_state", result["message"])
+
+    def test_plain_conversation_replies_remain_backwards_compatible(self):
+        result = conversation_agent_bridge.parse_conversation_result(
+            "The verified change is live.",
+            "Fix the campaign",
+        )
+        self.assertEqual(result, {
+            "message": "The verified change is live.",
+            "completion_state": "completed",
+            "continuation": None,
+        })
+
+    def test_marco_continuation_is_durable_research_first_and_idempotent(self):
+        rest = mock.Mock()
+        rest.rows.side_effect = [
+            [{
+                "id": "message-1",
+                "author_profile_id": "person-1",
+                "body": "Improve the ads",
+                "metadata": {"source": "text"},
+            }],
+            [],
+        ]
+        rest.insert.return_value = {"id": "task-1"}
+        job = {
+            "id": "job-1",
+            "agent_id": "marco-1",
+            "conversation_id": "conversation-1",
+            "triggering_message_id": "message-1",
+        }
+
+        task = conversation_agent_bridge.ensure_agent_continuation_task(
+            rest,
+            job,
+            {"slug": "marco"},
+            {
+                "title": "Improve the ads",
+                "objective": "Complete and verify the authorised optimisation.",
+                "model_tier": "strong",
+            },
+        )
+
+        self.assertEqual(task["id"], "task-1")
+        values = rest.insert.call_args.args[1]
+        self.assertEqual(values["client_task_id"], "conversation-continuation:job-1")
+        self.assertEqual(values["owner_agent_id"], "marco-1")
+        self.assertEqual(values["model_tier"], "strong")
+        self.assertIn("two scoped queries", values["objective"])
+        self.assertIn("authoritative live state", values["objective"])
+
+    @mock.patch.object(conversation_agent_bridge, "agent_identity")
+    def test_interrupted_marco_turn_creates_inspect_first_recovery_work(self, identity):
+        identity.return_value = {"slug": "marco", "display_name": "Marco"}
+        source = {
+            "id": "message-1",
+            "author_profile_id": "person-1",
+            "body": "Deploy the approved landing-page change",
+            "metadata": {"source": "text"},
+        }
+        rest = mock.Mock()
+        rest.rows.side_effect = [[source], [source], []]
+        rest.insert.side_effect = [{"id": "recovery-task-1"}, {"id": "recovery-message-1"}]
+        job = {
+            "id": "job-1",
+            "agent_id": "marco-1",
+            "conversation_id": "conversation-1",
+            "triggering_message_id": "message-1",
+        }
+
+        task = conversation_agent_bridge.recover_failed_marco_conversation_job(
+            rest,
+            job,
+            conversation_agent_bridge.GatewayRunError("final event missing", accepted=True),
+        )
+
+        self.assertEqual(task["id"], "recovery-task-1")
+        task_values = rest.insert.call_args_list[0].args[1]
+        self.assertEqual(task_values["client_task_id"], "conversation-recovery:job-1")
+        self.assertIn("do not repeat any side effect", task_values["objective"])
+        notice_values = rest.insert.call_args_list[1].args[1]
+        self.assertEqual(notice_values["metadata"]["continuation_task_id"], "recovery-task-1")
+        self.assertIn("verify the actual system state", notice_values["body"])
+
+    @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
+    def test_marco_text_prompt_requires_verified_completion_or_durable_handoff(self, popen):
+        process = popen.return_value
+        process.communicate.return_value = ('{"final":"Verified."}', "")
+        process.returncode = 0
+
+        conversation_agent_bridge.invoke_agent(
+            {"slug": "marco", "display_name": "Marco", "role_label": "Commercial strategist"},
+            "Phillip: Improve the campaign.",
+            "conversation-123",
+            newest_message="Improve the campaign.",
+        )
+
+        command = popen.call_args.args[0]
+        prompt = command[command.index("--message") + 1]
+        self.assertIn("completion contract", prompt)
+        self.assertIn("search Marco's curated Second Brain", prompt)
+        self.assertIn("continuation_required", prompt)
 
     def test_realtime_voice_has_a_call_scoped_openclaw_session_key(self):
         self.assertEqual(
@@ -1026,7 +1146,10 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         command = popen.call_args.args[0]
         self.assertEqual(reply, "Agent answer")
         self.assertIn("--session-key", command)
-        self.assertEqual(command[command.index("--session-key") + 1], "reslu-conversation-v2-conversation-123")
+        self.assertEqual(
+            command[command.index("--session-key") + 1],
+            conversation_agent_bridge.openclaw_session_key("conversation-123"),
+        )
         self.assertNotIn("--thinking", command)
 
     @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
