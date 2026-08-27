@@ -13,7 +13,8 @@ export default async function MarketingPage() {
   const supabase = await createClient();
   const info = await getUserRole(supabase);
   const isAdmin = info?.role === "admin";
-  const initialRange = defaultMarketingRange();
+  const now = new Date();
+  const initialRange = defaultMarketingRange(now);
 
   if (!isAdmin) {
     return (
@@ -38,7 +39,11 @@ export default async function MarketingPage() {
         subtitle="Google Ads · Meta Ads · SEO · Cost per lead"
       />
       <main className="flex-1 px-4 py-6 sm:px-8 sm:py-8">
-        <MarketingDashboard initialFrom={initialRange.from} initialTo={initialRange.to} />
+        <MarketingDashboard
+          initialFrom={initialRange.from}
+          initialTo={initialRange.to}
+          initialNow={now.toISOString()}
+        />
       </main>
     </>
   );

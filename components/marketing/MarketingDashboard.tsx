@@ -9,6 +9,7 @@ import {
   type OrganicPagePerformance,
 } from "@/lib/marketing";
 import type { OrganicActionStatus } from "@/lib/organic-actions";
+import { CurrentMarketingStrategies } from "@/components/marketing/CurrentMarketingStrategies";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -74,6 +75,7 @@ interface MarketingData {
 interface MarketingDashboardProps {
   initialFrom: string;
   initialTo: string;
+  initialNow: string;
 }
 
 interface OrganicAction {
@@ -587,7 +589,11 @@ async function requestOrganicActions(signal?: AbortSignal): Promise<OrganicActio
 
 // ── Main dashboard ─────────────────────────────────────────────────────────
 
-export function MarketingDashboard({ initialFrom, initialTo }: MarketingDashboardProps) {
+export function MarketingDashboard({
+  initialFrom,
+  initialTo,
+  initialNow,
+}: MarketingDashboardProps) {
   const [from, setFrom] = useState(initialFrom);
   const [to, setTo] = useState(initialTo);
   const [data, setData] = useState<MarketingData | null>(null);
@@ -735,6 +741,8 @@ export function MarketingDashboard({ initialFrom, initialTo }: MarketingDashboar
 
   return (
     <div className="space-y-8">
+      <CurrentMarketingStrategies initialNow={initialNow} />
+
       {/* Date picker */}
       <div className="flex flex-wrap items-end gap-3">
         <div>
