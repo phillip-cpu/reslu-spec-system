@@ -238,8 +238,6 @@ export interface FinanceCreditFacility {
   provider: string | null;
   facility_type: FinanceCreditFacilityType;
   credit_limit_minor: number;
-  current_balance_minor: number;
-  available_credit_minor: number;
   interest_rate_bps: number | null;
   status: "active" | "paused" | "closed";
   notes: string | null;
@@ -254,7 +252,6 @@ export interface SaveFinanceCreditFacilityRequest {
   provider?: string | null;
   facility_type: FinanceCreditFacilityType;
   credit_limit_minor: number;
-  current_balance_minor: number;
   interest_rate_bps?: number | null;
   status: "active" | "paused" | "closed";
   notes?: string | null;
@@ -270,6 +267,7 @@ export interface FinanceCreditFacilitiesResponse {
     current_balance_minor: number;
     available_credit_minor: number;
     active_count: number;
+    xero_balance_as_of: string | null;
   };
 }
 

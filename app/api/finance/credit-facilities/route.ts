@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUserRole } from "@/lib/auth";
 import { financeFoundationEnabled } from "@/lib/finance/feature-flags";
 import { hasFinanceCapability } from "@/lib/finance/permissions";
-import { createClient } from "@/lib/supabase/server";
+import { summarizeCreditLiquidity } from "@/lib/finance/liquidity";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import type {
   FinanceCreditFacility,
   SaveFinanceCreditFacilityRequest,
@@ -15,15 +16,12 @@ const VALID_STATUSES = new Set(["active", "paused", "closed"]);
 
 function normalize(row: Record<string, unknown>): FinanceCreditFacility {
   const limit = Number(row.credit_limit_minor);
-  const balance = Number(row.current_balance_minor);
-  if (!Number.isSafeInteger(limit) || limit <= 0 || !Number.isSafeInteger(balance) || balance < 0) {
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
     throw new Error(`${String(row.id)} has an invalid facility balance`);
   }
   return {
     ...row,
     credit_limit_minor: limit,
-    current_balance_minor: balance,
-    available_credit_minor: Math.max(limit - balance, 0),
   } as FinanceCreditFacility;
 }
 
@@ -54,14 +52,35 @@ export async function GET() {
   try {
     const facilities = ((data ?? []) as Record<string, unknown>[]).map(normalize);
     const active = facilities.filter((item) => item.status === "active");
+    const service = createServiceRoleClient();
+    const { data: connection } = await service
+      .from("xero_connections")
+      .select("id")
+      .eq("is_active", true)
+      .maybeSingle();
+    const { data: cashSnapshot, error: cashError } = connection
+      ? await service
+          .from("xero_cash_snapshots")
+          .select("credit_balance,as_of_date")
+          .eq("connection_id", connection.id)
+          .order("as_of_date", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+      : { data: null, error: null };
+    if (cashError) return NextResponse.json({ error: cashError.message }, { status: 500 });
+    const credit = summarizeCreditLiquidity({
+      facilities: active,
+      xeroCreditBalanceDollars: cashSnapshot?.credit_balance,
+    });
     return NextResponse.json({
       facilities,
       can_edit: edit.allowed,
       summary: {
-        credit_limit_minor: active.reduce((sum, item) => sum + item.credit_limit_minor, 0),
-        current_balance_minor: active.reduce((sum, item) => sum + item.current_balance_minor, 0),
-        available_credit_minor: active.reduce((sum, item) => sum + item.available_credit_minor, 0),
+        credit_limit_minor: credit.creditLimitMinor,
+        current_balance_minor: credit.creditDrawnMinor,
+        available_credit_minor: credit.availableCreditMinor,
         active_count: active.length,
+        xero_balance_as_of: cashSnapshot?.as_of_date ?? null,
       },
     });
   } catch (caught) {
@@ -80,8 +99,8 @@ export async function POST(request: NextRequest) {
   const body = (await request.json()) as SaveFinanceCreditFacilityRequest;
   if (!body.name?.trim() || !body.reason?.trim()) return NextResponse.json({ error: "Name and change reason are required" }, { status: 400 });
   if (!VALID_TYPES.has(body.facility_type) || !VALID_STATUSES.has(body.status)) return NextResponse.json({ error: "Facility type or status is invalid" }, { status: 400 });
-  if (!Number.isSafeInteger(body.credit_limit_minor) || body.credit_limit_minor <= 0 || !Number.isSafeInteger(body.current_balance_minor) || body.current_balance_minor < 0) {
-    return NextResponse.json({ error: "Limit and current balance must be valid minor-unit integers" }, { status: 400 });
+  if (!Number.isSafeInteger(body.credit_limit_minor) || body.credit_limit_minor <= 0) {
+    return NextResponse.json({ error: "Limit must be a positive minor-unit integer" }, { status: 400 });
   }
   if (body.interest_rate_bps !== null && body.interest_rate_bps !== undefined && (!Number.isInteger(body.interest_rate_bps) || body.interest_rate_bps < 0 || body.interest_rate_bps > 100000)) {
     return NextResponse.json({ error: "Interest rate must be between 0 and 1,000%" }, { status: 400 });
@@ -93,7 +112,7 @@ export async function POST(request: NextRequest) {
     p_provider: body.provider ?? null,
     p_facility_type: body.facility_type,
     p_credit_limit_minor: body.credit_limit_minor,
-    p_current_balance_minor: body.current_balance_minor,
+    p_current_balance_minor: 0,
     p_interest_rate_bps: body.interest_rate_bps ?? null,
     p_status: body.status,
     p_notes: body.notes ?? null,

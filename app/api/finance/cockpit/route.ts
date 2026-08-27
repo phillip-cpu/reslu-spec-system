@@ -15,6 +15,7 @@ import { generateRecurringContributions } from "@/lib/finance/recurrence";
 import { isIsoDate } from "@/lib/finance/readiness";
 import { buildSectionForecastDates } from "@/lib/finance/schedule-cost-timing";
 import { includesConstructionCosts } from "@/lib/finance/construction-cost-eligibility";
+import { summarizeCreditLiquidity } from "@/lib/finance/liquidity";
 import {
   cashCommitmentContributions,
   estimateAllowanceSummary,
@@ -218,7 +219,11 @@ export async function GET(request: NextRequest) {
     last_sync_completed_at: string | null;
     last_sync_error: string | null;
   } | null = null;
-  let xeroCashSnapshot: { cash_balance: number | string; as_of_date: string } | null = null;
+  let xeroCashSnapshot: {
+    cash_balance: number | string;
+    credit_balance: number | string;
+    as_of_date: string;
+  } | null = null;
   let xeroInvoices: CachedXeroInvoice[] = [];
   let xeroPayments: CachedXeroPayment[] = [];
   if (canUseXero) {
@@ -236,7 +241,7 @@ export async function GET(request: NextRequest) {
       const [cashResult, invoiceResult, paymentResult] = await Promise.all([
         service
           .from("xero_cash_snapshots")
-          .select("cash_balance,as_of_date")
+          .select("cash_balance,credit_balance,as_of_date")
           .eq("connection_id", connection.id)
           .lte("as_of_date", asOfDate)
           .order("as_of_date", { ascending: false })
@@ -297,7 +302,7 @@ export async function GET(request: NextRequest) {
       .order("first_due_date", { ascending: true }),
     supabase
       .from("finance_credit_facilities")
-      .select("credit_limit_minor,current_balance_minor")
+      .select("facility_type,credit_limit_minor")
       .eq("status", "active"),
   ]);
   const recurringError = recurringResult.error ?? facilityResult.error;
@@ -569,15 +574,14 @@ export async function GET(request: NextRequest) {
           contributions: cashCommitmentContributions(contributions),
         })
       : null;
-    const creditLimitMinor = rawFacilities.reduce(
-      (sum, row) => sum + safeMinor(row.credit_limit_minor, "credit_limit_minor"),
-      0
-    );
-    const creditDrawnMinor = rawFacilities.reduce(
-      (sum, row) => sum + safeMinor(row.current_balance_minor, "current_balance_minor"),
-      0
-    );
-    const availableCreditMinor = Math.max(creditLimitMinor - creditDrawnMinor, 0);
+    const { creditLimitMinor, creditDrawnMinor, availableCreditMinor } =
+      summarizeCreditLiquidity({
+        facilities: rawFacilities.map((row) => ({
+          facility_type: row.facility_type,
+          credit_limit_minor: safeMinor(row.credit_limit_minor, "credit_limit_minor"),
+        })),
+        xeroCreditBalanceDollars: xeroCashSnapshot?.credit_balance,
+      });
     const allowances = planningProjection
       ? estimateAllowanceSummary(planningProjection)
       : { totalMinor: 0, datedMinor: 0, undatedMinor: 0, overdueMinor: 0, itemCount: 0 };

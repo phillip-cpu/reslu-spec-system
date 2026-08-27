@@ -9,7 +9,7 @@ create table if not exists finance_credit_facilities (
                            'overdraft', 'credit_card', 'line_of_credit', 'other'
                          )),
   credit_limit_minor     bigint not null check (credit_limit_minor > 0),
-  current_balance_minor  bigint not null default 0 check (current_balance_minor >= 0),
+  current_balance_minor  bigint not null default 0 check (current_balance_minor >= 0), -- legacy/reserved; Xero is authoritative
   interest_rate_bps      integer check (
                            interest_rate_bps is null or interest_rate_bps between 0 and 100000
                          ),
@@ -147,6 +147,8 @@ grant select on finance_credit_facilities to authenticated;
 grant all on finance_credit_facilities to service_role;
 
 comment on table finance_credit_facilities is
-  'Audited overdrafts, cards and credit lines. Limits add liquidity headroom; balances are debt and never revenue or bank cash.';
+  'Audited overdrafts, cards and credit lines. Users maintain limits only; Xero cash snapshots are authoritative for balances and debt.';
+comment on column finance_credit_facilities.current_balance_minor is
+  'Reserved compatibility field. The cockpit ignores it because Xero is authoritative for credit balances.';
 
 notify pgrst, 'reload schema';
