@@ -1700,6 +1700,23 @@ const TOOLS = [
       apiFetch(`/api/second-brain/emails/${encodeURIComponent(id)}`),
   },
   {
+    name: "send_aria_email",
+    description:
+      "Send one exact approved plain-text email from RESLU <aria@reslu.com.au>. Use Aria's own tool, never a specialist's mailbox. A current authenticated owner instruction that already fixes the final recipient, subject, body and CC is the approval; do not ask for a redundant confirmation. If any final field changes materially, obtain refreshed authority. Returns Gmail's provider message id and timestamp so delivery can be verified and an uncertain send is never blindly retried.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "Single final recipient email address" },
+        cc: { type: "array", items: { type: "string" }, maxItems: 10, description: "Optional approved CC recipients" },
+        subject: { type: "string", minLength: 1, maxLength: 300 },
+        body: { type: "string", minLength: 1, maxLength: 50000, description: "Exact approved plain-text body" },
+      },
+      required: ["to", "subject", "body"],
+      additionalProperties: false,
+    },
+    handler: async (body) => apiFetch("/api/aria-email/send", { method: "POST", body: JSON.stringify(body) }),
+  },
+  {
     name: "search",
     description:
       "Hybrid search (full-text + semantic) across projects, leads, items, diary/portal updates, SOW documents, inbound emails and durable memory notes. Use it before deciding or drafting so current records and prior decisions inform the answer. Full-text catches exact codes; semantic search catches paraphrases. Use entity_type to scope to project/lead/item/diary/sow/email/memory. response_format 'concise' (default) returns a <=140-char snippet per result; 'detailed' returns the full indexed content.",
