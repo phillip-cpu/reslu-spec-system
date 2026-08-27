@@ -2,7 +2,6 @@
 
 import { Fragment, FormEvent, PointerEvent as ReactPointerEvent, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { AgentOperatingWorkspace } from "@/components/conversations/AgentOperatingWorkspace";
 import { MeetingMode } from "@/components/conversations/MeetingMode";
 import Image from "next/image";
 import { initials } from "@/lib/conversations";
@@ -10,6 +9,7 @@ import {
   agentTaskArtifactText,
   normalizeAgentTaskArtifactContent,
 } from "@/lib/agent-task-artifact";
+import { latestAgentComputerState } from "@/lib/agent-operating-workspace";
 import { visibleAgentWorkTasks } from "@/lib/agent-work-visibility";
 import { boundedFetch } from "@/lib/bounded-request";
 import {
@@ -524,23 +524,76 @@ function taskStatusLabel(task: AgentTask) {
   }[task.status];
 }
 
+function taskStatusDot(task: AgentTask) {
+  if (task.status === "awaiting_approval") return "bg-amber-500";
+  if (task.status === "failed") return "bg-red-500";
+  if (task.status === "completed") return "bg-emerald-600";
+  if (task.status === "cancelled") return "bg-charcoal/25";
+  return task.status === "running" ? "bg-blue-600" : "bg-charcoal/45";
+}
+
+function taskCurrentDetail(task: AgentTask) {
+  return task.error
+    ?? task.result_summary
+    ?? task.progress_label
+    ?? task.events.at(-1)?.label
+    ?? (task.status === "queued" ? "Waiting for the agent to start" : task.objective);
+}
+
+function AgentTaskRow({
+  task,
+  selected,
+  onSelect,
+}: {
+  task: AgentTask;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const agentName = task.owner_agent?.display_name ?? "RESLU agent";
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={selected}
+      className={clsx(
+        "group flex w-full items-start gap-3 border-l-2 px-3 py-3 text-left transition-colors",
+        selected ? "border-nearblack bg-white" : "border-transparent hover:bg-white/55",
+      )}
+    >
+      <span aria-hidden className={clsx("mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full", taskStatusDot(task))} />
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center justify-between gap-2">
+          <span className="truncate text-[15px] font-semibold leading-snug text-nearblack">{task.title}</span>
+          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.11em] text-charcoal/45">{taskStatusLabel(task)}</span>
+        </span>
+        <span className="mt-1 line-clamp-2 block text-[13px] leading-snug text-charcoal/60">{taskCurrentDetail(task)}</span>
+        <span className="mt-1.5 block text-[11px] text-charcoal/40">{agentName}{task.events.length > 0 ? ` · ${task.events.length} update${task.events.length === 1 ? "" : "s"}` : ""}</span>
+      </span>
+    </button>
+  );
+}
+
 function AgentTaskCard({
   task,
   compact = false,
   dark = false,
   canRetry = false,
   onAction,
+  onDiscuss,
 }: {
   task: AgentTask;
   compact?: boolean;
   dark?: boolean;
   canRetry?: boolean;
   onAction: (taskId: string, action: "cancel" | "approve" | "reject" | "retry" | "dismiss", artifactId?: string) => void;
+  onDiscuss?: (task: AgentTask) => void;
 }) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [confirmingRetry, setConfirmingRetry] = useState(false);
   const latestEvent = task.events.at(-1);
+  const computer = latestAgentComputerState(task);
   const active = task.status === "queued" || task.status === "running";
+  const dismissible = task.status === "failed" || task.status === "completed" || task.status === "cancelled";
   const hasApprovedArtifact = task.artifacts.some((artifact) => artifact.status === "approved" || artifact.status === "published");
   const approvalAlreadyDecided = task.status === "awaiting_approval"
     && !task.artifacts.some((artifact) => artifact.status === "draft")
@@ -552,6 +605,7 @@ function AgentTaskCard({
   const retryable = task.status === "failed" && !retryBlockedByApproval && canRetry;
   const statusDetail = task.error
     ?? task.result_summary
+    ?? task.progress_label
     ?? (!approvalAlreadyDecided ? latestEvent?.label : null);
   return (
     <article className={clsx(
@@ -599,7 +653,7 @@ function AgentTaskCard({
             </div>
           </div>
         )}
-        {task.status === "failed" && (
+        {dismissible && (
           <button
             type="button"
             onClick={() => onAction(task.id, "dismiss")}
@@ -664,6 +718,36 @@ function AgentTaskCard({
           <p className={clsx("mt-1 text-caption", dark ? "text-white/45" : "text-charcoal/45")}>The draft will appear here when it is ready to read.</p>
         </div>
       )}
+      {!compact && (computer.application || computer.location || computer.tool || computer.controlUrl) && (
+        <div className={clsx("mt-4 flex items-center justify-between gap-3 border px-3 py-2.5", dark ? "border-white/15 bg-black/15" : "border-[#d8d0c4] bg-[#f8f5ef]") }>
+          <div className="min-w-0">
+            <p className={clsx("conversation-meta font-semibold uppercase tracking-[0.12em]", dark ? "text-white/45" : "text-charcoal/55")}>Live computer</p>
+            <p className={clsx("mt-1 truncate text-caption", dark ? "text-white/70" : "text-charcoal/70")}>
+              {[computer.application, computer.tool, computer.location].filter(Boolean).join(" · ")}
+            </p>
+          </div>
+          {computer.controlUrl && (
+            <a href={computer.controlUrl} target="_blank" rel="noreferrer" className={clsx("flex min-h-10 shrink-0 items-center px-3 text-caption font-semibold", dark ? "bg-sand text-nearblack" : "bg-nearblack text-white")}>Take control</a>
+          )}
+        </div>
+      )}
+      {!compact && task.events.length > 0 && (
+        <div className={clsx("mt-4 border-t pt-3", dark ? "border-white/10" : "border-[#ded7cd]") }>
+          <p className={clsx("text-[10px] font-semibold uppercase tracking-[0.14em]", dark ? "text-white/45" : "text-charcoal/45")}>Activity</p>
+          <ol className="mt-2 space-y-2">
+            {task.events.slice(-5).reverse().map((event, index) => (
+              <li key={event.id} className="flex gap-2.5 text-[13px] leading-snug">
+                <span aria-hidden className={clsx("mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full", index === 0 ? taskStatusDot(task) : dark ? "bg-white/25" : "bg-charcoal/20")} />
+                <span className="min-w-0 flex-1">
+                  <span className={clsx("font-medium", dark ? "text-white/80" : "text-charcoal/80")}>{event.label}</span>
+                  {event.detail && <span className={clsx("mt-0.5 block", dark ? "text-white/45" : "text-charcoal/50")}>{event.detail}</span>}
+                </span>
+                <time className={clsx("shrink-0 text-[11px]", dark ? "text-white/30" : "text-charcoal/35")} dateTime={event.created_at}>{timeLabel(event.created_at)}</time>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
       {task.artifacts.map((artifact) => {
         const content = normalizeAgentTaskArtifactContent(artifact.content);
         const recipient = typeof content.to === "string" ? content.to : null;
@@ -691,6 +775,15 @@ function AgentTaskCard({
           </div>
         );
       })}
+      {!compact && onDiscuss && (
+        <button
+          type="button"
+          onClick={() => onDiscuss(task)}
+          className={clsx("mt-4 min-h-11 w-full rounded-lg border px-4 py-2 text-body font-semibold", dark ? "border-white/20 text-white hover:bg-white/10" : "border-[#cfc6b8] text-nearblack hover:bg-[#eee8de]")}
+        >
+          Ask or steer in chat
+        </button>
+      )}
     </article>
   );
 }
@@ -1292,7 +1385,8 @@ export function ConversationWorkspace({
   const [callTranscriptExpanded, setCallTranscriptExpanded] = useState(false);
   const [agentTasks, setAgentTasks] = useState<AgentTask[]>([]);
   const [agentWorkExpanded, setAgentWorkExpanded] = useState(false);
-  const [agentWorkspaceOpen, setAgentWorkspaceOpen] = useState(false);
+  const [selectedAgentTaskId, setSelectedAgentTaskId] = useState<string | null>(null);
+  const [composerAgentTask, setComposerAgentTask] = useState<AgentTask | null>(null);
   const [meetingModeOpen, setMeetingModeOpen] = useState(false);
   const [meetingSourceCallId, setMeetingSourceCallId] = useState<string | null>(null);
   const [meetingMinutesId, setMeetingMinutesId] = useState<string | null>(null);
@@ -1569,6 +1663,19 @@ export function ConversationWorkspace({
   const visibleAgentTasks = useMemo(() => {
     return visibleAgentWorkTasks(agentTasks);
   }, [agentTasks]);
+  const selectedAgentTask = visibleAgentTasks.find((task) => task.id === selectedAgentTaskId)
+    ?? visibleAgentTasks[0]
+    ?? null;
+  const activeAgentWorkCount = visibleAgentTasks.filter((task) => task.status === "queued" || task.status === "running").length
+    + agentActivity.reduce((total, activity) => total + Math.max(1, activity.pending_turns), 0);
+  const attentionAgentWorkCount = visibleAgentTasks.filter((task) => task.status === "awaiting_approval" || task.status === "failed").length;
+  const recentAgentWorkCount = visibleAgentTasks.filter((task) => task.status === "completed" || task.status === "cancelled").length;
+  const agentWorkVisible = visibleAgentTasks.length > 0 || agentActivity.length > 0;
+  const agentWorkSummary = attentionAgentWorkCount > 0
+    ? `${attentionAgentWorkCount} need${attentionAgentWorkCount === 1 ? "s" : ""} you`
+    : activeAgentWorkCount > 0
+      ? `${activeAgentWorkCount} active`
+      : `${recentAgentWorkCount} recent`;
   const latestCallTranscript = callTranscript.at(-1);
   const handleTaskAction = useCallback((taskId: string, action: "cancel" | "approve" | "reject" | "retry" | "dismiss", artifactId?: string) => {
     void updateAgentTask(taskId, action, artifactId).catch((reason) => {
@@ -1901,6 +2008,23 @@ export function ConversationWorkspace({
     });
   }, []);
 
+  const discussAgentTask = useCallback((task: AgentTask) => {
+    const conversationId = selectedIdRef.current;
+    if (!conversationId) return;
+    const agentName = task.owner_agent?.display_name;
+    const mention = participants.length > 2 && agentName ? `@${agentName} ` : "";
+    const prompt = `${mention}About “${task.title}”: `;
+    const current = draftsByConversationRef.current[conversationId] ?? "";
+    updateDraft(conversationId, current.trim() ? `${current.trimEnd()}\n\n${prompt}` : prompt);
+    setComposerAgentTask(task);
+    setAgentWorkExpanded(false);
+    window.setTimeout(() => {
+      const input = composerInputRef.current;
+      input?.focus();
+      input?.setSelectionRange(input.value.length, input.value.length);
+    }, 0);
+  }, [participants.length, updateDraft]);
+
   const clearDraft = useCallback((conversationId: string, sentBody?: string) => {
     if (sentBody !== undefined && (draftsByConversationRef.current[conversationId] ?? "") !== sentBody) return;
     const next = { ...draftsByConversationRef.current };
@@ -1953,6 +2077,7 @@ export function ConversationWorkspace({
           body: entry.body,
           source: entry.source,
           target_agent_slugs: entry.targetAgent ? [entry.targetAgent] : undefined,
+          agent_task_id: entry.agentTaskId,
           attachment_ids: entry.attachmentIds,
           client_message_id: entry.clientMessageId,
           reply_to_id: entry.replyToId,
@@ -2590,7 +2715,7 @@ export function ConversationWorkspace({
     setEditingMessageId(null);
     setEditingMessageBody("");
     setAgentWorkExpanded(false);
-    setAgentWorkspaceOpen(false);
+    setComposerAgentTask(null);
     messageSearchRequestRef.current += 1;
     if (selectedId) activeMessageRequestRef.current.delete(selectedId);
     if (conversationId) activeMessageRequestRef.current.delete(conversationId);
@@ -3183,7 +3308,8 @@ export function ConversationWorkspace({
     conversationId: string,
     body: string,
     attachments: ConversationAttachment[],
-    replyTarget: ConversationMessage | null
+    replyTarget: ConversationMessage | null,
+    agentTask: AgentTask | null,
   ) => {
     const ownerProfileId = currentUserIdRef.current;
     if (!ownerProfileId) {
@@ -3214,6 +3340,8 @@ export function ConversationWorkspace({
       conversationId,
       body: messageBody,
       source: voiceNote ? "voice_note" : "text",
+      targetAgent: agentTask?.owner_agent?.agent_slug,
+      agentTaskId: agentTask?.id,
       replyToId: replyTarget?.id ?? null,
       attachmentIds: attachments.map((attachment) => attachment.id),
       attachments,
@@ -3234,6 +3362,7 @@ export function ConversationWorkspace({
       setOutbox(next);
       clearDraft(conversationId, body);
       setReplyingTo((current) => current?.id === replyTarget?.id ? null : current);
+      setComposerAgentTask((current) => current?.id === agentTask?.id ? null : current);
       const sentAttachmentIds = new Set(entry.attachmentIds);
       commitDraftAttachments((current) => {
         current.forEach((item) => {
@@ -4632,7 +4761,7 @@ export function ConversationWorkspace({
     const attachments = draftAttachments.flatMap((item) =>
       item.status === "ready" && item.attachment ? [item.attachment] : []
     );
-    void queueDraftMessage(selectedId, draft, attachments, replyingTo);
+    void queueDraftMessage(selectedId, draft, attachments, replyingTo, composerAgentTask);
   }
 
   if (loading) return <div className={clsx("flex items-center justify-center text-body text-charcoal/50", drawer ? "h-full" : "h-[70vh]")}>Loading conversations…</div>;
@@ -4793,37 +4922,6 @@ export function ConversationWorkspace({
                 </p>
               </div>
               {callAgent && (
-                <div className="hidden shrink-0 border border-[#c9b998] sm:flex" aria-label="Conversation view">
-                  <button
-                    type="button"
-                    onClick={() => setAgentWorkspaceOpen(false)}
-                    aria-pressed={!agentWorkspaceOpen}
-                    className={clsx("min-h-11 px-3 text-caption", !agentWorkspaceOpen ? "bg-nearblack text-white" : "text-charcoal hover:bg-[#e9e2d6]")}
-                  >
-                    Chat
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAgentWorkspaceOpen(true)}
-                    aria-pressed={agentWorkspaceOpen}
-                    className={clsx("min-h-11 border-l border-[#c9b998] px-3 text-caption", agentWorkspaceOpen ? "bg-nearblack text-white" : "text-charcoal hover:bg-[#e9e2d6]")}
-                  >
-                    Work{agentTasks.length > 0 ? ` ${agentTasks.length}` : ""}
-                  </button>
-                </div>
-              )}
-              {callAgent && (
-                <button
-                  type="button"
-                  onClick={() => setAgentWorkspaceOpen((open) => !open)}
-                  aria-label={agentWorkspaceOpen ? "Open chat" : "Open agent assignments"}
-                  aria-pressed={agentWorkspaceOpen}
-                  className={clsx("flex h-11 w-11 shrink-0 items-center justify-center border border-[#c9b998] text-caption font-semibold sm:hidden", agentWorkspaceOpen ? "bg-nearblack text-white" : "text-nearblack")}
-                >
-                  {agentWorkspaceOpen ? "CH" : "WK"}
-                </button>
-              )}
-              {callAgent && (
                 <button disabled={voiceNoteRecording} onClick={() => void startCall()} aria-label={`Call ${callAgent.display_name}`} className="flex h-11 shrink-0 items-center justify-center gap-2 border border-nearblack px-3 text-nearblack hover:bg-nearblack hover:text-white disabled:opacity-35 md:px-4">
                   <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M7.2 3.5 9.5 8l-2.2 1.7a15.4 15.4 0 0 0 7 7l1.7-2.2 4.5 2.3-.7 3.2c-.2.8-.9 1.4-1.8 1.4A15.5 15.5 0 0 1 2.6 6c0-.9.6-1.6 1.4-1.8l3.2-.7Z" />
@@ -4918,68 +5016,108 @@ export function ConversationWorkspace({
               </div>
             </header>
 
-            {agentWorkspaceOpen && (
-              <div className="absolute inset-x-0 bottom-0 top-16 z-[9] min-h-0 overflow-hidden bg-[#f5f1e8] md:top-20">
-                <AgentOperatingWorkspace
-                  conversationId={selectedConversation.id}
-                  conversationTitle={selectedConversation.display_title}
-                  agent={callAgent}
-                  tasks={agentTasks}
-                  messages={messages}
-                  agentActivity={agentActivity}
-                  selfParticipant={selfParticipant}
-                  onTaskAction={handleTaskAction}
-                  onRefresh={async () => {
-                    await Promise.all([
-                      loadAgentTasks(selectedConversation.id),
-                      loadMessages(selectedConversation.id, { latest: true }),
-                    ]);
-                  }}
-                />
-              </div>
-            )}
-
-            {visibleAgentTasks.length > 0 && (
-              <section className="w-full min-w-0 max-w-full shrink-0 overflow-hidden border-b border-[#d4cbbd] bg-[#eee9df] md:px-4 md:py-2.5" aria-label="Agent work">
+            {agentWorkVisible && (
+              <section
+                className={clsx(
+                  "relative z-20 w-full min-w-0 max-w-full shrink-0 border-b border-[#d4cbbd] bg-[#eee9df]",
+                  drawer && "md:overflow-visible",
+                )}
+                aria-label="Agent work"
+              >
                 <button
                   type="button"
                   onClick={() => setAgentWorkExpanded((expanded) => !expanded)}
                   aria-expanded={agentWorkExpanded}
                   aria-controls="conversation-agent-work-details"
-                  className="flex min-h-14 w-full items-center gap-3 px-3 py-2 text-left md:min-h-12 md:px-0 md:py-1"
+                  className="flex min-h-16 w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-white/30 md:px-4"
                 >
-                  <span aria-hidden className={clsx(
-                    "h-2.5 w-2.5 shrink-0 rounded-full",
-                    visibleAgentTasks[0].status === "failed" ? "bg-red-500"
-                      : visibleAgentTasks[0].status === "awaiting_approval" ? "bg-amber-500"
-                        : visibleAgentTasks[0].status === "completed" ? "bg-emerald-600"
-                          : "bg-charcoal/45",
-                  )} />
+                  <span aria-hidden className="grid h-9 w-9 shrink-0 grid-cols-2 gap-1 rounded-lg border border-[#d4cbbd] bg-[#f8f5ef] p-2">
+                    <span className={clsx("rounded-full", attentionAgentWorkCount > 0 ? "bg-amber-500" : "bg-charcoal/30")} />
+                    <span className={clsx("rounded-full", activeAgentWorkCount > 0 ? "bg-blue-600" : "bg-charcoal/20")} />
+                    <span className="rounded-full bg-charcoal/20" />
+                    <span className={clsx("rounded-full", recentAgentWorkCount > 0 ? "bg-emerald-600" : "bg-charcoal/20")} />
+                  </span>
                   <span className="min-w-0 flex-1">
-                    <span className="conversation-meta flex items-center gap-2 font-semibold uppercase tracking-[0.13em] text-charcoal/60">
+                    <span className="conversation-meta flex flex-wrap items-center gap-x-2 gap-y-1 font-semibold uppercase tracking-[0.13em] text-charcoal/60">
                       <span>Agent work</span>
                       <span aria-hidden>·</span>
-                      <span>{taskStatusLabel(visibleAgentTasks[0])}</span>
-                      {visibleAgentTasks.length > 1 && <span>+{visibleAgentTasks.length - 1}</span>}
+                      <span>{agentWorkSummary}</span>
+                      {activeAgentWorkCount > 0 && attentionAgentWorkCount > 0 && <span>{activeAgentWorkCount} active</span>}
                     </span>
                     <span className="mt-0.5 block truncate text-[14px] font-semibold leading-snug text-nearblack">
-                      {visibleAgentTasks[0].title}
+                      {selectedAgentTask?.title
+                        ?? agentActivity[0]?.progress_label
+                        ?? (agentActivity[0]?.status === "processing" ? "Working on your request" : "Waiting to start")}
                     </span>
                   </span>
+                  <span className="hidden shrink-0 text-caption font-semibold text-charcoal/50 sm:block">{agentWorkExpanded ? "Close" : "View work"}</span>
                   <span aria-hidden className="shrink-0 text-[18px] text-charcoal/45">{agentWorkExpanded ? "⌃" : "⌄"}</span>
                 </button>
                 <div
                   id="conversation-agent-work-details"
                   className={clsx(
-                    "max-h-[46vh] min-w-0 max-w-full grid-cols-1 gap-3 overflow-y-auto px-3 pb-3 md:flex md:max-h-52 md:snap-x md:overflow-x-auto md:overflow-y-hidden md:px-0 md:pb-1",
-                    agentWorkExpanded ? "grid md:flex" : "hidden",
+                    "min-w-0 max-w-full border-t border-[#d4cbbd] bg-[#f4f0e8]",
+                    drawer && "md:absolute md:left-3 md:right-3 md:top-full md:max-h-[min(70vh,680px)] md:rounded-b-xl md:border md:border-t-0 md:shadow-2xl",
+                    agentWorkExpanded ? "block" : "hidden",
                   )}
                 >
-                  {visibleAgentTasks.map((task) => (
-                    <div key={task.id} className="min-w-0 max-w-full md:w-80 md:shrink-0 md:snap-start">
-                      <AgentTaskCard task={task} compact canRetry={task.requested_by === selfParticipant?.id && task.retry_count < 3} onAction={handleTaskAction} />
+                  <div className="flex items-start justify-between gap-4 border-b border-[#ddd5c8] px-4 py-3">
+                    <div>
+                      <p className="text-[15px] font-semibold text-nearblack">Work in this conversation</p>
+                      <p className="mt-0.5 text-[12px] leading-snug text-charcoal/55">Follow progress, review decisions, or steer an agent without losing the chat.</p>
                     </div>
-                  ))}
+                    <span className="shrink-0 text-[11px] text-charcoal/40">{visibleAgentTasks.length} task{visibleAgentTasks.length === 1 ? "" : "s"}</span>
+                  </div>
+                  <div className="grid max-h-[58vh] min-h-0 grid-cols-1 overflow-y-auto md:grid-cols-[minmax(220px,0.85fr)_minmax(320px,1.35fr)] md:overflow-hidden">
+                    <div className="min-w-0 border-b border-[#ddd5c8] md:max-h-[52vh] md:overflow-y-auto md:border-b-0 md:border-r">
+                      {agentActivity.length > 0 && (
+                        <div className="border-b border-[#ddd5c8] p-2">
+                          <p className="px-2 pb-1.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-charcoal/45">Live now</p>
+                          {agentActivity.map((activity) => {
+                            const agent = participants.find((participant) => participant.id === activity.agent_id && participant.type === "agent");
+                            return (
+                              <div key={activity.agent_id} className="flex items-start gap-3 rounded-lg bg-blue-50 px-3 py-2.5" role="status" aria-live="polite">
+                                <span aria-hidden className="mt-1.5 h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-blue-600" />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block text-[13px] font-semibold text-nearblack">{agent?.display_name ?? "Agent"}</span>
+                                  <span className="mt-0.5 block text-[12px] leading-snug text-charcoal/60">{activity.status === "processing" ? activity.progress_label ?? "Working on your request" : "Waiting to start"}</span>
+                                  {activity.pending_turns > 1 && <span className="mt-1 block text-[10px] text-charcoal/40">{activity.pending_turns} requests in progress</span>}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {visibleAgentTasks.length > 0 ? (
+                        <div className="divide-y divide-[#e1dacf]">
+                          {visibleAgentTasks.map((task) => (
+                            <AgentTaskRow
+                              key={task.id}
+                              task={task}
+                              selected={selectedAgentTask?.id === task.id}
+                              onSelect={() => setSelectedAgentTaskId(task.id)}
+                            />
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="p-4 text-[13px] text-charcoal/50">A durable task will appear here when the agent starts longer work.</p>
+                      )}
+                    </div>
+                    <div className="min-w-0 bg-white/45 p-3 md:max-h-[52vh] md:overflow-y-auto md:p-4">
+                      {selectedAgentTask ? (
+                        <AgentTaskCard
+                          task={selectedAgentTask}
+                          canRetry={selectedAgentTask.requested_by === selfParticipant?.id && selectedAgentTask.retry_count < 3}
+                          onAction={handleTaskAction}
+                          onDiscuss={discussAgentTask}
+                        />
+                      ) : (
+                        <div className="flex min-h-36 items-center justify-center px-6 text-center text-[13px] leading-relaxed text-charcoal/50">
+                          The agent is responding now. Longer delegated work will keep its progress and results here.
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </section>
             )}
@@ -5436,29 +5574,6 @@ export function ConversationWorkspace({
                     </Fragment>
                   );
                 })}
-                {!historyAnchorMessageId && agentActivity.map((activity) => {
-                  const agent = participants.find((participant) => participant.id === activity.agent_id && participant.type === "agent");
-                  if (!agent) return null;
-                  return (
-                    <div key={activity.agent_id} className="flex gap-3" role="status" aria-live="polite">
-                      <Avatar participant={agent} />
-                      <div className="max-w-[78%] rounded-2xl rounded-tl-sm border border-[#d4cbbd] bg-[#f5f1e8] px-4 py-3 text-charcoal">
-                        <p className="text-caption font-semibold text-nearblack">{agent.display_name}</p>
-                        <div className="mt-2 flex items-center gap-2 text-[16px] leading-[1.45] text-charcoal/60 md:text-[15px]">
-                          <span>{activity.status === "processing" ? activity.progress_label ?? "Working on your request" : "Waiting to start"}</span>
-                          <span className="flex gap-1" aria-hidden>
-                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-charcoal/45" />
-                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-charcoal/45 [animation-delay:150ms]" />
-                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-charcoal/45 [animation-delay:300ms]" />
-                          </span>
-                        </div>
-                        {activity.pending_turns > 1 && (
-                          <p className="conversation-meta mt-1 text-charcoal/55">{activity.pending_turns} requests in progress</p>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
               </div>
             </div>
 
@@ -5491,6 +5606,17 @@ export function ConversationWorkspace({
                 }}
               />
               <div className="mx-auto max-w-3xl rounded-2xl border border-[#cfc6b8] bg-white shadow-[0_8px_30px_rgba(35,31,25,0.08)] focus-within:border-nearblack">
+                {composerAgentTask && (
+                  <div className="flex items-start gap-3 border-b border-[#e3ddd2] bg-[#f7f2e9] px-3 py-2.5">
+                    <div className="min-w-0 flex-1 border-l-2 border-[#9c7c4c] pl-3">
+                      <p className="conversation-meta font-semibold uppercase tracking-[0.12em] text-charcoal/60">Steering {composerAgentTask.owner_agent?.display_name ?? "agent work"}</p>
+                      <p className="mt-1 truncate text-caption font-semibold text-nearblack">{composerAgentTask.title}</p>
+                    </div>
+                    <button type="button" onClick={() => setComposerAgentTask(null)} aria-label="Stop linking this message to the agent task" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-lg text-charcoal/50 hover:bg-[#eee8de]">
+                      ×
+                    </button>
+                  </div>
+                )}
                 {replyingTo && (
                   <div className="flex items-start gap-3 border-b border-[#e3ddd2] px-3 py-2.5">
                     <div className="min-w-0 flex-1 border-l-2 border-nearblack pl-3">
@@ -5573,7 +5699,11 @@ export function ConversationWorkspace({
                     }
                   }}
                   rows={1}
-                  placeholder={participants.some((p) => p.type === "agent") && participants.length > 2 ? "Message the group — use @Aria, @Marco or @Stuart" : `Message ${callAgent?.display_name ?? "the conversation"}`}
+                  placeholder={composerAgentTask
+                    ? `Steer ${composerAgentTask.owner_agent?.display_name ?? "the agent"} about this task`
+                    : participants.some((p) => p.type === "agent") && participants.length > 2
+                      ? "Message the group — use @Aria, @Marco or @Stuart"
+                      : `Message ${callAgent?.display_name ?? "the conversation"}`}
                   className="max-h-36 min-h-12 w-full resize-none rounded-t-2xl bg-transparent px-4 pb-2 pt-3 text-[16px] outline-none disabled:opacity-60 md:text-body"
                 />
                 <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
@@ -5752,7 +5882,7 @@ export function ConversationWorkspace({
               <div className="flex items-end justify-between gap-4 border-b border-white/10 px-4 py-3 md:px-6 md:py-4">
                 <div>
                   <p className="label-caps text-sand">Agent work</p>
-                  <p className="mt-1 text-[15px] text-white/65 md:text-[16px]">Email drafts, approvals and structured results appear here.</p>
+                <p className="mt-1 text-[15px] text-white/65 md:text-[16px]">Every delegated task, decision and result stays visible here.</p>
                 </div>
                 <p className="shrink-0 text-caption text-white/35">Continues after the call</p>
               </div>
@@ -5775,7 +5905,7 @@ export function ConversationWorkspace({
                   <div className="col-span-full flex h-full min-h-48 items-center justify-center text-center">
                     <div className="max-w-lg">
                       <p className="text-[20px] font-semibold text-white/80">Nothing to review</p>
-                      <p className="mt-2 text-[16px] leading-relaxed text-white/45">Email drafts, approvals, tables and useful lists will appear here. Routine work stays out of the way.</p>
+                      <p className="mt-2 text-[16px] leading-relaxed text-white/45">Tasks, live progress, approvals and useful results will appear here as you work together.</p>
                     </div>
                   </div>
                 ) : visibleAgentTasks.map((task) => (
