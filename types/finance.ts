@@ -226,6 +226,53 @@ export interface FinanceRecurringCommitmentsResponse {
   };
 }
 
+export type FinanceCreditFacilityType =
+  | "overdraft"
+  | "credit_card"
+  | "line_of_credit"
+  | "other";
+
+export interface FinanceCreditFacility {
+  id: string;
+  name: string;
+  provider: string | null;
+  facility_type: FinanceCreditFacilityType;
+  credit_limit_minor: number;
+  current_balance_minor: number;
+  available_credit_minor: number;
+  interest_rate_bps: number | null;
+  status: "active" | "paused" | "closed";
+  notes: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SaveFinanceCreditFacilityRequest {
+  id?: string | null;
+  name: string;
+  provider?: string | null;
+  facility_type: FinanceCreditFacilityType;
+  credit_limit_minor: number;
+  current_balance_minor: number;
+  interest_rate_bps?: number | null;
+  status: "active" | "paused" | "closed";
+  notes?: string | null;
+  expected_version?: number | null;
+  reason: string;
+}
+
+export interface FinanceCreditFacilitiesResponse {
+  facilities: FinanceCreditFacility[];
+  can_edit: boolean;
+  summary: {
+    credit_limit_minor: number;
+    current_balance_minor: number;
+    available_credit_minor: number;
+    active_count: number;
+  };
+}
+
 export interface FinanceContributionInput {
   contributionKey: string;
   direction: FinanceDirection;
@@ -359,7 +406,26 @@ export interface FinanceCockpitResponse {
     projected_outflow_minor: number;
     next_due_date: string | null;
   };
+  liquidity_summary: {
+    bank_cash_minor: number;
+    credit_limit_minor: number;
+    credit_drawn_minor: number;
+    available_credit_minor: number;
+    available_liquidity_minor: number;
+    committed_low_minor: number;
+    committed_liquidity_low_minor: number;
+  };
+  allowance_summary: {
+    total_minor: number;
+    dated_minor: number;
+    undated_minor: number;
+    overdue_minor: number;
+    item_count: number;
+  };
   projects: FinanceCockpitProject[];
+  cash_projection: FinanceShadowProjection | null;
+  planning_projection: FinanceShadowProjection | null;
+  /** @deprecated Use cash_projection for the operating view. */
   projection: FinanceShadowProjection | null;
 }
 

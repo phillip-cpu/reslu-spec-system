@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FinanceCashCurve } from "./FinanceCashCurve";
+import { FinanceCreditFacilitiesPanel } from "./FinanceCreditFacilitiesPanel";
 import { FinanceRecurringCommitmentsPanel } from "./FinanceRecurringCommitmentsPanel";
 import {
   adelaideToday,
@@ -12,7 +13,8 @@ import {
 } from "@/lib/finance/presentation";
 import type { FinanceCockpitResponse, FinanceProjectionPeriod } from "@/types/finance";
 
-type CockpitTab = "cash" | "commitments" | "projects";
+type CockpitTab = "cash" | "commitments" | "facilities" | "projects";
+type ForecastScenario = "committed" | "allowances";
 
 function MetricCard({
   label,
@@ -83,7 +85,7 @@ function PeriodDetail({ period }: { period: FinanceProjectionPeriod }) {
                       <span>
                         <span className="block text-nearblack">{item.description}</span>
                         <span className="mt-1 block text-caption text-charcoal/50">
-                          {String(item.sourceTrace.project_name ?? item.sourceTrace.supplier_or_payee ?? item.sourceTrace.category ?? item.state)} · {item.confidence} confidence
+                          {String(item.sourceTrace.project_name ?? item.sourceTrace.supplier_or_payee ?? item.sourceTrace.category ?? item.state)} · {item.state === "actual_accrued" ? "bill due" : item.state === "committed" ? "committed" : item.state === "planned" ? "forecast" : "paid"} · {item.confidence} confidence
                         </span>
                       </span>
                       <span className="shrink-0 text-nearblack">{formatMinorCurrency(item.amountMinor)}</span>
@@ -107,6 +109,7 @@ export function FinanceCockpit() {
   const [openingCash, setOpeningCash] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [activeTab, setActiveTab] = useState<CockpitTab>("cash");
+  const [scenario, setScenario] = useState<ForecastScenario>("committed");
   const [syncingXero, setSyncingXero] = useState(false);
 
   const loadCockpit = useCallback(async () => {
@@ -127,7 +130,7 @@ export function FinanceCockpit() {
       if (!response.ok) throw new Error(body.error ?? "Could not load finance cockpit");
       setData(body);
       setSelectedIndex((current) =>
-        body.projection && current < body.projection.periods.length ? current : 0
+        body.cash_projection && current < body.cash_projection.periods.length ? current : 0
       );
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Could not load finance cockpit");
@@ -166,12 +169,11 @@ export function FinanceCockpit() {
         b.exposure_minor - a.exposure_minor
     );
   }, [data]);
-  const projection = data?.projection ?? null;
+  const projection = scenario === "allowances"
+    ? data?.planning_projection ?? null
+    : data?.cash_projection ?? null;
+  const cashProjection = data?.cash_projection ?? null;
   const selectedPeriod = projection?.periods[selectedIndex] ?? null;
-  const lowestPeriod =
-    projection?.lowestCashPeriodIndex === null || projection?.lowestCashPeriodIndex === undefined
-      ? null
-      : projection.periods[projection.lowestCashPeriodIndex];
   return (
     <div className="space-y-6">
       <section className="border border-charcoal/20 bg-offwhite">
@@ -193,8 +195,8 @@ export function FinanceCockpit() {
               Executive finance cockpit
             </h1>
             <p className="mt-3 max-w-2xl text-body text-charcoal/60">
-              Client payments, issued claims, scheduled contract milestones and recurring costs flow
-              here automatically. Locked cost forecasts remain read-only.
+              Bank cash and credit capacity are shown separately. The default curve includes bills,
+              commitments and scheduled receipts; uncommitted estimate allowances sit in a separate stress test.
             </p>
           </div>
           <form
@@ -237,6 +239,7 @@ export function FinanceCockpit() {
           {[
             ["cash", "Cash timeline"],
             ["commitments", "Planned outgoings"],
+            ["facilities", "Credit facilities"],
             ["projects", "Projects"],
           ].map(([key, label]) => (
             <button
@@ -273,6 +276,11 @@ export function FinanceCockpit() {
       ) : activeTab === "commitments" && data ? (
         <FinanceRecurringCommitmentsPanel
           asOfDate={asOfDate}
+          canEdit={data.can_edit_forecast}
+          onChanged={() => void loadCockpit()}
+        />
+      ) : activeTab === "facilities" && data ? (
+        <FinanceCreditFacilitiesPanel
           canEdit={data.can_edit_forecast}
           onChanged={() => void loadCockpit()}
         />
@@ -330,8 +338,8 @@ export function FinanceCockpit() {
         <>
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard
-              label="Available cash"
-              value={projection ? formatMinorCurrency(projection.openingCashMinor) : "—"}
+              label="Bank cash"
+              value={formatMinorCurrency(data?.liquidity_summary.bank_cash_minor ?? 0)}
               detail={data?.source_status.opening_cash === "request_preview"
                 ? "Manual preview · not persisted"
                 : data?.source_status.opening_cash === "xero_bank_summary"
@@ -339,22 +347,22 @@ export function FinanceCockpit() {
                   : "Connect approved bank source or enter preview"}
             />
             <MetricCard
-              label="Client paid"
-              value={formatMinorCurrency(data?.client_claims_summary.paid_minor ?? 0)}
-              detail={`${data?.counts.connected_client_claims ?? 0} connected contract claim${data?.counts.connected_client_claims === 1 ? "" : "s"}`}
-              tone={(data?.client_claims_summary.paid_minor ?? 0) > 0 ? "positive" : "default"}
+              label="Available credit"
+              value={formatMinorCurrency(data?.liquidity_summary.available_credit_minor ?? 0)}
+              detail={`${formatMinorCurrency(data?.liquidity_summary.credit_drawn_minor ?? 0)} currently owing across active facilities`}
+              tone={(data?.liquidity_summary.available_credit_minor ?? 0) > 0 ? "positive" : "default"}
             />
             <MetricCard
-              label="Awaiting payment"
-              value={formatMinorCurrency(data?.client_claims_summary.outstanding_minor ?? 0)}
-              detail={`${formatMinorCurrency(data?.client_claims_summary.forecast_remaining_minor ?? 0)} in future contract milestones`}
-              tone={(data?.client_claims_summary.outstanding_minor ?? 0) > 0 ? "attention" : "positive"}
+              label="Spending capacity"
+              value={formatMinorCurrency(data?.liquidity_summary.available_liquidity_minor ?? 0)}
+              detail="Bank cash plus undrawn overdraft and card limits; not revenue"
+              tone={(data?.liquidity_summary.available_liquidity_minor ?? 0) > 0 ? "positive" : "attention"}
             />
             <MetricCard
-              label="13-week low"
-              value={projection ? formatMinorCurrency(projection.lowestCashMinor) : "—"}
-              detail={lowestPeriod ? `Week of ${formatFinanceDate(lowestPeriod.startsOn)}` : "No movement below opening cash"}
-              tone={projection && projection.lowestCashMinor < 0 ? "attention" : "default"}
+              label="Committed liquidity low"
+              value={formatMinorCurrency(data?.liquidity_summary.committed_liquidity_low_minor ?? 0)}
+              detail={cashProjection?.lowestCashPeriodIndex === null || cashProjection?.lowestCashPeriodIndex === undefined ? "No movement below opening cash" : `Week of ${formatFinanceDate(cashProjection.periods[cashProjection.lowestCashPeriodIndex]?.startsOn)}`}
+              tone={(data?.liquidity_summary.committed_liquidity_low_minor ?? 0) < 0 ? "attention" : "default"}
             />
           </div>
 
@@ -362,11 +370,13 @@ export function FinanceCockpit() {
             <div className="flex flex-col gap-3 border-b border-charcoal/20 p-5 md:flex-row md:items-end md:justify-between md:p-7">
               <div>
                 <p className="label-caps">Cash curve</p>
-                <h2 id="cash-curve-heading" className="mt-2 font-display text-section text-nearblack">Actual and forecast cash</h2>
+                <h2 id="cash-curve-heading" className="mt-2 font-display text-section text-nearblack">{scenario === "committed" ? "Committed cash forecast" : "All-allowances stress test"}</h2>
+                <p className="mt-2 max-w-xl text-body text-charcoal/55">{scenario === "committed" ? "Bills due, recurring commitments and scheduled client receipts. Uncommitted estimate allowances are excluded." : "Includes every remaining estimate allowance. Use this for exposure planning—not as a prediction of your bank balance."}</p>
               </div>
-              <p className="text-caption text-charcoal/50">
-                Calculated {data ? new Intl.DateTimeFormat("en-AU", { dateStyle: "medium", timeStyle: "short" }).format(new Date(data.source_status.calculated_at)) : "—"}
-              </p>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={() => { setScenario("committed"); setSelectedIndex(0); }} className={`px-3 py-2 text-caption ${scenario === "committed" ? "bg-nearblack text-white" : "border border-charcoal/25 text-nearblack"}`}>Committed cash</button>
+                <button type="button" onClick={() => { setScenario("allowances"); setSelectedIndex(0); }} className={`px-3 py-2 text-caption ${scenario === "allowances" ? "bg-nearblack text-white" : "border border-charcoal/25 text-nearblack"}`}>All allowances</button>
+              </div>
             </div>
             {projection ? (
               <div className="p-4 md:p-7">
@@ -384,11 +394,11 @@ export function FinanceCockpit() {
 
           <section className="grid gap-4 md:grid-cols-3">
             <div className="border border-[#c9971e]/40 bg-[#c9971e]/5 p-5">
-              <p className="label-caps">Timing to review</p>
+              <p className="label-caps">Estimate allowances</p>
               <p className="mt-3 text-subhead text-nearblack">
-                {projection ? formatMinorCurrency(projection.unknownTimingMinor) : "—"} unallocated
+                {formatMinorCurrency(data?.allowance_summary.total_minor ?? 0)} excluded from committed cash
               </p>
-              <p className="mt-2 text-body text-charcoal/55">Add a contract milestone or construction-program date to place these amounts in the cash timeline.</p>
+              <p className="mt-2 text-body text-charcoal/55">{data?.allowance_summary.item_count ?? 0} uncommitted estimate items · {formatMinorCurrency(data?.allowance_summary.overdue_minor ?? 0)} carry old phase dates and need review instead of being silently pulled forward.</p>
             </div>
             <div className="border border-charcoal/20 bg-offwhite p-5">
               <p className="label-caps">Xero actuals</p>

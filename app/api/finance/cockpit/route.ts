@@ -16,6 +16,10 @@ import { isIsoDate } from "@/lib/finance/readiness";
 import { buildSectionForecastDates } from "@/lib/finance/schedule-cost-timing";
 import { includesConstructionCosts } from "@/lib/finance/construction-cost-eligibility";
 import {
+  cashCommitmentContributions,
+  estimateAllowanceSummary,
+} from "@/lib/finance/scenarios";
+import {
   reconcileSupplierInvoiceActuals,
   type SupplierCashInvoice,
 } from "@/lib/finance/supplier-actuals";
@@ -285,14 +289,21 @@ export async function GET(request: NextRequest) {
     lines = (data ?? []) as unknown as ForecastLineRow[];
   }
 
-  const { data: rawRecurring, error: recurringError } = await supabase
-    .from("finance_recurring_commitments")
-    .select("*")
-    .eq("status", "active")
-    .order("first_due_date", { ascending: true });
-  if (recurringError) {
-    return NextResponse.json({ error: recurringError.message }, { status: 500 });
-  }
+  const [recurringResult, facilityResult] = await Promise.all([
+    supabase
+      .from("finance_recurring_commitments")
+      .select("*")
+      .eq("status", "active")
+      .order("first_due_date", { ascending: true }),
+    supabase
+      .from("finance_credit_facilities")
+      .select("credit_limit_minor,current_balance_minor")
+      .eq("status", "active"),
+  ]);
+  const recurringError = recurringResult.error ?? facilityResult.error;
+  if (recurringError) return NextResponse.json({ error: recurringError.message }, { status: 500 });
+  const rawRecurring = recurringResult.data;
+  const rawFacilities = facilityResult.data ?? [];
 
   const { data: rawBillingProfiles, error: billingProfileError } = await supabase
     .from("client_billing_profiles")
@@ -544,13 +555,32 @@ export async function GET(request: NextRequest) {
     }
     const openingCashMinor = requestedOpeningCashMinor ?? xeroCashMinor ?? 0;
     const shadowEnabled = financeShadowProjectionEnabled();
-    const projection = shadowEnabled
+    const planningProjection = shadowEnabled
       ? calculateShadowProjection({
           asOfDate,
           openingCashMinor,
           contributions,
         })
       : null;
+    const cashProjection = shadowEnabled
+      ? calculateShadowProjection({
+          asOfDate,
+          openingCashMinor,
+          contributions: cashCommitmentContributions(contributions),
+        })
+      : null;
+    const creditLimitMinor = rawFacilities.reduce(
+      (sum, row) => sum + safeMinor(row.credit_limit_minor, "credit_limit_minor"),
+      0
+    );
+    const creditDrawnMinor = rawFacilities.reduce(
+      (sum, row) => sum + safeMinor(row.current_balance_minor, "current_balance_minor"),
+      0
+    );
+    const availableCreditMinor = Math.max(creditLimitMinor - creditDrawnMinor, 0);
+    const allowances = planningProjection
+      ? estimateAllowanceSummary(planningProjection)
+      : { totalMinor: 0, datedMinor: 0, undatedMinor: 0, overdueMinor: 0, itemCount: 0 };
 
     const costContributionsByProject = new Map<string, FinanceContributionInput[]>();
     for (const contribution of projectContributions) {
@@ -673,8 +703,27 @@ export async function GET(request: NextRequest) {
         ),
         next_due_date: recurringContributions[0]?.plannedDate ?? null,
       },
+      liquidity_summary: {
+        bank_cash_minor: openingCashMinor,
+        credit_limit_minor: creditLimitMinor,
+        credit_drawn_minor: creditDrawnMinor,
+        available_credit_minor: availableCreditMinor,
+        available_liquidity_minor: openingCashMinor + availableCreditMinor,
+        committed_low_minor: cashProjection?.lowestCashMinor ?? openingCashMinor,
+        committed_liquidity_low_minor:
+          (cashProjection?.lowestCashMinor ?? openingCashMinor) + availableCreditMinor,
+      },
+      allowance_summary: {
+        total_minor: allowances.totalMinor,
+        dated_minor: allowances.datedMinor,
+        undated_minor: allowances.undatedMinor,
+        overdue_minor: allowances.overdueMinor,
+        item_count: allowances.itemCount,
+      },
       projects,
-      projection,
+      cash_projection: cashProjection,
+      planning_projection: planningProjection,
+      projection: cashProjection,
     });
   } catch (error) {
     return NextResponse.json(
