@@ -19,6 +19,8 @@ const SENDER = "RESLU <aria@reslu.com.au>";
 export interface SendResult {
   skipped: boolean;
   reason?: string;
+  provider_message_id?: string;
+  provider_thread_id?: string;
 }
 
 function creds() {
@@ -71,10 +73,12 @@ function toBase64Url(str: string): string {
  */
 export async function sendTeamEmail({
   to,
+  cc = [],
   subject,
   body,
 }: {
   to: string[];
+  cc?: string[];
   subject: string;
   body: string;
 }): Promise<SendResult> {
@@ -88,6 +92,7 @@ export async function sendTeamEmail({
     [
       `From: ${SENDER}`,
       `To: ${to.join(", ")}`,
+      ...(cc.length ? [`Cc: ${cc.join(", ")}`] : []),
       // RFC 2047 encoded-word: subjects with em-dashes/accents arrive
       // garbled ("â€”") in some clients if sent raw. Always base64-encode.
       `Subject: =?UTF-8?B?${Buffer.from(subject, "utf8").toString("base64")}?=`,
@@ -111,5 +116,11 @@ export async function sendTeamEmail({
     }
   );
   if (!res.ok) throw new Error(`Gmail send failed (${res.status})`);
-  return { skipped: false };
+  const delivered = await res.json() as { id?: string; threadId?: string };
+  if (!delivered.id) throw new Error("Gmail accepted the request without returning a message id");
+  return {
+    skipped: false,
+    provider_message_id: delivered.id,
+    provider_thread_id: delivered.threadId,
+  };
 }
