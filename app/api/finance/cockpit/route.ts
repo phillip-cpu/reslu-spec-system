@@ -27,6 +27,7 @@ import {
 import { applyXeroInvoiceActuals, type CachedXeroInvoice, type CachedXeroPayment } from "@/lib/finance/xero-actuals";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { hasXeroAccess } from "@/lib/xero/access";
+import { calculateBankSummaryBalance } from "@/lib/xero/bank-summary";
 import type {
   FinanceCockpitProject,
   FinanceConfidence,
@@ -41,6 +42,7 @@ import type {
   ClientPaymentScheduleItem,
   ClientSchedulePhase,
 } from "@/types/client-invoices";
+import type { XeroReport } from "@/types/xero";
 
 export const runtime = "nodejs";
 
@@ -107,6 +109,10 @@ function safeMinor(value: number | string, label: string): number {
     throw new Error(`${label} is outside safe minor-unit range`);
   }
   return parsed;
+}
+
+function normaliseAccountName(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 function grossMinorFromNet(value: number | string, label: string): number {
@@ -223,7 +229,13 @@ export async function GET(request: NextRequest) {
     cash_balance: number | string;
     credit_balance: number | string;
     as_of_date: string;
+    raw_json: { report?: XeroReport };
   } | null = null;
+  let xeroBankAccounts: Array<{
+    id: string;
+    name: string;
+    bank_account_type: string;
+  }> = [];
   let xeroInvoices: CachedXeroInvoice[] = [];
   let xeroPayments: CachedXeroPayment[] = [];
   if (canUseXero) {
@@ -238,10 +250,10 @@ export async function GET(request: NextRequest) {
     }
     xeroConnection = connection;
     if (connection) {
-      const [cashResult, invoiceResult, paymentResult] = await Promise.all([
+      const [cashResult, invoiceResult, paymentResult, accountResult] = await Promise.all([
         service
           .from("xero_cash_snapshots")
-          .select("cash_balance,credit_balance,as_of_date")
+          .select("cash_balance,credit_balance,as_of_date,raw_json")
           .eq("connection_id", connection.id)
           .lte("as_of_date", asOfDate)
           .order("as_of_date", { ascending: false })
@@ -255,14 +267,21 @@ export async function GET(request: NextRequest) {
           .from("xero_payments")
           .select("xero_invoice_id,payment_date,status")
           .eq("connection_id", connection.id),
+        service
+          .from("xero_bank_accounts")
+          .select("id,name,bank_account_type")
+          .eq("connection_id", connection.id)
+          .eq("status", "ACTIVE")
+          .in("bank_account_type", ["BANK", "CREDITCARD"]),
       ]);
-      const xeroReadError = cashResult.error ?? invoiceResult.error ?? paymentResult.error;
+      const xeroReadError = cashResult.error ?? invoiceResult.error ?? paymentResult.error ?? accountResult.error;
       if (xeroReadError) {
         return NextResponse.json({ error: xeroReadError.message }, { status: 500 });
       }
       xeroCashSnapshot = cashResult.data;
       xeroInvoices = (invoiceResult.data ?? []) as CachedXeroInvoice[];
       xeroPayments = (paymentResult.data ?? []) as CachedXeroPayment[];
+      xeroBankAccounts = (accountResult.data ?? []) as typeof xeroBankAccounts;
     }
   }
 
@@ -302,7 +321,7 @@ export async function GET(request: NextRequest) {
       .order("first_due_date", { ascending: true }),
     supabase
       .from("finance_credit_facilities")
-      .select("facility_type,credit_limit_minor")
+      .select("facility_type,credit_limit_minor,xero_bank_account_id")
       .eq("status", "active"),
   ]);
   const recurringError = recurringResult.error ?? facilityResult.error;
@@ -574,14 +593,38 @@ export async function GET(request: NextRequest) {
           contributions: cashCommitmentContributions(contributions),
         })
       : null;
+    const bankSummaryBalances = xeroCashSnapshot?.raw_json?.report
+      ? calculateBankSummaryBalance(
+          xeroCashSnapshot.raw_json.report,
+          xeroBankAccounts.map((account) => ({
+            name: account.name,
+            bankAccountType: account.bank_account_type,
+          }))
+        ).accountBalances
+      : [];
+    const balanceByName = new Map(
+      bankSummaryBalances.map((balance) => [
+        normaliseAccountName(balance.name),
+        Math.round(balance.closingBalance * 100),
+      ])
+    );
+    const accountById = new Map(xeroBankAccounts.map((account) => [account.id, account]));
+    const linkedFacilities = rawFacilities.map((row) => {
+      const account = accountById.get(String(row.xero_bank_account_id ?? ""));
+      if (!account) throw new Error("An active credit facility is not linked to its Xero account");
+      const xeroBalanceMinor = balanceByName.get(normaliseAccountName(account.name));
+      if (xeroBalanceMinor === undefined || !Number.isSafeInteger(xeroBalanceMinor)) {
+        throw new Error(`${account.name} has no current Xero Bank Summary balance`);
+      }
+      return {
+        facility_type: row.facility_type,
+        credit_limit_minor: safeMinor(row.credit_limit_minor, "credit_limit_minor"),
+        xero_bank_account_type: account.bank_account_type,
+        xero_balance_minor: xeroBalanceMinor,
+      };
+    });
     const { creditLimitMinor, creditDrawnMinor, availableCreditMinor } =
-      summarizeCreditLiquidity({
-        facilities: rawFacilities.map((row) => ({
-          facility_type: row.facility_type,
-          credit_limit_minor: safeMinor(row.credit_limit_minor, "credit_limit_minor"),
-        })),
-        xeroCreditBalanceDollars: xeroCashSnapshot?.credit_balance,
-      });
+      summarizeCreditLiquidity({ facilities: linkedFacilities });
     const allowances = planningProjection
       ? estimateAllowanceSummary(planningProjection)
       : { totalMinor: 0, datedMinor: 0, undatedMinor: 0, overdueMinor: 0, itemCount: 0 };

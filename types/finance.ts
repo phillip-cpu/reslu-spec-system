@@ -237,7 +237,13 @@ export interface FinanceCreditFacility {
   name: string;
   provider: string | null;
   facility_type: FinanceCreditFacilityType;
+  xero_bank_account_id: string;
+  xero_account_name: string;
+  xero_bank_account_type: "BANK" | "CREDITCARD";
+  xero_balance_minor: number;
+  xero_balance_as_of: string | null;
   credit_limit_minor: number;
+  available_credit_minor: number;
   interest_rate_bps: number | null;
   status: "active" | "paused" | "closed";
   notes: string | null;
@@ -248,7 +254,8 @@ export interface FinanceCreditFacility {
 
 export interface SaveFinanceCreditFacilityRequest {
   id?: string | null;
-  name: string;
+  xero_bank_account_id: string;
+  name?: string;
   provider?: string | null;
   facility_type: FinanceCreditFacilityType;
   credit_limit_minor: number;
@@ -259,8 +266,18 @@ export interface SaveFinanceCreditFacilityRequest {
   reason: string;
 }
 
+export interface FinanceXeroFacilityAccount {
+  id: string;
+  xero_account_id: string;
+  name: string;
+  bank_account_type: "BANK" | "CREDITCARD";
+  balance_minor: number;
+  balance_as_of: string | null;
+}
+
 export interface FinanceCreditFacilitiesResponse {
   facilities: FinanceCreditFacility[];
+  xero_accounts: FinanceXeroFacilityAccount[];
   can_edit: boolean;
   summary: {
     credit_limit_minor: number;

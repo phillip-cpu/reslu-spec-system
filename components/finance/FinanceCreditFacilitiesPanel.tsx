@@ -18,8 +18,7 @@ const TYPES: Array<[FinanceCreditFacilityType, string]> = [
 type Form = {
   id: string | null;
   version: number | null;
-  name: string;
-  provider: string;
+  xeroAccountId: string;
   type: FinanceCreditFacilityType;
   limit: string;
   rate: string;
@@ -31,8 +30,7 @@ type Form = {
 const blankForm = (): Form => ({
   id: null,
   version: null,
-  name: "",
-  provider: "",
+  xeroAccountId: "",
   type: "credit_card",
   limit: "",
   rate: "",
@@ -45,14 +43,13 @@ function fromFacility(item: FinanceCreditFacility): Form {
   return {
     id: item.id,
     version: item.version,
-    name: item.name,
-    provider: item.provider ?? "",
+    xeroAccountId: item.xero_bank_account_id,
     type: item.facility_type,
     limit: (item.credit_limit_minor / 100).toFixed(2),
     rate: item.interest_rate_bps === null ? "" : (item.interest_rate_bps / 100).toString(),
     status: item.status,
     notes: item.notes ?? "",
-    reason: "Update credit facility balance",
+    reason: "Update credit facility limit",
   };
 }
 
@@ -92,6 +89,10 @@ export function FinanceCreditFacilitiesPanel({ canEdit, onChanged }: { canEdit: 
       setError("Enter a positive credit limit.");
       return;
     }
+    if (!form.xeroAccountId) {
+      setError("Choose the matching Xero account.");
+      return;
+    }
     if (rate !== null && (!Number.isFinite(rate) || rate < 0 || rate > 1000)) {
       setError("Interest rate must be between 0 and 1,000%.");
       return;
@@ -105,8 +106,7 @@ export function FinanceCreditFacilitiesPanel({ canEdit, onChanged }: { canEdit: 
         body: JSON.stringify({
           id: form.id,
           expected_version: form.version,
-          name: form.name,
-          provider: form.provider || null,
+          xero_bank_account_id: form.xeroAccountId,
           facility_type: form.type,
           credit_limit_minor: limit,
           interest_rate_bps: rate === null ? null : Math.round(rate * 100),
@@ -134,16 +134,15 @@ export function FinanceCreditFacilitiesPanel({ canEdit, onChanged }: { canEdit: 
         <div>
           <p className="label-caps">Liquidity facilities</p>
           <h2 className="mt-2 font-display text-section text-nearblack">Overdrafts and credit cards</h2>
-          <p className="mt-2 max-w-2xl text-body text-charcoal/60">Enter facility limits only. Xero remains authoritative for current card balances and bank cash, so there is no second balance to maintain here.</p>
+          <p className="mt-2 max-w-2xl text-body text-charcoal/60">Choose the matching Xero account and enter its facility limit. Every current balance is read from Xero; there is no balance to maintain here.</p>
         </div>
         {canEdit && <button type="button" onClick={() => { setForm(blankForm()); setShowForm((value) => !value); }} className="bg-nearblack px-4 py-2 text-subhead text-white">{showForm ? "Close" : "Add facility"}</button>}
       </div>
       {error && <div role="alert" className="border-b border-red-700/30 bg-red-50 p-4 text-body text-red-800">{error}</div>}
       {showForm && canEdit && (
         <form className="grid gap-4 border-b border-charcoal/20 bg-cream p-5 md:grid-cols-2 xl:grid-cols-4 md:p-7" onSubmit={(event) => { event.preventDefault(); void save(); }}>
-          <label><span className="label-caps">Facility name</span><input required value={form.name} onChange={(event) => patch("name", event.target.value)} placeholder="Business Visa" className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
-          <label><span className="label-caps">Provider</span><input value={form.provider} onChange={(event) => patch("provider", event.target.value)} placeholder="Bank" className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
-          <label><span className="label-caps">Type</span><select value={form.type} onChange={(event) => patch("type", event.target.value as FinanceCreditFacilityType)} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body">{TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <label className="md:col-span-2"><span className="label-caps">Xero account</span><select required value={form.xeroAccountId} onChange={(event) => { const account = data?.xero_accounts.find((item) => item.id === event.target.value); patch("xeroAccountId", event.target.value); if (account?.bank_account_type === "CREDITCARD") patch("type", "credit_card"); else if (form.type === "credit_card") patch("type", "overdraft"); }} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body"><option value="">Select Xero account</option>{(data?.xero_accounts ?? []).filter((account) => !data?.facilities.some((facility) => facility.xero_bank_account_id === account.id && facility.id !== form.id)).map((account) => <option key={account.id} value={account.id}>{account.name} — Xero {formatMinorCurrency(account.balance_minor)}</option>)}</select></label>
+          <label><span className="label-caps">Type</span><select value={form.type} disabled={data?.xero_accounts.find((item) => item.id === form.xeroAccountId)?.bank_account_type === "CREDITCARD"} onChange={(event) => patch("type", event.target.value as FinanceCreditFacilityType)} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body disabled:opacity-60">{TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label><span className="label-caps">Status</span><select value={form.status} onChange={(event) => patch("status", event.target.value as Form["status"])} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body"><option value="active">Active</option><option value="paused">Paused</option><option value="closed">Closed</option></select></label>
           <label><span className="label-caps">Credit limit</span><input required inputMode="decimal" value={form.limit} onChange={(event) => patch("limit", event.target.value)} placeholder="0.00" className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
           <label><span className="label-caps">Interest rate % (optional)</span><input inputMode="decimal" value={form.rate} onChange={(event) => patch("rate", event.target.value)} className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
@@ -153,10 +152,10 @@ export function FinanceCreditFacilitiesPanel({ canEdit, onChanged }: { canEdit: 
         </form>
       )}
       <div className="grid sm:grid-cols-4">
-        {[["Active facilities", String(data?.summary.active_count ?? "—")], ["Total limits", formatMinorCurrency(data?.summary.credit_limit_minor ?? 0)], ["Xero card balance", formatMinorCurrency(data?.summary.current_balance_minor ?? 0)], ["Available credit", formatMinorCurrency(data?.summary.available_credit_minor ?? 0)]].map(([label, value]) => <div key={label} className="border-b border-r border-charcoal/15 p-4 last:border-r-0 sm:border-b-0"><p className="label-caps">{label}</p><p className="mt-2 text-subhead text-nearblack">{value}</p></div>)}
+        {[["Active facilities", String(data?.summary.active_count ?? "—")], ["Total limits", formatMinorCurrency(data?.summary.credit_limit_minor ?? 0)], ["Xero facility debt", formatMinorCurrency(data?.summary.current_balance_minor ?? 0)], ["Available credit", formatMinorCurrency(data?.summary.available_credit_minor ?? 0)]].map(([label, value]) => <div key={label} className="border-b border-r border-charcoal/15 p-4 last:border-r-0 sm:border-b-0"><p className="label-caps">{label}</p><p className="mt-2 text-subhead text-nearblack">{value}</p></div>)}
       </div>
       <div className="divide-y divide-charcoal/10 border-t border-charcoal/20">
-        {(data?.facilities ?? []).map((item) => <button key={item.id} type="button" disabled={!canEdit} onClick={() => { setForm(fromFacility(item)); setShowForm(true); }} className="grid w-full gap-2 px-5 py-4 text-left hover:bg-cream sm:grid-cols-[1fr_auto] sm:items-center"><span><span className="block text-body text-nearblack">{item.name}</span><span className="text-caption text-charcoal/50">{item.provider ?? TYPES.find(([value]) => value === item.facility_type)?.[1]}</span></span><span className="text-subhead text-nearblack">{formatMinorCurrency(item.credit_limit_minor)} limit</span></button>)}
+        {(data?.facilities ?? []).map((item) => <button key={item.id} type="button" disabled={!canEdit} onClick={() => { setForm(fromFacility(item)); setShowForm(true); }} className="grid w-full gap-2 px-5 py-4 text-left hover:bg-cream sm:grid-cols-[1fr_auto] sm:items-center"><span><span className="block text-body text-nearblack">{item.xero_account_name}</span><span className="text-caption text-charcoal/50">Xero balance {formatMinorCurrency(item.xero_balance_minor)} · {TYPES.find(([value]) => value === item.facility_type)?.[1]}</span></span><span className="text-right"><span className="block text-subhead text-nearblack">{formatMinorCurrency(item.credit_limit_minor)} limit</span><span className="text-caption text-charcoal/50">{formatMinorCurrency(item.available_credit_minor)} available</span></span></button>)}
         {!loading && (data?.facilities.length ?? 0) === 0 && <p className="px-5 py-10 text-center text-body text-charcoal/50">No credit facilities entered yet.</p>}
       </div>
     </section>

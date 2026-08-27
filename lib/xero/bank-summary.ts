@@ -11,6 +11,13 @@ export interface XeroBankSummaryBalance {
   cashAccountCount: number;
   creditAccountCount: number;
   unmatchedAccountCount: number;
+  accountBalances: XeroBankSummaryAccountBalance[];
+}
+
+export interface XeroBankSummaryAccountBalance {
+  name: string;
+  bankAccountType: string | null;
+  closingBalance: number;
 }
 
 function normaliseName(value: string): string {
@@ -47,6 +54,7 @@ export function calculateBankSummaryBalance(
   let cashAccountCount = 0;
   let creditAccountCount = 0;
   let unmatchedAccountCount = 0;
+  const accountBalances: XeroBankSummaryAccountBalance[] = [];
 
   for (const row of flatten(report.Rows)) {
     const cells = row.Cells ?? [];
@@ -56,6 +64,11 @@ export function calculateBankSummaryBalance(
     const closing = money(cells.at(-1)?.Value);
     if (closing === null) continue;
     const accountType = accountTypeByName.get(normaliseName(name));
+    accountBalances.push({
+      name,
+      bankAccountType: accountType ?? null,
+      closingBalance: closing,
+    });
     if (accountType === "CREDITCARD") {
       creditBalance += closing;
       creditAccountCount += 1;
@@ -72,5 +85,6 @@ export function calculateBankSummaryBalance(
     cashAccountCount,
     creditAccountCount,
     unmatchedAccountCount,
+    accountBalances,
   };
 }
