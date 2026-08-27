@@ -1384,7 +1384,7 @@ export function ConversationWorkspace({
   const [callTranscript, setCallTranscript] = useState<CallTranscriptEntry[]>([]);
   const [callTranscriptExpanded, setCallTranscriptExpanded] = useState(false);
   const [agentTasks, setAgentTasks] = useState<AgentTask[]>([]);
-  const [agentWorkExpanded, setAgentWorkExpanded] = useState(false);
+  const [agentWorkExpanded, setAgentWorkExpanded] = useState(true);
   const [selectedAgentTaskId, setSelectedAgentTaskId] = useState<string | null>(null);
   const [composerAgentTask, setComposerAgentTask] = useState<AgentTask | null>(null);
   const [meetingModeOpen, setMeetingModeOpen] = useState(false);
@@ -1670,12 +1670,17 @@ export function ConversationWorkspace({
     + agentActivity.reduce((total, activity) => total + Math.max(1, activity.pending_turns), 0);
   const attentionAgentWorkCount = visibleAgentTasks.filter((task) => task.status === "awaiting_approval" || task.status === "failed").length;
   const recentAgentWorkCount = visibleAgentTasks.filter((task) => task.status === "completed" || task.status === "cancelled").length;
-  const agentWorkVisible = visibleAgentTasks.length > 0 || agentActivity.length > 0;
+  // Keep the collaboration surface present even before an agent creates a task.
+  // Hiding it in the empty state made the redesigned workflow indistinguishable
+  // from the old chat and left people with no clear place to start or return to.
+  const agentWorkVisible = Boolean(selectedConversation);
   const agentWorkSummary = attentionAgentWorkCount > 0
     ? `${attentionAgentWorkCount} need${attentionAgentWorkCount === 1 ? "s" : ""} you`
     : activeAgentWorkCount > 0
       ? `${activeAgentWorkCount} active`
-      : `${recentAgentWorkCount} recent`;
+      : recentAgentWorkCount > 0
+        ? `${recentAgentWorkCount} recent`
+        : "No tasks yet";
   const latestCallTranscript = callTranscript.at(-1);
   const handleTaskAction = useCallback((taskId: string, action: "cancel" | "approve" | "reject" | "retry" | "dismiss", artifactId?: string) => {
     void updateAgentTask(taskId, action, artifactId).catch((reason) => {
@@ -5031,11 +5036,8 @@ export function ConversationWorkspace({
                   aria-controls="conversation-agent-work-details"
                   className="flex min-h-16 w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-white/30 md:px-4"
                 >
-                  <span aria-hidden className="grid h-9 w-9 shrink-0 grid-cols-2 gap-1 rounded-lg border border-[#d4cbbd] bg-[#f8f5ef] p-2">
-                    <span className={clsx("rounded-full", attentionAgentWorkCount > 0 ? "bg-amber-500" : "bg-charcoal/30")} />
-                    <span className={clsx("rounded-full", activeAgentWorkCount > 0 ? "bg-blue-600" : "bg-charcoal/20")} />
-                    <span className="rounded-full bg-charcoal/20" />
-                    <span className={clsx("rounded-full", recentAgentWorkCount > 0 ? "bg-emerald-600" : "bg-charcoal/20")} />
+                  <span aria-hidden className="flex h-9 min-w-14 shrink-0 items-center justify-center rounded-lg border border-[#c9beae] bg-[#f8f5ef] px-2 text-[10px] font-bold uppercase tracking-[0.16em] text-charcoal/65">
+                    Work
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="conversation-meta flex flex-wrap items-center gap-x-2 gap-y-1 font-semibold uppercase tracking-[0.13em] text-charcoal/60">
@@ -5047,7 +5049,9 @@ export function ConversationWorkspace({
                     <span className="mt-0.5 block truncate text-[14px] font-semibold leading-snug text-nearblack">
                       {selectedAgentTask?.title
                         ?? agentActivity[0]?.progress_label
-                        ?? (agentActivity[0]?.status === "processing" ? "Working on your request" : "Waiting to start")}
+                        ?? (agentActivity[0]?.status === "processing"
+                          ? "Working on your request"
+                          : "Tasks, approvals, and results stay connected to this chat")}
                     </span>
                   </span>
                   <span className="hidden shrink-0 text-caption font-semibold text-charcoal/50 sm:block">{agentWorkExpanded ? "Close" : "View work"}</span>
@@ -5100,7 +5104,10 @@ export function ConversationWorkspace({
                           ))}
                         </div>
                       ) : (
-                        <p className="p-4 text-[13px] text-charcoal/50">A durable task will appear here when the agent starts longer work.</p>
+                        <div className="p-4">
+                          <p className="text-[13px] font-semibold text-nearblack">No agent tasks yet</p>
+                          <p className="mt-1 text-[12px] leading-relaxed text-charcoal/55">When an agent starts longer work, its status will remain here instead of getting buried in the message timeline.</p>
+                        </div>
                       )}
                     </div>
                     <div className="min-w-0 bg-white/45 p-3 md:max-h-[52vh] md:overflow-y-auto md:p-4">
@@ -5112,8 +5119,18 @@ export function ConversationWorkspace({
                           onDiscuss={discussAgentTask}
                         />
                       ) : (
-                        <div className="flex min-h-36 items-center justify-center px-6 text-center text-[13px] leading-relaxed text-charcoal/50">
-                          The agent is responding now. Longer delegated work will keep its progress and results here.
+                        <div className="flex min-h-44 flex-col items-center justify-center px-6 text-center">
+                          <p className="text-[15px] font-semibold text-nearblack">Start work together</p>
+                          <p className="mt-1.5 max-w-sm text-[13px] leading-relaxed text-charcoal/55">
+                            Give an agent a clear outcome in chat. This board will show what is active, what needs your decision, and what was delivered.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => composerInputRef.current?.focus()}
+                            className="mt-4 rounded-lg bg-nearblack px-4 py-2.5 text-[12px] font-semibold text-white hover:bg-charcoal"
+                          >
+                            Start in chat
+                          </button>
                         </div>
                       )}
                     </div>
