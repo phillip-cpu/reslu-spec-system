@@ -24,27 +24,35 @@ function artifact(overrides: Partial<AgentTaskArtifact> = {}): AgentTaskArtifact
   };
 }
 
-test("completed work automatically clears from the review panel", () => {
-  assert.equal(agentTaskBelongsInWorkPanel(task({ status: "completed", artifacts: [artifact({ kind: "email_draft" })] })), false);
-  assert.deepEqual(visibleAgentWorkTasks([task({ status: "completed" })]), []);
+test("completed work remains in the durable work history until the person clears it", () => {
+  const completed = task({ status: "completed", artifacts: [artifact({ kind: "email_draft" })] });
+  assert.equal(agentTaskBelongsInWorkPanel(completed), true);
+  assert.deepEqual(visibleAgentWorkTasks([completed]), [completed]);
 });
 
-test("the review panel keeps email work and approvals, not routine progress", () => {
-  assert.equal(agentTaskBelongsInWorkPanel(task()), false);
+test("the work centre keeps routine progress as well as reviews and approvals", () => {
+  assert.equal(agentTaskBelongsInWorkPanel(task()), true);
   assert.equal(agentTaskBelongsInWorkPanel(task({ title: "Draft client email" })), true);
   assert.equal(agentTaskBelongsInWorkPanel(task({ status: "awaiting_approval" })), true);
   assert.equal(agentTaskBelongsInWorkPanel(task({ artifacts: [artifact({ kind: "email_draft" })] })), true);
 });
 
-test("an already decided artifact cannot leave a contradictory approval card behind", () => {
+test("an already decided artifact remains visible without becoming a pending decision", () => {
   assert.equal(agentTaskBelongsInWorkPanel(task({
     status: "awaiting_approval",
     artifacts: [artifact({ status: "approved" })],
-  })), false);
+  })), true);
   assert.equal(agentTaskBelongsInWorkPanel(task({
     status: "awaiting_approval",
     artifacts: [artifact({ status: "approved" }), artifact({ id: "artifact-2", status: "draft" })],
   })), true);
+});
+
+test("attention and active work sort ahead of recent history", () => {
+  const completed = task({ id: "completed", status: "completed", updated_at: "2026-08-13T00:00:00Z" });
+  const running = task({ id: "running", status: "running", updated_at: "2026-08-12T00:00:00Z" });
+  const approval = task({ id: "approval", status: "awaiting_approval", updated_at: "2026-08-11T00:00:00Z" });
+  assert.deepEqual(visibleAgentWorkTasks([completed, running, approval]).map((item) => item.id), ["approval", "running", "completed"]);
 });
 
 test("structured tables and lists remain visible for glanceable review", () => {

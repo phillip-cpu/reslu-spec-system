@@ -9,6 +9,7 @@ export interface PendingConversationMessage {
   body: string;
   source: "text" | "voice" | "voice_note";
   targetAgent?: AgentSlug;
+  agentTaskId?: string;
   replyToId: string | null;
   attachmentIds: string[];
   attachments: ConversationAttachment[];

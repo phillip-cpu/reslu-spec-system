@@ -27,7 +27,12 @@ export function agentTaskArtifactNeedsReview(artifact: AgentTaskArtifact) {
 }
 
 export function agentTaskBelongsInWorkPanel(task: AgentTask) {
-  if (["completed", "cancelled"].includes(task.status)) return false;
+  // The work centre is the durable record of delegated work. Hiding routine or
+  // completed tasks makes the chat look clean, but prevents people from
+  // answering the more important question: "what did the agent actually do?"
+  // Per-person dismissals are already applied by the API, so every returned
+  // task belongs here until that person explicitly clears it.
+  if (["queued", "running", "completed", "cancelled", "failed"].includes(task.status)) return true;
   if (task.status === "awaiting_approval") {
     const hasDraftArtifact = task.artifacts.some((artifact) => artifact.status === "draft");
     const hasDecidedArtifact = task.artifacts.some((artifact) =>
@@ -40,13 +45,29 @@ export function agentTaskBelongsInWorkPanel(task: AgentTask) {
     // partially completed task still says awaiting_approval after every
     // artifact has already been decided, do not leave a contradictory
     // "Needs approval / Approved" card pinned above the conversation.
-    if (hasDecidedArtifact && !hasDraftArtifact) return false;
+    if (hasDecidedArtifact && !hasDraftArtifact) return true;
     return true;
   }
-  if (task.artifacts.some(agentTaskArtifactNeedsReview)) return true;
-  return [task.title, task.objective].some((value) => EMAIL_WORD.test(value));
+  return task.artifacts.some(agentTaskArtifactNeedsReview)
+    || [task.title, task.objective].some((value) => EMAIL_WORD.test(value));
 }
 
-export function visibleAgentWorkTasks(tasks: AgentTask[], limit = 6) {
-  return tasks.filter(agentTaskBelongsInWorkPanel).slice(0, limit);
+const TASK_PRIORITY: Record<AgentTask["status"], number> = {
+  awaiting_approval: 0,
+  failed: 1,
+  running: 2,
+  queued: 3,
+  completed: 4,
+  cancelled: 5,
+};
+
+export function visibleAgentWorkTasks(tasks: AgentTask[], limit = 40) {
+  return tasks
+    .filter(agentTaskBelongsInWorkPanel)
+    .sort((left, right) => {
+      const priority = TASK_PRIORITY[left.status] - TASK_PRIORITY[right.status];
+      if (priority !== 0) return priority;
+      return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+    })
+    .slice(0, limit);
 }
