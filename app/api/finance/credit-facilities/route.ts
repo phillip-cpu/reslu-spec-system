@@ -21,7 +21,11 @@ type XeroAccountRow = {
   id: string;
   xero_account_id: string;
   name: string;
-  bank_account_type: "BANK" | "CREDITCARD";
+  bank_account_type: string | null;
+  account_class: string | null;
+  current_balance: number | string | null;
+  balance_as_of: string | null;
+  balance_source: "bank_summary" | "balance_sheet" | null;
 };
 
 function normaliseName(value: string): string {
@@ -50,15 +54,26 @@ function xeroAccountsWithBalances(input: {
   const balanceByName = new Map(
     balances.map((balance) => [normaliseName(balance.name), balance.closingBalance])
   );
-  return input.rows.map((row) => {
-    const balanceMinor = Math.round((balanceByName.get(normaliseName(row.name)) ?? 0) * 100);
-    if (!Number.isSafeInteger(balanceMinor)) {
+  return input.rows.filter((row) => {
+    const bankType = row.bank_account_type?.toUpperCase();
+    return bankType === "BANK" || bankType === "CREDITCARD" ||
+      (row.account_class?.toUpperCase() === "LIABILITY" && /(credit|loan|finance|overdraft|facility|line)/i.test(row.name));
+  }).map((row) => {
+    const bankReportBalance = balanceByName.get(normaliseName(row.name));
+    const rawBalance = bankReportBalance ?? (row.current_balance === null ? null : Number(row.current_balance));
+    const balanceMinor = rawBalance === null ? null : Math.round(rawBalance * 100);
+    if (balanceMinor !== null && !Number.isSafeInteger(balanceMinor)) {
       throw new Error(`${row.name} has an invalid Xero balance`);
     }
+    const bankType = row.bank_account_type?.toUpperCase();
     return {
-      ...row,
+      id: row.id,
+      xero_account_id: row.xero_account_id,
+      name: row.name,
+      bank_account_type: bankType === "BANK" || bankType === "CREDITCARD" ? bankType : "LIABILITY",
       balance_minor: balanceMinor,
-      balance_as_of: input.asOfDate,
+      balance_as_of: bankReportBalance === undefined ? row.balance_as_of : input.asOfDate,
+      balance_source: bankReportBalance === undefined ? row.balance_source : "bank_summary",
     };
   });
 }
@@ -106,10 +121,9 @@ export async function GET() {
             .maybeSingle(),
           service
             .from("xero_bank_accounts")
-            .select("id,xero_account_id,name,bank_account_type")
+            .select("id,xero_account_id,name,bank_account_type,account_class,current_balance,balance_as_of,balance_source")
             .eq("connection_id", connection.id)
             .eq("status", "ACTIVE")
-            .in("bank_account_type", ["BANK", "CREDITCARD"])
             .order("name"),
         ])
       : [{ data: null, error: null }, { data: [], error: null }];
@@ -131,6 +145,7 @@ export async function GET() {
           credit_limit_minor: limitMinor(row),
           xero_bank_account_type: account.bank_account_type,
           xero_balance_minor: account.balance_minor,
+          xero_balance_source: account.balance_source,
         }],
       });
       return {
@@ -141,6 +156,7 @@ export async function GET() {
         xero_bank_account_type: account.bank_account_type,
         xero_balance_minor: account.balance_minor,
         xero_balance_as_of: account.balance_as_of,
+        xero_balance_source: account.balance_source,
         available_credit_minor: itemCredit.availableCreditMinor,
       } as FinanceCreditFacility;
     });
@@ -151,6 +167,7 @@ export async function GET() {
         credit_limit_minor: item.credit_limit_minor,
         xero_bank_account_type: item.xero_bank_account_type,
         xero_balance_minor: item.xero_balance_minor,
+        xero_balance_source: item.xero_balance_source,
       })),
     });
     return NextResponse.json({
@@ -191,16 +208,19 @@ export async function POST(request: NextRequest) {
   const service = createServiceRoleClient();
   const { data: xeroAccount, error: xeroError } = await service
     .from("xero_bank_accounts")
-    .select("id,name,bank_account_type,status")
+    .select("id,name,bank_account_type,account_class,status")
     .eq("id", body.xero_bank_account_id)
     .maybeSingle();
   if (xeroError) return NextResponse.json({ error: xeroError.message }, { status: 500 });
-  if (!xeroAccount || xeroAccount.status !== "ACTIVE" || !["BANK", "CREDITCARD"].includes(xeroAccount.bank_account_type ?? "")) {
-    return NextResponse.json({ error: "Choose an active Xero bank or credit-card account" }, { status: 400 });
+  const isLiability = xeroAccount?.account_class === "LIABILITY";
+  if (!xeroAccount || xeroAccount.status !== "ACTIVE" || (!["BANK", "CREDITCARD"].includes(xeroAccount.bank_account_type ?? "") && !isLiability)) {
+    return NextResponse.json({ error: "Choose an active Xero facility account" }, { status: 400 });
   }
   const facilityType = xeroAccount.bank_account_type === "CREDITCARD"
     ? "credit_card"
-    : body.facility_type;
+    : isLiability
+      ? "line_of_credit"
+      : body.facility_type;
   if (facilityType === "credit_card" && xeroAccount.bank_account_type !== "CREDITCARD") {
     return NextResponse.json({ error: "Choose overdraft or line of credit for a Xero bank account" }, { status: 400 });
   }

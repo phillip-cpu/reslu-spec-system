@@ -239,9 +239,10 @@ export interface FinanceCreditFacility {
   facility_type: FinanceCreditFacilityType;
   xero_bank_account_id: string;
   xero_account_name: string;
-  xero_bank_account_type: "BANK" | "CREDITCARD";
-  xero_balance_minor: number;
+  xero_bank_account_type: "BANK" | "CREDITCARD" | "LIABILITY";
+  xero_balance_minor: number | null;
   xero_balance_as_of: string | null;
+  xero_balance_source: "bank_summary" | "balance_sheet" | null;
   credit_limit_minor: number;
   available_credit_minor: number;
   interest_rate_bps: number | null;
@@ -270,9 +271,10 @@ export interface FinanceXeroFacilityAccount {
   id: string;
   xero_account_id: string;
   name: string;
-  bank_account_type: "BANK" | "CREDITCARD";
-  balance_minor: number;
+  bank_account_type: "BANK" | "CREDITCARD" | "LIABILITY";
+  balance_minor: number | null;
   balance_as_of: string | null;
+  balance_source: "bank_summary" | "balance_sheet" | null;
 }
 
 export interface FinanceCreditFacilitiesResponse {

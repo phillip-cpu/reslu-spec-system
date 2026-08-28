@@ -234,7 +234,11 @@ export async function GET(request: NextRequest) {
   let xeroBankAccounts: Array<{
     id: string;
     name: string;
-    bank_account_type: string;
+    bank_account_type: string | null;
+    account_class: string | null;
+    current_balance: number | string | null;
+    balance_as_of: string | null;
+    balance_source: "bank_summary" | "balance_sheet" | null;
   }> = [];
   let xeroInvoices: CachedXeroInvoice[] = [];
   let xeroPayments: CachedXeroPayment[] = [];
@@ -269,10 +273,9 @@ export async function GET(request: NextRequest) {
           .eq("connection_id", connection.id),
         service
           .from("xero_bank_accounts")
-          .select("id,name,bank_account_type")
+          .select("id,name,bank_account_type,account_class,current_balance,balance_as_of,balance_source")
           .eq("connection_id", connection.id)
-          .eq("status", "ACTIVE")
-          .in("bank_account_type", ["BANK", "CREDITCARD"]),
+          .eq("status", "ACTIVE"),
       ]);
       const xeroReadError = cashResult.error ?? invoiceResult.error ?? paymentResult.error ?? accountResult.error;
       if (xeroReadError) {
@@ -612,15 +615,25 @@ export async function GET(request: NextRequest) {
     const linkedFacilities = rawFacilities.map((row) => {
       const account = accountById.get(String(row.xero_bank_account_id ?? ""));
       if (!account) throw new Error("An active credit facility is not linked to its Xero account");
-      const xeroBalanceMinor = balanceByName.get(normaliseAccountName(account.name));
-      if (xeroBalanceMinor === undefined || !Number.isSafeInteger(xeroBalanceMinor)) {
+      const bankReportBalanceMinor = balanceByName.get(normaliseAccountName(account.name));
+      const cachedBalanceMinor = account.current_balance === null
+        ? null
+        : Math.round(Number(account.current_balance) * 100);
+      const xeroBalanceMinor = bankReportBalanceMinor ?? cachedBalanceMinor;
+      if (xeroBalanceMinor !== null && !Number.isSafeInteger(xeroBalanceMinor)) {
         throw new Error(`${account.name} has no current Xero Bank Summary balance`);
       }
+      const bankType = account.bank_account_type?.toUpperCase();
       return {
         facility_type: row.facility_type,
         credit_limit_minor: safeMinor(row.credit_limit_minor, "credit_limit_minor"),
-        xero_bank_account_type: account.bank_account_type,
+        xero_bank_account_type: bankType === "BANK" || bankType === "CREDITCARD"
+          ? bankType
+          : "LIABILITY",
         xero_balance_minor: xeroBalanceMinor,
+        xero_balance_source: bankReportBalanceMinor === undefined
+          ? account.balance_source
+          : "bank_summary" as const,
       };
     });
     const { creditLimitMinor, creditDrawnMinor, availableCreditMinor } =
