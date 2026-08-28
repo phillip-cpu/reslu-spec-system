@@ -47,6 +47,7 @@ const KIND_LABEL: Record<MyWorkItem["kind"], string> = {
   // (Record<MyWorkItemKind, string> requires every kind to have one),
   // per the "ordering_due" bug-fix precedent noted above.
   proposal_followup: "Proposal follow-up",
+  supplier_quote_followup: "Supplier quote",
   // QA fix round (r27) item 12 — "wire the dead attention aggregator"
   // (GET /api/my-work source #13, types/phase-12a-b.ts's own
   // MyWorkItemKind comment has the full story). Additive entry, same

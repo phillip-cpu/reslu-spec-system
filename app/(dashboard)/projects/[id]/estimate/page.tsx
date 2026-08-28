@@ -23,10 +23,13 @@ import { portalUrlFor } from "@/lib/portal-link";
  */
 export default async function EstimatePage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ quote?: string }>;
 }) {
   const { id } = await params;
+  const query = await searchParams;
   const supabase = await createClient();
 
   const info = await getUserRole(supabase);
@@ -68,7 +71,7 @@ export default async function EstimatePage({
       <Header title={project.name} subtitle={`${project.client_name} · Estimate`} titleHref={`/projects/${id}`} />
       <ProjectTabs projectId={id} active="estimate" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
       <main className="flex-1 px-8 py-8">
-        <EstimateWorkspace projectId={id} />
+        <EstimateWorkspace projectId={id} initialView={query.quote ? "quotes" : "estimate"} />
       </main>
     </>
   );

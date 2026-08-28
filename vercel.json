@@ -75,6 +75,10 @@
     {
       "path": "/api/stuart/accounts-invoices",
       "schedule": "14-59/15 * * * *"
+    },
+    {
+      "path": "/api/quote-requests/reconcile",
+      "schedule": "8-59/15 * * * *"
     }
   ]
 }

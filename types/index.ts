@@ -686,6 +686,8 @@ export interface EstimateResponse {
    * grouped by measurement group, without a second fetch.
    */
   measurements: MeasurementWithGroup[];
+  /** Supplier RFQ coverage keyed by cost_lines.id. */
+  quote_summaries: Record<string, import("@/types/supplier-quotes").SupplierQuoteLineSummary[]>;
 }
 
 /** POST /api/projects/[id]/estimate/init response. */
