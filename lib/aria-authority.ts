@@ -72,6 +72,7 @@ const TARGET_KEYS: Record<string, { type: string; keys: string[] }> = {
   stage_learning_candidate: { type: "learning_candidate", keys: ["candidate_id"] },
   record_learning_monitor: { type: "learning_candidate", keys: ["candidate_id"] },
   send_aria_email: { type: "email_delivery", keys: ["to", "subject"] },
+  ensure_supplier_contact_and_link_item: { type: "item", keys: ["item_id", "item_code"] },
 };
 
 function canonical(value: unknown): unknown {
