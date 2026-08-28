@@ -26,6 +26,8 @@ interface Props {
   onLineAdded: (line: CostLine) => void;
   onLineChanged: (line: CostLine) => void;
   onLineRemoved: (sectionId: string, lineId: string) => void;
+  /** Optimistically apply a persisted line order within one section. */
+  onLinesReordered: (sectionId: string, lineIds: string[]) => void;
   approvedVariationsTotal: number;
   /** Week 7 — Estimate ↔ Schedule integration: every project measurement, for the link picker + resolving a linked line's display. */
   measurements: MeasurementWithGroup[];
@@ -62,6 +64,7 @@ export function EstimateView({
   onLineAdded,
   onLineChanged,
   onLineRemoved,
+  onLinesReordered,
   approvedVariationsTotal,
   measurements,
 }: Props) {
@@ -71,6 +74,13 @@ export function EstimateView({
   const [addingSection, setAddingSection] = useState(false);
   const [newSectionName, setNewSectionName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [draggingLine, setDraggingLine] = useState<{ sectionId: string; lineId: string } | null>(null);
+  const [dropTarget, setDropTarget] = useState<{
+    sectionId: string;
+    lineId: string;
+    edge: "before" | "after";
+  } | null>(null);
+  const [reorderingSectionId, setReorderingSectionId] = useState<string | null>(null);
 
   if (notInitialised) {
     return (
@@ -253,6 +263,63 @@ export function EstimateView({
     }
   }
 
+  async function persistLineOrder(sectionId: string, nextLineIds: string[], previousLineIds: string[]) {
+    if (nextLineIds.join("|") === previousLineIds.join("|")) return;
+
+    onLinesReordered(sectionId, nextLineIds);
+    setReorderingSectionId(sectionId);
+    setError(null);
+    try {
+      const res = await fetch(`/api/estimate/sections/${sectionId}/lines/reorder`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ line_ids: nextLineIds }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? "Could not save the new line order.");
+      }
+    } catch (err) {
+      onLinesReordered(sectionId, previousLineIds);
+      setError(err instanceof Error ? err.message : "Could not save the new line order.");
+    } finally {
+      setReorderingSectionId(null);
+    }
+  }
+
+  function reorderLine(
+    sectionId: string,
+    lineId: string,
+    targetLineId: string,
+    edge: "before" | "after"
+  ) {
+    if (reorderingSectionId) return;
+    const section = estimate?.sections.find((candidate) => candidate.id === sectionId);
+    if (!section || lineId === targetLineId) return;
+
+    const previousLineIds = section.lines.map((line) => line.id);
+    const nextLineIds = previousLineIds.filter((id) => id !== lineId);
+    const targetIndex = nextLineIds.indexOf(targetLineId);
+    if (targetIndex < 0) return;
+    nextLineIds.splice(targetIndex + (edge === "after" ? 1 : 0), 0, lineId);
+    void persistLineOrder(sectionId, nextLineIds, previousLineIds);
+  }
+
+  function moveLine(sectionId: string, lineId: string, delta: -1 | 1) {
+    if (reorderingSectionId) return;
+    const section = estimate?.sections.find((candidate) => candidate.id === sectionId);
+    if (!section) return;
+    const previousLineIds = section.lines.map((line) => line.id);
+    const currentIndex = previousLineIds.indexOf(lineId);
+    const nextIndex = currentIndex + delta;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= previousLineIds.length) return;
+
+    const nextLineIds = [...previousLineIds];
+    nextLineIds.splice(currentIndex, 1);
+    nextLineIds.splice(nextIndex, 0, lineId);
+    void persistLineOrder(sectionId, nextLineIds, previousLineIds);
+  }
+
   return (
     <div className="space-y-6">
       {error && (
@@ -352,6 +419,9 @@ export function EstimateView({
               <span className="text-caption text-charcoal/50">
                 {section.lines.length} {section.lines.length === 1 ? "line" : "lines"}
               </span>
+              {reorderingSectionId === section.id && (
+                <span className="text-caption text-sand" role="status">Saving order…</span>
+              )}
               <span className="text-body text-nearblack">
                 Budget {formatMoney(section.rollup.costExGst)}
               </span>
@@ -388,7 +458,9 @@ export function EstimateView({
               <table className="w-full min-w-[1000px] border-collapse">
                 <thead>
                   <tr className="border-b border-[#dcd6cc] text-left">
-                    <th className="w-6" />
+                    <th className="w-7">
+                      <span className="sr-only">Reorder</span>
+                    </th>
                     <th className="label-caps px-2 py-1.5">Description</th>
                     <th className="label-caps px-2 py-1.5 text-right">Qty</th>
                     <th className="label-caps px-2 py-1.5">Unit</th>
@@ -423,7 +495,7 @@ export function EstimateView({
                   </tr>
                 </thead>
                 <tbody>
-                  {section.lines.map((line) => (
+                  {section.lines.map((line, lineIndex) => (
                     <LineRow
                       key={line.id}
                       line={line}
@@ -431,6 +503,46 @@ export function EstimateView({
                       markupPct={estimate.markup_pct}
                       onPatch={(patch) => patchLine(line, patch)}
                       onDelete={() => deleteLine(line)}
+                      isDragging={draggingLine?.lineId === line.id}
+                      dropEdge={
+                        dropTarget?.sectionId === section.id && dropTarget.lineId === line.id
+                          ? dropTarget.edge
+                          : null
+                      }
+                      reorderDisabled={reorderingSectionId !== null}
+                      canMoveUp={lineIndex > 0}
+                      canMoveDown={lineIndex < section.lines.length - 1}
+                      onMove={(delta) => moveLine(section.id, line.id, delta)}
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", line.id);
+                        setDraggingLine({ sectionId: section.id, lineId: line.id });
+                        setDropTarget(null);
+                      }}
+                      onDragEnd={() => {
+                        setDraggingLine(null);
+                        setDropTarget(null);
+                      }}
+                      onDragOver={(event) => {
+                        if (draggingLine?.sectionId !== section.id || draggingLine.lineId === line.id) return;
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "move";
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        const edge = event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+                        setDropTarget({ sectionId: section.id, lineId: line.id, edge });
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        if (!draggingLine || draggingLine.sectionId !== section.id) return;
+                        const edge =
+                          dropTarget?.sectionId === section.id && dropTarget.lineId === line.id
+                            ? dropTarget.edge
+                            : "before";
+                        const draggedLineId = draggingLine.lineId;
+                        setDraggingLine(null);
+                        setDropTarget(null);
+                        reorderLine(section.id, draggedLineId, line.id, edge);
+                      }}
                     />
                   ))}
                   <DraftLineRow
@@ -584,12 +696,32 @@ function LineRow({
   markupPct,
   onPatch,
   onDelete,
+  isDragging,
+  dropEdge,
+  reorderDisabled,
+  canMoveUp,
+  canMoveDown,
+  onMove,
+  onDragStart,
+  onDragEnd,
+  onDragOver,
+  onDrop,
 }: {
   line: CostLine;
   measurements: MeasurementWithGroup[];
   markupPct: number;
   onPatch: (patch: Partial<CostLine>) => Promise<CostLine>;
   onDelete: () => void;
+  isDragging: boolean;
+  dropEdge: "before" | "after" | null;
+  reorderDisabled: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMove: (delta: -1 | 1) => void;
+  onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDragEnd: () => void;
+  onDragOver: (event: React.DragEvent<HTMLTableRowElement>) => void;
+  onDrop: (event: React.DragEvent<HTMLTableRowElement>) => void;
 }) {
   const [linkOpen, setLinkOpen] = useState(false);
   const [measurementLinkOpen, setMeasurementLinkOpen] = useState(false);
@@ -713,9 +845,39 @@ function LineRow({
       <tr
         ref={rowRef}
         onBlur={handleRowBlur}
-        className={clsx("border-b border-[#e5e0d6] align-top", dirty && "bg-cream/60")}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
+        className={clsx(
+          "border-b border-[#e5e0d6] align-top transition-opacity",
+          dirty && "bg-cream/60",
+          isDragging && "opacity-35",
+          dropEdge === "before" && "border-t-2 border-t-sand",
+          dropEdge === "after" && "border-b-2 border-b-sand"
+        )}
       >
         <td className="space-y-0.5 pt-1.5">
+          <button
+            type="button"
+            draggable={!reorderDisabled}
+            disabled={reorderDisabled}
+            onDragStart={onDragStart}
+            onDragEnd={onDragEnd}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowUp" && canMoveUp) {
+                event.preventDefault();
+                onMove(-1);
+              }
+              if (event.key === "ArrowDown" && canMoveDown) {
+                event.preventDefault();
+                onMove(1);
+              }
+            }}
+            aria-label={`Reorder ${draft.description}. Drag, or use the up and down arrow keys.`}
+            title="Drag to reorder · use ↑/↓ from the keyboard"
+            className="block cursor-grab px-1 text-caption leading-none text-charcoal/35 hover:text-nearblack active:cursor-grabbing disabled:cursor-wait disabled:opacity-40"
+          >
+            ⋮⋮
+          </button>
           <button
             type="button"
             onClick={() => setLinkOpen((o) => !o)}

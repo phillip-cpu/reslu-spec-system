@@ -160,6 +160,38 @@ export function EstimateWorkspace({ projectId }: Props) {
     });
   }, [variations]);
 
+  /**
+   * Reorder a section's lines without replacing their current values.
+   * This is ID-based so a reorder rollback cannot discard an edit that
+   * finished saving while the line was being dragged.
+   */
+  const reorderLinesLocal = useCallback((sectionId: string, lineIds: string[]) => {
+    setEstimate((cur) => {
+      if (!cur) return cur;
+      const sections = cur.sections.map((section) => {
+        if (section.id !== sectionId) return section;
+
+        const byId = new Map(section.lines.map((line) => [line.id, line]));
+        const ordered = lineIds
+          .map((id, index) => {
+            const line = byId.get(id);
+            if (!line) return null;
+            byId.delete(id);
+            return { ...line, sort: (index + 1) * 10 };
+          })
+          .filter((line): line is CostLine => line !== null);
+
+        // Preserve a line that may have been created concurrently.
+        const remaining = [...byId.values()].map((line, index) => ({
+          ...line,
+          sort: (ordered.length + index + 1) * 10,
+        }));
+        return { ...section, lines: [...ordered, ...remaining] };
+      });
+      return recomputeRollups(cur, sections, variations);
+    });
+  }, [variations]);
+
   // Variations feed projectRollup via approvedVariationsTotal, so every
   // variation mutation also recomputes `estimate`'s rollups (using the
   // NEW variations list, not the stale closure) in addition to updating
@@ -348,6 +380,7 @@ export function EstimateWorkspace({ projectId }: Props) {
           onLineAdded={addLineLocal}
           onLineChanged={patchLineLocal}
           onLineRemoved={removeLineLocal}
+          onLinesReordered={reorderLinesLocal}
           approvedVariationsTotal={approvedVariations}
           measurements={estimate?.measurements ?? []}
         />
