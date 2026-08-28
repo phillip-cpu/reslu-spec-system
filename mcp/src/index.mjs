@@ -55,6 +55,7 @@ import {
 } from "./aria-authority.mjs";
 import { transcribePrivateMeetingSource } from "./local-whisper.mjs";
 import { compactProjectBoard, resolveBoardGroupUpdate, resolveBoardTaskUpdate, verifyBoardGroupUpdate, verifyBoardTaskUpdate } from "./project-board.mjs";
+import { assertItemCanBeLinked, chooseExactEmailContact, mergeVerifiedContactNotes, normalizeContactItemLinkInput } from "./contact-item-link.mjs";
 
 // ------------------------------------------------------------
 // Environment
@@ -911,6 +912,77 @@ const TOOLS = [
       if (category) params.set("category", category);
       const qs = params.toString();
       return apiFetch(`/api/contacts${qs ? `?${qs}` : ""}`);
+    },
+  },
+  {
+    name: "ensure_supplier_contact_and_link_item",
+    description:
+      "Create or reuse one verified Address Book supplier contact by exact email, then link it to one exact existing Spec item and verify the relationship by readback. This is an ordinary reversible R1 internal operation: no approval is needed when the owner asks Aria to add/link the contact. It never replaces a different existing supplier link, never creates a duplicate email contact, and never creates an Operations task instead of doing the work.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Exact project UUID" },
+        item_id: { type: "string", description: "Exact existing items UUID" },
+        item_code: { type: "string", description: "Exact item code, e.g. CP-01" },
+        company: { type: "string", minLength: 1, maxLength: 300 },
+        contact_name: { type: "string", minLength: 1, maxLength: 300 },
+        email: { type: "string", minLength: 3, maxLength: 320 },
+        phone: { type: "string", maxLength: 100 },
+        mobile: { type: "string", maxLength: 100 },
+        address: { type: "string", maxLength: 500 },
+        specialty: { type: "string", maxLength: 300 },
+        category: { type: "string", maxLength: 300 },
+      },
+      required: ["project_id", "item_id", "item_code", "company", "contact_name", "email"],
+      additionalProperties: false,
+    },
+    handler: async (rawInput) => {
+      const input = normalizeContactItemLinkInput(rawInput);
+      const listing = await apiFetch(`/api/contacts?q=${encodeURIComponent(input.email)}&limit=20`);
+      let contact = chooseExactEmailContact(listing?.contacts, input.email);
+      const contactCreated = !contact;
+      const contactPayload = {
+        company: input.company,
+        contact_name: input.contact_name,
+        email: input.email,
+        phone: input.phone,
+        specialty: input.specialty,
+        category: input.category,
+        notes: mergeVerifiedContactNotes(contact?.notes, input),
+      };
+      contact = contact
+        ? (await apiFetch(`/api/contacts/${encodeURIComponent(contact.id)}`, {
+            method: "PATCH", body: JSON.stringify(contactPayload),
+          })).contact
+        : (await apiFetch("/api/contacts", {
+            method: "POST", body: JSON.stringify(contactPayload),
+          })).contact;
+      if (!contact?.id) throw new Error("Contact write returned no contact id");
+
+      const before = (await apiFetch(`/api/items/${encodeURIComponent(input.item_id)}`))?.item;
+      assertItemCanBeLinked(before, input, contact.id);
+      const linkUpdated = before.supplier_contact_id !== contact.id;
+      if (linkUpdated) {
+        await apiFetch(`/api/items/${encodeURIComponent(input.item_id)}`, {
+          method: "PATCH", body: JSON.stringify({ supplier_contact_id: contact.id }),
+        });
+      }
+      const item = (await apiFetch(`/api/items/${encodeURIComponent(input.item_id)}`))?.item;
+      assertItemCanBeLinked(item, input, contact.id);
+      if (item.supplier_contact_id !== contact.id) throw new Error("Supplier contact link failed readback verification");
+      return {
+        contact: {
+          id: contact.id, company: contact.company, contact_name: contact.contact_name,
+          email: contact.email, phone: contact.phone, notes: contact.notes, updated_at: contact.updated_at,
+        },
+        item: {
+          id: item.id, project_id: item.project_id, item_code: item.item_code,
+          name: item.name, supplier_contact_id: item.supplier_contact_id, updated_at: item.updated_at,
+        },
+        contact_created: contactCreated,
+        link_updated: linkUpdated,
+        completion_state: "verified",
+      };
     },
   },
   {
