@@ -218,9 +218,7 @@ export async function POST(request: NextRequest) {
   }
   const facilityType = xeroAccount.bank_account_type === "CREDITCARD"
     ? "credit_card"
-    : isLiability
-      ? "line_of_credit"
-      : body.facility_type;
+    : body.facility_type;
   if (facilityType === "credit_card" && xeroAccount.bank_account_type !== "CREDITCARD") {
     return NextResponse.json({ error: "Choose overdraft or line of credit for a Xero bank account" }, { status: 400 });
   }
