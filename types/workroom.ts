@@ -14,8 +14,26 @@ export interface WorkroomRoutine {
   id: string;
   label: string;
   owner: string;
+  description: string;
   schedule: string;
   cadence: string;
+  next_run_at: string | null;
+  monitoring_key: string | null;
+  monitoring_status: "healthy" | "warning" | "failed" | "late" | "never" | "unmonitored";
+  last_run_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+  recent_runs: WorkroomRoutineRun[];
+}
+
+export interface WorkroomRoutineRun {
+  id: string;
+  status: "succeeded" | "degraded" | "failed";
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  summary: Record<string, unknown>;
+  error: string | null;
 }
 
 export interface WorkroomApprovalPolicy {
