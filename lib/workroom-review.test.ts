@@ -41,3 +41,30 @@ test("blocks stale or over-broad execution windows before a decision", () => {
   assert.match(authorityTimingIssue(withExpiry("2026-09-02T10:00:00Z"), now) ?? "", /24-hour/);
   assert.equal(authorityTimingIssue(withExpiry("2026-08-31T10:30:00Z"), now), null);
 });
+
+test("hash-bound review media resolves local asset names to authenticated previews", () => {
+  const value = artifact({
+    posts: [{ assets: ["VDK_0063.jpg"], caption: "Caption" }],
+    asset_manifest: [{ file: "VDK_0063.jpg", sha256: "a".repeat(64) }],
+    workroom_review_media: [{
+      asset_key: "VDK_0063.jpg",
+      source_sha256: "a".repeat(64),
+      url: "/api/workroom/media/media-1",
+    }],
+  });
+  assert.deepEqual(socialReviewPosts(value)[0]?.assets, ["/api/workroom/media/media-1"]);
+  assert.deepEqual(inaccessibleAssets(value), []);
+});
+
+test("review media with a different source hash stays blocked", () => {
+  const value = artifact({
+    posts: [{ assets: ["VDK_0063.jpg"], caption: "Caption" }],
+    asset_manifest: [{ file: "VDK_0063.jpg", sha256: "a".repeat(64) }],
+    workroom_review_media: [{
+      asset_key: "VDK_0063.jpg",
+      source_sha256: "b".repeat(64),
+      url: "/api/workroom/media/media-1",
+    }],
+  });
+  assert.deepEqual(inaccessibleAssets(value), ["VDK_0063.jpg"]);
+});

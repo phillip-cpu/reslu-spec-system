@@ -42,6 +42,33 @@ export async function GET() {
   const relatedError = eventsResult.error ?? artifactsResult.error ?? dismissalsResult.error ?? policiesResult.error;
   if (relatedError) return NextResponse.json({ error: relatedError.message }, { status: 500 });
 
+  const artifactRows = artifactsResult.data ?? [];
+  const artifactIds = artifactRows.map((artifact) => artifact.id);
+  const mediaResult = artifactIds.length > 0
+    ? await supabase
+        .from("agent_task_artifact_media")
+        .select("id,artifact_id,asset_key,source_sha256,width,height")
+        .in("artifact_id", artifactIds)
+        .order("created_at")
+    : { data: [], error: null };
+  if (mediaResult.error) return NextResponse.json({ error: mediaResult.error.message }, { status: 500 });
+
+  const hydratedArtifacts = artifactRows.map((artifact) => ({
+    ...artifact,
+    content: {
+      ...(artifact.content && typeof artifact.content === "object" ? artifact.content : {}),
+      workroom_review_media: (mediaResult.data ?? [])
+        .filter((media) => media.artifact_id === artifact.id)
+        .map((media) => ({
+          asset_key: media.asset_key,
+          source_sha256: media.source_sha256,
+          width: media.width,
+          height: media.height,
+          url: `/api/workroom/media/${media.id}`,
+        })),
+    },
+  }));
+
   const dismissed = new Set((dismissalsResult.data ?? []).map((row) => row.task_id));
   const tasks = rows.filter((task) => !dismissed.has(task.id)).map((task) => ({
     ...task,
@@ -51,7 +78,7 @@ export async function GET() {
       title: task.conversation?.title?.trim() || task.owner_agent?.display_name || "Conversation",
     },
     events: (eventsResult.data ?? []).filter((event) => event.task_id === task.id),
-    artifacts: (artifactsResult.data ?? []).filter((artifact) => artifact.task_id === task.id),
+    artifacts: hydratedArtifacts.filter((artifact) => artifact.task_id === task.id),
   }));
 
   return NextResponse.json({
