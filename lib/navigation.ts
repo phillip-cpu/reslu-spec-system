@@ -13,6 +13,7 @@ export interface SidebarNavItem {
 /** Stable ids are persisted in user_navigation_preferences.sidebar_order. */
 export const SIDEBAR_NAV_ITEMS: SidebarNavItem[] = [
   { id: "messages", label: "Messages", href: "/messages" },
+  { id: "workroom", label: "Workroom", href: "/workroom" },
   { id: "my-work", label: "My Work", href: "/my-work", badgeKey: "my_work_due" },
   { id: "friday-review", label: "Friday Review", href: "/friday-review" },
   { id: "projects", label: "Projects", href: "/" },

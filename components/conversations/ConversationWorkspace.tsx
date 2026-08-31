@@ -4,6 +4,7 @@ import { Fragment, FormEvent, PointerEvent as ReactPointerEvent, type RefObject,
 import clsx from "clsx";
 import { MeetingMode } from "@/components/conversations/MeetingMode";
 import Image from "next/image";
+import Link from "next/link";
 import { initials } from "@/lib/conversations";
 import {
   agentTaskArtifactText,
@@ -1384,7 +1385,6 @@ export function ConversationWorkspace({
   const [callTranscript, setCallTranscript] = useState<CallTranscriptEntry[]>([]);
   const [callTranscriptExpanded, setCallTranscriptExpanded] = useState(false);
   const [agentTasks, setAgentTasks] = useState<AgentTask[]>([]);
-  const [agentWorkExpanded, setAgentWorkExpanded] = useState(true);
   const [selectedAgentTaskId, setSelectedAgentTaskId] = useState<string | null>(null);
   const [composerAgentTask, setComposerAgentTask] = useState<AgentTask | null>(null);
   const [meetingModeOpen, setMeetingModeOpen] = useState(false);
@@ -2012,23 +2012,6 @@ export function ConversationWorkspace({
       setError("This draft could not be saved on this device.");
     });
   }, []);
-
-  const discussAgentTask = useCallback((task: AgentTask) => {
-    const conversationId = selectedIdRef.current;
-    if (!conversationId) return;
-    const agentName = task.owner_agent?.display_name;
-    const mention = participants.length > 2 && agentName ? `@${agentName} ` : "";
-    const prompt = `${mention}About “${task.title}”: `;
-    const current = draftsByConversationRef.current[conversationId] ?? "";
-    updateDraft(conversationId, current.trim() ? `${current.trimEnd()}\n\n${prompt}` : prompt);
-    setComposerAgentTask(task);
-    setAgentWorkExpanded(false);
-    window.setTimeout(() => {
-      const input = composerInputRef.current;
-      input?.focus();
-      input?.setSelectionRange(input.value.length, input.value.length);
-    }, 0);
-  }, [participants.length, updateDraft]);
 
   const clearDraft = useCallback((conversationId: string, sentBody?: string) => {
     if (sentBody !== undefined && (draftsByConversationRef.current[conversationId] ?? "") !== sentBody) return;
@@ -2719,7 +2702,6 @@ export function ConversationWorkspace({
     setMessageMenuId(null);
     setEditingMessageId(null);
     setEditingMessageBody("");
-    setAgentWorkExpanded(false);
     setComposerAgentTask(null);
     messageSearchRequestRef.current += 1;
     if (selectedId) activeMessageRequestRef.current.delete(selectedId);
@@ -5029,11 +5011,8 @@ export function ConversationWorkspace({
                 )}
                 aria-label="Agent work"
               >
-                <button
-                  type="button"
-                  onClick={() => setAgentWorkExpanded((expanded) => !expanded)}
-                  aria-expanded={agentWorkExpanded}
-                  aria-controls="conversation-agent-work-details"
+                <Link
+                  href={`/workroom?conversation=${encodeURIComponent(selectedConversation.id)}`}
                   className="flex min-h-16 w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-white/30 md:px-4"
                 >
                   <span aria-hidden className="flex h-9 min-w-14 shrink-0 items-center justify-center rounded-lg border border-[#c9beae] bg-[#f8f5ef] px-2 text-[10px] font-bold uppercase tracking-[0.16em] text-charcoal/65">
@@ -5054,16 +5033,13 @@ export function ConversationWorkspace({
                           : "Tasks, approvals, and results stay connected to this chat")}
                     </span>
                   </span>
-                  <span className="hidden shrink-0 text-caption font-semibold text-charcoal/50 sm:block">{agentWorkExpanded ? "Close" : "View work"}</span>
-                  <span aria-hidden className="shrink-0 text-[18px] text-charcoal/45">{agentWorkExpanded ? "⌃" : "⌄"}</span>
-                </button>
+                  <span className="hidden shrink-0 text-caption font-semibold text-charcoal/50 sm:block">Open Workroom</span>
+                  <span aria-hidden className="shrink-0 text-[18px] text-charcoal/45">→</span>
+                </Link>
                 <div
                   id="conversation-agent-work-details"
-                  className={clsx(
-                    "min-w-0 max-w-full border-t border-[#d4cbbd] bg-[#f4f0e8]",
-                    drawer && "md:absolute md:left-3 md:right-3 md:top-full md:max-h-[min(70vh,680px)] md:rounded-b-xl md:border md:border-t-0 md:shadow-2xl",
-                    agentWorkExpanded ? "block" : "hidden",
-                  )}
+                  className="hidden"
+                  aria-hidden="true"
                 >
                   <div className="flex items-start justify-between gap-4 border-b border-[#ddd5c8] px-4 py-3">
                     <div>
@@ -5116,7 +5092,6 @@ export function ConversationWorkspace({
                           task={selectedAgentTask}
                           canRetry={selectedAgentTask.requested_by === selfParticipant?.id && selectedAgentTask.retry_count < 3}
                           onAction={handleTaskAction}
-                          onDiscuss={discussAgentTask}
                         />
                       ) : (
                         <div className="flex min-h-44 flex-col items-center justify-center px-6 text-center">

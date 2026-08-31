@@ -14,6 +14,7 @@ const bridge = read("scripts/conversation_agent_bridge.py");
 const verifier = read("supabase/fixtures/099_persistent_agent_tasks_verify.sql");
 const dismissals = read("supabase/migrations/20260817053000_agent_task_dismissals.sql");
 const taskDetailRoute = read("app/api/conversations/[id]/tasks/[taskId]/route.ts");
+const workroom = read("components/workroom/WorkroomWorkspace.tsx");
 
 test("durable tasks have explicit lifecycle, RLS and service-only claiming", () => {
   assert.match(migration, /create table if not exists agent_tasks/i);
@@ -53,12 +54,12 @@ test("cancelling durable work needs a deliberate second action", () => {
   assert.doesNotMatch(workspace, /onClick=\{\(\) => onAction\(task\.id, "cancel"\)\}/);
 });
 
-test("agent work stays compact by default and the composer does not trigger iPhone zoom", () => {
+test("agent work is a compact link to the dedicated Workroom and the composer does not trigger iPhone zoom", () => {
   assert.match(workspace, /max-w-full flex-1 flex-col overflow-x-hidden/);
-  assert.match(workspace, /aria-controls="conversation-agent-work-details"/);
-  assert.match(workspace, /agentWorkExpanded \? "block" : "hidden"/);
+  assert.match(workspace, /href=\{`\/workroom\?conversation=/);
+  assert.match(workspace, />Open Workroom<\/span>/);
+  assert.doesNotMatch(workspace, /agentWorkExpanded/);
   assert.doesNotMatch(workspace, /pb-3 md:flex md:max-h-52/);
-  assert.match(workspace, /drawer && "md:absolute md:left-3 md:right-3 md:top-full/);
   assert.match(workspace, /block truncate text-\[14px\]/);
   assert.match(workspace, /text-\[16px\].*md:text-body/);
   const artifact = read("lib/agent-task-artifact.ts");
@@ -68,15 +69,15 @@ test("agent work stays compact by default and the composer does not trigger iPho
   assert.doesNotMatch(workspace, /JSON\.stringify\(content, null, 2\)/);
 });
 
-test("the work centre unifies overview, progress history and steering", () => {
-  assert.match(workspace, /Work in this conversation/);
-  assert.match(workspace, /Live now/);
-  assert.match(workspace, /task\.events\.slice\(-5\)\.reverse\(\)/);
-  assert.match(workspace, /Ask or steer in chat/);
-  assert.match(workspace, /About “\$\{task\.title\}”: /);
+test("the dedicated Workroom unifies task counts, progress, approvals and steering", () => {
   assert.match(workspace, /attentionAgentWorkCount/);
   assert.match(workspace, /activeAgentWorkCount/);
-  assert.match(workspace, /selectedAgentTaskId/);
+  assert.match(workspace, /agentWorkSummary/);
+  assert.match(workroom, /Needs you/);
+  assert.match(workroom, /Outstanding/);
+  assert.match(workroom, /Recurring/);
+  assert.match(workroom, /Evidence and approvals/);
+  assert.match(workroom, /Open conversation/);
 });
 
 test("terminal Agent Work can be cleared per person without hiding active work", () => {
