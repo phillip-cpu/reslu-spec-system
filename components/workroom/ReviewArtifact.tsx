@@ -52,7 +52,7 @@ function AssetPreview({ value, alt }: { value: string; alt: string }) {
       <p className="mt-1 truncate text-[12px] text-charcoal/65">{shortFile(value)}</p>
     </div>;
   }
-  return <div className="relative aspect-[4/3] overflow-hidden bg-[#e9e1d3]"><Image src={value} alt={alt} fill sizes="(max-width: 768px) 88vw, 520px" unoptimized className="object-cover" /></div>;
+  return <a href={value} target="_blank" rel="noreferrer" className="group relative block aspect-[4/3] overflow-hidden bg-[#e9e1d3]" aria-label={`Open ${alt}`}><Image src={value} alt={alt} fill sizes="(max-width: 768px) 88vw, 520px" unoptimized className="object-cover transition-transform duration-300 group-hover:scale-[1.015]" /><span className="absolute bottom-3 right-3 bg-nearblack/85 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-white">Open image</span></a>;
 }
 
 function SocialReview({ artifact }: { artifact: AgentTaskArtifact }) {

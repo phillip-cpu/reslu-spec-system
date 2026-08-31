@@ -75,10 +75,41 @@ function assetStrings(value: unknown): string[] {
     .flatMap(assetStrings);
 }
 
+function shortAssetKey(value: string) {
+  return value.split(/[\\/]/).filter(Boolean).at(-1) ?? value;
+}
+
+function reviewMediaUrls(artifact: AgentTaskArtifact) {
+  const manifest = new Map<string, string>();
+  if (Array.isArray(artifact.content?.asset_manifest)) {
+    for (const row of artifact.content.asset_manifest) {
+      const item = objectValue(row);
+      const key = textValue(item?.file);
+      const hash = textValue(item?.sha256)?.toLowerCase();
+      if (key && hash && /^[a-f0-9]{64}$/.test(hash)) manifest.set(shortAssetKey(key), hash);
+    }
+  }
+  const rows = Array.isArray(artifact.content?.workroom_review_media)
+    ? artifact.content.workroom_review_media
+    : [];
+  const urls = new Map<string, string>();
+  for (const row of rows) {
+    const media = objectValue(row);
+    const key = textValue(media?.asset_key);
+    const url = textValue(media?.url);
+    const sourceHash = textValue(media?.source_sha256)?.toLowerCase();
+    if (key && url && sourceHash && manifest.get(shortAssetKey(key)) === sourceHash && isWebAsset(url)) {
+      urls.set(key, url);
+    }
+  }
+  return urls;
+}
+
 export function socialReviewPosts(artifact: AgentTaskArtifact): SocialReviewPost[] {
   let candidates: unknown[] = Array.isArray(artifact.content?.posts) ? artifact.content.posts : [];
   const firstPost = objectValue(artifact.content?.first_post_pack);
   if (!candidates.length && firstPost) candidates = [firstPost];
+  const mediaUrls = reviewMediaUrls(artifact);
   return candidates.map((candidate, index) => {
     const post = objectValue(candidate) ?? {};
     const asset = objectValue(post.asset);
@@ -88,7 +119,9 @@ export function socialReviewPosts(artifact: AgentTaskArtifact): SocialReviewPost
       ...assetStrings(post.visuals),
       ...assetStrings(post.asset),
       ...assetStrings(post.visual),
-    ].filter((value, position, all) => all.indexOf(value) === position);
+    ]
+      .filter((value, position, all) => all.indexOf(value) === position)
+      .map((value) => mediaUrls.get(value) ?? mediaUrls.get(shortAssetKey(value)) ?? value);
     return {
       id: textValue(post.post_id) ?? textValue(post.id) ?? `post-${index + 1}`,
       title: textValue(post.title) ?? textValue(post.theme) ?? `Post ${String(index + 1).padStart(2, "0")}`,
