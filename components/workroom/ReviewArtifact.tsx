@@ -10,6 +10,7 @@ import {
   authorityRequest,
   isWebAsset,
   reviewKind,
+  reviewMediaPreviews,
   socialReviewPosts,
 } from "@/lib/workroom-review";
 
@@ -88,8 +89,13 @@ function EmailReview({ artifact }: { artifact: AgentTaskArtifact }) {
 }
 
 function GeneralReview({ artifact }: { artifact: AgentTaskArtifact }) {
-  const entries = Object.fromEntries(Object.entries(artifact.content ?? {}).filter(([key]) => key !== "authority_request"));
-  return <ReadableValue value={entries} />;
+  const previews = reviewMediaPreviews(artifact);
+  const hiddenKeys = new Set(["approval_group_key", "authority_request", "review_media_error", "review_media_sources", "workroom_review_media"]);
+  const entries = Object.fromEntries(Object.entries(artifact.content ?? {}).filter(([key]) => !hiddenKeys.has(key)));
+  return <div>
+    {previews.length > 0 && <section className="mb-7"><p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#76634f]">Images for review</p><div className="grid gap-2 sm:grid-cols-2">{previews.map((preview) => <AssetPreview key={preview.assetKey} value={preview.url} alt={preview.assetKey} />)}</div></section>}
+    <ReadableValue value={entries} />
+  </div>;
 }
 
 export function ReviewArtifact({ artifact, policy }: { artifact: AgentTaskArtifact; policy: WorkroomApprovalPolicy | null }) {

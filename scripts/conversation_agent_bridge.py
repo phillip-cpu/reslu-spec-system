@@ -65,6 +65,8 @@ OPENCLAW_SESSION_VERSION_DEFAULT = "v3"
 OPENCLAW_GATEWAY_EVENTS_DEFAULT = True
 OPENCLAW_GATEWAY_RUN_SCRIPT = Path(__file__).with_name("openclaw_gateway_run.mjs")
 MEETING_MINUTES_WORKER_SCRIPT = Path(__file__).parent.parent / "mcp" / "src" / "process-meeting-minutes.mjs"
+REVIEW_MEDIA_MAX_BYTES = 6 * 1024 * 1024
+REVIEW_MEDIA_EXTENSIONS = {".heic", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 UUID_PATTERN = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}"
 OPENCLAW_THINKING_LEVELS = {
     "off",
@@ -307,6 +309,33 @@ class SupabaseRest:
         )
         with urllib.request.urlopen(request, timeout=90) as response:
             return response.read()
+
+    def upload_storage(self, bucket: str, path: str, body: bytes, content_type: str) -> None:
+        encoded_bucket = urllib.parse.quote(bucket, safe="")
+        encoded_path = urllib.parse.quote(path, safe="/")
+        request = urllib.request.Request(
+            f"{self.base_url}/storage/v1/object/{encoded_bucket}/{encoded_path}",
+            data=body,
+            method="POST",
+            headers={
+                "apikey": self.headers["apikey"],
+                "Authorization": self.headers["Authorization"],
+                "Content-Type": content_type,
+                "Cache-Control": "max-age=31536000",
+                "x-upsert": "true",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=90) as response:
+            response.read()
+
+    def upsert(self, table: str, values: dict, on_conflict: str) -> None:
+        query = urllib.parse.urlencode({"on_conflict": on_conflict}, safe=",")
+        self.request(
+            "POST",
+            f"{table}?{query}",
+            values,
+            "resolution=merge-duplicates,return=minimal",
+        )
 
 
 def reply_candidate(value: object, prompt: str) -> str | None:
@@ -1420,6 +1449,137 @@ def parse_task_result(reply: str, task: dict) -> dict:
     return {"status": status, "summary": summary, "message": message, "artifact": artifact}
 
 
+def review_media_allowed_roots() -> tuple[Path, ...]:
+    """Return the private local roots from which approval previews may be made."""
+    configured = os.environ.get("RESLU_REVIEW_MEDIA_ROOTS", "")
+    values = [value for value in configured.split(os.pathsep) if value.strip()]
+    if not values:
+        home = Path.home()
+        values = [
+            str(home / ".openclaw"),
+            str(home / "Library" / "Mobile Documents" / "com~apple~CloudDocs"),
+        ]
+    return tuple(Path(value).expanduser().resolve() for value in values)
+
+
+def is_path_within(path: Path, roots: tuple[Path, ...]) -> bool:
+    return any(path == root or root in path.parents for root in roots)
+
+
+def review_media_sources(content: object) -> list[dict[str, str]]:
+    """Find exact local image + SHA bindings without guessing filenames or folders."""
+    found: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            path = value.get("path")
+            digest = value.get("sha256")
+            if isinstance(path, str) and isinstance(digest, str):
+                normalized_hash = digest.lower()
+                key = (path, normalized_hash)
+                if re.fullmatch(r"[a-f0-9]{64}", normalized_hash) and key not in seen:
+                    seen.add(key)
+                    asset_key = value.get("asset_key") or value.get("filename") or Path(path).name
+                    found.append({"path": path, "sha256": normalized_hash, "asset_key": str(asset_key)[:240]})
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    # Prefer the explicit contract so its human-readable asset keys win over
+    # duplicate path/hash pairs also embedded in posts or other evidence.
+    if isinstance(content, dict) and "review_media_sources" in content:
+        visit(content["review_media_sources"])
+        visit({key: value for key, value in content.items() if key != "review_media_sources"})
+    else:
+        visit(content)
+    keys = [row["asset_key"] for row in found]
+    if len(keys) != len(set(keys)):
+        raise RuntimeError("Review media asset_key values must be unique within an artifact")
+    return found
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sips_dimensions(path: Path) -> tuple[int, int]:
+    output = subprocess.run(
+        ["sips", "-g", "pixelWidth", "-g", "pixelHeight", str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    width_match = re.search(r"pixelWidth:\s*(\d+)", output)
+    height_match = re.search(r"pixelHeight:\s*(\d+)", output)
+    if not width_match or not height_match:
+        raise RuntimeError("Could not read generated preview dimensions")
+    return int(width_match.group(1)), int(height_match.group(1))
+
+
+def ingest_workroom_review_media(rest: SupabaseRest, artifact: dict) -> list[dict]:
+    """Create private, hash-bound previews for exact media named by an artifact."""
+    sources = review_media_sources(artifact.get("content"))
+    if not sources:
+        return []
+    roots = review_media_allowed_roots()
+    uploaded: list[dict] = []
+    with tempfile.TemporaryDirectory(prefix="reslu-workroom-review-") as temporary_root:
+        for source in sources:
+            source_path = Path(source["path"]).expanduser().resolve()
+            if not is_path_within(source_path, roots):
+                raise RuntimeError(f"Review media is outside the allowed private roots: {source_path.name}")
+            if source_path.suffix.lower() not in REVIEW_MEDIA_EXTENSIONS or not source_path.is_file():
+                raise RuntimeError(f"Review image is unavailable: {source_path.name}")
+            actual_hash = sha256_file(source_path)
+            if actual_hash != source["sha256"]:
+                raise RuntimeError(f"Review image hash changed: {source_path.name}")
+
+            preview_path = Path(temporary_root) / f"{actual_hash}.jpg"
+            subprocess.run(
+                [
+                    "sips", "-s", "format", "jpeg", "-s", "formatOptions", "82",
+                    "-Z", "1600", str(source_path), "--out", str(preview_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            preview_bytes = preview_path.read_bytes()
+            if len(preview_bytes) > REVIEW_MEDIA_MAX_BYTES:
+                raise RuntimeError(f"Generated preview is larger than 6 MB: {source_path.name}")
+            preview_hash = hashlib.sha256(preview_bytes).hexdigest()
+            width, height = sips_dimensions(preview_path)
+            storage_path = (
+                f"workroom/review-media/{artifact['id']}/"
+                f"{actual_hash}-{preview_hash[:12]}.jpg"
+            )
+            rest.upload_storage("assets", storage_path, preview_bytes, "image/jpeg")
+            rest.upsert(
+                "agent_task_artifact_media",
+                {
+                    "artifact_id": artifact["id"],
+                    "asset_key": source["asset_key"],
+                    "preview_storage_path": storage_path,
+                    "source_sha256": actual_hash,
+                    "preview_sha256": preview_hash,
+                    "mime_type": "image/jpeg",
+                    "width": width,
+                    "height": height,
+                    "byte_size": len(preview_bytes),
+                },
+                "artifact_id,asset_key",
+            )
+            uploaded.append({"asset_key": source["asset_key"], "source_sha256": actual_hash})
+    return uploaded
+
+
 def parse_conversation_result(reply: str, newest_message: str) -> dict:
     """Parse Marco's completion contract without exposing transport JSON.
 
@@ -1613,7 +1773,11 @@ def invoke_task_agent(
         "When authoritative_scope is present, keep all retrieval and writes inside that project or lead unless the task explicitly names a cross-project outcome. "
         "Instead return status awaiting_approval with a visible draft artifact. For an R2/R3 tool effect, artifact.content must include authority_request with exact tool_name, tool_args, target_type, target_id, idempotency_key, approval_scope, expected_version when applicable, and a short expiry; the platform hashes and binds it when the human approves. If approval is granted, execute only the approved artifact and pass approval_receipt_id unchanged in the tool's _authority envelope. "
         "Return JSON only with: status (completed or awaiting_approval), summary, message, and optional artifact. "
-        "Artifact must contain artifact_key, kind (text, email_draft, report, file, or record_change), title, and an object content.\n\n"
+        "Artifact must contain artifact_key, kind (text, email_draft, report, file, or record_change), title, and an object content. "
+        "When an approval includes images, artifact.content must include review_media_sources with one object per image: "
+        "asset_key (unique visible label), path (exact absolute local path), and sha256 (the current file's lowercase SHA-256). "
+        "Never ask for approval of an image that is not represented there; the bridge privately prepares the review previews. "
+        "When a new approval replaces an older version, include a stable approval_group_key in artifact.content so only that exact review series can be superseded.\n\n"
         f"TASK_REQUEST_JSON\n{task_payload}\nEND_TASK_REQUEST_JSON\n\n"
         f"CONTEXT_DATA_JSON\n{context_payload}\nEND_CONTEXT_DATA_JSON"
     )
@@ -1789,7 +1953,7 @@ def task_artifacts(rest: SupabaseRest, task_id: str) -> list[dict]:
     )
 
 
-def store_task_artifact(rest: SupabaseRest, task: dict, artifact: dict) -> None:
+def store_task_artifact(rest: SupabaseRest, task: dict, artifact: dict) -> dict:
     existing = rest.rows(
         "agent_task_artifacts",
         {"select": "id", "task_id": f"eq.{task['id']}", "artifact_key": f"eq.{artifact['artifact_key']}", "limit": "1"},
@@ -1804,10 +1968,67 @@ def store_task_artifact(rest: SupabaseRest, task: dict, artifact: dict) -> None:
         "status": "approved" if task.get("approval_state") == "approved" else "draft",
     }
     if existing:
-        rest.patch("agent_task_artifacts", existing[0]["id"], values)
+        artifact_row = {"id": existing[0]["id"], "task_id": task["id"], **values}
+        rest.patch("agent_task_artifacts", artifact_row["id"], values)
     else:
-        rest.insert("agent_task_artifacts", {"task_id": task["id"], "artifact_key": artifact["artifact_key"], **values})
+        artifact_row = rest.insert(
+            "agent_task_artifacts",
+            {"task_id": task["id"], "artifact_key": artifact["artifact_key"], **values},
+        )
     insert_task_event(rest, task["id"], "artifact", f"Prepared {artifact['title']}")
+    return artifact_row
+
+
+def supersede_matching_approval_tasks(rest: SupabaseRest, task: dict, artifact: dict) -> list[str]:
+    """Cancel only older approvals carrying the same explicit stable group key."""
+    content = artifact.get("content") if isinstance(artifact.get("content"), dict) else {}
+    group_key = content.get("approval_group_key")
+    created_at = task.get("created_at")
+    if (
+        not isinstance(group_key, str)
+        or not re.fullmatch(r"[a-z0-9][a-z0-9._:-]{2,119}", group_key)
+        or not isinstance(created_at, str)
+        or not created_at
+    ):
+        return []
+    candidates = rest.rows(
+        "agent_tasks",
+        {
+            "select": "id",
+            "conversation_id": f"eq.{task['conversation_id']}",
+            "owner_agent_id": f"eq.{task['owner_agent_id']}",
+            "status": "eq.awaiting_approval",
+            "id": f"neq.{task['id']}",
+            "created_at": f"lt.{created_at}",
+            "order": "created_at.desc",
+            "limit": "40",
+        },
+    )
+    superseded: list[str] = []
+    completed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    for candidate in candidates:
+        artifacts = task_artifacts(rest, candidate["id"])
+        matches = any(
+            isinstance(row.get("content"), dict)
+            and row["content"].get("approval_group_key") == group_key
+            for row in artifacts
+        )
+        if not matches:
+            continue
+        rest.patch(
+            "agent_tasks",
+            candidate["id"],
+            {"status": "cancelled", "approval_state": "none", "completed_at": completed_at},
+        )
+        insert_task_event(
+            rest,
+            candidate["id"],
+            "cancelled",
+            "Superseded by a newer review",
+            f"Replacement task: {task['id']}",
+        )
+        superseded.append(candidate["id"])
+    return superseded
 
 
 def process_task(rest: SupabaseRest, task: dict) -> str:
@@ -1842,8 +2063,29 @@ def process_task(rest: SupabaseRest, task: dict) -> str:
         })
         insert_task_event(rest, task["id"], "cancelled", "Task cancelled")
         return "cancelled"
+    stored_artifact = None
     if result["artifact"]:
-        store_task_artifact(rest, task, result["artifact"])
+        stored_artifact = store_task_artifact(rest, task, result["artifact"])
+        try:
+            uploaded_media = (
+                ingest_workroom_review_media(rest, stored_artifact)
+                if stored_artifact.get("status") == "draft"
+                else []
+            )
+            if uploaded_media:
+                insert_task_event(
+                    rest,
+                    task["id"],
+                    "artifact",
+                    f"Prepared {len(uploaded_media)} private review preview{'s' if len(uploaded_media) != 1 else ''}",
+                )
+        except Exception as exc:  # noqa: BLE001 - preserve the draft and make the review block visible
+            media_error = str(exc)[:500]
+            content = dict(stored_artifact.get("content") or {})
+            content["review_media_error"] = media_error
+            rest.patch("agent_task_artifacts", stored_artifact["id"], {"content": content})
+            stored_artifact["content"] = content
+            insert_task_event(rest, task["id"], "error", "Review media needs attention", media_error)
 
     awaiting_approval = result["status"] == "awaiting_approval"
     completed_at = None if awaiting_approval else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -1867,6 +2109,8 @@ def process_task(rest: SupabaseRest, task: dict) -> str:
     if usage_capture.get("value") is not None:
         completion_values["openclaw_usage"] = usage_capture["value"]
     rest.patch("agent_tasks", task["id"], completion_values)
+    if awaiting_approval and stored_artifact:
+        supersede_matching_approval_tasks(rest, task, stored_artifact)
     if not awaiting_approval and task.get("approval_state") == "approved":
         rest.patch_where(
             "agent_task_artifacts",

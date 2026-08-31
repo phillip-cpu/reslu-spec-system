@@ -12,6 +12,7 @@ import {
   authorityRequest,
   inaccessibleAssets,
   policyForArtifact,
+  reviewMediaIssue,
 } from "@/lib/workroom-review";
 import type { AgentTaskArtifact } from "@/types/conversations";
 import type { WorkroomApprovalPolicy, WorkroomResponse, WorkroomTask } from "@/types/workroom";
@@ -238,9 +239,10 @@ function ArtifactDecision({ task, artifact, policies, busy, onAction }: { task: 
   const request = authorityRequest(artifact);
   const policy = policyForArtifact(artifact, policies);
   const missingAssets = inaccessibleAssets(artifact);
+  const mediaIssue = reviewMediaIssue(artifact);
   const timingIssue = authorityTimingIssue(artifact);
   const hasPreview = artifactHasUsefulPreview(artifact);
-  const blockedReason = !hasPreview ? "The review pack has no visible content." : request && !policy ? "This execution tool is not registered in RESLU's approval system." : timingIssue ? timingIssue : missingAssets.length ? `${missingAssets.length} image ${missingAssets.length === 1 ? "is" : "are"} still stored as a local file and cannot be reviewed on this device.` : null;
+  const blockedReason = !hasPreview ? "The review pack has no visible content." : request && !policy ? "This execution tool is not registered in RESLU's approval system." : timingIssue ? timingIssue : mediaIssue ? `The private review previews could not be prepared: ${mediaIssue}` : missingAssets.length ? `${missingAssets.length} image ${missingAssets.length === 1 ? "is" : "are"} still stored as a local file and cannot be reviewed on this device.` : null;
   const actionLabel = approvalActionLabel(artifact, policy);
   const actionBusy = busy === `${task.id}:${artifact.id}`;
 

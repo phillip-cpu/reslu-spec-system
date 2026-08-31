@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentTaskArtifact } from "../types/conversations.ts";
-import { approvalActionLabel, authorityRequest, authorityTimingIssue, inaccessibleAssets, reviewKind, socialReviewPosts } from "./workroom-review.ts";
+import { approvalActionLabel, authorityRequest, authorityTimingIssue, inaccessibleAssets, reviewKind, reviewMediaIssue, reviewMediaPreviews, socialReviewPosts } from "./workroom-review.ts";
 
 function artifact(content: Record<string, unknown>, kind: AgentTaskArtifact["kind"] = "report"): AgentTaskArtifact {
   return { id: "a", task_id: "t", artifact_key: "review", kind, title: "Review", content, status: "draft", created_at: "", updated_at: "" };
@@ -67,4 +67,31 @@ test("review media with a different source hash stays blocked", () => {
     }],
   });
   assert.deepEqual(inaccessibleAssets(value), ["VDK_0063.jpg"]);
+});
+
+test("automatic review media sources bind private previews to the declared hash", () => {
+  const value = artifact({
+    posts: [{ assets: ["Kitchen hero"], caption: "Caption" }],
+    review_media_sources: [{ asset_key: "Kitchen hero", path: "/Users/marco/kitchen.jpg", sha256: "c".repeat(64) }],
+    workroom_review_media: [{
+      asset_key: "Kitchen hero",
+      source_sha256: "c".repeat(64),
+      url: "/api/workroom/media/media-2",
+    }],
+  });
+  assert.deepEqual(socialReviewPosts(value)[0]?.assets, ["/api/workroom/media/media-2"]);
+  assert.deepEqual(inaccessibleAssets(value), []);
+});
+
+test("automatic ingestion faults remain visible to the decision surface", () => {
+  const value = artifact({ review_media_error: "Review image hash changed: kitchen.jpg" });
+  assert.equal(reviewMediaIssue(value), "Review image hash changed: kitchen.jpg");
+});
+
+test("non-social review packs expose their verified preview gallery", () => {
+  const value = artifact({
+    review_media_sources: [{ asset_key: "Marked-up plan", path: "/Users/aria/plan.png", sha256: "d".repeat(64) }],
+    workroom_review_media: [{ asset_key: "Marked-up plan", source_sha256: "d".repeat(64), url: "/api/workroom/media/media-3" }],
+  }, "file");
+  assert.deepEqual(reviewMediaPreviews(value), [{ assetKey: "Marked-up plan", url: "/api/workroom/media/media-3" }]);
 });
