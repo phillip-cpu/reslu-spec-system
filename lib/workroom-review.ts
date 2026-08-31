@@ -89,6 +89,18 @@ function reviewMediaUrls(artifact: AgentTaskArtifact) {
       if (key && hash && /^[a-f0-9]{64}$/.test(hash)) manifest.set(shortAssetKey(key), hash);
     }
   }
+  if (Array.isArray(artifact.content?.review_media_sources)) {
+    for (const row of artifact.content.review_media_sources) {
+      const item = objectValue(row);
+      const path = textValue(item?.path);
+      const assetKey = textValue(item?.asset_key);
+      const hash = textValue(item?.sha256)?.toLowerCase();
+      if (hash && /^[a-f0-9]{64}$/.test(hash)) {
+        if (path) manifest.set(shortAssetKey(path), hash);
+        if (assetKey) manifest.set(shortAssetKey(assetKey), hash);
+      }
+    }
+  }
   const rows = Array.isArray(artifact.content?.workroom_review_media)
     ? artifact.content.workroom_review_media
     : [];
@@ -103,6 +115,14 @@ function reviewMediaUrls(artifact: AgentTaskArtifact) {
     }
   }
   return urls;
+}
+
+export function reviewMediaPreviews(artifact: AgentTaskArtifact) {
+  return [...reviewMediaUrls(artifact)].map(([assetKey, url]) => ({ assetKey, url }));
+}
+
+export function reviewMediaIssue(artifact: AgentTaskArtifact) {
+  return textValue(artifact.content?.review_media_error);
 }
 
 export function socialReviewPosts(artifact: AgentTaskArtifact): SocialReviewPost[] {

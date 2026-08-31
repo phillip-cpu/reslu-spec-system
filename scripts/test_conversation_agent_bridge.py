@@ -73,6 +73,75 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         parsed = json.loads(encoded)
         self.assertTrue(parsed["truncated"])
 
+    def test_review_media_sources_require_exact_path_and_hash_bindings(self):
+        digest = "a" * 64
+        content = {
+            "review_media_sources": [
+                {"asset_key": "Hero", "path": "/Users/vale/.openclaw/workspace-marco/hero.jpg", "sha256": digest},
+                {"asset_key": "No hash", "path": "/tmp/unbound.jpg"},
+            ],
+            "nested": {"path": "/Users/vale/.openclaw/workspace-marco/detail.png", "sha256": "b" * 64},
+        }
+
+        sources = conversation_agent_bridge.review_media_sources(content)
+
+        self.assertEqual([row["asset_key"] for row in sources], ["Hero", "detail.png"])
+        self.assertEqual(sources[0]["sha256"], digest)
+
+    def test_review_media_sources_reject_duplicate_visible_keys(self):
+        with self.assertRaisesRegex(RuntimeError, "asset_key values must be unique"):
+            conversation_agent_bridge.review_media_sources({
+                "review_media_sources": [
+                    {"asset_key": "Hero", "path": "/one.jpg", "sha256": "a" * 64},
+                    {"asset_key": "Hero", "path": "/two.jpg", "sha256": "b" * 64},
+                ],
+            })
+
+    def test_superseding_is_explicit_and_only_matches_same_group(self):
+        class FakeRest:
+            patches = []
+            inserts = []
+
+            @classmethod
+            def rows(cls, table, params):
+                if table == "agent_tasks":
+                    return [{"id": "older-match"}, {"id": "older-other"}]
+                if table == "agent_task_artifacts":
+                    group = "social.west-lakes" if params["task_id"] == "eq.older-match" else "social.other"
+                    return [{"content": {"approval_group_key": group}}]
+                raise AssertionError((table, params))
+
+            @classmethod
+            def patch(cls, table, row_id, values):
+                cls.patches.append((table, row_id, values))
+
+            @classmethod
+            def insert(cls, table, values):
+                cls.inserts.append((table, values))
+                return values
+
+        task = {"id": "new", "conversation_id": "conversation", "owner_agent_id": "marco", "created_at": "2026-08-31T10:00:00Z"}
+        artifact = {"content": {"approval_group_key": "social.west-lakes"}}
+
+        superseded = conversation_agent_bridge.supersede_matching_approval_tasks(FakeRest(), task, artifact)
+
+        self.assertEqual(superseded, ["older-match"])
+        self.assertEqual(FakeRest.rows("agent_tasks", {
+            "select": "id", "conversation_id": "eq.conversation", "owner_agent_id": "eq.marco",
+            "status": "eq.awaiting_approval", "id": "neq.new", "created_at": "lt.2026-08-31T10:00:00Z",
+            "order": "created_at.desc", "limit": "40",
+        })[0]["id"], "older-match")
+        self.assertEqual(FakeRest.patches[0][1], "older-match")
+        self.assertEqual(FakeRest.patches[0][2]["status"], "cancelled")
+        self.assertEqual(len(FakeRest.inserts), 1)
+
+    def test_superseding_ignores_missing_or_invalid_group_keys(self):
+        rest = mock.Mock()
+        task = {"id": "new", "conversation_id": "conversation", "owner_agent_id": "marco", "created_at": "2026-08-31T10:00:00Z"}
+        self.assertEqual(conversation_agent_bridge.supersede_matching_approval_tasks(rest, task, {"content": {}}), [])
+        self.assertEqual(conversation_agent_bridge.supersede_matching_approval_tasks(rest, task, {"content": {"approval_group_key": "spaces are unsafe"}}), [])
+        rest.rows.assert_not_called()
+
     def test_gateway_event_transport_is_enabled_with_an_emergency_off_switch(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertTrue(conversation_agent_bridge.openclaw_gateway_events_enabled())

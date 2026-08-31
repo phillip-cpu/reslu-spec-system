@@ -32,3 +32,11 @@ test("the local ingester verifies source hashes before creating previews", () =>
   assert.match(uploader, /workroom\/review-media\/\$\{artifactId\}/);
   assert.match(uploader, /artifact\.status !== "draft"/);
 });
+
+test("the shared agent bridge automatically prepares review media for every agent", () => {
+  const bridge = read("scripts/conversation_agent_bridge.py");
+  assert.match(bridge, /def ingest_workroom_review_media/);
+  assert.match(bridge, /review_media_sources/);
+  assert.match(bridge, /Review media needs attention/);
+  assert.match(bridge, /def supersede_matching_approval_tasks/);
+});
