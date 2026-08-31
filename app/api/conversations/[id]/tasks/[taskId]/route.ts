@@ -61,5 +61,16 @@ export async function PATCH(request: NextRequest, context: Context) {
     return NextResponse.json({ task: data });
   }
 
+  if (body.action === "request_changes" && body.artifact_id) {
+    const { data, error } = await supabase.rpc("request_agent_task_artifact_changes", {
+      p_conversation_id: id,
+      p_task_id: taskId,
+      p_artifact_id: body.artifact_id,
+      p_note: body.note?.trim() || "",
+    }).single();
+    if (error || !data) return NextResponse.json({ error: error?.message ?? "Could not return this review" }, { status: 400 });
+    return NextResponse.json({ task: data });
+  }
+
   return NextResponse.json({ error: "Invalid task action" }, { status: 400 });
 }

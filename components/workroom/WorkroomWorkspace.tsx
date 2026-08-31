@@ -1,18 +1,30 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { agentAssignmentStatusLabel, artifactSummary, assignmentLastUpdatedAt } from "@/lib/agent-operating-workspace";
+import { agentAssignmentStatusLabel, assignmentLastUpdatedAt } from "@/lib/agent-operating-workspace";
 import { filterWorkroomTasks, workroomCounts, type WorkroomView } from "@/lib/workroom";
-import type { WorkroomResponse, WorkroomTask } from "@/types/workroom";
+import {
+  approvalActionLabel,
+  artifactHasUsefulPreview,
+  authorityTimingIssue,
+  authorityRequest,
+  inaccessibleAssets,
+  policyForArtifact,
+} from "@/lib/workroom-review";
+import type { AgentTaskArtifact } from "@/types/conversations";
+import type { WorkroomApprovalPolicy, WorkroomResponse, WorkroomTask } from "@/types/workroom";
+import { ReviewArtifact } from "@/components/workroom/ReviewArtifact";
 
-const VIEWS: Array<{ id: WorkroomView; label: string }> = [
-  { id: "attention", label: "Needs you" },
-  { id: "outstanding", label: "Outstanding" },
-  { id: "recurring", label: "Recurring" },
-  { id: "history", label: "History" },
+const VIEWS: Array<{ id: WorkroomView; label: string; quietLabel: string }> = [
+  { id: "attention", label: "Needs you", quietLabel: "Decisions and recovery" },
+  { id: "outstanding", label: "Active work", quietLabel: "Outstanding" },
+  { id: "recurring", label: "Routines", quietLabel: "Recurring" },
+  { id: "history", label: "History", quietLabel: "Completed" },
 ];
+
+type TaskAction = "cancel" | "retry" | "dismiss" | "approve" | "reject" | "request_changes";
 
 function dateTime(value: string | null | undefined) {
   if (!value) return "";
@@ -21,12 +33,21 @@ function dateTime(value: string | null | undefined) {
   return new Intl.DateTimeFormat("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }).format(date);
 }
 
-function statusTone(task: WorkroomTask) {
-  if (task.status === "awaiting_approval") return "bg-amber-100 text-amber-900";
-  if (task.status === "failed") return "bg-red-100 text-red-800";
-  if (task.status === "completed") return "bg-emerald-100 text-emerald-900";
-  if (task.status === "cancelled") return "bg-charcoal/10 text-charcoal/60";
-  return "bg-blue-100 text-blue-900";
+function statusColour(task: WorkroomTask) {
+  if (task.status === "awaiting_approval") return "bg-[#b98517]";
+  if (task.status === "failed") return "bg-[#b33a32]";
+  if (task.status === "completed") return "bg-[#3f7958]";
+  if (task.status === "cancelled") return "bg-charcoal/35";
+  return "bg-[#274690]";
+}
+
+function noticeFor(action: TaskAction) {
+  if (action === "approve") return "Decision saved. The agent can continue with the reviewed pack.";
+  if (action === "request_changes") return "Feedback sent. The same assignment is back with the agent.";
+  if (action === "reject") return "Review declined and the assignment stopped.";
+  if (action === "retry") return "Recovery started after checking the current state.";
+  if (action === "dismiss") return "Removed from your Workroom.";
+  return "Assignment updated.";
 }
 
 export function WorkroomWorkspace({ conversationId = null }: { conversationId?: string | null }) {
@@ -34,9 +55,12 @@ export function WorkroomWorkspace({ conversationId = null }: { conversationId?: 
   const [view, setView] = useState<WorkroomView>("attention");
   const [agentId, setAgentId] = useState("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const actionLock = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -55,10 +79,7 @@ export function WorkroomWorkspace({ conversationId = null }: { conversationId?: 
   useEffect(() => {
     const initial = window.setTimeout(() => void load(), 0);
     const interval = window.setInterval(load, 20_000);
-    return () => {
-      window.clearTimeout(initial);
-      window.clearInterval(interval);
-    };
+    return () => { window.clearTimeout(initial); window.clearInterval(interval); };
   }, [load]);
 
   const tasks = useMemo(() => {
@@ -73,131 +94,158 @@ export function WorkroomWorkspace({ conversationId = null }: { conversationId?: 
   }, [tasks]);
   const filtered = useMemo(() => filterWorkroomTasks(tasks, view, agentId), [agentId, tasks, view]);
   const selected = filtered.find((task) => task.id === selectedId) ?? filtered[0] ?? null;
+  const policies = data?.approval_policies ?? [];
 
-  async function taskAction(task: WorkroomTask, action: "cancel" | "retry" | "dismiss" | "approve" | "reject", artifactId?: string) {
-    setBusy(`${task.id}:${artifactId ?? action}`);
+  async function taskAction(task: WorkroomTask, action: TaskAction, artifactId?: string, note?: string) {
+    const lockKey = `${task.id}:${artifactId ?? action}`;
+    if (actionLock.current) return;
+    actionLock.current = lockKey;
+    setBusy(lockKey);
     setError(null);
+    setNotice(null);
     try {
       const response = await fetch(`/api/conversations/${task.conversation_id}/tasks/${task.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, artifact_id: artifactId }),
+        body: JSON.stringify({ action, artifact_id: artifactId, note }),
       });
       const body = await response.json() as { error?: string };
-      if (!response.ok) throw new Error(body.error ?? "Could not update this task");
+      if (!response.ok) throw new Error(body.error ?? "Could not update this assignment");
+      setNotice(noticeFor(action));
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not update this task");
+      setError(reason instanceof Error ? reason.message : "Could not update this assignment");
     } finally {
+      actionLock.current = null;
       setBusy(null);
     }
   }
 
-  if (loading && !data) return <div className="border border-[#d4cbbd] bg-offwhite p-8 text-body text-charcoal/55">Opening the Workroom…</div>;
+  function selectTask(taskId: string) {
+    setSelectedId(taskId);
+    setMobileDetailOpen(true);
+    setNotice(null);
+  }
+
+  if (loading && !data) return <WorkroomSkeleton />;
 
   return (
-    <div className="mx-auto max-w-[1500px] space-y-5">
-      {error && <div role="alert" className="border border-red-300 bg-red-50 px-4 py-3 text-body text-red-800">{error}</div>}
-      <section className="grid grid-cols-2 gap-3 lg:grid-cols-4" aria-label="Workroom summary">
-        <Summary label="Needs you" value={counts.attention} tone={counts.attention ? "attention" : "plain"} />
-        <Summary label="Outstanding" value={counts.outstanding} />
-        <Summary label="Agents with work" value={new Set(tasks.filter((task) => !["completed", "cancelled"].includes(task.status)).map((task) => task.owner_agent_id)).size} />
-        <Summary label="Recurring routines" value={data?.routines.length ?? 0} />
-      </section>
-
-      {conversationId && (
-        <div className="flex flex-wrap items-center justify-between gap-3 border border-[#d4cbbd] bg-[#eee8de] px-4 py-3 text-caption">
-          <span>Showing work from one conversation.</span>
-          <Link href="/workroom" className="font-semibold underline underline-offset-4">Show all agent work</Link>
-        </div>
-      )}
-
-      <section className="border border-[#cfc6b8] bg-offwhite">
-        <div className="flex flex-col gap-3 border-b border-[#d4cbbd] p-3 md:flex-row md:items-center md:justify-between md:px-5">
-          <div className="flex gap-1 overflow-x-auto" role="tablist" aria-label="Workroom views">
-            {VIEWS.map((item) => {
-              const count = item.id === "recurring" ? data?.routines.length ?? 0 : counts[item.id];
-              return (
-                <button key={item.id} type="button" role="tab" aria-selected={view === item.id} onClick={() => { setView(item.id); setSelectedId(null); }} className={clsx("min-h-11 shrink-0 px-3 text-caption font-semibold", view === item.id ? "bg-nearblack text-white" : "text-charcoal/60 hover:bg-[#eee8de]")}>{item.label} <span className="ml-1 opacity-60">{count}</span></button>
-              );
-            })}
+    <div className="workroom-surface -mx-4 -my-5 min-h-[calc(100vh-92px)] px-4 py-5 md:-mx-8 md:-my-8 md:px-8 md:py-8">
+      <div className="mx-auto max-w-[1540px]">
+        <div className="mb-5 flex flex-col gap-4 border-b border-[#cfc5b6] pb-5 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#76634f]">Studio work table</p>
+            <p className="workroom-ink-note mt-2">What needs your eye, without the noise.</p>
           </div>
-          <label className="flex items-center gap-2 text-caption text-charcoal/55">
-            Agent
-            <select value={agentId} onChange={(event) => { setAgentId(event.target.value); setSelectedId(null); }} className="min-h-11 border border-[#cfc6b8] bg-white px-3 text-body text-nearblack">
-              <option value="all">All agents</option>
-              {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name}</option>)}
-            </select>
-          </label>
+          <dl className="flex flex-wrap gap-x-7 gap-y-3 text-[12px] text-charcoal/65">
+            <div><dt className="inline">Needs you </dt><dd className="inline font-semibold text-nearblack">{counts.attention}</dd></div>
+            <div><dt className="inline">Outstanding </dt><dd className="inline font-semibold text-nearblack">{counts.outstanding}</dd></div>
+            <div><dt className="inline">Recurring </dt><dd className="inline font-semibold text-nearblack">{data?.routines.length ?? 0}</dd></div>
+          </dl>
         </div>
 
-        {view === "recurring" ? (
-          <div className="grid gap-px bg-[#d4cbbd] md:grid-cols-2 xl:grid-cols-3">
-            {(data?.routines ?? []).filter((routine) => agentId === "all" || agents.find((agent) => agent.id === agentId)?.display_name === routine.owner).map((routine) => (
-              <article key={routine.id} className="bg-offwhite p-5">
-                <div className="flex items-start justify-between gap-3"><h2 className="text-body font-semibold text-nearblack">{routine.label}</h2><span className="bg-[#e7dfd1] px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-charcoal/65">{routine.owner}</span></div>
-                <p className="mt-4 text-subhead text-charcoal/70">{routine.cadence}</p>
-                <p className="mt-1 font-mono text-[11px] text-charcoal/45">{routine.schedule} · UTC</p>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <div className="grid min-h-[520px] lg:grid-cols-[minmax(280px,0.78fr)_minmax(420px,1.5fr)]">
-            <div className="border-b border-[#d4cbbd] lg:border-b-0 lg:border-r">
-              {filtered.length ? filtered.map((task) => (
-                <button key={task.id} type="button" onClick={() => setSelectedId(task.id)} className={clsx("block w-full border-b border-[#e1dacf] p-4 text-left", selected?.id === task.id ? "bg-[#e9e1d4]" : "hover:bg-[#f5f1e8]")}>
-                  <div className="flex items-center justify-between gap-3"><span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-charcoal/50">{task.owner_agent?.display_name ?? "Agent"}</span><span className={clsx("px-2 py-1 text-[10px] font-semibold", statusTone(task))}>{agentAssignmentStatusLabel(task)}</span></div>
-                  <p className="mt-2 text-body font-semibold leading-snug text-nearblack">{task.title}</p>
-                  <p className="mt-2 truncate text-caption text-charcoal/50">{task.conversation.title} · {dateTime(assignmentLastUpdatedAt(task))}</p>
-                </button>
-              )) : <Empty view={view} />}
+        {error && <div role="alert" className="mb-4 border-l-2 border-red-700 bg-red-50 px-4 py-3 text-[14px] text-red-900">{error}</div>}
+        {notice && <div role="status" aria-live="polite" className="mb-4 border-l-2 border-[#3f7958] bg-[#edf5ef] px-4 py-3 text-[14px] text-[#254c36]">{notice}</div>}
+
+        {conversationId && <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border border-[#d4cbbd] bg-[#f5f1e8] px-4 py-3 text-[12px]"><span>Showing assignments from one conversation.</span><Link href="/workroom" className="font-semibold underline underline-offset-4">Show the whole Workroom</Link></div>}
+
+        <section className="overflow-hidden border border-[#cfc5b6] bg-[#f5f1e8]/80">
+          <div className="flex flex-col gap-3 border-b border-[#cfc5b6] bg-[#eee7dc] p-3 md:flex-row md:items-center md:justify-between md:px-4">
+            <div className="flex gap-1 overflow-x-auto" role="tablist" aria-label="Workroom views">
+              {VIEWS.map((item) => {
+                const count = item.id === "recurring" ? data?.routines.length ?? 0 : counts[item.id];
+                return <button key={item.id} type="button" role="tab" aria-selected={view === item.id} onClick={() => { setView(item.id); setSelectedId(null); setMobileDetailOpen(false); setNotice(null); }} className={clsx("min-h-11 shrink-0 border-b-2 px-3 text-[12px] font-semibold transition-colors", view === item.id ? "border-nearblack text-nearblack" : "border-transparent text-charcoal/55 hover:text-nearblack")}><span>{item.label}</span><span className="ml-2 font-normal text-charcoal/45">{count}</span><span className="sr-only"> · {item.quietLabel}</span></button>;
+              })}
             </div>
-            <div className="min-w-0 p-5 md:p-7">{selected ? <TaskDetail task={selected} selfId={data?.self_profile_id ?? ""} busy={busy} onAction={taskAction} /> : <div className="flex min-h-80 items-center justify-center text-center text-body text-charcoal/45">Choose an assignment to see its brief, progress, evidence and controls.</div>}</div>
+            <label className="flex items-center gap-2 text-[12px] text-charcoal/60"><span>Agent</span><select value={agentId} onChange={(event) => { setAgentId(event.target.value); setSelectedId(null); setMobileDetailOpen(false); }} className="min-h-11 border border-[#cfc5b6] bg-[#faf6ec] px-3 text-[14px] text-nearblack"><option value="all">All agents</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name}</option>)}</select></label>
           </div>
-        )}
-      </section>
+
+          {view === "recurring" ? <RoutineGrid routines={data?.routines ?? []} agents={agents} agentId={agentId} /> : (
+            <div className="grid min-h-[620px] lg:grid-cols-[minmax(300px,0.72fr)_minmax(0,1.55fr)] xl:grid-cols-[370px_minmax(0,1fr)]">
+              <div className={clsx("border-[#cfc5b6] bg-[#f5f1e8] lg:block lg:border-r", mobileDetailOpen ? "hidden" : "block")}>
+                {filtered.length ? filtered.map((task) => <TaskQueueRow key={task.id} task={task} selected={selected?.id === task.id} onSelect={() => selectTask(task.id)} />) : <Empty view={view} />}
+              </div>
+              <div className={clsx("min-w-0 bg-[#ede8de] lg:block", mobileDetailOpen ? "block" : "hidden")}>
+                {selected ? <TaskDetail task={selected} selfId={data?.self_profile_id ?? ""} policies={policies} busy={busy} onBack={() => setMobileDetailOpen(false)} onAction={taskAction} /> : <div className="flex min-h-[620px] items-center justify-center p-8 text-center text-[14px] text-charcoal/50">Choose an assignment to review its work, evidence and next action.</div>}
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
     </div>
   );
 }
 
-function Summary({ label, value, tone = "plain" }: { label: string; value: number; tone?: "plain" | "attention" }) {
-  return <article className={clsx("border p-4 md:p-5", tone === "attention" ? "border-amber-400 bg-amber-50" : "border-[#d4cbbd] bg-offwhite")}><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-charcoal/50">{label}</p><p className="mt-2 font-display text-[30px] leading-none text-nearblack">{value}</p></article>;
+function WorkroomSkeleton() {
+  return <div className="workroom-surface -mx-4 -my-5 min-h-[calc(100vh-92px)] px-4 py-5 md:-mx-8 md:-my-8 md:px-8 md:py-8"><div className="mx-auto max-w-[1540px] animate-pulse"><div className="h-16 border-b border-[#cfc5b6]" /><div className="mt-5 grid min-h-[620px] border border-[#cfc5b6] lg:grid-cols-[370px_1fr]"><div className="border-r border-[#cfc5b6] bg-[#f5f1e8]" /><div className="bg-[#ede8de] p-8"><div className="mx-auto h-96 max-w-3xl bg-[#faf6ec]" /></div></div></div></div>;
+}
+
+function TaskQueueRow({ task, selected, onSelect }: { task: WorkroomTask; selected: boolean; onSelect: () => void }) {
+  return <button type="button" onClick={onSelect} aria-current={selected ? "true" : undefined} className={clsx("workroom-queue-row block min-h-[94px] w-full border-b border-[#ddd5c8] px-5 py-4 text-left", selected ? "bg-[#faf6ec]" : "hover:bg-[#f9f4ea]")}>
+    <div className="flex items-center justify-between gap-3"><span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-[#76634f]">{task.owner_agent?.display_name ?? "Agent"}</span><span className="flex items-center gap-2 text-[11px] text-charcoal/60"><span className={clsx("h-2 w-2", statusColour(task))} aria-hidden />{agentAssignmentStatusLabel(task)}</span></div>
+    <p className="mt-2 text-[15px] font-medium leading-snug text-nearblack">{task.title}</p>
+    <p className="mt-2 truncate text-[11px] text-charcoal/50">{task.conversation.title} · {dateTime(assignmentLastUpdatedAt(task))}</p>
+  </button>;
 }
 
 function Empty({ view }: { view: WorkroomView }) {
-  const copy = view === "attention" ? "Nothing needs your approval or recovery." : view === "outstanding" ? "No work is currently queued or running." : "No completed work is available.";
-  return <div className="p-8 text-center text-body text-charcoal/50">{copy}</div>;
+  const copy = view === "attention" ? ["Your table is clear", "Nothing needs a decision or recovery right now."] : view === "outstanding" ? ["No active assignments", "The agents have no queued or running work."] : ["No history yet", "Completed work will settle here."];
+  return <div className="flex min-h-72 flex-col justify-center px-8 text-center"><p className="font-display text-[25px] text-nearblack">{copy[0]}</p><p className="mt-2 text-[13px] leading-6 text-charcoal/55">{copy[1]}</p></div>;
 }
 
-function TaskDetail({ task, selfId, busy, onAction }: { task: WorkroomTask; selfId: string; busy: string | null; onAction: (task: WorkroomTask, action: "cancel" | "retry" | "dismiss" | "approve" | "reject", artifactId?: string) => void }) {
+function RoutineGrid({ routines, agents, agentId }: { routines: WorkroomResponse["routines"]; agents: Array<NonNullable<WorkroomTask["owner_agent"]>>; agentId: string }) {
+  const visible = routines.filter((routine) => agentId === "all" || agents.find((agent) => agent.id === agentId)?.display_name === routine.owner);
+  return <div className="grid gap-px bg-[#d4cbbd] md:grid-cols-2 xl:grid-cols-3">{visible.map((routine, index) => <article key={routine.id} className="min-h-48 bg-[#faf6ec] p-6"><div className="flex items-start justify-between gap-4"><span className="font-display text-[34px] leading-none text-[#c8b99f]">{String(index + 1).padStart(2, "0")}</span><span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#76634f]">{routine.owner}</span></div><h2 className="mt-6 font-display text-[25px] leading-tight text-nearblack">{routine.label}</h2><p className="mt-4 text-[13px] text-charcoal/65">{routine.cadence}</p><p className="mt-1 font-mono text-[11px] text-charcoal/45">{routine.schedule} · UTC</p></article>)}</div>;
+}
+
+function TaskDetail({ task, selfId, policies, busy, onBack, onAction }: { task: WorkroomTask; selfId: string; policies: WorkroomApprovalPolicy[]; busy: string | null; onBack: () => void; onAction: (task: WorkroomTask, action: TaskAction, artifactId?: string, note?: string) => void }) {
   const draftArtifacts = task.artifacts.filter((artifact) => artifact.status === "draft");
   const terminal = ["failed", "completed", "cancelled"].includes(task.status);
-  return (
-    <article>
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0"><p className="label-caps">{task.owner_agent?.display_name ?? "Agent"} · {task.conversation.title}</p><h2 className="mt-2 max-w-3xl font-display text-section leading-tight text-nearblack">{task.title}</h2></div>
-        <span className={clsx("px-3 py-2 text-caption font-semibold", statusTone(task))}>{agentAssignmentStatusLabel(task)}</span>
-      </div>
-      <p className="mt-5 whitespace-pre-wrap text-body leading-7 text-charcoal/75">{task.objective}</p>
-      {task.progress_label && <div className="mt-5 border-l-2 border-blue-700 bg-blue-50 px-4 py-3 text-body text-blue-950">{task.progress_label}</div>}
-      {task.error && <div className="mt-5 border-l-2 border-red-700 bg-red-50 px-4 py-3 text-body text-red-800">{task.error}</div>}
-      {task.result_summary && <div className="mt-5 border-l-2 border-emerald-700 bg-emerald-50 px-4 py-3 text-body leading-6 text-emerald-950">{task.result_summary}</div>}
+  return <article className="mx-auto max-w-[1040px] px-4 py-5 sm:px-6 sm:py-7 lg:px-8 lg:py-9">
+    <button type="button" onClick={onBack} className="mb-5 inline-flex min-h-11 items-center gap-2 text-[13px] font-semibold text-charcoal/65 lg:hidden"><span aria-hidden>←</span> Back to Workroom</button>
+    <header className="border-b border-[#cfc5b6] pb-6">
+      <div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><p className="text-[10px] font-semibold uppercase tracking-[0.19em] text-[#76634f]">{task.owner_agent?.display_name ?? "Agent"} · {task.conversation.title}</p><h2 className="mt-3 max-w-3xl font-display text-[34px] font-light leading-[1.05] text-nearblack sm:text-[42px]">{task.title}</h2></div><span className="flex items-center gap-2 border border-[#cbbda7] bg-[#f5f1e8] px-3 py-2 text-[11px] font-semibold text-charcoal/70"><span className={clsx("h-2 w-2", statusColour(task))} aria-hidden />{agentAssignmentStatusLabel(task)}</span></div>
+      <p className="mt-5 max-w-3xl whitespace-pre-wrap text-[15px] leading-7 text-charcoal/72">{task.objective}</p>
+    </header>
 
-      {task.artifacts.length > 0 && <section className="mt-7"><h3 className="label-caps mb-3">Evidence and approvals</h3><div className="divide-y divide-[#d4cbbd] border-y border-[#d4cbbd]">{task.artifacts.map((artifact) => (
-        <div key={artifact.id} className="py-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-body font-semibold text-nearblack">{artifact.title}</p><p className="mt-1 whitespace-pre-wrap text-caption leading-5 text-charcoal/65">{artifactSummary(artifact)}</p></div><span className="text-[10px] uppercase tracking-wider text-charcoal/45">{artifact.status}</span></div>
-          {artifact.status === "draft" && <div className="mt-3 flex gap-2"><button disabled={Boolean(busy)} onClick={() => onAction(task, "reject", artifact.id)} className="min-h-10 border border-[#cfc6b8] px-3 text-caption font-semibold disabled:opacity-40">Reject</button><button disabled={Boolean(busy)} onClick={() => onAction(task, "approve", artifact.id)} className="min-h-10 bg-nearblack px-3 text-caption font-semibold text-white disabled:opacity-40">Approve</button></div>}
-        </div>
-      ))}</div></section>}
+    {task.progress_label && <div className="mt-5 border-l-2 border-[#274690] bg-[#eef3fb] px-4 py-3 text-[14px] text-[#20375f]">{task.progress_label}</div>}
+    {task.error && <div className="mt-5 border-l-2 border-red-700 bg-red-50 px-4 py-3 text-[14px] leading-6 text-red-900">{task.error}</div>}
+    {task.result_summary && <div className="mt-5 border-l-2 border-[#3f7958] bg-[#edf5ef] px-4 py-3 text-[14px] leading-6 text-[#254c36]">{task.result_summary}</div>}
 
-      {task.events.length > 0 && <section className="mt-7"><h3 className="label-caps mb-3">Activity</h3><ol className="space-y-3">{[...task.events].reverse().slice(0, 12).map((event) => <li key={event.id} className="grid grid-cols-[7rem_minmax(0,1fr)] gap-3 text-caption"><time className="text-charcoal/40">{dateTime(event.created_at)}</time><div><span className="font-semibold text-nearblack">{event.label}</span>{event.detail && <p className="mt-0.5 text-charcoal/60">{event.detail}</p>}</div></li>)}</ol></section>}
+    {task.status === "awaiting_approval" && draftArtifacts.length === 0 && <section className="mt-7 border border-red-200 bg-[#faf6ec] p-6"><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-red-700">Review pack incomplete</p><h3 className="mt-3 font-display text-[28px] text-nearblack">There is nothing safe to approve yet.</h3><p className="mt-3 max-w-2xl text-[14px] leading-6 text-charcoal/70">The agent paused for approval without attaching the proposed content, evidence or exact action. Open the conversation and ask the agent to rebuild the review pack.</p><Link href={`/messages?conversation=${encodeURIComponent(task.conversation_id)}`} className="mt-5 inline-flex min-h-11 items-center bg-nearblack px-4 text-[13px] font-semibold text-white">Open conversation</Link></section>}
 
-      <div className="mt-8 flex flex-wrap gap-2 border-t border-[#d4cbbd] pt-5">
-        <Link href={`/messages?conversation=${encodeURIComponent(task.conversation_id)}`} className="inline-flex min-h-11 items-center bg-nearblack px-4 text-caption font-semibold text-white">Open conversation</Link>
-        {(task.status === "queued" || task.status === "running") && <button disabled={Boolean(busy)} onClick={() => onAction(task, "cancel")} className="min-h-11 border border-red-300 px-4 text-caption font-semibold text-red-800 disabled:opacity-40">Stop task</button>}
-        {task.status === "failed" && task.requested_by === selfId && task.retry_count < 3 && <button disabled={Boolean(busy)} onClick={() => onAction(task, "retry")} className="min-h-11 border border-[#cfc6b8] px-4 text-caption font-semibold disabled:opacity-40">Retry</button>}
-        {terminal && <button disabled={Boolean(busy)} onClick={() => onAction(task, "dismiss")} className="min-h-11 border border-[#cfc6b8] px-4 text-caption font-semibold disabled:opacity-40">Clear from Workroom</button>}
-      </div>
-      {draftArtifacts.length > 0 && <p className="mt-3 text-caption text-amber-800">{draftArtifacts.length} item{draftArtifacts.length === 1 ? "" : "s"} waiting for your decision.</p>}
-    </article>
-  );
+    {draftArtifacts.length > 0 && <div className="mt-7 space-y-8" aria-label="Evidence and approvals">{draftArtifacts.map((artifact) => <ArtifactDecision key={artifact.id} task={task} artifact={artifact} policies={policies} busy={busy} onAction={onAction} />)}</div>}
+
+    {task.events.length > 0 && <details className="mt-8 border-t border-[#cfc5b6] pt-5"><summary className="flex min-h-11 cursor-pointer items-center justify-between text-[12px] font-semibold uppercase tracking-[0.14em] text-[#76634f]">Activity <span className="font-normal text-charcoal/45">{task.events.length} updates</span></summary><ol className="mt-3 space-y-3 border-l border-[#cbbda7] pl-4">{[...task.events].reverse().slice(0, 16).map((event) => <li key={event.id} className="grid gap-1 text-[12px] sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-3"><time className="text-charcoal/45">{dateTime(event.created_at)}</time><div><span className="font-semibold text-nearblack">{event.label}</span>{event.detail && <p className="mt-1 leading-5 text-charcoal/60">{event.detail}</p>}</div></li>)}</ol></details>}
+
+    <div className="mt-8 flex flex-wrap gap-2 border-t border-[#cfc5b6] pt-5"><Link href={`/messages?conversation=${encodeURIComponent(task.conversation_id)}`} className="inline-flex min-h-11 items-center border border-nearblack px-4 text-[13px] font-semibold text-nearblack hover:bg-nearblack hover:text-white">Open conversation</Link>{(task.status === "queued" || task.status === "running") && <button disabled={Boolean(busy)} onClick={() => onAction(task, "cancel")} className="min-h-11 border border-red-300 px-4 text-[13px] font-semibold text-red-800 disabled:opacity-40">Stop task</button>}{task.status === "failed" && task.requested_by === selfId && task.retry_count < 3 && <button disabled={Boolean(busy)} onClick={() => onAction(task, "retry")} className="min-h-11 bg-nearblack px-4 text-[13px] font-semibold text-white disabled:opacity-40">{busy ? "Checking current state…" : "Retry safely"}</button>}{terminal && <button disabled={Boolean(busy)} onClick={() => onAction(task, "dismiss")} className="min-h-11 border border-[#cfc5b6] px-4 text-[13px] font-semibold disabled:opacity-40">Clear from Workroom</button>}</div>
+  </article>;
+}
+
+function ArtifactDecision({ task, artifact, policies, busy, onAction }: { task: WorkroomTask; artifact: AgentTaskArtifact; policies: WorkroomApprovalPolicy[]; busy: string | null; onAction: (task: WorkroomTask, action: TaskAction, artifactId?: string, note?: string) => void }) {
+  const [feedbackMode, setFeedbackMode] = useState<"changes" | "decline" | null>(null);
+  const [note, setNote] = useState("");
+  const request = authorityRequest(artifact);
+  const policy = policyForArtifact(artifact, policies);
+  const missingAssets = inaccessibleAssets(artifact);
+  const timingIssue = authorityTimingIssue(artifact);
+  const hasPreview = artifactHasUsefulPreview(artifact);
+  const blockedReason = !hasPreview ? "The review pack has no visible content." : request && !policy ? "This execution tool is not registered in RESLU's approval system." : timingIssue ? timingIssue : missingAssets.length ? `${missingAssets.length} image ${missingAssets.length === 1 ? "is" : "are"} still stored as a local file and cannot be reviewed on this device.` : null;
+  const actionLabel = approvalActionLabel(artifact, policy);
+  const actionBusy = busy === `${task.id}:${artifact.id}`;
+
+  function sendFeedback() {
+    const clean = note.trim();
+    if (!clean) return;
+    onAction(task, feedbackMode === "decline" ? "reject" : "request_changes", artifact.id, clean);
+  }
+
+  return <section>
+    <ReviewArtifact artifact={artifact} policy={policy} />
+    {blockedReason && <div id={`review-block-${artifact.id}`} className="border-x border-b border-red-200 bg-red-50 px-5 py-4 text-[13px] leading-6 text-red-900 sm:px-7"><strong>Decision paused.</strong> {blockedReason}{missingAssets.length > 0 && <p className="mt-2 text-[11px] text-red-800">The agent must upload the originals and thumbnails before approval.</p>}</div>}
+
+    <div className="workroom-action-bar sticky bottom-0 z-10 mt-4 border border-[#cfc5b6] bg-[#faf6ec]/[0.97] px-4 pt-4 backdrop-blur sm:px-5">
+      {feedbackMode ? <div className="pb-4"><label htmlFor={`review-note-${artifact.id}`} className="text-[12px] font-semibold text-nearblack">{feedbackMode === "changes" ? "What should the agent change?" : "Why are you declining this pack?"}</label><textarea id={`review-note-${artifact.id}`} value={note} onChange={(event) => setNote(event.target.value)} rows={3} autoFocus maxLength={2000} placeholder="Be specific about the image, wording, amount or action…" className="mt-2 w-full resize-y border border-[#bfb3a1] bg-white px-3 py-3 text-[16px] leading-6 text-nearblack placeholder:text-charcoal/45" /><div className="mt-3 flex flex-wrap justify-end gap-2"><button type="button" disabled={Boolean(busy)} onClick={() => { setFeedbackMode(null); setNote(""); }} className="min-h-11 px-4 text-[13px] font-semibold text-charcoal/65">Cancel</button><button type="button" disabled={Boolean(busy) || !note.trim()} onClick={sendFeedback} className={clsx("min-h-11 px-4 text-[13px] font-semibold text-white disabled:opacity-35", feedbackMode === "decline" ? "bg-red-800" : "bg-nearblack")}>{actionBusy ? "Sending…" : feedbackMode === "decline" ? "Decline pack" : "Send changes"}</button></div></div> : <div className="flex flex-wrap items-center justify-between gap-3 pb-4"><div className="flex flex-wrap gap-1"><button type="button" disabled={Boolean(busy)} onClick={() => setFeedbackMode("changes")} className="min-h-11 px-3 text-[13px] font-semibold text-nearblack hover:bg-[#eee7dc]">Request changes</button><button type="button" disabled={Boolean(busy)} onClick={() => setFeedbackMode("decline")} className="min-h-11 px-3 text-[13px] font-semibold text-red-800 hover:bg-red-50">Decline</button></div><button type="button" aria-describedby={blockedReason ? `review-block-${artifact.id}` : undefined} disabled={Boolean(busy) || Boolean(blockedReason)} onClick={() => onAction(task, "approve", artifact.id)} className="min-h-12 min-w-[10rem] bg-nearblack px-5 text-[14px] font-semibold text-white transition-colors hover:bg-[#313131] disabled:cursor-not-allowed disabled:bg-charcoal/25">{actionBusy ? "Saving decision…" : actionLabel}</button></div>}
+    </div>
+  </section>;
 }

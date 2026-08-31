@@ -27,14 +27,19 @@ export async function GET() {
 
   const rows = (data ?? []) as unknown as TaskRow[];
   const taskIds = rows.map((task) => task.id);
-  const [eventsResult, artifactsResult, dismissalsResult] = taskIds.length > 0
+  const [eventsResult, artifactsResult, dismissalsResult, policiesResult] = taskIds.length > 0
     ? await Promise.all([
         supabase.from("agent_task_events").select("*").in("task_id", taskIds).order("created_at"),
         supabase.from("agent_task_artifacts").select("*").in("task_id", taskIds).order("created_at"),
         supabase.from("agent_task_dismissals").select("task_id").in("task_id", taskIds),
+        supabase
+          .from("aria_tool_registry")
+          .select("tool_name,owner,purpose,risk_tier,approval_rule,verification_kind,rollback_kind")
+          .eq("active", true)
+          .in("risk_tier", ["R2", "R3"]),
       ])
-    : [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }];
-  const relatedError = eventsResult.error ?? artifactsResult.error ?? dismissalsResult.error;
+    : [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }, { data: [], error: null }];
+  const relatedError = eventsResult.error ?? artifactsResult.error ?? dismissalsResult.error ?? policiesResult.error;
   if (relatedError) return NextResponse.json({ error: relatedError.message }, { status: 500 });
 
   const dismissed = new Set((dismissalsResult.data ?? []).map((row) => row.task_id));
@@ -52,6 +57,7 @@ export async function GET() {
   return NextResponse.json({
     tasks,
     routines: workroomRoutines(vercel.crons),
+    approval_policies: policiesResult.data ?? [],
     self_profile_id: user.id,
     generated_at: new Date().toISOString(),
   });

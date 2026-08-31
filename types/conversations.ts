@@ -92,7 +92,7 @@ export interface ConversationAgentActivity {
 export interface AgentTaskEvent {
   id: string;
   task_id: string;
-  event_type: "created" | "queued" | "started" | "progress" | "artifact" | "approval_required" | "approved" | "rejected" | "completed" | "failed" | "cancelled";
+  event_type: "created" | "queued" | "started" | "progress" | "artifact" | "approval_required" | "approved" | "rejected" | "changes_requested" | "completed" | "failed" | "cancelled";
   label: string;
   detail: string | null;
   metadata: Record<string, unknown>;
@@ -106,7 +106,7 @@ export interface AgentTaskArtifact {
   kind: "text" | "email_draft" | "report" | "file" | "record_change";
   title: string;
   content: Record<string, unknown>;
-  status: "draft" | "approved" | "rejected" | "published";
+  status: "draft" | "approved" | "rejected" | "changes_requested" | "published";
   created_at: string;
   updated_at: string;
 }
@@ -129,7 +129,7 @@ export interface AgentTask {
   status: AgentTaskStatus;
   model_tier: AgentTaskModelTier;
   model_name: string | null;
-  approval_state: "none" | "pending" | "approved" | "rejected";
+  approval_state: "none" | "pending" | "approved" | "rejected" | "changes_requested";
   approval_note: string | null;
   result_summary: string | null;
   error: string | null;
