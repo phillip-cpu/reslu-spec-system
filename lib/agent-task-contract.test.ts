@@ -73,7 +73,8 @@ test("the dedicated Workroom unifies task counts, progress, approvals and steeri
   assert.match(workspace, /attentionAgentWorkCount/);
   assert.match(workspace, /activeAgentWorkCount/);
   assert.match(workspace, /agentWorkSummary/);
-  assert.match(workroom, /Needs you/);
+  assert.match(workroom, /Approvals/);
+  assert.match(workroom, /Recovery/);
   assert.match(workroom, /Outstanding/);
   assert.match(workroom, /Recurring/);
   assert.match(workroom, /Evidence and approvals/);

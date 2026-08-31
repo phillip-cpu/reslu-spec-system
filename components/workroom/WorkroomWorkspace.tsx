@@ -18,7 +18,8 @@ import type { WorkroomApprovalPolicy, WorkroomResponse, WorkroomTask } from "@/t
 import { ReviewArtifact } from "@/components/workroom/ReviewArtifact";
 
 const VIEWS: Array<{ id: WorkroomView; label: string; quietLabel: string }> = [
-  { id: "attention", label: "Needs you", quietLabel: "Decisions and recovery" },
+  { id: "approvals", label: "Approvals", quietLabel: "Waiting on you" },
+  { id: "recovery", label: "Recovery", quietLabel: "Failed work" },
   { id: "outstanding", label: "Active work", quietLabel: "Outstanding" },
   { id: "recurring", label: "Routines", quietLabel: "Recurring" },
   { id: "history", label: "History", quietLabel: "Completed" },
@@ -52,7 +53,7 @@ function noticeFor(action: TaskAction) {
 
 export function WorkroomWorkspace({ conversationId = null }: { conversationId?: string | null }) {
   const [data, setData] = useState<WorkroomResponse | null>(null);
-  const [view, setView] = useState<WorkroomView>("attention");
+  const [view, setView] = useState<WorkroomView>("approvals");
   const [agentId, setAgentId] = useState("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
@@ -125,6 +126,13 @@ export function WorkroomWorkspace({ conversationId = null }: { conversationId?: 
     setSelectedId(taskId);
     setMobileDetailOpen(true);
     setNotice(null);
+    if (window.matchMedia("(max-width: 1023px)").matches) {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+        window.scrollTo({ top: 0, behavior: "auto" });
+        document.documentElement.scrollTop = 0;
+        document.body.scrollTop = 0;
+      }));
+    }
   }
 
   if (loading && !data) return <WorkroomSkeleton />;
@@ -138,7 +146,8 @@ export function WorkroomWorkspace({ conversationId = null }: { conversationId?: 
             <p className="workroom-ink-note mt-2">What needs your eye, without the noise.</p>
           </div>
           <dl className="flex flex-wrap gap-x-7 gap-y-3 text-[12px] text-charcoal/65">
-            <div><dt className="inline">Needs you </dt><dd className="inline font-semibold text-nearblack">{counts.attention}</dd></div>
+            <div><dt className="inline">Approvals </dt><dd className="inline font-semibold text-nearblack">{counts.approvals}</dd></div>
+            <div><dt className="inline">Recovery </dt><dd className="inline font-semibold text-nearblack">{counts.recovery}</dd></div>
             <div><dt className="inline">Outstanding </dt><dd className="inline font-semibold text-nearblack">{counts.outstanding}</dd></div>
             <div><dt className="inline">Recurring </dt><dd className="inline font-semibold text-nearblack">{data?.routines.length ?? 0}</dd></div>
           </dl>
@@ -189,7 +198,7 @@ function TaskQueueRow({ task, selected, onSelect }: { task: WorkroomTask; select
 }
 
 function Empty({ view }: { view: WorkroomView }) {
-  const copy = view === "attention" ? ["Your table is clear", "Nothing needs a decision or recovery right now."] : view === "outstanding" ? ["No active assignments", "The agents have no queued or running work."] : ["No history yet", "Completed work will settle here."];
+  const copy = view === "approvals" ? ["Nothing awaiting approval", "No agent is waiting on a decision from you."] : view === "recovery" ? ["Nothing needs recovery", "There is no failed work to inspect or retry."] : view === "outstanding" ? ["No active assignments", "The agents have no queued or running work."] : ["No history yet", "Completed work will settle here."];
   return <div className="flex min-h-72 flex-col justify-center px-8 text-center"><p className="font-display text-[25px] text-nearblack">{copy[0]}</p><p className="mt-2 text-[13px] leading-6 text-charcoal/55">{copy[1]}</p></div>;
 }
 
@@ -205,8 +214,9 @@ function TaskDetail({ task, selfId, policies, busy, onBack, onAction }: { task: 
     <button type="button" onClick={onBack} className="mb-5 inline-flex min-h-11 items-center gap-2 text-[13px] font-semibold text-charcoal/65 lg:hidden"><span aria-hidden>←</span> Back to Workroom</button>
     <header className="border-b border-[#cfc5b6] pb-6">
       <div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><p className="text-[10px] font-semibold uppercase tracking-[0.19em] text-[#76634f]">{task.owner_agent?.display_name ?? "Agent"} · {task.conversation.title}</p><h2 className="mt-3 max-w-3xl font-display text-[34px] font-light leading-[1.05] text-nearblack sm:text-[42px]">{task.title}</h2></div><span className="flex items-center gap-2 border border-[#cbbda7] bg-[#f5f1e8] px-3 py-2 text-[11px] font-semibold text-charcoal/70"><span className={clsx("h-2 w-2", statusColour(task))} aria-hidden />{agentAssignmentStatusLabel(task)}</span></div>
-      <p className="mt-5 max-w-3xl whitespace-pre-wrap text-[15px] leading-7 text-charcoal/72">{task.objective}</p>
     </header>
+
+    <details className="border-b border-[#cfc5b6] py-2"><summary className="flex min-h-11 cursor-pointer items-center text-[11px] font-semibold uppercase tracking-[0.14em] text-[#76634f]">Assignment brief</summary><p className="pb-4 whitespace-pre-wrap text-[14px] leading-6 text-charcoal/72">{task.objective}</p></details>
 
     {task.progress_label && <div className="mt-5 border-l-2 border-[#274690] bg-[#eef3fb] px-4 py-3 text-[14px] text-[#20375f]">{task.progress_label}</div>}
     {task.error && <div className="mt-5 border-l-2 border-red-700 bg-red-50 px-4 py-3 text-[14px] leading-6 text-red-900">{task.error}</div>}

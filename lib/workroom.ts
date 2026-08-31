@@ -1,10 +1,11 @@
 import type { AgentTask } from "@/types/conversations";
 import type { WorkroomRoutine, WorkroomTask } from "@/types/workroom";
 
-export type WorkroomView = "attention" | "outstanding" | "recurring" | "history";
+export type WorkroomView = "approvals" | "recovery" | "outstanding" | "recurring" | "history";
 
 export function workroomView(task: AgentTask): Exclude<WorkroomView, "recurring"> {
-  if (task.status === "awaiting_approval" || task.status === "failed") return "attention";
+  if (task.status === "awaiting_approval") return "approvals";
+  if (task.status === "failed") return "recovery";
   if (task.status === "completed" || task.status === "cancelled") return "history";
   return "outstanding";
 }
@@ -18,7 +19,7 @@ export function workroomCounts(tasks: AgentTask[]) {
   return tasks.reduce((counts, task) => {
     counts[workroomView(task)] += 1;
     return counts;
-  }, { attention: 0, outstanding: 0, history: 0 });
+  }, { approvals: 0, recovery: 0, outstanding: 0, history: 0 });
 }
 
 export function cronCadence(schedule: string) {

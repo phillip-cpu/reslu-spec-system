@@ -15,6 +15,13 @@ test("Workroom decisions lock before React can render a disabled button", async 
   assert.match(source, /actionLock\.current = null;/);
 });
 
+test("mobile review opens at its beginning and keeps the internal brief quiet", async () => {
+  const source = await readFile(workspace, "utf8");
+  assert.match(source, /window\.matchMedia\("\(max-width: 1023px\)"\)/);
+  assert.match(source, /window\.scrollTo\(\{ top: 0, behavior: "auto" \}\)/);
+  assert.match(source, /<details className="border-b[^>]*><summary[^>]*>Assignment brief<\/summary>/);
+});
+
 test("requesting changes returns the same durable assignment to its agent", async () => {
   const [route, sql, workerSource] = await Promise.all([
     readFile(taskRoute, "utf8"),
