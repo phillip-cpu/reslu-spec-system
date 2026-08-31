@@ -6,7 +6,7 @@ import type { SowDocument, SowLineKind } from "@/types";
 import type { SowLineWithTrade, SowSectionWithTradedLines, SuggestTradeTagsResponse } from "@/types/sow-trade-tags";
 import type { ExportPresetRow } from "@/types/round-export-batch";
 import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
-import { distinctTaggedTrades } from "@/lib/sow-trade-tags";
+import { distinctTaggedTrades, groupSowLinesByTrade } from "@/lib/sow-trade-tags";
 import { reorderSowLines } from "@/lib/sow-reorder";
 
 interface Props {
@@ -392,7 +392,11 @@ export function SowBuilder({ projectId }: Props) {
     const section = sections.find((candidate) => candidate.id === sectionId);
     if (!section) return;
 
-    const reordered = reorderSowLines(section.lines, lineId, destinationIndex);
+    // Reordering operates on the same grouped order the builder shows.
+    // This also normalises any legacy interleaved lines into one
+    // contiguous block per trade when an order change is saved.
+    const displayedLines = groupSowLinesByTrade(section.lines).flatMap((group) => group.lines);
+    const reordered = reorderSowLines(displayedLines, lineId, destinationIndex);
     if (reordered === section.lines) return;
 
     const originalSort = new Map(section.lines.map((line) => [line.id, line.sort]));
@@ -796,7 +800,13 @@ function SectionBlock({
   const [expanded, setExpanded] = useState(true);
   const [draggedLineId, setDraggedLineId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
-  const hasTradeHeadings = section.lines.some((line) => Boolean(line.trade?.trim()));
+  const lineGroups = groupSowLinesByTrade(section.lines);
+  const displayedLines = lineGroups.flatMap((group) => group.lines);
+  const hasTradeHeadings = lineGroups.some((group) => group.trade !== null);
+
+  function tradeKey(line: SowLineWithTrade): string | null {
+    return line.trade?.trim() || null;
+  }
 
   function clearDragState() {
     setDraggedLineId(null);
@@ -808,9 +818,17 @@ function SectionBlock({
       clearDragState();
       return;
     }
-    const sourceIndex = section.lines.findIndex((line) => line.id === draggedLineId);
-    const targetIndex = section.lines.findIndex((line) => line.id === targetLineId);
-    if (sourceIndex === -1 || targetIndex === -1) {
+    const sourceLine = displayedLines.find((line) => line.id === draggedLineId);
+    const targetLine = displayedLines.find((line) => line.id === targetLineId);
+    const sourceIndex = displayedLines.findIndex((line) => line.id === draggedLineId);
+    const targetIndex = displayedLines.findIndex((line) => line.id === targetLineId);
+    if (
+      !sourceLine ||
+      !targetLine ||
+      tradeKey(sourceLine) !== tradeKey(targetLine) ||
+      sourceIndex === -1 ||
+      targetIndex === -1
+    ) {
       clearDragState();
       return;
     }
@@ -855,71 +873,85 @@ function SectionBlock({
       </div>
 
       {expanded && (
-        <div className="divide-y divide-[#e5e0d6]">
-          {section.lines.map((line, index) => {
-            const tradeHeading = line.trade?.trim() || "General";
-            const previousTradeHeading =
-              index > 0 ? section.lines[index - 1].trade?.trim() || "General" : null;
-            const showTradeHeading = hasTradeHeadings && tradeHeading !== previousTradeHeading;
+        <div>
+          {lineGroups.map((group, groupIndex) => {
+            const groupStartIndex = lineGroups
+              .slice(0, groupIndex)
+              .reduce((total, candidate) => total + candidate.lines.length, 0);
+            const draggedLine = displayedLines.find((line) => line.id === draggedLineId);
+            const draggingThisGroup = draggedLine && tradeKey(draggedLine) === group.trade;
 
             return (
-              <div key={line.id}>
-                {showTradeHeading && (
+              <div
+                key={group.trade ?? "general"}
+                className={groupIndex > 0 ? "border-t border-[#dcd6cc]" : undefined}
+              >
+                {hasTradeHeadings && (
                   <div className="border-b border-[#dcd6cc] bg-offwhite px-4 py-2">
-                    <p className="label-caps font-semibold !text-nearblack">{tradeHeading}</p>
+                    <p className="label-caps font-semibold !text-nearblack">
+                      {group.trade ?? "General"}
+                    </p>
                   </div>
                 )}
-                <LineRow
-                  line={line}
-                  readOnly={readOnly}
-                  presetNames={presetNames}
-                  onPatch={(patch) => onPatchLine(line, patch)}
-                  onDelete={() => onDeleteLine(line)}
-                  dragging={draggedLineId === line.id}
-                  dropTarget={dropTargetId === line.id && draggedLineId !== line.id}
-                  reordering={reordering}
-                  canMoveUp={index > 0}
-                  canMoveDown={index < section.lines.length - 1}
-                  onMoveUp={() => void onReorderLine(line.id, index - 1)}
-                  onMoveDown={() => void onReorderLine(line.id, index + 1)}
-                  onDragStart={(event) => {
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData("text/plain", line.id);
-                    setDraggedLineId(line.id);
-                  }}
-                  onDragEnd={clearDragState}
-                  onDragOver={(event) => {
-                    if (!draggedLineId || reordering) return;
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = "move";
-                    setDropTargetId(line.id);
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    dropBefore(line.id);
-                  }}
-                />
+                <div className="divide-y divide-[#e5e0d6]">
+                  {group.lines.map((line, lineIndex) => {
+                    const displayIndex = groupStartIndex + lineIndex;
+                    return (
+                      <LineRow
+                        key={line.id}
+                        line={line}
+                        readOnly={readOnly}
+                        presetNames={presetNames}
+                        onPatch={(patch) => onPatchLine(line, patch)}
+                        onDelete={() => onDeleteLine(line)}
+                        dragging={draggedLineId === line.id}
+                        dropTarget={dropTargetId === line.id && draggedLineId !== line.id}
+                        reordering={reordering}
+                        canMoveUp={lineIndex > 0}
+                        canMoveDown={lineIndex < group.lines.length - 1}
+                        onMoveUp={() => void onReorderLine(line.id, displayIndex - 1)}
+                        onMoveDown={() => void onReorderLine(line.id, displayIndex + 1)}
+                        onDragStart={(event) => {
+                          event.dataTransfer.effectAllowed = "move";
+                          event.dataTransfer.setData("text/plain", line.id);
+                          setDraggedLineId(line.id);
+                        }}
+                        onDragEnd={clearDragState}
+                        onDragOver={(event) => {
+                          if (!draggedLine || reordering || tradeKey(draggedLine) !== group.trade) return;
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = "move";
+                          setDropTargetId(line.id);
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          dropBefore(line.id);
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+                {!readOnly && draggingThisGroup && group.lines.length > 1 && (
+                  <div
+                    className="h-8 border-t-2 border-dashed border-sand bg-sand/10 text-center text-caption leading-8 text-charcoal"
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = "move";
+                      setDropTargetId(null);
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      const lineId = draggedLineId;
+                      clearDragState();
+                      if (lineId) void onReorderLine(lineId, groupStartIndex + group.lines.length - 1);
+                    }}
+                  >
+                    Drop at end of {group.trade ?? "General"}
+                  </div>
+                )}
               </div>
             );
           })}
-          {!readOnly && draggedLineId && section.lines.length > 1 && (
-            <div
-              className="h-8 border-t-2 border-dashed border-sand bg-sand/10 text-center text-caption leading-8 text-sand"
-              onDragOver={(event) => {
-                event.preventDefault();
-                event.dataTransfer.dropEffect = "move";
-                setDropTargetId(null);
-              }}
-              onDrop={(event) => {
-                event.preventDefault();
-                const lineId = draggedLineId;
-                clearDragState();
-                void onReorderLine(lineId, section.lines.length - 1);
-              }}
-            >
-              Drop at end
-            </div>
-          )}
           {!readOnly && <DraftLineRow onAdd={onAddLine} />}
           {section.lines.length === 0 && readOnly && (
             <p className="px-4 py-3 text-caption text-charcoal/40">No lines in this section.</p>
