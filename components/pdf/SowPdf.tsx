@@ -9,7 +9,9 @@ import {
   StyleSheet,
   Font,
 } from "@react-pdf/renderer";
-import type { Project, SowSectionWithLines } from "@/types";
+import type { Project } from "@/types";
+import type { SowLineWithTrade, SowSectionWithTradedLines } from "@/types/sow-trade-tags";
+import { groupSowLinesByTrade } from "@/lib/sow-trade-tags";
 
 // ── fonts (registered once) ─────────────────────────────────
 // Same registration approach as components/pdf/SchedulePdf.tsx — falls
@@ -166,6 +168,20 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
 
+  tradeHeading: {
+    fontSize: 8,
+    fontFamily: "Helvetica-Bold",
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
+    color: NEARBLACK,
+    borderBottomWidth: 0.5,
+    borderBottomColor: LINE,
+    paddingBottom: 3,
+    marginTop: 10,
+    marginBottom: 6,
+    marginLeft: 4,
+  },
+
   lineRow: {
     flexDirection: "row",
     marginBottom: 4,
@@ -218,7 +234,7 @@ const styles = StyleSheet.create({
 
 interface Props {
   project: Pick<Project, "name" | "client_name" | "address">;
-  sections: SowSectionWithLines[];
+  sections: SowSectionWithTradedLines[];
   revisionLabel: string;
   status: "draft" | "issued";
   issuedAt: string | null;
@@ -268,6 +284,41 @@ export function SowPdf({
   const dateLabel = issuedAt
     ? new Date(issuedAt).toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })
     : generatedAt;
+
+  function renderLines(lines: SowLineWithTrade[]) {
+    const inclusions = lines.filter((line) => line.kind === "inclusion");
+    const exclusions = lines.filter((line) => line.kind === "exclusion");
+    const notes = lines.filter((line) => line.kind === "note");
+
+    return (
+      <>
+        {inclusions.map((line) => (
+          <View key={line.id} style={styles.lineRow} wrap={false}>
+            <Text style={styles.lineBullet}>—</Text>
+            <Text style={styles.lineText}>{line.text}</Text>
+          </View>
+        ))}
+
+        {exclusions.length > 0 && (
+          <View style={styles.exclusionsBlock} wrap={false}>
+            <Text style={styles.exclusionsLabel}>Exclusions</Text>
+            {exclusions.map((line) => (
+              <View key={line.id} style={styles.lineRow} wrap={false}>
+                <Text style={styles.lineBullet}>—</Text>
+                <Text style={styles.lineText}>{line.text}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {notes.map((line) => (
+          <Text key={line.id} style={[styles.noteText, { marginTop: 6 }]}>
+            {line.text}
+          </Text>
+        ))}
+      </>
+    );
+  }
 
   return (
     <Document title={`${project.name} — Scope of Works ${revisionLabel}`}>
@@ -325,9 +376,10 @@ export function SowPdf({
         </View>
 
         {sections.map((section) => {
-          const inclusions = section.lines.filter((l) => l.kind === "inclusion");
-          const exclusions = section.lines.filter((l) => l.kind === "exclusion");
-          const notes = section.lines.filter((l) => l.kind === "note");
+          const lineGroups = extractTrade
+            ? [{ trade: null, lines: section.lines }]
+            : groupSowLinesByTrade(section.lines);
+          const hasTradeGroups = lineGroups.some((group) => group.trade !== null);
 
           return (
             // Root cause of the overlapping-text bug: this section
@@ -357,34 +409,15 @@ export function SowPdf({
                 {section.heading}
               </Text>
 
-              {inclusions.map((line) => (
-                // wrap={false} on the row (not the section) — same
-                // granularity as SchedulePdf.tsx's per-card wrap={false}:
-                // keeps one bullet glued to its own (bounded-length)
-                // line so a page break can't separate the "—" from its
-                // text, without making the whole section unbreakable.
-                <View key={line.id} style={styles.lineRow} wrap={false}>
-                  <Text style={styles.lineBullet}>—</Text>
-                  <Text style={styles.lineText}>{line.text}</Text>
+              {lineGroups.map((group, groupIndex) => (
+                <View key={group.trade ?? `untagged-${groupIndex}`}>
+                  {group.trade || (!extractTrade && hasTradeGroups) ? (
+                    <Text style={styles.tradeHeading} minPresenceAhead={24}>
+                      {group.trade ?? "General"}
+                    </Text>
+                  ) : null}
+                  {renderLines(group.lines)}
                 </View>
-              ))}
-
-              {exclusions.length > 0 && (
-                <View style={styles.exclusionsBlock} wrap={false}>
-                  <Text style={styles.exclusionsLabel}>Exclusions</Text>
-                  {exclusions.map((line) => (
-                    <View key={line.id} style={styles.lineRow} wrap={false}>
-                      <Text style={styles.lineBullet}>—</Text>
-                      <Text style={styles.lineText}>{line.text}</Text>
-                    </View>
-                  ))}
-                </View>
-              )}
-
-              {notes.map((line) => (
-                <Text key={line.id} style={[styles.noteText, { marginTop: 6 }]}>
-                  {line.text}
-                </Text>
               ))}
             </View>
           );

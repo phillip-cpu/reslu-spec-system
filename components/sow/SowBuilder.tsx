@@ -796,6 +796,7 @@ function SectionBlock({
   const [expanded, setExpanded] = useState(true);
   const [draggedLineId, setDraggedLineId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const hasTradeHeadings = section.lines.some((line) => Boolean(line.trade?.trim()));
 
   function clearDragState() {
     setDraggedLineId(null);
@@ -855,39 +856,52 @@ function SectionBlock({
 
       {expanded && (
         <div className="divide-y divide-[#e5e0d6]">
-          {section.lines.map((line, index) => (
-            <LineRow
-              key={line.id}
-              line={line}
-              readOnly={readOnly}
-              presetNames={presetNames}
-              onPatch={(patch) => onPatchLine(line, patch)}
-              onDelete={() => onDeleteLine(line)}
-              dragging={draggedLineId === line.id}
-              dropTarget={dropTargetId === line.id && draggedLineId !== line.id}
-              reordering={reordering}
-              canMoveUp={index > 0}
-              canMoveDown={index < section.lines.length - 1}
-              onMoveUp={() => void onReorderLine(line.id, index - 1)}
-              onMoveDown={() => void onReorderLine(line.id, index + 1)}
-              onDragStart={(event) => {
-                event.dataTransfer.effectAllowed = "move";
-                event.dataTransfer.setData("text/plain", line.id);
-                setDraggedLineId(line.id);
-              }}
-              onDragEnd={clearDragState}
-              onDragOver={(event) => {
-                if (!draggedLineId || reordering) return;
-                event.preventDefault();
-                event.dataTransfer.dropEffect = "move";
-                setDropTargetId(line.id);
-              }}
-              onDrop={(event) => {
-                event.preventDefault();
-                dropBefore(line.id);
-              }}
-            />
-          ))}
+          {section.lines.map((line, index) => {
+            const tradeHeading = line.trade?.trim() || "General";
+            const previousTradeHeading =
+              index > 0 ? section.lines[index - 1].trade?.trim() || "General" : null;
+            const showTradeHeading = hasTradeHeadings && tradeHeading !== previousTradeHeading;
+
+            return (
+              <div key={line.id}>
+                {showTradeHeading && (
+                  <div className="border-b border-[#dcd6cc] bg-offwhite px-4 py-2">
+                    <p className="label-caps font-semibold !text-nearblack">{tradeHeading}</p>
+                  </div>
+                )}
+                <LineRow
+                  line={line}
+                  readOnly={readOnly}
+                  presetNames={presetNames}
+                  onPatch={(patch) => onPatchLine(line, patch)}
+                  onDelete={() => onDeleteLine(line)}
+                  dragging={draggedLineId === line.id}
+                  dropTarget={dropTargetId === line.id && draggedLineId !== line.id}
+                  reordering={reordering}
+                  canMoveUp={index > 0}
+                  canMoveDown={index < section.lines.length - 1}
+                  onMoveUp={() => void onReorderLine(line.id, index - 1)}
+                  onMoveDown={() => void onReorderLine(line.id, index + 1)}
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("text/plain", line.id);
+                    setDraggedLineId(line.id);
+                  }}
+                  onDragEnd={clearDragState}
+                  onDragOver={(event) => {
+                    if (!draggedLineId || reordering) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    setDropTargetId(line.id);
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    dropBefore(line.id);
+                  }}
+                />
+              </div>
+            );
+          })}
           {!readOnly && draggedLineId && section.lines.length > 1 && (
             <div
               className="h-8 border-t-2 border-dashed border-sand bg-sand/10 text-center text-caption leading-8 text-sand"
@@ -1049,19 +1063,21 @@ function LineRow({
       <div className="flex items-start gap-3 px-4 py-2">
         <span
           className={clsx(
-            "label-caps mt-0.5 w-20 shrink-0",
+            "label-caps mt-0.5 w-20 shrink-0 !text-charcoal",
             line.kind === "exclusion" && "!text-[#A32D2D]",
-            line.kind === "note" && "!text-charcoal/40"
+            line.kind === "note" && "!text-charcoal/70"
           )}
         >
           {KIND_LABEL[line.kind]}
         </span>
-        <p className={clsx("flex-1 text-body text-charcoal", line.kind === "note" && "italic")}>
+        <p className={clsx("flex-1 text-body text-nearblack", line.kind === "note" && "italic text-charcoal/80")}>
           {line.text}
         </p>
         {/* "Trade-scoped SOW extracts" round — small sand chip, read-only display only (no select once the SOW is issued). */}
         {line.trade && (
-          <span className="mt-0.5 shrink-0 bg-sand px-2 py-0.5 text-caption text-white">{line.trade}</span>
+          <span className="mt-0.5 shrink-0 border border-nearblack bg-nearblack px-2 py-0.5 text-caption font-semibold text-white">
+            {line.trade}
+          </span>
         )}
       </div>
     );
@@ -1094,9 +1110,9 @@ function LineRow({
         value={line.kind}
         onChange={(e) => setKind(e.target.value as SowLineKind)}
         className={clsx(
-          "label-caps mt-1 w-24 shrink-0 border-none bg-transparent focus:outline-none",
+          "label-caps mt-1 w-24 shrink-0 border-none bg-transparent !text-charcoal focus:outline-none",
           line.kind === "exclusion" && "!text-[#A32D2D]",
-          line.kind === "note" && "!text-charcoal/40"
+          line.kind === "note" && "!text-charcoal/70"
         )}
       >
         <option value="inclusion">Inclusion</option>
@@ -1112,13 +1128,13 @@ function LineRow({
         onChange={(e) => setTrade(e.target.value)}
         title="Trade tag — drives which extract PDF this line appears in"
         className={clsx(
-          "label-caps mt-1 w-28 shrink-0 border px-1.5 py-0.5 text-caption focus:outline-none",
+          "label-caps mt-1 w-28 shrink-0 border px-1.5 py-0.5 text-caption font-semibold focus:outline-none focus:ring-2 focus:ring-sand/50",
           line.trade
-            ? "border-sand bg-sand text-white"
-            : "border-[#c9c2b4] bg-transparent text-charcoal/40"
+            ? "border-nearblack bg-nearblack !text-white"
+            : "border-charcoal bg-white !text-charcoal"
         )}
       >
-        <option value="">— trade —</option>
+        <option value="" className="bg-white text-nearblack">— trade —</option>
         {/* A line tagged with a preset name that no longer exists
             (renamed/deleted since tagging) still shows its actual
             value here rather than silently rendering blank — the tag
@@ -1126,10 +1142,12 @@ function LineRow({
             044_sow_trade_tags.sql's own comment for why `trade` isn't
             a constrained lookup). */}
         {line.trade && !presetNames.includes(line.trade) && (
-          <option value={line.trade}>{line.trade} (no longer a preset)</option>
+          <option value={line.trade} className="bg-white text-nearblack">
+            {line.trade} (no longer a preset)
+          </option>
         )}
         {presetNames.map((name) => (
-          <option key={name} value={name}>
+          <option key={name} value={name} className="bg-white text-nearblack">
             {name}
           </option>
         ))}
@@ -1146,8 +1164,8 @@ function LineRow({
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
           }}
           className={clsx(
-            "w-full border-none bg-transparent px-1 py-1 text-body text-charcoal focus:bg-nearwhite focus:outline-none",
-            line.kind === "note" && "italic"
+            "w-full border-none bg-transparent px-1 py-1 text-body text-nearblack focus:bg-nearwhite focus:outline-none",
+            line.kind === "note" && "italic text-charcoal/80"
           )}
         />
         {rowError && <p className="px-1 pt-1 text-caption text-red-700">⚠ {rowError}</p>}

@@ -258,6 +258,30 @@ export function distinctTaggedTrades(sections: { lines: { trade: string | null }
   return [...set];
 }
 
+/** Groups a section's lines by selected trade for the full SOW PDF. */
+export interface SowTradeLineGroup {
+  trade: string | null;
+  lines: SowLineWithTrade[];
+}
+
+export function groupSowLinesByTrade(lines: SowLineWithTrade[]): SowTradeLineGroup[] {
+  const groups: SowTradeLineGroup[] = [];
+  const groupIndex = new Map<string | null, number>();
+
+  for (const line of lines) {
+    const trade = line.trade?.trim() || null;
+    let index = groupIndex.get(trade);
+    if (index === undefined) {
+      index = groups.length;
+      groupIndex.set(trade, index);
+      groups.push({ trade, lines: [] });
+    }
+    groups[index].lines.push(line);
+  }
+
+  return groups;
+}
+
 /** True if `line` currently carries no trade tag — the condition "Suggest trade tags" only ever fills. */
 export function isUntagged(line: Pick<SowLineWithTrade, "trade">): boolean {
   return line.trade === null || line.trade === undefined;
