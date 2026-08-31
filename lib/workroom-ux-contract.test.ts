@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspace = readFileSync(resolve(root, "components/workroom/WorkroomWorkspace.tsx"), "utf8");
 const page = readFileSync(resolve(root, "app/(dashboard)/workroom/page.tsx"), "utf8");
+const globals = readFileSync(resolve(root, "app/globals.css"), "utf8");
 
 test("Workroom navigation survives refresh and browser history", () => {
   assert.match(page, /initialView=\{params\.view/);
@@ -31,6 +32,7 @@ test("Recovery can be searched, filtered and inspected with safe guidance", () =
 test("each routine opens to explain its purpose and technical schedule", () => {
   assert.match(workspace, /<details key=\{routine\.id\}/);
   assert.match(workspace, /md:open:col-span-2 xl:open:col-span-3/);
+  assert.match(globals, /details\[open\] > summary\.min-h-64/);
   assert.match(workspace, /What it does/);
   assert.match(workspace, /Adelaide time/);
   assert.match(workspace, /Endpoint/);

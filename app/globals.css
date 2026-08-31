@@ -172,6 +172,13 @@ body {
   box-shadow: 0 -10px 28px rgba(60, 50, 30, 0.08);
 }
 
+/* Closed routine cards align as a calm grid. Once opened, the review panel
+   spans the grid and should size to its evidence instead of retaining the
+   closed-card display height. */
+.workroom-surface details[open] > summary.min-h-64 {
+  min-height: 0;
+}
+
 @media (max-width: 639px) {
   .workroom-page-header > header {
     min-height: 72px;
