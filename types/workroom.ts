@@ -14,8 +14,10 @@ export interface WorkroomRoutine {
   id: string;
   label: string;
   owner: string;
+  description: string;
   schedule: string;
   cadence: string;
+  next_run_at: string | null;
 }
 
 export interface WorkroomApprovalPolicy {
