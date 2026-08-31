@@ -38,6 +38,7 @@ const STATUS_STYLES: Record<InvoiceStatus, string> = {
 
 interface Props {
   projectId: string;
+  focusInvoiceId?: string;
 }
 
 /**
@@ -52,16 +53,18 @@ interface Props {
  * writes") — an optimistic-only update here would risk showing a
  * status the server actually rejected (e.g. approving twice).
  */
-export function InvoiceQueue({ projectId }: Props) {
+export function InvoiceQueue({ projectId, focusInvoiceId }: Props) {
   const [invoices, setInvoices] = useState<InvoiceWithAllocations[]>([]);
   // Attention-first queue: land on work that still needs matching.
   // `load()` below automatically falls through to Approved when there
   // is no unmatched work, so the normal view never starts on the noisy
   // All tab (which also contains rejected and voided history).
-  const [statusFilter, setStatusFilter] = useState<InvoiceStatus | "all">("unmatched");
+  const [statusFilter, setStatusFilter] = useState<InvoiceStatus | "all">(
+    focusInvoiceId ? "approved" : "unmatched"
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(focusInvoiceId ?? null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -106,6 +109,19 @@ export function InvoiceQueue({ projectId }: Props) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!focusInvoiceId || loading || !invoices.some((invoice) => invoice.id === focusInvoiceId)) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      document.getElementById(`supplier-invoice-${focusInvoiceId}`)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [focusInvoiceId, invoices, loading]);
 
   async function approve(id: string, allocations: InvoiceAllocationInput[]) {
     setBusyId(id);
@@ -344,7 +360,13 @@ function InvoiceRow({
 
   return (
     <>
-      <tr className="border-b border-[#e5e0d6] align-top">
+      <tr
+        id={`supplier-invoice-${invoice.id}`}
+        className={clsx(
+          "border-b border-[#e5e0d6] align-top",
+          expanded && "bg-sand/10"
+        )}
+      >
         <td className="pt-1.5">
           <button
             type="button"

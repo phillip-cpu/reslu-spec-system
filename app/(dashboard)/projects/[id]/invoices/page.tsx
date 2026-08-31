@@ -25,10 +25,13 @@ import { portalUrlFor } from "@/lib/portal-link";
  */
 export default async function ProjectInvoicesPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ invoice?: string }>;
 }) {
   const { id } = await params;
+  const { invoice: focusInvoiceId } = await searchParams;
   const supabase = await createClient();
 
   const info = await getUserRole(supabase);
@@ -102,7 +105,7 @@ export default async function ProjectInvoicesPage({
             Trade/supplier bills against this project&apos;s estimate, matched to a cost line or
             spec item and approved before actuals update.
           </p>
-          <InvoiceQueue projectId={id} />
+          <InvoiceQueue projectId={id} focusInvoiceId={focusInvoiceId} />
         </section>
       </main>
     </>
