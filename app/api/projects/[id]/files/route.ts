@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { ASSET_BUCKET, SIGNED_URL_TTL_SECONDS } from "@/lib/storage";
-import { sniffStorageObjectHead, sniffFileKind } from "@/lib/file-sniff";
+import { inspectStorageObjectHead, sniffFileKind } from "@/lib/file-sniff";
 import type { ProjectFile, ProjectFileKind } from "@/types";
 
 export const runtime = "nodejs";
@@ -106,27 +106,44 @@ export async function POST(
     return NextResponse.json({ error: "Invalid storage path" }, { status: 400 });
   }
 
+  // A browser can lose the response after Storage has already committed the
+  // object, then retry this small registration request. Return the original
+  // row instead of creating duplicate document entries.
+  const { data: existing, error: existingError } = await supabase
+    .from("project_files")
+    .select("*")
+    .eq("project_id", projectId)
+    .eq("storage_path", storage_path)
+    .is("deleted_at", null)
+    .maybeSingle();
+  if (existingError) {
+    return NextResponse.json({ error: existingError.message }, { status: 500 });
+  }
+  if (existing) {
+    return NextResponse.json({ file: await withUrl(supabase, existing as ProjectFile) });
+  }
+
   // Fix round B — BUILD-SPEC.md §"Phase 14 follow-ups" point 5:
   // magic-byte validation. The bytes went straight from the browser to
-  // Storage via the signed upload URL (this route never saw them), so
-  // this reads back just the first 16 bytes of the object that's now
-  // sitting at storage_path and rejects an obvious PDF-vs-something-
-  // else mismatch against the claimed `kind` (a "plans"/"council"/
-  // "scope_of_works" document should be a real PDF, not e.g. a
-  // renamed executable). Fails OPEN (skips the check, doesn't block
-  // the upload) if the read-back itself fails for any reason — this is
-  // a defence-in-depth layer on top of the path-ownership check above,
-  // not the sole guard, per sniffStorageObjectHead's own doc comment.
-  const head = await sniffStorageObjectHead(supabase, ASSET_BUCKET, storage_path);
-  if (head) {
-    const sniffed = sniffFileKind(head);
-    if (sniffed !== "unknown" && sniffed !== "pdf") {
-      await supabase.storage.from(ASSET_BUCKET).remove([storage_path]);
-      return NextResponse.json(
-        { error: "That file's content doesn't look like a valid document — it may be corrupted or mislabelled." },
-        { status: 400 }
-      );
-    }
+  // Storage via the signed upload URL (this route never saw them), so this
+  // reads back the first 16 bytes. The registration boundary fails closed
+  // when no object is readable; this makes it safe for the browser to call it
+  // even if the direct upload reported a network error after committing.
+  const inspection = await inspectStorageObjectHead(supabase, ASSET_BUCKET, storage_path);
+  if (!inspection) {
+    return NextResponse.json(
+      { error: "The document has not finished uploading. Please try again." },
+      { status: 409 }
+    );
+  }
+
+  const sniffed = sniffFileKind(inspection.bytes);
+  if (sniffed !== "unknown" && sniffed !== "pdf") {
+    await supabase.storage.from(ASSET_BUCKET).remove([storage_path]);
+    return NextResponse.json(
+      { error: "That file's content doesn't look like a valid document — it may be corrupted or mislabelled." },
+      { status: 400 }
+    );
   }
 
   const { data: row, error: insertError } = await supabase

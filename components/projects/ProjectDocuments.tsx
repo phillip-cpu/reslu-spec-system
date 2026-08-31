@@ -187,22 +187,47 @@ function DocumentSection({
           .uploadToSignedUrl(urlBody.path, urlBody.token, file, {
             contentType: file.type || "application/octet-stream",
           });
-        if (upErr) throw new Error(`${file.name}: ${upErr.message}`);
 
-        // 3. Record the metadata row (no file body).
-        const res = await fetch(`/api/projects/${projectId}/files`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            storage_path: urlBody.path,
-            filename: file.name,
-            kind,
-            revision_label: revisionLabel.trim() || null,
-          }),
+        // 3. Record the metadata row (no file body). Always attempt this even
+        // if the browser reports a Storage error: the bytes may already have
+        // committed before the response was interrupted. Registration verifies
+        // the stored object and is idempotent, so retrying is safe.
+        const registrationBody = JSON.stringify({
+          storage_path: urlBody.path,
+          filename: file.name,
+          kind,
+          revision_label: revisionLabel.trim() || null,
         });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(body.error ?? `${file.name}: upload failed`);
-        onUploaded(body.file);
+        let row: FileWithUrl | null = null;
+        let registrationError = `${file.name}: upload failed`;
+        for (let attempt = 0; attempt < 3 && !row; attempt += 1) {
+          try {
+            const res = await fetch(`/api/projects/${projectId}/files`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: registrationBody,
+            });
+            const body = await res.json().catch(() => ({}));
+            if (res.ok && body.file) {
+              row = body.file as FileWithUrl;
+              break;
+            }
+            registrationError = body.error ?? `${file.name}: upload registration failed (${res.status})`;
+            if (res.status < 500 && res.status !== 409) break;
+          } catch (registrationFailure) {
+            registrationError =
+              registrationFailure instanceof Error
+                ? registrationFailure.message
+                : `${file.name}: upload registration failed`;
+          }
+          if (attempt < 2) {
+            await new Promise((resolve) => window.setTimeout(resolve, 300 * (attempt + 1)));
+          }
+        }
+        if (!row) {
+          throw new Error(upErr ? `${registrationError} Storage response: ${upErr.message}` : registrationError);
+        }
+        onUploaded(row);
       }
       setRevisionLabel("");
       if (fileInput.current) fileInput.current.value = "";
