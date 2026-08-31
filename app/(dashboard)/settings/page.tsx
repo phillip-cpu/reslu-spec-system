@@ -20,13 +20,13 @@ import { MeetingRetentionSettings } from "@/components/settings/MeetingRetention
 import { XeroIntegrationSettings } from "@/components/settings/XeroIntegrationSettings";
 import { SettingsGroup, SettingsJumpNav } from "@/components/settings/SettingsGroup";
 import { getSignaturePeople } from "@/lib/email-signatures";
-import { FALLBACK_PHASE_TEMPLATE, FALLBACK_PHASE_TASK_TEMPLATES } from "@/lib/phase-template";
+import { FALLBACK_PHASE_TASK_TEMPLATES } from "@/lib/phase-template";
+import { PROJECT_TYPES, resolveProjectPhaseTemplates } from "@/lib/project-templates";
 import { FALLBACK_DESIGN_TASK_TEMPLATES } from "@/lib/design-task-templates";
 import { resolveExportPresets } from "@/lib/export-presets";
 import { BANK_DETAILS_SETTINGS_KEY } from "@/lib/bank-details";
 import { FALLBACK_CPD_DEFAULTS } from "@/lib/cpd";
 import { DESIGN_PHASE_TEMPLATE } from "@/types/phase-12b";
-import type { AppSettingsPhaseTemplateRow } from "@/types/phase-fix-a";
 import type { PhaseTaskTemplatesMap } from "@/types/board-cockpit";
 import type { DesignTaskTemplatesMap } from "@/types/round-c";
 import type { InvoiceBankDetails } from "@/types/client-invoices";
@@ -84,8 +84,10 @@ export default async function SettingsPage({
     .select("value")
     .eq("key", "phase_template")
     .maybeSingle();
-  const phaseTemplate =
-    (phaseTemplateRow?.value as AppSettingsPhaseTemplateRow[] | undefined) ?? FALLBACK_PHASE_TEMPLATE;
+  const phaseTemplates = resolveProjectPhaseTemplates(phaseTemplateRow?.value);
+  const phaseTemplateNames = Array.from(
+    new Set(PROJECT_TYPES.flatMap((projectType) => phaseTemplates[projectType].map((row) => row.name)))
+  );
 
   // Board cockpit round — phase task templates (app_settings
   // 'phase_task_templates'), read directly here same as phase_template
@@ -226,14 +228,14 @@ export default async function SettingsPage({
         </section>
 
         <section>
-          <h2 className="mb-1 text-subhead text-nearblack">Default phase template</h2>
+          <h2 className="mb-1 text-subhead text-nearblack">Timeline templates by project type</h2>
           <p className="mb-4 text-body text-charcoal/60">
-            New projects (and any project whose Timeline or Board hasn&apos;t been
-            opened yet) seed their phases from this list on first visit. Exactly
-            one phase must be the umbrella (Site Setup) phase.
+            A project&apos;s type selects its starting Timeline when the Timeline or
+            Board is first opened. These are editable draft defaults; established
+            project Timelines are never rewritten.
             {!isAdmin && " Only admins can make changes."}
           </p>
-          <PhaseTemplateSettings initialTemplate={phaseTemplate} canEdit={isAdmin} />
+          <PhaseTemplateSettings initialTemplates={phaseTemplates} canEdit={isAdmin} />
         </section>
 
         <section>
@@ -246,7 +248,7 @@ export default async function SettingsPage({
             {!isAdmin && " Only admins can make changes."}
           </p>
           <PhaseTaskTemplateSettings
-            phaseNames={phaseTemplate.map((p) => p.name)}
+            phaseNames={phaseTemplateNames}
             initialTemplates={phaseTaskTemplates}
             canEdit={isAdmin}
           />

@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { projectRollup, sectionRollup, ffeRollup, wholeJobSummary } from "@/lib/estimate";
 import type { CostSectionWithLines, EstimateResponse, Measurement, MeasurementWithGroup } from "@/types";
+import type { SupplierQuoteLineSummary } from "@/types/supplier-quotes";
 
 /**
  * GET /api/projects/[id]/estimate
@@ -168,6 +169,47 @@ export async function GET(
   }
   const wholeJob = wholeJobSummary(rollup, ffe);
 
+  const quoteSummaries: Record<string, SupplierQuoteLineSummary[]> = {};
+  const { data: quotePackages } = await supabase
+    .from("supplier_quote_packages")
+    .select("id,title")
+    .eq("project_id", projectId)
+    .is("deleted_at", null);
+  const quotePackageIds = (quotePackages ?? []).map((row) => row.id);
+  if (quotePackageIds.length > 0) {
+    const [{ data: quoteLines }, { data: quoteRequests }] = await Promise.all([
+      supabase.from("supplier_quote_package_lines").select("package_id,cost_line_id").in("package_id", quotePackageIds),
+      supabase.from("supplier_quote_requests").select("package_id,status,promised_quote_at,contact_id").in("package_id", quotePackageIds),
+    ]);
+    const contactIds = [...new Set((quoteRequests ?? []).map((row) => row.contact_id).filter(Boolean))] as string[];
+    const { data: quoteContacts } = contactIds.length
+      ? await supabase.from("contacts").select("id,company").in("id", contactIds)
+      : { data: [] as { id: string; company: string }[] };
+    const contactById = new Map((quoteContacts ?? []).map((row) => [row.id, row.company]));
+    const packageById = new Map((quotePackages ?? []).map((row) => [row.id, row]));
+    const requestsByPackage = new Map<string, typeof quoteRequests>();
+    for (const quoteRequest of quoteRequests ?? []) {
+      const list = requestsByPackage.get(quoteRequest.package_id) ?? [];
+      list.push(quoteRequest);
+      requestsByPackage.set(quoteRequest.package_id, list);
+    }
+    for (const quoteLine of quoteLines ?? []) {
+      const quotePackage = packageById.get(quoteLine.package_id);
+      if (!quotePackage) continue;
+      const requests = requestsByPackage.get(quoteLine.package_id) ?? [];
+      const promisedDates = requests.map((row) => row.promised_quote_at).filter((value): value is string => !!value).sort();
+      const summary: SupplierQuoteLineSummary = {
+        package_id: quoteLine.package_id,
+        package_title: quotePackage.title,
+        request_count: requests.length,
+        received_count: requests.filter((row) => ["quote_received", "selected"].includes(row.status)).length,
+        next_due: promisedDates[0] ?? null,
+        supplier_names: requests.map((row) => row.contact_id ? contactById.get(row.contact_id) : null).filter((value): value is string => !!value),
+      };
+      (quoteSummaries[quoteLine.cost_line_id] ??= []).push(summary);
+    }
+  }
+
   const payload: EstimateResponse = {
     sections: sectionsWithLines,
     markup_pct: project.estimate_markup_pct ?? 0,
@@ -175,6 +217,7 @@ export async function GET(
     ffe,
     wholeJob,
     measurements,
+    quote_summaries: quoteSummaries,
   };
 
   return NextResponse.json(payload);

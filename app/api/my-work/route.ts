@@ -10,6 +10,7 @@ import { FALLBACK_CPD_DEFAULTS, computeCpdYearWindow, formatPoints, isBehindPace
 import { isBookingRequestFollowupDue } from "@/lib/trade-booking";
 import { isProposalFollowupDue } from "@/lib/proposals";
 import { suppressProposalFollowupForLeadStage } from "@/lib/proposal-followups";
+import { quoteRequestFollowup } from "@/lib/supplier-quotes";
 import type { CpdDefaults } from "@/types/cpd";
 import type { MyWorkItem, MyWorkResponse } from "@/types/phase-12a-b";
 
@@ -802,6 +803,49 @@ export async function GET() {
           due: p.sent_at ? p.sent_at.slice(0, 10) : null,
           href: `/proposals/${p.id}`,
           meta: "Sent, not yet accepted",
+        });
+      }
+    }
+  }
+
+  // ---- Supplier RFQ follow-ups — acknowledgement, turnaround and quote due ----
+  if (isAdmin) {
+    const { data: quoteRequests } = await supabase
+      .from("supplier_quote_requests")
+      .select("id,package_id,contact_id,status,sent_at,acknowledgement_due_at,acknowledged_at,promised_quote_at")
+      .in("status", ["sent", "acknowledged"]);
+    const actionable = (quoteRequests ?? []).map((row) => ({ row, followup: quoteRequestFollowup(row) })).filter((entry) => entry.followup);
+    if (actionable.length > 0) {
+      const packageIds = [...new Set(actionable.map((entry) => entry.row.package_id))];
+      const contactIds = [...new Set(actionable.map((entry) => entry.row.contact_id).filter(Boolean))] as string[];
+      const [{ data: quotePackages }, { data: quoteContacts }] = await Promise.all([
+        supabase.from("supplier_quote_packages").select("id,project_id,title").in("id", packageIds),
+        contactIds.length ? supabase.from("contacts").select("id,company").in("id", contactIds) : Promise.resolve({ data: [] as { id: string; company: string }[] }),
+      ]);
+      const packageById = new Map((quotePackages ?? []).map((row) => [row.id, row]));
+      const quoteProjectIds = [...new Set((quotePackages ?? []).map((row) => row.project_id))];
+      const { data: quoteProjects } = quoteProjectIds.length ? await supabase.from("projects").select("id,name,alias").in("id", quoteProjectIds) : { data: [] as { id: string; name: string; alias: string | null }[] };
+      const projectById = new Map((quoteProjects ?? []).map((row) => [row.id, row]));
+      const contactById = new Map((quoteContacts ?? []).map((row) => [row.id, row.company]));
+      for (const { row, followup } of actionable) {
+        if (!followup) continue;
+        const quotePackage = packageById.get(row.package_id);
+        if (!quotePackage) continue;
+        const project = projectById.get(quotePackage.project_id);
+        const supplier = row.contact_id ? contactById.get(row.contact_id) ?? "Supplier" : "Supplier";
+        const wording = followup.kind === "acknowledgement"
+          ? `${supplier} hasn't acknowledged — ${quotePackage.title}`
+          : followup.kind === "turnaround"
+            ? `Confirm quote turnaround with ${supplier} — ${quotePackage.title}`
+            : `Quote due from ${supplier} — ${quotePackage.title}`;
+        items.push({
+          kind: "supplier_quote_followup",
+          id: row.id,
+          title: wording,
+          project: project ? { id: project.id, name: project.name, alias: project.alias } : null,
+          due: followup.due,
+          href: `/projects/${quotePackage.project_id}/estimate?quote=${quotePackage.id}`,
+          meta: followup.kind === "quote_due" ? "Supplier promised date" : followup.kind === "turnaround" ? "Reply received — date missing" : "Awaiting supplier reply",
         });
       }
     }

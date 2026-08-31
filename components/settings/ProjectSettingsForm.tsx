@@ -5,6 +5,14 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import type { ProjectWithAlias } from "@/types/phase-12a-b";
 import { regenerateProjectToken } from "@/app/(dashboard)/projects/[id]/settings/actions";
+import {
+  PROJECT_TYPES,
+  PROJECT_TYPE_LABELS,
+  PROJECT_SUBTYPE_LABELS,
+  SINGLE_ROOM_PROJECT_SUBTYPES,
+  type ProjectType,
+  type ProjectSubtype,
+} from "@/lib/project-templates";
 
 interface Props {
   project: ProjectWithAlias;
@@ -66,6 +74,8 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImag
   const [clientName, setClientName] = useState(project.client_name);
   const [address, setAddress] = useState(project.address ?? "");
   const [budget, setBudget] = useState(project.budget?.toString() ?? "");
+  const [projectType, setProjectType] = useState<ProjectType | "">(project.project_type ?? "");
+  const [projectSubtype, setProjectSubtype] = useState<ProjectSubtype>(project.project_subtype);
   const [mondayBoardId, setMondayBoardId] = useState(project.monday_board_id ?? "");
   const [token, setToken] = useState(project.client_token);
 
@@ -142,6 +152,16 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImag
       setSaving(false);
       return;
     }
+    if (!projectType) {
+      setError("Select a project type.");
+      setSaving(false);
+      return;
+    }
+    if (projectType === "single_room_renovation" && !projectSubtype) {
+      setError("Select a room type for a single-room renovation.");
+      setSaving(false);
+      return;
+    }
 
     try {
       const res = await fetch(`/api/projects/${project.id}`, {
@@ -154,6 +174,8 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImag
           client_name: clientName.trim(),
           address: address.trim() || null,
           budget: budget.trim() === "" ? null : Number(budget),
+          project_type: projectType,
+          project_subtype: projectType === "single_room_renovation" ? projectSubtype : null,
           monday_board_id: mondayBoardId.trim() || null,
           // Phase 11 extension — Client contacts group.
           client_email: clientEmail.trim() || null,
@@ -357,6 +379,47 @@ export function ProjectSettingsForm({ project, isAdmin, appUrl, initialCoverImag
             className="border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
           />
         </label>
+
+        <div className="grid grid-cols-2 gap-4">
+          <label className="flex flex-col gap-1">
+            <span className="label-caps">Project type</span>
+            <select
+              value={projectType}
+              onChange={(e) => {
+                const next = e.target.value as ProjectType | "";
+                setProjectType(next);
+                if (next !== "single_room_renovation") setProjectSubtype(null);
+              }}
+              disabled={!isAdmin}
+              className="border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+            >
+              <option value="">Select project type</option>
+              {PROJECT_TYPES.map((type) => (
+                <option key={type} value={type}>{PROJECT_TYPE_LABELS[type]}</option>
+              ))}
+            </select>
+          </label>
+          {projectType === "single_room_renovation" && (
+            <label className="flex flex-col gap-1">
+              <span className="label-caps">Room type</span>
+              <select
+                value={projectSubtype ?? ""}
+                onChange={(e) => setProjectSubtype((e.target.value || null) as ProjectSubtype)}
+                disabled={!isAdmin}
+                required
+                className="border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+              >
+                <option value="">Select room</option>
+                {SINGLE_ROOM_PROJECT_SUBTYPES.map((subtype) => (
+                  <option key={subtype} value={subtype}>{PROJECT_SUBTYPE_LABELS[subtype]}</option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
+        <p className="text-caption text-charcoal/50">
+          Sets defaults for an empty Timeline and future payment stages. Changing this value does not overwrite an established Timeline.
+        </p>
 
         <div className="grid grid-cols-2 gap-4">
           <label className="flex flex-col gap-1">

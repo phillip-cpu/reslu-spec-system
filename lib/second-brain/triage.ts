@@ -76,6 +76,8 @@ A note on RESLU's typical project lifecycle, useful background for reading how u
 
 A separate reply-routing decision is required for every email. Set reply_requested=true only when the sender directly asks RESLU or Aria to answer a question, confirm something, make a decision, supply information, or complete a requested internal task for which the sender reasonably expects a response. This boolean is independent of the primary label: a client_rfi is often true; a supplier quote can be true when it asks a concrete question; an internal RESLU request can be true even when its primary label is fyi. Set it false for acknowledgements, courtesy copies, newsletters, automatic mail, invoices with no question, statements that require no answer, and vague content where no response is actually requested. Do not infer permission to send from this boolean; it only routes the message into Aria's reply workflow.
 
+A separate lead-opportunity decision is also required for every email. Set lead_introduction=true when the message introduces or refers a genuinely prospective client or project to RESLU: for example, "I'd like to introduce Jane, who is planning a renovation", a trusted contact connecting Phillip with a homeowner, or a direct prospective-client enquiry that clearly asks about engaging RESLU. Set it false for supplier sales leads, newsletters, existing clients, recruitment, software notifications, and uses of the word "lead" that mean product lead time or an electrical lead. This flag must be based on the message's business meaning, not a keyword alone. It creates an internal review alert only; it never sends a reply or creates a client commitment.
+
 A final reminder before you begin: work through the batch methodically, one email at a time, applying the definitions and examples above rather than pattern-matching on subject lines or sender names alone. A supplier's typical business does not fully determine the correct label for a given email from them — a tapware distributor might send a client_rfi-adjacent question, a stonemason might send something that reads more like fyi than lead_time_update, and so on. Read each email's actual content before deciding.
 
 Call the triage_batch tool exactly once, providing one entry per email in the batch (any order is fine), using each email's exact id as given and including reply_requested for every result.`;
@@ -95,8 +97,9 @@ const TRIAGE_TOOL: ClaudeTool = {
             label: { type: "string", enum: [...TRIAGE_LABELS] },
             confidence: { type: "number", minimum: 0, maximum: 1 },
             reply_requested: { type: "boolean" },
+            lead_introduction: { type: "boolean" },
           },
-          required: ["email_id", "label", "confidence", "reply_requested"],
+          required: ["email_id", "label", "confidence", "reply_requested", "lead_introduction"],
           additionalProperties: false,
         },
       },
@@ -118,6 +121,7 @@ export type TriageResult = {
   label: TriageLabel;
   confidence: number;
   reply_requested: boolean;
+  lead_introduction: boolean;
 };
 
 export async function triageEmails(batch: TriageInput[]): Promise<{ results: TriageResult[]; usage: Record<string, unknown> }> {

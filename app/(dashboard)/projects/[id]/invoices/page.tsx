@@ -53,7 +53,7 @@ export default async function ProjectInvoicesPage({
 
   const { data: project } = await supabase
     .from("projects")
-    .select("id, name, client_name, client_email, address, client_token")
+    .select("id, name, client_name, client_email, address, client_token, project_type")
     .eq("id", id)
     .single();
 
@@ -91,6 +91,7 @@ export default async function ProjectInvoicesPage({
             projectClientName={project.client_name}
             projectClientEmail={project.client_email}
             projectAddress={project.address}
+            projectType={project.project_type}
             stripeConfigured={stripeConfigured}
           />
         </section>

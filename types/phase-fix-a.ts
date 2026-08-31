@@ -23,6 +23,7 @@
 
 import type { Contact, PhaseColorKey, SchedulePhaseWithContact } from "@/types";
 import type { ContactDocument, InsuranceStatus } from "@/lib/insurance";
+import type { ProjectType } from "@/lib/project-templates";
 
 // ------------------------------------------------------------
 // Phase unification — board_groups.phase_id (migration 023)
@@ -75,14 +76,16 @@ export interface AppSettingsPhaseTemplateRow {
   kind: "phase" | "umbrella";
 }
 
+export type AppSettingsProjectPhaseTemplates = Record<ProjectType, AppSettingsPhaseTemplateRow[]>;
+
 /** GET /api/settings/phase-template response. */
 export interface PhaseTemplateResponse {
-  template: AppSettingsPhaseTemplateRow[];
+  templates: AppSettingsProjectPhaseTemplates;
 }
 
 /** body accepted by PUT /api/settings/phase-template — full replace, admin-only (mirrors PATCH /api/categories/[id]'s admin gating — this is studio-wide configuration, not per-project data). */
 export interface PutPhaseTemplateInput {
-  template: AppSettingsPhaseTemplateRow[];
+  templates: AppSettingsProjectPhaseTemplates;
 }
 
 // ------------------------------------------------------------

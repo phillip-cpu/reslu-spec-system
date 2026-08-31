@@ -4,6 +4,7 @@ import {
   addCalendarDays,
   plannedClaimTimingState,
   resolveClaimForecastDate,
+  resolveTemplateSchedulePhaseId,
   suggestSchedulePhaseId,
 } from "./client-claim-schedule.ts";
 import type {
@@ -79,5 +80,12 @@ test("Goldsworthy labels suggest only unambiguous schedule phases", () => {
       { ...phases[0], id: "demo-2", name: "Demo inspection" },
     ]),
     null
+  );
+});
+
+test("template milestones use their explicit Timeline anchor before label guessing", () => {
+  assert.equal(
+    resolveTemplateSchedulePhaseId("First Fix", "Demo", phases),
+    "first-fix"
   );
 });

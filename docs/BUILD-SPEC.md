@@ -117,6 +117,12 @@ D. Supplier invoice source lines (r31, migration 061):
 15. Existing Bunnings invoice W288707086-1 is backfilled as 10 source lines from its ingested PDF. This is evidence-only: migration does not allocate or approve the invoice.
 16. Aria must prefer `line_items[]` in `propose_supplier_invoice`, extracting every visible line even when she cannot suggest a destination. Suggestions are draft metadata only; email content never writes project actuals or library prices.
 
+E. Supplier invoice cash reconciliation (migration 20260824084559):
+17. Supplier-invoice approval means the cost is accrued/confirmed; it does not mean cash has left the bank. Every approved bill separately records due date, `unpaid | part_paid | paid`, gross amount paid including GST, and latest payment date. Payment facts remain editable after approval; commercial fields and allocations remain locked.
+18. Cashflow uses gross inc-GST amounts. An approved allocation replaces the same slice of its estimate cost-line plan (or the matched item's FF&E category plan), leaving only the uninvoiced balance. Acceptance invariant: a $1,000 gross plan plus a $300 accrued supplier allocation resolves to $300 accrued plus $700 planned, never $1,300.
+19. Allocation gross and paid amounts are apportioned cent-exactly from canonical invoice totals. Each allocation retains its own due/payment timing. Unmatched actuals remain explicit rather than disappearing.
+20. Xero ACCPAY bills match RESLU supplier invoices by normalised invoice number plus supplier/contact name and overlay the RESLU allocation actuals. A matched Xero bill must never be added as a second outflow; unmatched Xero bills remain visible as explicit accounting facts.
+
 ## Proposal delivery skin (r25)
 
 Approved via animated mockup 2026-07-11. The proposal email + page adopt the website's card/paper language. Sources of truth: docs/RESLU-Card-Design-Spec.md, docs/RESLU-Paper-Animation-Brief.md, and the WORKING implementation at "…/260611_RESLU Marketing & Branding overhall/Website/reslu-site/src/components/BeginForm.astro" (filmed fold: FV geometry fractions, video alignment/clip/feather technique, write() pen + .ink CSS, cardstock #faf6ec/#e6dfcf, emboss #e2dac5). COPY, don't reinvent.

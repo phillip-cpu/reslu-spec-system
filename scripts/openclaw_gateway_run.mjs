@@ -19,7 +19,7 @@ const MODEL_PATTERN = /^[A-Za-z0-9._:-]{1,80}\/[A-Za-z0-9._:-]{1,120}$/;
 const IMAGE_MIME_TYPES = new Set(["image/gif", "image/jpeg", "image/png", "image/webp"]);
 
 function validateImageAttachments(value) {
-  if (value === undefined) return undefined;
+  if (value === undefined || value === null) return [];
   if (!Array.isArray(value) || value.length > MAX_IMAGE_ATTACHMENTS) throw new Error("Invalid image attachments");
   return value.map((attachment, index) => {
     if (!attachment || typeof attachment !== "object" || Array.isArray(attachment)) {

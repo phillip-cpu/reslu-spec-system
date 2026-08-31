@@ -15,13 +15,25 @@ const EDITABLE_FIELDS = new Set([
   "supplier",
   "invoice_number",
   "invoice_date",
+  "due_date",
   "amount_ex_gst",
   "gst",
   "total",
   "confidence_note",
+  "payment_status",
+  "amount_paid",
+  "paid_at",
 ]);
 
-const NUMERIC_FIELDS = new Set(["amount_ex_gst", "gst", "total"]);
+const CASH_FIELDS = new Set(["due_date", "payment_status", "amount_paid", "paid_at"]);
+const NUMERIC_FIELDS = new Set(["amount_ex_gst", "gst", "total", "amount_paid"]);
+const PAYMENT_STATUSES = new Set(["unpaid", "part_paid", "paid"]);
+
+function validDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+}
 
 /**
  * PATCH /api/invoices/[id]
@@ -68,7 +80,13 @@ export async function PATCH(
   if (fetchError || !existing) {
     return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
   }
-  if (existing.status === "approved" || existing.status === "rejected" || existing.status === "voided") {
+  const requestedKeys = Object.keys(body);
+  const cashOnlyUpdate = requestedKeys.length > 0 && requestedKeys.every((key) => CASH_FIELDS.has(key));
+  if (
+    existing.status === "rejected" ||
+    existing.status === "voided" ||
+    (existing.status === "approved" && !cashOnlyUpdate)
+  ) {
     return NextResponse.json(
       { error: `Cannot edit an invoice that is already ${existing.status}` },
       { status: 400 }
@@ -139,6 +157,41 @@ export async function PATCH(
       update[key] = raw.trim() === "" ? null : raw.trim();
     } else {
       update[key] = raw;
+    }
+  }
+
+  for (const field of ["due_date", "paid_at"] as const) {
+    if (!Object.prototype.hasOwnProperty.call(update, field)) continue;
+    if (update[field] !== null && !validDate(update[field])) {
+      return NextResponse.json({ error: `${field} must be an ISO calendar date or null` }, { status: 400 });
+    }
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(update, "payment_status") &&
+    !PAYMENT_STATUSES.has(String(update.payment_status))
+  ) {
+    return NextResponse.json({ error: "Invalid payment_status" }, { status: 400 });
+  }
+
+  if (cashOnlyUpdate || requestedKeys.some((key) => CASH_FIELDS.has(key))) {
+    const paymentStatus = String(update.payment_status ?? existing.payment_status ?? "unpaid");
+    const amountPaid = Number(update.amount_paid ?? existing.amount_paid ?? 0);
+    const paidAt = Object.prototype.hasOwnProperty.call(update, "paid_at")
+      ? update.paid_at
+      : existing.paid_at;
+    const total = Number(existing.total);
+    if (!Number.isFinite(amountPaid) || amountPaid < 0 || amountPaid > total) {
+      return NextResponse.json({ error: "amount_paid must be between zero and the invoice total" }, { status: 400 });
+    }
+    const coherent =
+      (paymentStatus === "unpaid" && amountPaid === 0 && paidAt === null) ||
+      (paymentStatus === "part_paid" && amountPaid > 0 && amountPaid < total && validDate(paidAt)) ||
+      (paymentStatus === "paid" && amountPaid === total && validDate(paidAt));
+    if (!coherent) {
+      return NextResponse.json(
+        { error: "Payment status, gross amount paid and payment date are inconsistent" },
+        { status: 400 }
+      );
     }
   }
 

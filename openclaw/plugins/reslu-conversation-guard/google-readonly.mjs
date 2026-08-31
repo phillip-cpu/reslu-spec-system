@@ -1,11 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
 const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 const MAILBOXES = ["aria", "phillip", "tenille", "marco"];
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_CALENDAR_WINDOW_MS = 31 * DAY_MS;
@@ -39,6 +41,23 @@ const GMAIL_READ_PARAMETERS = {
   properties: {
     mailbox: { type: "string", enum: MAILBOXES, description: "Mailbox returned by the search result. Defaults to aria." },
     message_id: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$" },
+  },
+};
+
+const GMAIL_SEND_PARAMETERS = {
+  type: "object",
+  additionalProperties: false,
+  required: ["to", "subject", "body", "idempotency_key"],
+  properties: {
+    to: { type: "string", minLength: 3, maxLength: 320, description: "One recipient email address." },
+    subject: { type: "string", minLength: 1, maxLength: 300, description: "Approved email subject." },
+    body: { type: "string", minLength: 1, maxLength: 20000, description: "Approved plain-text email body." },
+    idempotency_key: {
+      type: "string",
+      minLength: 8,
+      maxLength: 200,
+      description: "Stable key for this approved recipient, subject and body. Reusing it returns the existing sent message instead of sending twice.",
+    },
   },
 };
 
@@ -82,6 +101,14 @@ function boundedInteger(value, fallback, minimum, maximum) {
   return value;
 }
 
+function cappedInteger(value, fallback, minimum, maximum) {
+  if (value == null || value === "") return fallback;
+  if (!Number.isInteger(value) || value < minimum) {
+    throw new Error(`limit must be an integer of at least ${minimum}`);
+  }
+  return Math.min(value, maximum);
+}
+
 function boundedQuery(value, fallback, limit) {
   if (value == null || value === "") return fallback;
   if (typeof value !== "string") throw new Error("query must be text");
@@ -121,7 +148,10 @@ export function normalizeGmailSearchRequest(params = {}) {
   return {
     mailbox: normalizeMailbox(params.mailbox),
     q: boundedQuery(params.query, "in:inbox newer_than:30d", 300),
-    maxResults: boundedInteger(params.limit, 5, 1, 10),
+    // Some model runtimes can emit a value above the JSON-schema maximum.
+    // Keep the read bounded instead of misreporting a healthy Gmail connection
+    // as unavailable because of a harmless result-count mismatch.
+    maxResults: cappedInteger(params.limit, 5, 1, 10),
   };
 }
 
@@ -138,6 +168,55 @@ export function normalizeGmailMessageId(value) {
     throw new Error("message_id is invalid");
   }
   return value;
+}
+
+function oneLine(value, label, limit) {
+  if (typeof value !== "string") throw new Error(`${label} must be text`);
+  const normalized = value.trim();
+  if (!normalized || normalized.length > limit || /[\0\r\n]/.test(normalized)) {
+    throw new Error(`${label} must be between 1 and ${limit} characters on one line`);
+  }
+  return normalized;
+}
+
+function normalizeEmailAddress(value) {
+  const email = oneLine(value, "to", 320).toLowerCase();
+  if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email)) {
+    throw new Error("to must be one valid email address");
+  }
+  return email;
+}
+
+export function normalizeGmailSendRequest(params = {}) {
+  const body = typeof params.body === "string" ? params.body.replace(/\r\n/g, "\n").trim() : "";
+  if (!body || body.length > 20_000 || body.includes("\0")) {
+    throw new Error("body must be between 1 and 20000 characters");
+  }
+  return {
+    to: normalizeEmailAddress(params.to),
+    subject: oneLine(params.subject, "subject", 300),
+    body,
+    idempotencyKey: oneLine(params.idempotency_key, "idempotency_key", 200),
+  };
+}
+
+export function resolveGoogleIntegrationWorkspace(workspaceDir) {
+  if (typeof workspaceDir !== "string" || !path.isAbsolute(workspaceDir)) {
+    throw new Error("Google integration workspace is unavailable");
+  }
+  const resolved = path.resolve(workspaceDir);
+  const name = path.basename(resolved);
+  if (name === "workspace") return resolved;
+  if (/^workspace-[A-Za-z0-9_-]+$/.test(name)) return path.join(path.dirname(resolved), "workspace");
+  throw new Error("Google integration workspace is unavailable");
+}
+
+export function resolveGmailSender(workspaceDir) {
+  const resolved = path.resolve(workspaceDir ?? "");
+  if (path.basename(resolved) !== "workspace-marco") {
+    throw new Error("Gmail sending is unavailable for this agent");
+  }
+  return { mailbox: "marco", email: "marco@reslu.com.au", name: "Marco Santoro" };
 }
 
 function findHeader(headers, name) {
@@ -226,22 +305,20 @@ export function resolveGoogleAuthInput(token, credentials) {
 }
 
 async function loadGoogleClient(workspaceDir, integration, scope, credentialsIntegration = integration) {
-  if (typeof workspaceDir !== "string" || !path.isAbsolute(workspaceDir)) {
-    throw new Error("Google integration workspace is unavailable");
-  }
-  const integrationDir = path.join(workspaceDir, integration);
+  const integrationWorkspace = resolveGoogleIntegrationWorkspace(workspaceDir);
+  const integrationDir = path.join(integrationWorkspace, integration);
   const tokenPath = path.join(integrationDir, "token.json");
   const token = JSON.parse(await fs.readFile(tokenPath, "utf8"));
   let credentials;
   try {
     credentials = JSON.parse(await fs.readFile(
-      path.join(workspaceDir, credentialsIntegration, "credentials.json"),
+      path.join(integrationWorkspace, credentialsIntegration, "credentials.json"),
       "utf8",
     ));
   } catch {
     credentials = null;
   }
-  const requireFromIntegration = createRequire(path.join(workspaceDir, credentialsIntegration, "package.json"));
+  const requireFromIntegration = createRequire(path.join(integrationWorkspace, credentialsIntegration, "package.json"));
   const { google } = requireFromIntegration("googleapis");
   const input = resolveGoogleAuthInput(token, credentials);
   const auth = input.kind === "authorized_user"
@@ -250,6 +327,86 @@ async function loadGoogleClient(workspaceDir, integration, scope, credentialsInt
   if (input.kind === "oauth2") auth.setCredentials(input.token);
   auth.scopes = [scope];
   return { google, auth };
+}
+
+function base64Url(value) {
+  return Buffer.from(value).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function wrapBase64(value) {
+  return Buffer.from(value, "utf8").toString("base64").match(/.{1,76}/g)?.join("\r\n") ?? "";
+}
+
+export function buildGmailRawMessage(sender, request, messageId) {
+  const encodedSubject = `=?UTF-8?B?${Buffer.from(request.subject, "utf8").toString("base64")}?=`;
+  return base64Url([
+    `From: ${sender.name} <${sender.email}>`,
+    `To: ${request.to}`,
+    `Subject: ${encodedSubject}`,
+    `Message-ID: <${messageId}>`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    wrapBase64(request.body),
+  ].join("\r\n"));
+}
+
+async function sendGmailMessage(workspaceDir, params) {
+  const sender = resolveGmailSender(workspaceDir);
+  const request = normalizeGmailSendRequest(params);
+  const { google, auth } = await loadGoogleClient(
+    workspaceDir,
+    `${sender.mailbox}-gmail`,
+    GMAIL_SEND_SCOPE,
+    "gmail",
+  );
+  const gmail = google.gmail({ version: "v1", auth });
+  const profile = await gmail.users.getProfile({ userId: "me" }, { timeout: 12_000 });
+  if (String(profile.data.emailAddress ?? "").toLowerCase() !== sender.email) {
+    throw new Error("Authenticated Gmail identity does not match Marco");
+  }
+
+  const messageId = `${crypto.createHash("sha256").update(request.idempotencyKey).digest("hex")}@reslu.com.au`;
+  const existing = await gmail.users.messages.list({
+    userId: "me",
+    q: `in:sent rfc822msgid:${messageId}`,
+    maxResults: 1,
+    fields: "messages(id,threadId)",
+  }, { timeout: 12_000 });
+  const prior = existing.data.messages?.[0];
+  if (prior?.id) {
+    return {
+      status: "already_sent",
+      sender: sender.email,
+      to: request.to,
+      subject: request.subject,
+      message_id: prior.id,
+      thread_id: prior.threadId ?? "",
+    };
+  }
+
+  const sent = await gmail.users.messages.send({
+    userId: "me",
+    requestBody: { raw: buildGmailRawMessage(sender, request, messageId) },
+  }, { timeout: 12_000 });
+  const verified = await gmail.users.messages.get({
+    userId: "me",
+    id: sent.data.id,
+    format: "minimal",
+    fields: "id,threadId,labelIds",
+  }, { timeout: 12_000 });
+  if (!verified.data.labelIds?.includes("SENT")) {
+    throw new Error("Gmail did not verify the message in Sent");
+  }
+  return {
+    status: "verified_in_sent",
+    sender: sender.email,
+    to: request.to,
+    subject: request.subject,
+    message_id: verified.data.id,
+    thread_id: verified.data.threadId ?? "",
+  };
 }
 
 async function listCalendarEvents(workspaceDir, params, now) {
@@ -337,6 +494,31 @@ function toolResult(source, data) {
 
 function safeToolError(label) {
   return new Error(`${label} is temporarily unavailable. The read-only integration did not return data.`);
+}
+
+function operationResult(data) {
+  return {
+    content: [{ type: "text", text: `RESLU_GMAIL_SEND_RESULT_JSON\n${JSON.stringify(data)}\nEND_RESLU_GMAIL_SEND_RESULT_JSON` }],
+    details: data,
+  };
+}
+
+export function createMarcoGmailSendTool(context, options = {}) {
+  const workspaceDir = context?.workspaceDir;
+  const send = options.sendMessage ?? sendGmailMessage;
+  return {
+    name: "reslu_gmail_messages_send",
+    label: "Send email as Marco",
+    description: "Send one approved plain-text email from Marco Santoro <marco@reslu.com.au>. Available only in Marco's direct authenticated human-request turns. The idempotency key prevents duplicate sends. Attachments are not supported.",
+    parameters: GMAIL_SEND_PARAMETERS,
+    async execute(_id, params) {
+      try {
+        return operationResult(await send(workspaceDir, params));
+      } catch {
+        throw new Error("Gmail sending failed before a verified Sent result. No success is claimed.");
+      }
+    },
+  };
 }
 
 export function createReadonlyGoogleTools(context, options = {}) {

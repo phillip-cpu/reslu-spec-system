@@ -5,6 +5,12 @@ import { useRouter } from "next/navigation";
 import type { CreateProjectInput } from "@/types";
 import type { StandardItemIdsInput } from "@/types/round-d";
 import { StandardItemsChecklist } from "@/components/projects/StandardItemsChecklist";
+import {
+  PROJECT_TYPES,
+  PROJECT_TYPE_LABELS,
+  PROJECT_SUBTYPE_LABELS,
+  SINGLE_ROOM_PROJECT_SUBTYPES,
+} from "@/lib/project-templates";
 
 export function ProjectForm() {
   const router = useRouter();
@@ -13,6 +19,8 @@ export function ProjectForm() {
     client_name: "",
     address: "",
     monday_board_id: "",
+    project_type: "whole_home_renovation",
+    project_subtype: null,
   });
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -95,6 +103,57 @@ export function ProjectForm() {
           className="w-full border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:outline-none focus:border-nearblack"
         />
       </div>
+
+      <div>
+        <label className="label-caps block mb-2" htmlFor="project_type">
+          Project type
+        </label>
+        <select
+          id="project_type"
+          required
+          value={form.project_type}
+          onChange={(e) => {
+            const projectType = e.target.value as CreateProjectInput["project_type"];
+            setForm((prev) => ({
+              ...prev,
+              project_type: projectType,
+              project_subtype: projectType === "single_room_renovation" ? prev.project_subtype : null,
+            }));
+          }}
+          className="w-full border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:outline-none focus:border-nearblack"
+        >
+          {PROJECT_TYPES.map((projectType) => (
+            <option key={projectType} value={projectType}>
+              {PROJECT_TYPE_LABELS[projectType]}
+            </option>
+          ))}
+        </select>
+        <p className="mt-1 text-caption text-charcoal/55">
+          Sets the draft Timeline and future payment-stage defaults.
+        </p>
+      </div>
+
+      {form.project_type === "single_room_renovation" && (
+        <div>
+          <label className="label-caps block mb-2" htmlFor="project_subtype">
+            Room type
+          </label>
+          <select
+            id="project_subtype"
+            required
+            value={form.project_subtype ?? ""}
+            onChange={(e) => update("project_subtype", e.target.value as CreateProjectInput["project_subtype"])}
+            className="w-full border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:outline-none focus:border-nearblack"
+          >
+            <option value="">Select room</option>
+            {SINGLE_ROOM_PROJECT_SUBTYPES.map((subtype) => (
+              <option key={subtype} value={subtype}>
+                {PROJECT_SUBTYPE_LABELS[subtype]}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div>
         <label className="label-caps block mb-2" htmlFor="monday_board_id">

@@ -31,4 +31,9 @@ test("Bank Summary excludes Xero credit cards from available cash", () => {
   assert.equal(result.cashAccountCount, 5);
   assert.equal(result.creditAccountCount, 1);
   assert.equal(result.unmatchedAccountCount, 0);
+  assert.deepEqual(result.accountBalances[0], {
+    name: "American Express® Qantas Business Rewards Card",
+    bankAccountType: "CREDITCARD",
+    closingBalance: -70_117.26,
+  });
 });

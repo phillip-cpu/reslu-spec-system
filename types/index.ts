@@ -34,6 +34,12 @@ export type ProjectStage =
   | "handover"
   | "complete"
   | "on_hold";
+export type ProjectType =
+  | "new_build"
+  | "whole_home_renovation"
+  | "extension"
+  | "single_room_renovation";
+export type ProjectSubtype = "kitchen" | "bathroom" | "ensuite" | "laundry" | "other";
 
 export interface Project {
   id: string;
@@ -42,6 +48,8 @@ export interface Project {
   address: string | null;
   status: ProjectStatus;
   project_stage: ProjectStage;
+  project_type: ProjectType | null;
+  project_subtype: ProjectSubtype | null;
   budget: number | null;
   // Estimate trade markup as a fraction (e.g. 0.15 = 15%) — migration
   // 007_estimating.sql; not null default 0.
@@ -304,6 +312,8 @@ export interface CreateProjectInput {
   address?: string;
   monday_board_id?: string;
   budget?: number;
+  project_type: ProjectType;
+  project_subtype?: ProjectSubtype | null;
 }
 
 export interface CreateItemInput {
@@ -572,6 +582,7 @@ export interface MeasurementGroupWithRows extends MeasurementGroup {
 
 export type InvoiceMatchType = "cost_line" | "item" | "item_component";
 export type InvoiceStatus = "unmatched" | "proposed" | "approved" | "rejected" | "voided";
+export type SupplierInvoicePaymentStatus = "unpaid" | "part_paid" | "paid";
 
 /**
  * Schema-only this release (BUILD-SPEC.md "Invoice pipeline — AI-updated
@@ -588,9 +599,15 @@ export interface Invoice {
   supplier: string;
   invoice_number: string;
   invoice_date: string | null;
+  due_date: string | null;
   amount_ex_gst: number;
   gst: number;
   total: number;
+  payment_status: SupplierInvoicePaymentStatus;
+  /** Gross cash paid including GST. */
+  amount_paid: number;
+  /** Latest recorded payment date. */
+  paid_at: string | null;
   storage_path: string | null;
   proposed_match_type: InvoiceMatchType | null;
   proposed_match_id: string | null;
@@ -673,6 +690,8 @@ export interface EstimateResponse {
    * grouped by measurement group, without a second fetch.
    */
   measurements: MeasurementWithGroup[];
+  /** Supplier RFQ coverage keyed by cost_lines.id. */
+  quote_summaries: Record<string, import("@/types/supplier-quotes").SupplierQuoteLineSummary[]>;
 }
 
 /** POST /api/projects/[id]/estimate/init response. */
@@ -822,6 +841,7 @@ export interface CreateInvoiceInput {
   supplier: string;
   invoice_number: string;
   invoice_date?: string | null;
+  due_date?: string | null;
   amount_ex_gst: number;
   gst?: number;
   total?: number;
@@ -842,9 +862,13 @@ export interface PatchInvoiceInput {
   supplier?: string;
   invoice_number?: string;
   invoice_date?: string | null;
+  due_date?: string | null;
   amount_ex_gst?: number;
   gst?: number;
   total?: number;
+  payment_status?: SupplierInvoicePaymentStatus;
+  amount_paid?: number;
+  paid_at?: string | null;
   proposed_match_type?: InvoiceMatchType | null;
   proposed_match_id?: string | null;
   confidence_note?: string | null;
@@ -1257,6 +1281,11 @@ export interface Lead {
   // offline conversion import matches booked studio visits back to
   // the ad click via gclid (RESLU-Spec-Lead-Intake.md).
   project_type: string | null;
+  // Internal, checked classification used to choose the project's
+  // Timeline and contract payment templates. Kept separate from the
+  // verbatim website answer above.
+  project_type_code: ProjectType | null;
+  project_subtype: ProjectSubtype | null;
   message: string | null;
   page: string | null;
   gclid: string | null;
@@ -1314,6 +1343,8 @@ export interface CreateLeadInput {
   construction_start?: string | null;
   construction_end?: string | null;
   notes?: string | null;
+  project_type_code?: ProjectType | null;
+  project_subtype?: ProjectSubtype | null;
 }
 
 /** body accepted by PATCH /api/leads/[id]. Includes every editable
@@ -1342,6 +1373,8 @@ export interface PatchLeadInput {
   construction_start?: string | null;
   construction_end?: string | null;
   notes?: string | null;
+  project_type_code?: ProjectType | null;
+  project_subtype?: ProjectSubtype | null;
 }
 
 /** body accepted by POST /api/leads/[id]/stage. */

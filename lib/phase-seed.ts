@@ -1,6 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { computeUmbrellaSeedSpan, FALLBACK_PHASE_TEMPLATE, FALLBACK_PHASE_TASK_TEMPLATES } from "@/lib/phase-template";
+import { computeUmbrellaSeedSpan, FALLBACK_PHASE_TASK_TEMPLATES } from "@/lib/phase-template";
+import { resolveProjectPhaseTemplates, templateForProjectType } from "@/lib/project-templates";
 import type { PhaseTaskTemplatesMap } from "@/types/board-cockpit";
+import { alignUnmappedCostSectionsToTimeline } from "@/lib/finance/project-phase-alignment";
 
 const SORT_STEP = 1000;
 const TASK_SORT_STEP = 1000;
@@ -26,8 +28,10 @@ const TASK_SORT_STEP = 1000;
  * manually built phases for before either "first visit" happened is
  * never clobbered.
  *
- * Reads app_settings('phase_template') (falls back to
- * FALLBACK_PHASE_TEMPLATE if that row is missing) and, for each
+ * Reads projects.project_type and app_settings('phase_template'), then selects
+ * that job type's editable template. A missing project type uses the legacy
+ * whole-home renovation default; this preserves rollout behaviour for existing
+ * unseeded projects without guessing or mutating their stored type. For each
  * template row, creates a schedule_phases row AND a linked
  * board_groups row in the same pass — the unification invariant
  * applied at seed time (see app/api/projects/[id]/phases/route.ts's
@@ -76,17 +80,20 @@ export async function seedPhaseTemplateIfEmpty(
     .select("id", { count: "exact", head: true })
     .eq("project_id", projectId)
     .is("deleted_at", null);
-  if ((count ?? 0) > 0) return;
+  if ((count ?? 0) > 0) {
+    await alignUnmappedCostSectionsToTimeline(supabase, projectId);
+    return;
+  }
 
-  const { data: settingsRow } = await supabase
-    .from("app_settings")
-    .select("value")
-    .eq("key", "phase_template")
-    .maybeSingle();
+  const [{ data: project }, { data: settingsRow }] = await Promise.all([
+    supabase.from("projects").select("project_type").eq("id", projectId).maybeSingle(),
+    supabase.from("app_settings").select("value").eq("key", "phase_template").maybeSingle(),
+  ]);
 
-  const template =
-    (settingsRow?.value as { name: string; kind: "phase" | "umbrella" }[] | undefined) ??
-    FALLBACK_PHASE_TEMPLATE;
+  const template = templateForProjectType(
+    resolveProjectPhaseTemplates(settingsRow?.value),
+    project?.project_type
+  );
   if (!template.length) return;
 
   // Board cockpit round — phase task templates (app_settings
@@ -139,17 +146,25 @@ export async function seedPhaseTemplateIfEmpty(
   }
 
   const umbrellaSpan = computeUmbrellaSeedSpan([]);
-  const ordinaryStart = new Date(umbrellaSpan.end_date + "T00:00:00Z");
-  ordinaryStart.setUTCDate(ordinaryStart.getUTCDate() + 1);
-  const ordinaryStartStr = ordinaryStart.toISOString().slice(0, 10);
-  const ordinaryEnd = new Date(ordinaryStart);
-  ordinaryEnd.setUTCDate(ordinaryEnd.getUTCDate() + 4);
-  const ordinaryEndStr = ordinaryEnd.toISOString().slice(0, 10);
+  const hasUmbrella = template.some((row) => row.kind === "umbrella");
+  const ordinaryBaseStart = new Date(
+    `${hasUmbrella ? umbrellaSpan.end_date : umbrellaSpan.start_date}T00:00:00Z`
+  );
+  if (hasUmbrella) ordinaryBaseStart.setUTCDate(ordinaryBaseStart.getUTCDate() + 1);
 
   let sort = 0;
   for (const row of template) {
     const isUmbrella = row.kind === "umbrella";
-    const span = isUmbrella ? umbrellaSpan : { start_date: ordinaryStartStr, end_date: ordinaryEndStr };
+    const ordinaryStart = new Date(ordinaryBaseStart);
+    ordinaryStart.setUTCDate(ordinaryStart.getUTCDate() + sort * 5);
+    const ordinaryEnd = new Date(ordinaryStart);
+    ordinaryEnd.setUTCDate(ordinaryEnd.getUTCDate() + 4);
+    const span = isUmbrella
+      ? umbrellaSpan
+      : {
+          start_date: ordinaryStart.toISOString().slice(0, 10),
+          end_date: ordinaryEnd.toISOString().slice(0, 10),
+        };
 
     const { data: phase, error: phaseError } = await supabase
       .from("schedule_phases")
@@ -192,6 +207,8 @@ export async function seedPhaseTemplateIfEmpty(
       await supabase.from("board_tasks").insert(taskRows);
     }
   }
+
+  await alignUnmappedCostSectionsToTimeline(supabase, projectId);
 }
 
 // ============================================================

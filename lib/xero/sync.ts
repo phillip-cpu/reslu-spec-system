@@ -3,6 +3,7 @@ import { getActiveXeroConnection, xeroGet } from "@/lib/xero/client";
 import { xeroDate, xeroTimestamp } from "@/lib/xero/normalise";
 import { calculateBankSummaryBalance } from "@/lib/xero/bank-summary";
 import { pullXeroReport } from "@/lib/xero/reports";
+import { xeroReportAccountBalances } from "@/lib/xero/report-account-balances";
 import type { XeroSyncResult } from "@/types/xero";
 
 type XeroRecord = Record<string, unknown>;
@@ -66,6 +67,8 @@ function accountRow(connectionId: string, account: XeroRecord) {
     code: typeof account.Code === "string" ? account.Code : null,
     name: String(account.Name ?? "Unnamed account"),
     bank_account_type: typeof account.BankAccountType === "string" ? account.BankAccountType : null,
+    account_type: typeof account.Type === "string" ? account.Type : null,
+    account_class: typeof account.Class === "string" ? account.Class : null,
     status: typeof account.Status === "string" ? account.Status : null,
     raw_json: account,
     synced_at: new Date().toISOString(),
@@ -112,11 +115,12 @@ export async function syncXeroReadModel(triggeredBy: string): Promise<XeroSyncRe
 
   try {
     const today = new Date().toISOString().slice(0, 10);
-    const [invoices, payments, accountBody, bankSummary] = await Promise.all([
+    const [invoices, payments, accountBody, bankSummary, balanceSheet] = await Promise.all([
       fetchAll(connection, "Invoices", "Invoices"),
       fetchAll(connection, "Payments", "Payments"),
       xeroGet<{ Accounts?: XeroRecord[] }>(connection, "api.xro/2.0/Accounts"),
       pullXeroReport({ report: "bank_summary", fromDate: today, toDate: today }),
+      pullXeroReport({ report: "balance_sheet", date: today }),
     ]);
     const invoiceRows = invoices
       .filter((row) => row.InvoiceID && (row.Type === "ACCREC" || row.Type === "ACCPAY"))
@@ -133,6 +137,35 @@ export async function syncXeroReadModel(triggeredBy: string): Promise<XeroSyncRe
       report,
       accountRows.map((row) => ({ name: row.name, bankAccountType: row.bank_account_type }))
     );
+    const balanceSheetReport = balanceSheet.reports[0];
+    if (!balanceSheetReport) throw new Error("Xero Balance Sheet returned no report");
+    const bankBalanceByName = new Map(
+      cash.accountBalances.map((row) => [row.name, row.closingBalance])
+    );
+    const liabilityBalanceByName = new Map(
+      xeroReportAccountBalances(
+        balanceSheetReport,
+        accountRows
+          .filter((row) => row.account_class?.toUpperCase() === "LIABILITY")
+          .map((row) => row.name)
+      ).map((row) => [row.name, row.balance])
+    );
+    const accountRowsWithBalances = accountRows.map((row) => {
+      const bankBalance = bankBalanceByName.get(row.name);
+      const liabilityBalance = liabilityBalanceByName.get(row.name);
+      const currentBalance = bankBalance ?? liabilityBalance ?? null;
+      return {
+        ...row,
+        current_balance: currentBalance,
+        balance_as_of: currentBalance === null ? null : today,
+        balance_source: bankBalance !== undefined
+          ? "bank_summary"
+          : liabilityBalance !== undefined
+            ? "balance_sheet"
+            : null,
+        balance_synced_at: currentBalance === null ? null : new Date().toISOString(),
+      };
+    });
 
     for (let index = 0; index < invoiceRows.length; index += 500) {
       const { error } = await service
@@ -146,10 +179,10 @@ export async function syncXeroReadModel(triggeredBy: string): Promise<XeroSyncRe
         .upsert(paymentRows.slice(index, index + 500), { onConflict: "connection_id,xero_payment_id" });
       if (error) throw new Error(error.message);
     }
-    for (let index = 0; index < accountRows.length; index += 500) {
+    for (let index = 0; index < accountRowsWithBalances.length; index += 500) {
       const { error } = await service
         .from("xero_bank_accounts")
-        .upsert(accountRows.slice(index, index + 500), { onConflict: "connection_id,xero_account_id" });
+        .upsert(accountRowsWithBalances.slice(index, index + 500), { onConflict: "connection_id,xero_account_id" });
       if (error) throw new Error(error.message);
     }
     const { error: cashError } = await service.from("xero_cash_snapshots").upsert({

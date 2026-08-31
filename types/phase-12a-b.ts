@@ -260,6 +260,7 @@ export type MyWorkItemKind =
   // set (sent_at's date), so this kind always lands in "overdue", never
   // "no_date" — same shape as trade_booking_followup above.
   | "proposal_followup"
+  | "supplier_quote_followup"
   // QA fix round (r27) item 12 — "wire the dead attention aggregator":
   // GET /api/projects/[id]/attention derives two groups
   // (ordering_due + missing_lead_times) but had ZERO callers anywhere

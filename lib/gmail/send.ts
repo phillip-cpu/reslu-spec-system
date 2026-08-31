@@ -23,6 +23,12 @@ export interface SendResult {
   provider_thread_id?: string;
 }
 
+export interface EmailAttachment {
+  filename: string;
+  contentType: string;
+  content: Buffer;
+}
+
 function creds() {
   const clientId = process.env.GMAIL_CLIENT_ID;
   const clientSecret = process.env.GMAIL_CLIENT_SECRET;
@@ -62,6 +68,54 @@ function toBase64Url(str: string): string {
     .replace(/=+$/, "");
 }
 
+
+function encodeHeader(value: string): string {
+  return `=?UTF-8?B?${Buffer.from(value, "utf8").toString("base64")}?=`;
+}
+
+function buildRawMessage(input: {
+  to: string[];
+  cc: string[];
+  subject: string;
+  body: string;
+  attachments: EmailAttachment[];
+}): string {
+  const headers = [
+    `From: ${SENDER}`,
+    `To: ${input.to.join(", ")}`,
+    ...(input.cc.length ? [`Cc: ${input.cc.join(", ")}`] : []),
+    `Subject: ${encodeHeader(input.subject)}`,
+    "MIME-Version: 1.0",
+  ];
+  if (input.attachments.length === 0) {
+    return [...headers, 'Content-Type: text/plain; charset="UTF-8"', "Content-Transfer-Encoding: base64", "", Buffer.from(input.body, "utf8").toString("base64")].join("\r\n");
+  }
+
+  const boundary = `reslu-${crypto.randomUUID()}`;
+  const parts = [
+    ...headers,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    "Content-Transfer-Encoding: base64",
+    "",
+    Buffer.from(input.body, "utf8").toString("base64"),
+  ];
+  for (const attachment of input.attachments) {
+    parts.push(
+      `--${boundary}`,
+      `Content-Type: ${attachment.contentType || "application/octet-stream"}; name="${attachment.filename.replace(/["\r\n]/g, "")}"`,
+      `Content-Disposition: attachment; filename="${attachment.filename.replace(/["\r\n]/g, "")}"`,
+      "Content-Transfer-Encoding: base64",
+      "",
+      attachment.content.toString("base64")
+    );
+  }
+  parts.push(`--${boundary}--`, "");
+  return parts.join("\r\n");
+}
+
 /**
  * Sends a plain-text email from the shared RESLU/Aria mailbox. Never
  * throws for the "not configured" case — returns { skipped: true }
@@ -76,11 +130,13 @@ export async function sendTeamEmail({
   cc = [],
   subject,
   body,
+  attachments = [],
 }: {
   to: string[];
   cc?: string[];
   subject: string;
   body: string;
+  attachments?: EmailAttachment[];
 }): Promise<SendResult> {
   const c = creds();
   if (!c) return { skipped: true, reason: "Gmail credentials not configured" };
@@ -88,20 +144,11 @@ export async function sendTeamEmail({
 
   const accessToken = await getAccessToken(c);
 
-  const raw = toBase64Url(
-    [
-      `From: ${SENDER}`,
-      `To: ${to.join(", ")}`,
-      ...(cc.length ? [`Cc: ${cc.join(", ")}`] : []),
-      // RFC 2047 encoded-word: subjects with em-dashes/accents arrive
-      // garbled ("â€”") in some clients if sent raw. Always base64-encode.
-      `Subject: =?UTF-8?B?${Buffer.from(subject, "utf8").toString("base64")}?=`,
-      "MIME-Version: 1.0",
-      'Content-Type: text/plain; charset="UTF-8"',
-      "",
-      body,
-    ].join("\r\n")
-  );
+  const totalBytes = attachments.reduce((sum, attachment) => sum + attachment.content.byteLength, 0);
+  if (totalBytes > 20 * 1024 * 1024) {
+    throw new Error("Email attachments exceed the 20 MB request limit");
+  }
+  const raw = toBase64Url(buildRawMessage({ to, cc, subject, body, attachments }));
 
   const res = await fetch(
     "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",

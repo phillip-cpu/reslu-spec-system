@@ -6,6 +6,15 @@
 # Build/deps are reinstalled/rebuilt by Vercel.
 node_modules
 .next
+.venv-email-ingest
+mcp/node_modules
+mcp/.venv-whisper
+mcp/.whisper-cache
+
+# Native build output is not part of the Next.js deployment.
+ios/DerivedData
+ios/RESLU/Packages/WebRTC/WebRTC.xcframework
+ios/RESLU/Packages/WebRTC/WebRTC-M151.xcframework.zip*
 
 # Local scratch
 *.log

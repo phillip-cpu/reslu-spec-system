@@ -3,7 +3,13 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import clsx from "clsx";
-import { LEAD_STAGES, type Lead, type LeadStageEvent, type PatchLeadInput } from "@/types";
+import { LEAD_STAGES, type Lead, type LeadStageEvent, type PatchLeadInput, type ProjectSubtype, type ProjectType } from "@/types";
+import {
+  PROJECT_SUBTYPE_LABELS,
+  PROJECT_TYPE_LABELS,
+  PROJECT_TYPES,
+  SINGLE_ROOM_PROJECT_SUBTYPES,
+} from "@/lib/project-templates";
 import { googleCalendarUrl } from "@/lib/ics";
 import { AddToCalendarMenu } from "@/components/shared/AddToCalendarMenu";
 import type { InviteeOption } from "@/types/phase-small-round";
@@ -157,6 +163,8 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
       design_end: draft.design_end,
       construction_start: draft.construction_start,
       construction_end: draft.construction_end,
+      project_type_code: draft.project_type_code,
+      project_subtype: draft.project_subtype,
       // Migration 030 round: leads.notes is no longer editable via this
       // panel — the attributed lead_notes feed (LeadNotes, rendered
       // below) replaces it as the editable surface. Deliberately NOT
@@ -296,6 +304,42 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
                 <option value="DIRECT">DIRECT</option>
               </select>
             </label>
+            <label className="block">
+              <span className={labelClass}>Project type</span>
+              <select
+                value={draft.project_type_code ?? ""}
+                onChange={(e) => {
+                  const value = (e.target.value || null) as ProjectType | null;
+                  setDraft((current) => ({
+                    ...current,
+                    project_type_code: value,
+                    project_subtype: null,
+                  }));
+                  setDirty(true);
+                }}
+                className={inputClass}
+              >
+                <option value="">Not confirmed</option>
+                {PROJECT_TYPES.map((value) => (
+                  <option key={value} value={value}>{PROJECT_TYPE_LABELS[value]}</option>
+                ))}
+              </select>
+            </label>
+            {draft.project_type_code === "single_room_renovation" && (
+              <label className="block">
+                <span className={labelClass}>Room type</span>
+                <select
+                  value={draft.project_subtype ?? ""}
+                  onChange={(e) => setField("project_subtype", (e.target.value || null) as ProjectSubtype)}
+                  className={inputClass}
+                >
+                  <option value="">Select room</option>
+                  {SINGLE_ROOM_PROJECT_SUBTYPES.map((value) => (
+                    <option key={value} value={value}>{PROJECT_SUBTYPE_LABELS[value]}</option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="block">
               <span className={labelClass}>Email</span>
               <input

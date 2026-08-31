@@ -306,7 +306,7 @@ processing ranged from 13.8 to 44.1 seconds, so the Stage 3 latency gate is not
 met. The next candidate requests the fixed acknowledgement as an independent
 out-of-band Realtime audio response immediately on speech stop, rather than
 waiting for the default response to finish choosing the RESLU agent tool. It
-also uses high semantic-VAD eagerness and cancels the acknowledgement by its
+also uses medium semantic-VAD eagerness and cancels the acknowledgement by its
 own response id so interruption and the authoritative Aria/Marco answer remain
 independent.
 

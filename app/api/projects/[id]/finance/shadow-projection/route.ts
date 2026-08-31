@@ -10,6 +10,10 @@ import { calculateShadowProjection } from "@/lib/finance/projection";
 import { isIsoDate } from "@/lib/finance/readiness";
 import { buildSectionForecastDates } from "@/lib/finance/schedule-cost-timing";
 import { includesConstructionCosts } from "@/lib/finance/construction-cost-eligibility";
+import {
+  reconcileSupplierInvoiceActuals,
+  type SupplierCashInvoice,
+} from "@/lib/finance/supplier-actuals";
 import { createClient } from "@/lib/supabase/server";
 import type { FinanceShadowProjectionRequest, ProjectFinanceProfile } from "@/types/finance";
 import type { FinanceEstimateSnapshot } from "@/lib/finance/baseline";
@@ -98,6 +102,8 @@ export async function POST(
     { data: costSections, error: costSectionError },
     { data: clientInvoices, error: invoiceError },
     { data: contractVariations, error: contractVariationError },
+    { data: supplierInvoices, error: supplierInvoiceError },
+    { data: items, error: itemError },
   ] = await Promise.all([
     supabase.from("projects").select("id,project_stage").eq("id", projectId).maybeSingle(),
     supabase
@@ -139,10 +145,20 @@ export async function POST(
       .eq("project_id", projectId)
       .eq("status", "active")
       .is("deleted_at", null),
+    supabase
+      .from("invoices")
+      .select("id,project_id,supplier,invoice_number,invoice_date,due_date,amount_ex_gst,gst,total,status,payment_status,amount_paid,paid_at,proposed_match_type,proposed_match_id,invoice_allocations(id,match_type,match_id,amount_ex_gst)")
+      .eq("project_id", projectId)
+      .eq("status", "approved"),
+    supabase
+      .from("items")
+      .select("id,category")
+      .eq("project_id", projectId)
+      .is("deleted_at", null),
   ]);
 
   if (projectError || !project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
-  const readError = profileError ?? estimateError ?? billingError ?? scheduleError ?? phaseError ?? costSectionError ?? invoiceError ?? contractVariationError;
+  const readError = profileError ?? estimateError ?? billingError ?? scheduleError ?? phaseError ?? costSectionError ?? invoiceError ?? contractVariationError ?? supplierInvoiceError ?? itemError;
   if (readError) return NextResponse.json({ error: readError.message }, { status: 500 });
   if (!profile) {
     return NextResponse.json(
@@ -184,7 +200,17 @@ export async function POST(
       invoices: (clientInvoices ?? []) as ClientInvoice[],
       contractVariations: (contractVariations ?? []) as ClientContractVariation[],
     });
-    const contributions = [...estimateContributions, ...clientClaimContributions];
+    const supplierReconciliation = reconcileSupplierInvoiceActuals({
+      contributions: estimateContributions,
+      invoices: (supplierInvoices ?? []) as unknown as SupplierCashInvoice[],
+      itemCategories: Object.fromEntries(
+        (items ?? []).map((item) => [item.id, item.category || "Uncategorised"])
+      ),
+    });
+    const contributions = [
+      ...supplierReconciliation.contributions,
+      ...clientClaimContributions,
+    ];
     const projection = calculateShadowProjection({
       asOfDate: body.as_of_date,
       openingCashMinor,
@@ -203,6 +229,7 @@ export async function POST(
         schedule_link_count: Object.keys(sectionDates).length,
         client_claim_count: clientClaimContributions.length,
         construction_costs_included: constructionCostsIncluded,
+        reconciled_supplier_invoice_count: supplierReconciliation.includedInvoices,
         opening_cash_source:
           body.opening_cash_minor === undefined ? "not_configured" : "request_preview",
       },

@@ -15,9 +15,19 @@ import { generateRecurringContributions } from "@/lib/finance/recurrence";
 import { isIsoDate } from "@/lib/finance/readiness";
 import { buildSectionForecastDates } from "@/lib/finance/schedule-cost-timing";
 import { includesConstructionCosts } from "@/lib/finance/construction-cost-eligibility";
+import { summarizeCreditLiquidity } from "@/lib/finance/liquidity";
+import {
+  cashCommitmentContributions,
+  estimateAllowanceSummary,
+} from "@/lib/finance/scenarios";
+import {
+  reconcileSupplierInvoiceActuals,
+  type SupplierCashInvoice,
+} from "@/lib/finance/supplier-actuals";
 import { applyXeroInvoiceActuals, type CachedXeroInvoice, type CachedXeroPayment } from "@/lib/finance/xero-actuals";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { hasXeroAccess } from "@/lib/xero/access";
+import { calculateBankSummaryBalance } from "@/lib/xero/bank-summary";
 import type {
   FinanceCockpitProject,
   FinanceConfidence,
@@ -32,6 +42,7 @@ import type {
   ClientPaymentScheduleItem,
   ClientSchedulePhase,
 } from "@/types/client-invoices";
+import type { XeroReport } from "@/types/xero";
 
 export const runtime = "nodejs";
 
@@ -60,6 +71,8 @@ type ForecastLineRow = {
   description: string;
   dimension: Record<string, unknown> | null;
   planned_net_minor: number | string;
+  planned_tax_minor: number | string | null;
+  planned_gross_minor: number | string | null;
   committed_net_minor: number | string;
   actual_accrued_net_minor: number | string;
   actual_paid_net_minor: number | string;
@@ -98,6 +111,17 @@ function safeMinor(value: number | string, label: string): number {
   return parsed;
 }
 
+function normaliseAccountName(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function grossMinorFromNet(value: number | string, label: string): number {
+  const net = safeMinor(value, label);
+  const gross = Math.round(net * 1.1);
+  if (!Number.isSafeInteger(gross)) throw new Error(`${label} gross is outside safe minor-unit range`);
+  return gross;
+}
+
 function toContribution(
   line: ForecastLineRow,
   projectName: string,
@@ -112,13 +136,12 @@ function toContribution(
     contributionKey: line.contribution_key,
     direction: line.direction,
     description: line.description,
-    plannedMinor: safeMinor(line.planned_net_minor, `${line.id}.planned`),
-    committedMinor: safeMinor(line.committed_net_minor, `${line.id}.committed`),
-    actualAccruedMinor: safeMinor(
-      line.actual_accrued_net_minor,
-      `${line.id}.actual_accrued`
-    ),
-    actualPaidMinor: safeMinor(line.actual_paid_net_minor, `${line.id}.actual_paid`),
+    plannedMinor: line.planned_gross_minor === null
+      ? grossMinorFromNet(line.planned_net_minor, `${line.id}.planned`)
+      : safeMinor(line.planned_gross_minor, `${line.id}.planned_gross`),
+    committedMinor: grossMinorFromNet(line.committed_net_minor, `${line.id}.committed`),
+    actualAccruedMinor: grossMinorFromNet(line.actual_accrued_net_minor, `${line.id}.actual_accrued`),
+    actualPaidMinor: grossMinorFromNet(line.actual_paid_net_minor, `${line.id}.actual_paid`),
     plannedDate: scheduleDate ?? line.planned_date,
     committedDate: line.committed_date,
     actualDueDate: line.actual_due_date,
@@ -134,6 +157,8 @@ function toContribution(
       source_version_id: line.source_version_id,
       dimension: line.dimension ?? {},
       timing_source: scheduleDate ? "construction_schedule" : "baseline",
+      cash_basis: "gross_inc_gst",
+      net_minor: safeMinor(line.planned_net_minor, `${line.id}.planned_net_trace`),
     },
   };
 }
@@ -200,7 +225,21 @@ export async function GET(request: NextRequest) {
     last_sync_completed_at: string | null;
     last_sync_error: string | null;
   } | null = null;
-  let xeroCashSnapshot: { cash_balance: number | string; as_of_date: string } | null = null;
+  let xeroCashSnapshot: {
+    cash_balance: number | string;
+    credit_balance: number | string;
+    as_of_date: string;
+    raw_json: { report?: XeroReport };
+  } | null = null;
+  let xeroBankAccounts: Array<{
+    id: string;
+    name: string;
+    bank_account_type: string | null;
+    account_class: string | null;
+    current_balance: number | string | null;
+    balance_as_of: string | null;
+    balance_source: "bank_summary" | "balance_sheet" | null;
+  }> = [];
   let xeroInvoices: CachedXeroInvoice[] = [];
   let xeroPayments: CachedXeroPayment[] = [];
   if (canUseXero) {
@@ -215,10 +254,10 @@ export async function GET(request: NextRequest) {
     }
     xeroConnection = connection;
     if (connection) {
-      const [cashResult, invoiceResult, paymentResult] = await Promise.all([
+      const [cashResult, invoiceResult, paymentResult, accountResult] = await Promise.all([
         service
           .from("xero_cash_snapshots")
-          .select("cash_balance,as_of_date")
+          .select("cash_balance,credit_balance,as_of_date,raw_json")
           .eq("connection_id", connection.id)
           .lte("as_of_date", asOfDate)
           .order("as_of_date", { ascending: false })
@@ -232,14 +271,20 @@ export async function GET(request: NextRequest) {
           .from("xero_payments")
           .select("xero_invoice_id,payment_date,status")
           .eq("connection_id", connection.id),
+        service
+          .from("xero_bank_accounts")
+          .select("id,name,bank_account_type,account_class,current_balance,balance_as_of,balance_source")
+          .eq("connection_id", connection.id)
+          .eq("status", "ACTIVE"),
       ]);
-      const xeroReadError = cashResult.error ?? invoiceResult.error ?? paymentResult.error;
+      const xeroReadError = cashResult.error ?? invoiceResult.error ?? paymentResult.error ?? accountResult.error;
       if (xeroReadError) {
         return NextResponse.json({ error: xeroReadError.message }, { status: 500 });
       }
       xeroCashSnapshot = cashResult.data;
       xeroInvoices = (invoiceResult.data ?? []) as CachedXeroInvoice[];
       xeroPayments = (paymentResult.data ?? []) as CachedXeroPayment[];
+      xeroBankAccounts = (accountResult.data ?? []) as typeof xeroBankAccounts;
     }
   }
 
@@ -264,21 +309,28 @@ export async function GET(request: NextRequest) {
     const { data, error } = await supabase
       .from("finance_forecast_lines")
       .select(
-        "id,baseline_id,project_id,contribution_key,direction,source_type,source_record_id,source_version_id,description,dimension,planned_net_minor,committed_net_minor,actual_accrued_net_minor,actual_paid_net_minor,planned_date,committed_date,actual_due_date,actual_paid_date,confidence"
+        "id,baseline_id,project_id,contribution_key,direction,source_type,source_record_id,source_version_id,description,dimension,planned_net_minor,planned_tax_minor,planned_gross_minor,committed_net_minor,actual_accrued_net_minor,actual_paid_net_minor,planned_date,committed_date,actual_due_date,actual_paid_date,confidence"
       )
       .in("baseline_id", baselineIds);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     lines = (data ?? []) as unknown as ForecastLineRow[];
   }
 
-  const { data: rawRecurring, error: recurringError } = await supabase
-    .from("finance_recurring_commitments")
-    .select("*")
-    .eq("status", "active")
-    .order("first_due_date", { ascending: true });
-  if (recurringError) {
-    return NextResponse.json({ error: recurringError.message }, { status: 500 });
-  }
+  const [recurringResult, facilityResult] = await Promise.all([
+    supabase
+      .from("finance_recurring_commitments")
+      .select("*")
+      .eq("status", "active")
+      .order("first_due_date", { ascending: true }),
+    supabase
+      .from("finance_credit_facilities")
+      .select("facility_type,credit_limit_minor,xero_bank_account_id")
+      .eq("status", "active"),
+  ]);
+  const recurringError = recurringResult.error ?? facilityResult.error;
+  if (recurringError) return NextResponse.json({ error: recurringError.message }, { status: 500 });
+  const rawRecurring = recurringResult.data;
+  const rawFacilities = facilityResult.data ?? [];
 
   const { data: rawBillingProfiles, error: billingProfileError } = await supabase
     .from("client_billing_profiles")
@@ -301,6 +353,8 @@ export async function GET(request: NextRequest) {
   let estimateVersions: EstimateVersionRow[] = [];
   let costSections: CostSectionForecastRow[] = [];
   let contractVariations: ClientContractVariation[] = [];
+  let supplierInvoices: SupplierCashInvoice[] = [];
+  let itemCategories: Record<string, string> = {};
   if (companyProjectIds.length > 0) {
     const [
       scheduleResult,
@@ -310,6 +364,8 @@ export async function GET(request: NextRequest) {
       estimateResult,
       costSectionResult,
       contractVariationResult,
+      supplierInvoiceResult,
+      itemResult,
     ] = await Promise.all([
       supabase
         .from("client_payment_schedule")
@@ -348,6 +404,16 @@ export async function GET(request: NextRequest) {
         .in("project_id", companyProjectIds)
         .eq("status", "active")
         .is("deleted_at", null),
+      supabase
+        .from("invoices")
+        .select("id,project_id,supplier,invoice_number,invoice_date,due_date,amount_ex_gst,gst,total,status,payment_status,amount_paid,paid_at,proposed_match_type,proposed_match_id,invoice_allocations(id,match_type,match_id,amount_ex_gst)")
+        .in("project_id", companyProjectIds)
+        .eq("status", "approved"),
+      supabase
+        .from("items")
+        .select("id,category")
+        .in("project_id", companyProjectIds)
+        .is("deleted_at", null),
     ]);
     const companyReadError =
       scheduleResult.error ??
@@ -357,7 +423,7 @@ export async function GET(request: NextRequest) {
       estimateResult.error ??
       costSectionResult.error;
       // keep the first read error deterministic across all company sources
-    const allCompanyReadError = companyReadError ?? contractVariationResult.error;
+    const allCompanyReadError = companyReadError ?? contractVariationResult.error ?? supplierInvoiceResult.error ?? itemResult.error;
     if (allCompanyReadError) {
       return NextResponse.json({ error: allCompanyReadError.message }, { status: 500 });
     }
@@ -368,6 +434,10 @@ export async function GET(request: NextRequest) {
     estimateVersions = (estimateResult.data ?? []) as unknown as EstimateVersionRow[];
     costSections = (costSectionResult.data ?? []) as CostSectionForecastRow[];
     contractVariations = (contractVariationResult.data ?? []) as ClientContractVariation[];
+    supplierInvoices = (supplierInvoiceResult.data ?? []) as unknown as SupplierCashInvoice[];
+    itemCategories = Object.fromEntries(
+      (itemResult.data ?? []).map((item) => [item.id, item.category || "Uncategorised"])
+    );
   }
 
   try {
@@ -446,10 +516,15 @@ export async function GET(request: NextRequest) {
         });
       }
     }
-    const projectContributions = [
+    const plannedProjectContributions = [
       ...eligibleBaselineContributions,
       ...connectedEstimateContributions,
     ];
+    const supplierReconciliation = reconcileSupplierInvoiceActuals({
+      contributions: plannedProjectContributions,
+      invoices: supplierInvoices,
+      itemCategories,
+    });
     const recurringCommitments = ((rawRecurring ?? []) as Record<string, unknown>[]).map(
       (row) => ({ ...row, amount_minor: safeMinor(row.amount_minor as number | string, `${String(row.id)}.amount`) }) as unknown as FinanceRecurringCommitment
     );
@@ -466,12 +541,24 @@ export async function GET(request: NextRequest) {
       contractVariations,
     });
     const xeroActuals = applyXeroInvoiceActuals({
-      contributions: clientClaimPortfolio.contributions,
+      contributions: [
+        ...supplierReconciliation.contributions,
+        ...clientClaimPortfolio.contributions,
+      ],
       clientInvoices,
+      supplierInvoices,
       xeroInvoices,
       xeroPayments,
     });
-    const clientClaimContributions = xeroActuals.contributions;
+    const reconciledCashContributions = xeroActuals.contributions;
+    const clientClaimContributions = reconciledCashContributions.filter(
+      (contribution) =>
+        contribution.sourceTrace?.source_type === "client_claim" ||
+        (contribution.sourceTrace?.source_type === "xero_invoice" && contribution.direction === "inflow")
+    );
+    const projectContributions = reconciledCashContributions.filter(
+      (contribution) => contribution.direction === "outflow"
+    );
     const reconciledClientClaims = clientClaimContributions.filter(
       (contribution) => contribution.sourceTrace?.source_type === "client_claim"
     );
@@ -484,8 +571,7 @@ export async function GET(request: NextRequest) {
       0
     );
     const contributions = [
-      ...projectContributions,
-      ...clientClaimContributions,
+      ...reconciledCashContributions,
       ...recurringContributions,
     ];
     const xeroCashMinor = xeroCashSnapshot
@@ -496,13 +582,65 @@ export async function GET(request: NextRequest) {
     }
     const openingCashMinor = requestedOpeningCashMinor ?? xeroCashMinor ?? 0;
     const shadowEnabled = financeShadowProjectionEnabled();
-    const projection = shadowEnabled
+    const planningProjection = shadowEnabled
       ? calculateShadowProjection({
           asOfDate,
           openingCashMinor,
           contributions,
         })
       : null;
+    const cashProjection = shadowEnabled
+      ? calculateShadowProjection({
+          asOfDate,
+          openingCashMinor,
+          contributions: cashCommitmentContributions(contributions),
+        })
+      : null;
+    const bankSummaryBalances = xeroCashSnapshot?.raw_json?.report
+      ? calculateBankSummaryBalance(
+          xeroCashSnapshot.raw_json.report,
+          xeroBankAccounts.map((account) => ({
+            name: account.name,
+            bankAccountType: account.bank_account_type,
+          }))
+        ).accountBalances
+      : [];
+    const balanceByName = new Map(
+      bankSummaryBalances.map((balance) => [
+        normaliseAccountName(balance.name),
+        Math.round(balance.closingBalance * 100),
+      ])
+    );
+    const accountById = new Map(xeroBankAccounts.map((account) => [account.id, account]));
+    const linkedFacilities = rawFacilities.map((row) => {
+      const account = accountById.get(String(row.xero_bank_account_id ?? ""));
+      if (!account) throw new Error("An active credit facility is not linked to its Xero account");
+      const bankReportBalanceMinor = balanceByName.get(normaliseAccountName(account.name));
+      const cachedBalanceMinor = account.current_balance === null
+        ? null
+        : Math.round(Number(account.current_balance) * 100);
+      const xeroBalanceMinor = bankReportBalanceMinor ?? cachedBalanceMinor;
+      if (xeroBalanceMinor !== null && !Number.isSafeInteger(xeroBalanceMinor)) {
+        throw new Error(`${account.name} has no current Xero Bank Summary balance`);
+      }
+      const bankType = account.bank_account_type?.toUpperCase();
+      return {
+        facility_type: row.facility_type,
+        credit_limit_minor: safeMinor(row.credit_limit_minor, "credit_limit_minor"),
+        xero_bank_account_type: bankType === "BANK" || bankType === "CREDITCARD"
+          ? bankType
+          : "LIABILITY",
+        xero_balance_minor: xeroBalanceMinor,
+        xero_balance_source: bankReportBalanceMinor === undefined
+          ? account.balance_source
+          : "bank_summary" as const,
+      };
+    });
+    const { creditLimitMinor, creditDrawnMinor, availableCreditMinor } =
+      summarizeCreditLiquidity({ facilities: linkedFacilities });
+    const allowances = planningProjection
+      ? estimateAllowanceSummary(planningProjection)
+      : { totalMinor: 0, datedMinor: 0, undatedMinor: 0, overdueMinor: 0, itemCount: 0 };
 
     const costContributionsByProject = new Map<string, FinanceContributionInput[]>();
     for (const contribution of projectContributions) {
@@ -591,6 +729,7 @@ export async function GET(request: NextRequest) {
         xero_cash_as_of: xeroCashSnapshot?.as_of_date ?? null,
         xero_invoice_actuals: xeroActuals.includedInvoices,
         xero_matched_invoices: xeroActuals.matchedClientInvoices,
+        xero_matched_supplier_bills: xeroActuals.matchedSupplierInvoices,
         xero_unmatched_invoices: xeroActuals.unmatchedInvoices,
         calculated_at: new Date().toISOString(),
       },
@@ -605,6 +744,7 @@ export async function GET(request: NextRequest) {
         active_recurring_commitments: recurringCommitments.length,
         connected_client_claims: clientClaimPortfolio.contributions.length,
         connected_projects: clientClaimPortfolio.summary.projectCount,
+        reconciled_supplier_invoices: supplierReconciliation.includedInvoices,
       },
       client_claims_summary: {
         contracted_minor: clientClaimPortfolio.summary.contractedMinor,
@@ -623,8 +763,27 @@ export async function GET(request: NextRequest) {
         ),
         next_due_date: recurringContributions[0]?.plannedDate ?? null,
       },
+      liquidity_summary: {
+        bank_cash_minor: openingCashMinor,
+        credit_limit_minor: creditLimitMinor,
+        credit_drawn_minor: creditDrawnMinor,
+        available_credit_minor: availableCreditMinor,
+        available_liquidity_minor: openingCashMinor + availableCreditMinor,
+        committed_low_minor: cashProjection?.lowestCashMinor ?? openingCashMinor,
+        committed_liquidity_low_minor:
+          (cashProjection?.lowestCashMinor ?? openingCashMinor) + availableCreditMinor,
+      },
+      allowance_summary: {
+        total_minor: allowances.totalMinor,
+        dated_minor: allowances.datedMinor,
+        undated_minor: allowances.undatedMinor,
+        overdue_minor: allowances.overdueMinor,
+        item_count: allowances.itemCount,
+      },
       projects,
-      projection,
+      cash_projection: cashProjection,
+      planning_projection: planningProjection,
+      projection: cashProjection,
     });
   } catch (error) {
     return NextResponse.json(

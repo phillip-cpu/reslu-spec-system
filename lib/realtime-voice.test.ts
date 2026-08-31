@@ -28,7 +28,7 @@ test("session forces substantive turns through the existing RESLU agent", () => 
   assert.equal(session.max_output_tokens, 1024);
   assert.equal(session.reasoning.effort, "low");
   assert.equal(session.audio.input.turn_detection.type, "semantic_vad");
-  assert.equal(session.audio.input.turn_detection.eagerness, "high");
+  assert.equal(session.audio.input.turn_detection.eagerness, "medium");
   assert.equal(session.audio.input.turn_detection.interrupt_response, true);
   assert.equal(session.audio.input.transcription.model, "gpt-live-transcribe");
   assert.equal(session.audio.input.transcription.delay, "low");

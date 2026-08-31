@@ -4,6 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import { Header } from "@/components/layout/Header";
 import { ProjectTabs } from "@/components/projects/ProjectTabs";
 import { ProjectOverview } from "@/components/projects/ProjectOverview";
+import { ProjectTypeCard } from "@/components/projects/ProjectTypeCard";
 import { ProjectDataQualityPanel } from "@/components/projects/ProjectDataQualityPanel";
 import { ProjectWorkspace } from "@/components/items/ProjectWorkspace";
 import { MondayBoardPicker } from "@/components/items/MondayBoardPicker";
@@ -156,6 +157,12 @@ export default async function ProjectPage({
           />
         ) : (
           <div className="space-y-6">
+            <ProjectTypeCard
+              projectId={id}
+              initialProjectType={project.project_type ?? null}
+              initialProjectSubtype={project.project_subtype ?? null}
+              canEdit={isAdmin}
+            />
             {isAdmin && <ProjectDataQualityPanel projectId={id} />}
             <ProjectOverview projectId={id} isAdmin={isAdmin} />
           </div>

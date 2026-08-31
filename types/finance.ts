@@ -226,6 +226,70 @@ export interface FinanceRecurringCommitmentsResponse {
   };
 }
 
+export type FinanceCreditFacilityType =
+  | "overdraft"
+  | "credit_card"
+  | "line_of_credit"
+  | "other";
+
+export interface FinanceCreditFacility {
+  id: string;
+  name: string;
+  provider: string | null;
+  facility_type: FinanceCreditFacilityType;
+  xero_bank_account_id: string;
+  xero_account_name: string;
+  xero_bank_account_type: "BANK" | "CREDITCARD" | "LIABILITY";
+  xero_balance_minor: number | null;
+  xero_balance_as_of: string | null;
+  xero_balance_source: "bank_summary" | "balance_sheet" | null;
+  credit_limit_minor: number;
+  available_credit_minor: number;
+  interest_rate_bps: number | null;
+  status: "active" | "paused" | "closed";
+  notes: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SaveFinanceCreditFacilityRequest {
+  id?: string | null;
+  xero_bank_account_id: string;
+  name?: string;
+  provider?: string | null;
+  facility_type: FinanceCreditFacilityType;
+  credit_limit_minor: number;
+  interest_rate_bps?: number | null;
+  status: "active" | "paused" | "closed";
+  notes?: string | null;
+  expected_version?: number | null;
+  reason: string;
+}
+
+export interface FinanceXeroFacilityAccount {
+  id: string;
+  xero_account_id: string;
+  name: string;
+  bank_account_type: "BANK" | "CREDITCARD" | "LIABILITY";
+  balance_minor: number | null;
+  balance_as_of: string | null;
+  balance_source: "bank_summary" | "balance_sheet" | null;
+}
+
+export interface FinanceCreditFacilitiesResponse {
+  facilities: FinanceCreditFacility[];
+  xero_accounts: FinanceXeroFacilityAccount[];
+  can_edit: boolean;
+  summary: {
+    credit_limit_minor: number;
+    current_balance_minor: number;
+    available_credit_minor: number;
+    active_count: number;
+    xero_balance_as_of: string | null;
+  };
+}
+
 export interface FinanceContributionInput {
   contributionKey: string;
   direction: FinanceDirection;
@@ -335,6 +399,7 @@ export interface FinanceCockpitResponse {
     xero_cash_as_of: string | null;
     xero_invoice_actuals: number;
     xero_matched_invoices: number;
+    xero_matched_supplier_bills: number;
     xero_unmatched_invoices: number;
     calculated_at: string;
   };
@@ -345,6 +410,7 @@ export interface FinanceCockpitResponse {
     active_recurring_commitments: number;
     connected_client_claims: number;
     connected_projects: number;
+    reconciled_supplier_invoices: number;
   };
   client_claims_summary: {
     contracted_minor: number;
@@ -357,7 +423,26 @@ export interface FinanceCockpitResponse {
     projected_outflow_minor: number;
     next_due_date: string | null;
   };
+  liquidity_summary: {
+    bank_cash_minor: number;
+    credit_limit_minor: number;
+    credit_drawn_minor: number;
+    available_credit_minor: number;
+    available_liquidity_minor: number;
+    committed_low_minor: number;
+    committed_liquidity_low_minor: number;
+  };
+  allowance_summary: {
+    total_minor: number;
+    dated_minor: number;
+    undated_minor: number;
+    overdue_minor: number;
+    item_count: number;
+  };
   projects: FinanceCockpitProject[];
+  cash_projection: FinanceShadowProjection | null;
+  planning_projection: FinanceShadowProjection | null;
+  /** @deprecated Use cash_projection for the operating view. */
   projection: FinanceShadowProjection | null;
 }
 

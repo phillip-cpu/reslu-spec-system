@@ -1,5 +1,6 @@
 import type { ClientInvoice } from "@/types/client-invoices";
 import type { FinanceContributionInput } from "@/types/finance";
+import type { SupplierCashInvoice } from "./supplier-actuals";
 
 export interface CachedXeroInvoice {
   xero_invoice_id: string;
@@ -23,6 +24,7 @@ export interface CachedXeroPayment {
 export interface XeroActualContributionResult {
   contributions: FinanceContributionInput[];
   matchedClientInvoices: number;
+  matchedSupplierInvoices: number;
   unmatchedInvoices: number;
   includedInvoices: number;
 }
@@ -31,6 +33,22 @@ const INCLUDED_STATUSES = new Set(["AUTHORISED", "PAID"]);
 
 function normaliseInvoiceNumber(value: string | null | undefined): string {
   return (value ?? "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function normaliseName(value: string | null | undefined): string {
+  return (value ?? "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function apportionMinor(total: number, weights: number[]): number[] {
+  const weightTotal = weights.reduce((sum, value) => sum + Math.max(value, 0), 0);
+  if (weights.length === 0 || weightTotal <= 0) return weights.map(() => 0);
+  const exact = weights.map((weight) => total * Math.max(weight, 0) / weightTotal);
+  const result = exact.map(Math.floor);
+  const remainder = total - result.reduce((sum, value) => sum + value, 0);
+  const order = exact.map((value, index) => ({ index, fraction: value - Math.floor(value) }))
+    .sort((a, b) => b.fraction - a.fraction || a.index - b.index);
+  for (let index = 0; index < remainder; index += 1) result[order[index % order.length].index] += 1;
+  return result;
 }
 
 function dollarsToMinor(value: number | string | null): number {
@@ -49,6 +67,7 @@ function dollarsToMinor(value: number | string | null): number {
 export function applyXeroInvoiceActuals(input: {
   contributions: FinanceContributionInput[];
   clientInvoices: ClientInvoice[];
+  supplierInvoices?: SupplierCashInvoice[];
   xeroInvoices: CachedXeroInvoice[];
   xeroPayments: CachedXeroPayment[];
 }): XeroActualContributionResult {
@@ -66,6 +85,21 @@ export function applyXeroInvoiceActuals(input: {
       .map((invoice) => [normaliseInvoiceNumber(invoice.invoice_number), invoice] as const)
       .filter(([number]) => number)
   );
+  const supplierInvoicesByNumber = new Map<string, SupplierCashInvoice[]>();
+  for (const invoice of input.supplierInvoices ?? []) {
+    const number = normaliseInvoiceNumber(invoice.invoice_number);
+    if (!number) continue;
+    supplierInvoicesByNumber.set(number, [...(supplierInvoicesByNumber.get(number) ?? []), invoice]);
+  }
+  const contributionIndicesBySupplierInvoiceId = new Map<string, number[]>();
+  result.forEach((contribution, index) => {
+    const id = contribution.sourceTrace?.supplier_invoice_id;
+    if (typeof id !== "string") return;
+    contributionIndicesBySupplierInvoiceId.set(id, [
+      ...(contributionIndicesBySupplierInvoiceId.get(id) ?? []),
+      index,
+    ]);
+  });
   const paidDateByInvoiceId = new Map<string, string>();
   for (const payment of input.xeroPayments) {
     if (!payment.xero_invoice_id || !payment.payment_date || payment.status === "DELETED") continue;
@@ -76,6 +110,7 @@ export function applyXeroInvoiceActuals(input: {
   }
 
   let matchedClientInvoices = 0;
+  let matchedSupplierInvoices = 0;
   let unmatchedInvoices = 0;
   let includedInvoices = 0;
   for (const invoice of input.xeroInvoices) {
@@ -114,6 +149,40 @@ export function applyXeroInvoiceActuals(input: {
       }
     }
 
+    if (invoice.invoice_type === "ACCPAY") {
+      const candidates = supplierInvoicesByNumber.get(normaliseInvoiceNumber(invoice.invoice_number)) ?? [];
+      const contact = normaliseName(invoice.contact_name);
+      const supplierInvoice = candidates.find(
+        (candidate) => contact && normaliseName(candidate.supplier) === contact
+      ) ?? (!contact && candidates.length === 1 ? candidates[0] : undefined);
+      const indices = supplierInvoice
+        ? contributionIndicesBySupplierInvoiceId.get(supplierInvoice.id) ?? []
+        : [];
+      if (supplierInvoice && indices.length > 0) {
+        const weights = indices.map((index) => result[index].actualAccruedMinor ?? 0);
+        const accruedShares = apportionMinor(accruedMinor, weights);
+        const paidShares = apportionMinor(paidMinor, accruedShares);
+        indices.forEach((index, shareIndex) => {
+          const existing = result[index];
+          result[index] = {
+            ...existing,
+            actualAccruedMinor: accruedShares[shareIndex],
+            actualPaidMinor: paidShares[shareIndex],
+            actualDueDate: invoice.due_date ?? existing.actualDueDate,
+            actualPaidDate: paidShares[shareIndex] > 0 ? paidDate ?? existing.actualPaidDate : null,
+            confidence: "confirmed",
+            sourceTrace: {
+              ...(existing.sourceTrace ?? {}),
+              xero_invoice_id: invoice.xero_invoice_id,
+              xero_match: "supplier_invoice_number",
+            },
+          };
+        });
+        matchedSupplierInvoices += 1;
+        continue;
+      }
+    }
+
     unmatchedInvoices += 1;
     result.push({
       contributionKey: `xero:invoice:${invoice.xero_invoice_id}`,
@@ -137,5 +206,11 @@ export function applyXeroInvoiceActuals(input: {
     });
   }
 
-  return { contributions: result, matchedClientInvoices, unmatchedInvoices, includedInvoices };
+  return {
+    contributions: result,
+    matchedClientInvoices,
+    matchedSupplierInvoices,
+    unmatchedInvoices,
+    includedInvoices,
+  };
 }

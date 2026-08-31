@@ -6,6 +6,11 @@ import { nextJobNumber } from "@/lib/job-number";
 import { copyStandardItems } from "@/lib/library-items";
 import type { CreateProjectInput, ProjectWithCounts } from "@/types";
 import type { StandardItemIdsInput } from "@/types/round-d";
+import {
+  DEFAULT_PROJECT_TYPE,
+  isProjectType,
+  normaliseProjectSubtype,
+} from "@/lib/project-templates";
 
 /**
  * GET /api/projects
@@ -109,6 +114,15 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const projectType = isProjectType(body.project_type) ? body.project_type : DEFAULT_PROJECT_TYPE;
+  const projectSubtype = normaliseProjectSubtype(projectType, body.project_subtype);
+  if (projectType === "single_room_renovation" && !projectSubtype) {
+    return NextResponse.json(
+      { error: "Select a room type for a single-room renovation" },
+      { status: 400 }
+    );
+  }
+
   const explicitJobNumber = body.job_number?.trim() || null;
   // Captured outside insertProject() below — TS narrowing on `user`
   // (from the `if (!user)` guard above) doesn't propagate into a
@@ -125,6 +139,8 @@ export async function POST(request: NextRequest) {
         address: body.address?.trim() || null,
         monday_board_id: body.monday_board_id?.trim() || null,
         budget: body.budget ?? null,
+        project_type: projectType,
+        project_subtype: projectSubtype,
         created_by: createdBy,
         job_number: jobNumber,
       })

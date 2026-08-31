@@ -91,6 +91,12 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith("/trade-request/") ||
     pathname === "/api/trade-request" ||
     pathname.startsWith("/api/trade-request/") ||
+    // Supplier RFQ portal: singular token-gated request page and response API.
+    // Admin quote-package/request APIs use plural paths and remain protected.
+    pathname === "/quote-request" ||
+    pathname.startsWith("/quote-request/") ||
+    pathname === "/api/quote-request" ||
+    pathname.startsWith("/api/quote-request/") ||
     // Fee proposal phase (r23, migration 051): /proposal/[token]
     // (singular) is the public, token-gated client signing page (also
     // the Builder UI's own "Live preview" link, reachable before Send);

@@ -31,6 +31,7 @@ interface Props {
   approvedVariationsTotal: number;
   /** Week 7 — Estimate ↔ Schedule integration: every project measurement, for the link picker + resolving a linked line's display. */
   measurements: MeasurementWithGroup[];
+  onOpenQuoteRequests: () => void;
 }
 
 const QUOTE_STATUSES: { value: QuoteStatus; label: string }[] = [
@@ -67,6 +68,7 @@ export function EstimateView({
   onLinesReordered,
   approvedVariationsTotal,
   measurements,
+  onOpenQuoteRequests,
 }: Props) {
   const [markupDraft, setMarkupDraft] = useState<string | null>(null);
   const [savingMarkup, setSavingMarkup] = useState(false);
@@ -503,6 +505,8 @@ export function EstimateView({
                       markupPct={estimate.markup_pct}
                       onPatch={(patch) => patchLine(line, patch)}
                       onDelete={() => deleteLine(line)}
+                      quoteSummaries={estimate.quote_summaries[line.id] ?? []}
+                      onOpenQuoteRequests={onOpenQuoteRequests}
                       isDragging={draggingLine?.lineId === line.id}
                       dropEdge={
                         dropTarget?.sectionId === section.id && dropTarget.lineId === line.id
@@ -706,6 +710,8 @@ function LineRow({
   onDragEnd,
   onDragOver,
   onDrop,
+  quoteSummaries,
+  onOpenQuoteRequests,
 }: {
   line: CostLine;
   measurements: MeasurementWithGroup[];
@@ -722,6 +728,8 @@ function LineRow({
   onDragEnd: () => void;
   onDragOver: (event: React.DragEvent<HTMLTableRowElement>) => void;
   onDrop: (event: React.DragEvent<HTMLTableRowElement>) => void;
+  quoteSummaries: EstimateResponse["quote_summaries"][string];
+  onOpenQuoteRequests: () => void;
 }) {
   const [linkOpen, setLinkOpen] = useState(false);
   const [measurementLinkOpen, setMeasurementLinkOpen] = useState(false);
@@ -970,6 +978,11 @@ function LineRow({
               </span>
             </p>
           )}
+          {quoteSummaries.map((summary) => (
+            <button key={summary.package_id} type="button" onClick={onOpenQuoteRequests} className="mx-2 mb-1 block border border-sand px-1.5 py-0.5 text-left text-caption text-sand hover:bg-cream">
+              Quotes {summary.received_count}/{summary.request_count} · {summary.package_title}{summary.next_due ? ` · due ${summary.next_due}` : ""}
+            </button>
+          ))}
           {rowError && <p className="px-2 pb-1 text-caption text-red-700">⚠ {rowError}</p>}
         </td>
         <td className="w-24 px-0 py-0">

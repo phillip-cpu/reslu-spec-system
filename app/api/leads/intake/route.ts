@@ -5,6 +5,7 @@ import { reportError } from "@/lib/report-error";
 import { ASSET_BUCKET, slugFilename } from "@/lib/storage";
 import { sniffFileKind } from "@/lib/file-sniff";
 import type { Lead } from "@/types";
+import { inferProjectTypeFromText, inferSingleRoomSubtypeFromText } from "@/lib/project-templates";
 
 export const runtime = "nodejs";
 
@@ -140,6 +141,10 @@ export async function POST(request: NextRequest) {
   const firstName = clean(body.first_name, 80);
   const lastName = clean(body.last_name, 80);
   const projectType = clean(body.project_type, 60);
+  const projectTypeCode = projectType ? inferProjectTypeFromText(projectType) : null;
+  const projectSubtype = projectTypeCode === "single_room_renovation"
+    ? inferSingleRoomSubtypeFromText(projectType) ?? "other"
+    : null;
 
   // House card-name convention (014: "surname_project"): Surname_Project,
   // falling back to whatever identity we have so the card is never blank.
@@ -170,6 +175,8 @@ export async function POST(request: NextRequest) {
       // Verbatim intake payload (migration 042). gclid + utm_* are the
       // spec's MUST-KEEP fields — see route header.
       project_type: projectType,
+      project_type_code: projectTypeCode,
+      project_subtype: projectSubtype,
       message,
       page: clean(body.page, 200),
       gclid: clean(body.gclid, 200),

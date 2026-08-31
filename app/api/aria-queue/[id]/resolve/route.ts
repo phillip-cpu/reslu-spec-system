@@ -51,10 +51,28 @@ export async function POST(
 
   const { data: queueItem, error: queueReadError } = await supabase
     .from("aria_queue")
-    .select("kind,payload")
+    .select("kind,payload,status,resolved_at")
     .eq("id", id)
     .maybeSingle();
   if (queueReadError) return NextResponse.json({ error: queueReadError.message }, { status: 500 });
+  if (!queueItem) return NextResponse.json({ error: "Queue item not found" }, { status: 404 });
+
+  if (queueItem.status === "done" || queueItem.status === "failed") {
+    return NextResponse.json({
+      ok: true,
+      id,
+      status: queueItem.status,
+      resolved_at: queueItem.resolved_at,
+      already_terminal: true,
+    });
+  }
+
+  if (queueItem.status !== "picked_up") {
+    return NextResponse.json(
+      { error: "Queue item must be claimed before it can be resolved" },
+      { status: 409 }
+    );
+  }
 
   const { data: updated, error } = await supabase
     .from("aria_queue")
@@ -64,15 +82,14 @@ export async function POST(
       error: body.note?.trim() || null,
     })
     .eq("id", id)
+    .eq("status", "picked_up")
     .select("id,status,resolved_at")
     .maybeSingle();
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-  if (!updated) {
-    return NextResponse.json({ error: "Queue item not found" }, { status: 404 });
-  }
+  if (!updated) return NextResponse.json({ error: "Queue item changed during resolution" }, { status: 409 });
 
   if (queueItem?.kind === "finance_routing_feedback") {
     const feedbackId = typeof queueItem.payload === "object" && queueItem.payload !== null
@@ -89,5 +106,5 @@ export async function POST(
     }
   }
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, ...updated });
 }

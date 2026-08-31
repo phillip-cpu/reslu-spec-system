@@ -66,10 +66,20 @@ class AriaHeartbeatTests(unittest.TestCase):
         text_index = message.index("--message") + 1
         self.assertIn("Do NOT call get_aria_queue", message[text_index])
         self.assertEqual(message[:4], ["openclaw", "agent", "--agent", "main"])
+        self.assertEqual(
+            message[message.index("--session-key") + 1],
+            aria_heartbeat.heartbeat_session_key(
+                [{"id": "queue-1", "kind": "invoice_candidate", "payload": {}}]
+            ),
+        )
         self.assertEqual(message[message.index("--timeout") + 1], "600")
         self.assertEqual(run.call_args.kwargs["timeout"], 630)
 
-    @patch.object(aria_heartbeat, "release_queue_items")
+    @patch.object(
+        aria_heartbeat,
+        "get_queue_item_statuses",
+        return_value={"queue-1": "picked_up"},
+    )
     @patch.object(aria_heartbeat, "wake_aria", return_value=False)
     @patch.object(
         aria_heartbeat,
@@ -77,7 +87,13 @@ class AriaHeartbeatTests(unittest.TestCase):
         return_value=[{"id": "queue-1", "kind": "invoice_candidate", "payload": {}}],
     )
     @patch.object(aria_heartbeat, "get_actionable_queue_count", return_value=1)
-    def test_failed_wake_releases_claimed_batch(self, _count, _claim, _wake, release):
+    def test_failed_wake_retains_unfinished_batch_for_bounded_retry(
+        self,
+        _count,
+        _claim,
+        _wake,
+        _statuses,
+    ):
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             aria_heartbeat.os.environ,
             {
@@ -86,11 +102,64 @@ class AriaHeartbeatTests(unittest.TestCase):
                 "ARIA_HEARTBEAT_STATE_PATH": str(Path(directory) / "state.json"),
             },
             clear=False,
-        ), self.assertRaises(SystemExit) as exited:
-            aria_heartbeat.main()
+        ):
+            with self.assertRaises(SystemExit) as exited:
+                aria_heartbeat.main()
+            self.assertEqual(exited.exception.code, 1)
+            state_path = Path(directory) / "state.json"
+            self.assertEqual(
+                [item["id"] for item in aria_heartbeat.active_queue_batch(state_path)],
+                ["queue-1"],
+            )
+            self.assertEqual(aria_heartbeat.wake_attempt_count(state_path), 1)
 
-        self.assertEqual(exited.exception.code, 1)
-        release.assert_called_once_with("https://example.test", "secret", ["queue-1"])
+    @patch.object(
+        aria_heartbeat,
+        "get_queue_item_statuses",
+        return_value={"queue-1": "done"},
+    )
+    @patch.object(aria_heartbeat, "wake_aria", return_value=False)
+    @patch.object(
+        aria_heartbeat,
+        "claim_queue_items",
+        return_value=[{"id": "queue-1", "kind": "invoice_candidate", "payload": {}}],
+    )
+    @patch.object(aria_heartbeat, "get_actionable_queue_count", return_value=1)
+    def test_failed_agent_command_never_resurrects_terminal_rows(
+        self,
+        _count,
+        _claim,
+        _wake,
+        _statuses,
+    ):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            aria_heartbeat.os.environ,
+            {
+                "SUPABASE_URL": "https://example.test",
+                "SUPABASE_SERVICE_ROLE_KEY": "secret",
+                "ARIA_HEARTBEAT_STATE_PATH": str(Path(directory) / "state.json"),
+            },
+            clear=False,
+        ):
+            with self.assertRaises(SystemExit) as exited:
+                aria_heartbeat.main()
+            self.assertEqual(exited.exception.code, 1)
+            self.assertFalse((Path(directory) / "state.json").exists())
+
+    def test_release_recovery_only_targets_picked_up_rows(self):
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        with patch.object(aria_heartbeat.urllib.request, "urlopen", return_value=response) as urlopen:
+            aria_heartbeat.release_queue_items(
+                "https://example.test",
+                "secret",
+                ["queue-1"],
+            )
+
+        request = urlopen.call_args.args[0]
+        self.assertIn("status=eq.picked_up", request.full_url)
+        self.assertEqual(json.loads(request.data), {"status": "pending", "picked_up_at": None})
 
     def test_successful_wake_is_throttled_for_twenty_minutes(self):
         now = datetime(2026, 7, 14, 13, 0, tzinfo=timezone.utc)
@@ -278,6 +347,48 @@ class AriaHeartbeatTests(unittest.TestCase):
                 now=now - timedelta(minutes=21),
             )
             aria_heartbeat.main()
+
+        claim.assert_not_called()
+        wake.assert_called_once_with(queue_items)
+
+    @patch.object(aria_heartbeat, "claim_queue_items")
+    @patch.object(aria_heartbeat, "wake_aria", return_value=False)
+    @patch.object(
+        aria_heartbeat,
+        "get_queue_item_statuses",
+        return_value={"queue-1": "picked_up"},
+    )
+    def test_failed_retry_still_advances_retry_ceiling(
+        self,
+        _statuses,
+        wake,
+        claim,
+    ):
+        now = datetime.now(timezone.utc)
+        queue_items = [
+            {"id": "queue-1", "kind": "daily_review", "payload": {}, "created_at": None}
+        ]
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            aria_heartbeat.os.environ,
+            {
+                "SUPABASE_URL": "https://example.test",
+                "SUPABASE_SERVICE_ROLE_KEY": "secret",
+                "ARIA_HEARTBEAT_STATE_PATH": str(Path(directory) / "state.json"),
+            },
+            clear=False,
+        ):
+            state_path = aria_heartbeat.heartbeat_state_path()
+            aria_heartbeat.record_successful_wake(
+                state_path,
+                queue_items,
+                now=now - timedelta(minutes=21),
+                wake_attempts=1,
+            )
+            with self.assertRaises(SystemExit) as exited:
+                aria_heartbeat.main()
+
+            self.assertEqual(exited.exception.code, 1)
+            self.assertEqual(aria_heartbeat.wake_attempt_count(state_path), 2)
 
         claim.assert_not_called()
         wake.assert_called_once_with(queue_items)

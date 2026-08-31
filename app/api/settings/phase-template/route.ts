@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
-import { FALLBACK_PHASE_TEMPLATE } from "@/lib/phase-template";
+import {
+  PROJECT_TYPES,
+  resolveProjectPhaseTemplates,
+  type ProjectPhaseTemplates,
+} from "@/lib/project-templates";
 import type { AppSettingsPhaseTemplateRow, PutPhaseTemplateInput } from "@/types/phase-fix-a";
 
 const VALID_KINDS = new Set(["phase", "umbrella"]);
@@ -44,22 +48,17 @@ export async function GET() {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const template = (data?.value as AppSettingsPhaseTemplateRow[] | undefined) ?? FALLBACK_PHASE_TEMPLATE;
-  return NextResponse.json({ template });
+  return NextResponse.json({ templates: resolveProjectPhaseTemplates(data?.value) });
 }
 
 /**
  * PUT /api/settings/phase-template
  * Admin-only (mirrors PATCH /api/categories/[id]'s admin gating —
  * this is studio-wide configuration, not per-project data). Body:
- * PutPhaseTemplateInput — { template: [{ name, kind }] } — full
- * replace (upsert onto the single app_settings row). Validates:
- * non-empty array, every row has a non-empty trimmed name and
- * kind in ('phase','umbrella'), and EXACTLY ONE row is kind='umbrella'
- * — the seed path (lib/phase-seed.ts) assumes a single umbrella row
- * per project when it applies this template, so a template with zero
- * or multiple umbrella rows would silently break that assumption for
- * every project seeded after the edit.
+ * PutPhaseTemplateInput — { templates: { [projectType]: [{ name, kind }] } }
+ * — full replace. Each of the four project types must have a non-empty
+ * template. A template may have zero or one umbrella row; the seed path is
+ * explicitly null-safe when no umbrella is present.
  *
  * Does NOT retroactively touch any already-seeded project's
  * schedule_phases — this only changes what NEW projects (or projects
@@ -84,29 +83,47 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  if (!Array.isArray(body.template) || body.template.length === 0) {
-    return NextResponse.json({ error: "template must be a non-empty array" }, { status: 400 });
+  if (!body.templates || typeof body.templates !== "object" || Array.isArray(body.templates)) {
+    return NextResponse.json({ error: "templates must be keyed by project type" }, { status: 400 });
   }
 
-  const cleaned: AppSettingsPhaseTemplateRow[] = [];
-  for (const row of body.template) {
-    const name = typeof row?.name === "string" ? row.name.trim() : "";
-    const kind = row?.kind;
-    if (!name) {
-      return NextResponse.json({ error: "Every phase needs a name" }, { status: 400 });
+  const cleaned = {} as ProjectPhaseTemplates;
+  for (const projectType of PROJECT_TYPES) {
+    const rows = body.templates[projectType];
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return NextResponse.json(
+        { error: `${projectType} needs at least one Timeline stage` },
+        { status: 400 }
+      );
     }
-    if (!VALID_KINDS.has(kind)) {
-      return NextResponse.json({ error: "kind must be 'phase' or 'umbrella'" }, { status: 400 });
-    }
-    cleaned.push({ name, kind });
-  }
 
-  const umbrellaCount = cleaned.filter((r) => r.kind === "umbrella").length;
-  if (umbrellaCount !== 1) {
-    return NextResponse.json(
-      { error: "Exactly one phase must be kind 'umbrella' (e.g. Site Setup)" },
-      { status: 400 }
-    );
+    const names = new Set<string>();
+    const cleanedRows: AppSettingsPhaseTemplateRow[] = [];
+    for (const row of rows) {
+      const name = typeof row?.name === "string" ? row.name.trim() : "";
+      const kind = row?.kind;
+      if (!name) {
+        return NextResponse.json({ error: "Every phase needs a name" }, { status: 400 });
+      }
+      if (!VALID_KINDS.has(kind)) {
+        return NextResponse.json({ error: "kind must be 'phase' or 'umbrella'" }, { status: 400 });
+      }
+      if (names.has(name.toLocaleLowerCase())) {
+        return NextResponse.json(
+          { error: `Stage names must be unique within ${projectType}` },
+          { status: 400 }
+        );
+      }
+      names.add(name.toLocaleLowerCase());
+      cleanedRows.push({ name, kind });
+    }
+    if (cleanedRows.filter((row) => row.kind === "umbrella").length > 1) {
+      return NextResponse.json(
+        { error: `${projectType} can have at most one umbrella stage` },
+        { status: 400 }
+      );
+    }
+    cleaned[projectType] = cleanedRows;
   }
 
   const { error } = await supabase
@@ -117,5 +134,5 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ template: cleaned });
+  return NextResponse.json({ templates: cleaned });
 }

@@ -9,11 +9,13 @@ import { VariationsView } from "./VariationsView";
 import { MeasurementsView } from "./MeasurementsView";
 import { VersionsPanel } from "./VersionsPanel";
 import { CalculatorsPanel } from "@/components/calculators/CalculatorsPanel";
+import { QuoteRequestsPanel } from "./QuoteRequestsPanel";
 
-type View = "estimate" | "variations" | "measurements" | "versions" | "calculators";
+type View = "estimate" | "quotes" | "variations" | "measurements" | "versions" | "calculators";
 
 interface Props {
   projectId: string;
+  initialView?: View;
 }
 
 /**
@@ -40,8 +42,8 @@ interface Props {
  * instantly from that local state because lib/estimate.ts's rollup
  * functions are pure and already run client-side (see EstimateView).
  */
-export function EstimateWorkspace({ projectId }: Props) {
-  const [view, setView] = useState<View>("estimate");
+export function EstimateWorkspace({ projectId, initialView = "estimate" }: Props) {
+  const [view, setView] = useState<View>(initialView);
   const [estimate, setEstimate] = useState<EstimateResponse | null>(null);
   const [variations, setVariations] = useState<Variation[]>([]);
   const [measurementGroups, setMeasurementGroups] = useState<MeasurementGroupWithRows[]>([]);
@@ -348,6 +350,7 @@ export function EstimateWorkspace({ projectId }: Props) {
         {(
           [
             { key: "estimate", label: "Estimate" },
+            { key: "quotes", label: "Quote requests" },
             { key: "variations", label: "Variations" },
             { key: "measurements", label: "Areas & Measurements" },
             { key: "versions", label: "Versions" },
@@ -383,6 +386,7 @@ export function EstimateWorkspace({ projectId }: Props) {
           onLinesReordered={reorderLinesLocal}
           approvedVariationsTotal={approvedVariations}
           measurements={estimate?.measurements ?? []}
+          onOpenQuoteRequests={() => setView("quotes")}
         />
       )}
 
@@ -395,6 +399,10 @@ export function EstimateWorkspace({ projectId }: Props) {
           onVariationChanged={patchVariationLocal}
           onVariationRemoved={removeVariationLocal}
         />
+      )}
+
+      {view === "quotes" && (
+        <QuoteRequestsPanel projectId={projectId} estimate={estimate} onEstimateReload={loadAll} />
       )}
 
       {view === "measurements" && (

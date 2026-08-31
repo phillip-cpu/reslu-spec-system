@@ -7,6 +7,10 @@ import type { Lead, Project } from "@/types";
 import type { StandardItemIdsInput } from "@/types/round-d";
 import type { LeadWithBriefFields } from "@/types/round-lead-flow";
 import type { ProposalContent } from "@/types/proposals";
+import {
+  inferProjectTypeFromText,
+  inferSingleRoomSubtypeFromText,
+} from "@/lib/project-templates";
 
 export const runtime = "nodejs";
 
@@ -126,6 +130,15 @@ export async function POST(
   // nested function's body, so this closure needs its own
   // already-non-null reference.
   const createdBy = info.userId;
+  const projectType = typedLead.project_type_code ?? inferProjectTypeFromText(
+    typedLead.project_type || typedLead.surname_project
+  );
+  const projectSubtype =
+    projectType === "single_room_renovation"
+      ? typedLead.project_subtype ?? inferSingleRoomSubtypeFromText(
+          `${typedLead.project_type ?? ""} ${typedLead.surname_project}`
+        ) ?? "other"
+      : null;
 
   // Job number (migration 028_job_numbers.sql, BUILD-SPEC.md "Three
   // from Phillip — 6 July 2026 evening" item 2): both project-creation
@@ -143,6 +156,8 @@ export async function POST(
         address: typedLead.location || null,
         budget: typedLead.construction_value ?? null,
         lead_id: typedLead.id,
+        project_type: projectType,
+        project_subtype: projectSubtype,
         created_by: createdBy,
         job_number: jobNumber,
       })

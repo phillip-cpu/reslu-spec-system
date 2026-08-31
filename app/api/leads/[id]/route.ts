@@ -14,6 +14,7 @@ import {
 } from "@/lib/visit-emails";
 import { buildLeadVisitCalendarAssets, ensureBriefToken, briefUrlFor } from "@/lib/lead-brief";
 import type { LeadWithBriefFields } from "@/types/round-lead-flow";
+import { isProjectType, normaliseProjectSubtype } from "@/lib/project-templates";
 
 export const runtime = "nodejs";
 
@@ -45,6 +46,8 @@ const EDITABLE_FIELDS = new Set([
   "construction_start",
   "construction_end",
   "notes",
+  "project_type_code",
+  "project_subtype",
 ]);
 
 const NUMERIC_FIELDS = new Set(["construction_value", "design_value"]);
@@ -116,6 +119,24 @@ export async function PATCH(
   }
   if (body.source && !["META", "DIRECT", "WEBSITE"].includes(body.source)) {
     return NextResponse.json({ error: `Invalid source: ${body.source}` }, { status: 400 });
+  }
+  if ("project_type_code" in body || "project_subtype" in body) {
+    if (!("project_type_code" in body) || !("project_subtype" in body)) {
+      return NextResponse.json(
+        { error: "project_type_code and project_subtype must be updated together" },
+        { status: 400 }
+      );
+    }
+    if (body.project_type_code != null && !isProjectType(body.project_type_code)) {
+      return NextResponse.json({ error: "Invalid project type" }, { status: 400 });
+    }
+    const subtype = body.project_type_code
+      ? normaliseProjectSubtype(body.project_type_code, body.project_subtype)
+      : null;
+    if (body.project_type_code === "single_room_renovation" && !subtype) {
+      return NextResponse.json({ error: "Room type is required for a single-room renovation" }, { status: 400 });
+    }
+    body.project_subtype = subtype;
   }
 
   const update: Record<string, unknown> = {};

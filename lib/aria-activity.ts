@@ -16,6 +16,7 @@ const LABELS: Record<string, string> = {
   email_proposal: "Email proposal",
   draft_proposal: "Proposal draft",
   email_reply_requested: "Email reply requested",
+  lead_introduction: "New lead introduction",
 };
 
 function payloadDetail(payload: Record<string, unknown>, error: string | null): string | null {
