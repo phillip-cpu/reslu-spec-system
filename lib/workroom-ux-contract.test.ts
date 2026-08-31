@@ -30,6 +30,7 @@ test("Recovery can be searched, filtered and inspected with safe guidance", () =
 
 test("each routine opens to explain its purpose and technical schedule", () => {
   assert.match(workspace, /<details key=\{routine\.id\}/);
+  assert.match(workspace, /md:open:col-span-2 xl:open:col-span-3/);
   assert.match(workspace, /What it does/);
   assert.match(workspace, /Adelaide time/);
   assert.match(workspace, /Endpoint/);
