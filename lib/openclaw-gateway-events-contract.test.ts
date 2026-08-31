@@ -25,10 +25,12 @@ test("the bridge uses a loopback authenticated Gateway run with stable identity"
   assert.match(gateway, /\["127\.0\.0\.1", "localhost", "::1"\]/);
   assert.match(gateway, /method: "connect"|request\("connect"/);
   assert.match(gateway, /idempotencyKey: input\.idempotencyKey/);
-  assert.match(gateway, /sessionKey: input\.sessionKey/);
+  assert.match(gateway, /sessionKey: buildAgentParams\(input\)\.sessionKey/);
   assert.match(gateway, /request\("chat\.abort"/);
   assert.match(bridge, /idempotency_key=job\["id"\]/);
   assert.match(bridge, /openclaw_session_key\(conversation_id\)/);
+  assert.match(bridge, /openclaw_voice_session_key\(job\["conversation_id"\], realtime_call_id\)/);
+  assert.match(bridge, /reslu-call-v1-/);
 });
 
 test("member-visible activity exposes labels but no tool arguments or results", () => {
@@ -41,4 +43,12 @@ test("member-visible activity exposes labels but no tool arguments or results", 
 test("an accepted run never falls back and duplicate-executes through the CLI", () => {
   assert.match(bridge, /if exc\.accepted:\n\s+raise/);
   assert.match(bridge, /Gateway unavailable before acceptance; using CLI fallback/);
+});
+
+test("a missing live final is reconciled from exact durable session history", () => {
+  assert.match(gateway, /request\("chat\.history"/);
+  assert.match(gateway, /extractDurableRunReply/);
+  assert.match(gateway, /source: "durable_history"/);
+  assert.doesNotMatch(gateway, /FINAL_EVENT_GRACE_MS/);
+  assert.doesNotMatch(gateway, /ended without a final chat event/);
 });

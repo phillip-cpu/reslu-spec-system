@@ -6,7 +6,7 @@ export const FALLBACK_ARIA_READ_TOOLS = new Set([
   "get_bookings_overdue", "get_ordering_attention", "get_organic_action", "get_proposal",
   "get_email", "search", "search_second_brain", "get_project_health", "get_context_snapshot",
   "get_materials_needing_aria", "get_stuart_finance_brief",
-  "list_learning_candidates",
+  "list_learning_candidates", "get_project_board",
 ]);
 
 const AUTHORITY_PROPERTIES = {

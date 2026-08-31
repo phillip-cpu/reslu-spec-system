@@ -48,6 +48,32 @@ test("storage inspection derives the real object size from a range response", as
   assert.equal(inspection?.byteSize, 1_786_192);
 });
 
+test("storage inspection stops when private object read-back stalls", async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async (_input, init) => new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+  });
+
+  const startedAt = Date.now();
+  const inspection = await inspectStorageObjectHead(fakeStorageClient(), "assets", "private/file", 5);
+  assert.equal(inspection, null);
+  assert(Date.now() - startedAt < 250, "Storage inspection ignored its deadline");
+});
+
+test("storage inspection also bounds signed URL creation", async () => {
+  const stalledStorage = {
+    storage: {
+      from: () => ({ createSignedUrl: async () => new Promise(() => undefined) }),
+    },
+  } as never;
+
+  const startedAt = Date.now();
+  const inspection = await inspectStorageObjectHead(stalledStorage, "assets", "private/file", 5);
+  assert.equal(inspection, null);
+  assert(Date.now() - startedAt < 250, "Signed URL creation ignored the storage deadline");
+});
+
 test("voice-note containers are identified from their actual leading bytes", () => {
   assert.equal(sniffFileKind(Uint8Array.from([
     0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x4d, 0x34, 0x41, 0x20,

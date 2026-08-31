@@ -6,6 +6,7 @@ export type StuartFindingKind =
   | "due_soon_receivable"
   | "due_soon_payable"
   | "missing_from_xero"
+  | "missing_source_evidence"
   | "xero_conflict"
   | "unmatched_accounts_email"
   | "cost_change"
@@ -51,6 +52,7 @@ export interface SpecInvoiceReviewRow {
   total_inc_gst?: number | string | null;
   status: string;
   source_email_id?: string | null;
+  storage_path?: string | null;
 }
 
 export interface AccountsEmailReviewRow {
@@ -137,6 +139,26 @@ export function reviewSpecAgainstXero(
     const number = canonical(spec.invoice_number);
     const exactNumber = candidates.filter((row) => canonical(row.invoice_number) === number);
     if (exactNumber.length === 0) {
+      if (direction === "ACCPAY" && (!spec.source_email_id || !spec.storage_path)) {
+        return [{
+          finding_key: `spec:${direction}:${spec.id}:missing-source-evidence`,
+          kind: "missing_source_evidence" as const,
+          severity: "warning" as const,
+          title: `Supplier bill candidate ${spec.invoice_number} lacks source evidence`,
+          detail: "Spec has no traceable source email and attached original. Do not treat this record as a verified bill missing from Xero; it may be a quote, duplicate or incomplete legacy entry.",
+          source_type: "supplier_invoice",
+          source_id: spec.id,
+          evidence: {
+            invoice_number: spec.invoice_number,
+            status: spec.status,
+            direction,
+            source_email_present: Boolean(spec.source_email_id),
+            source_document_present: Boolean(spec.storage_path),
+          },
+          confidence: "high" as const,
+          last_seen_at: now,
+        }];
+      }
       return [{
         finding_key: `spec:${direction}:${spec.id}:missing-xero`,
         kind: "missing_from_xero" as const,

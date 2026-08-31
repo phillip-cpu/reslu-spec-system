@@ -49,11 +49,18 @@ test("WebRTC call path performs immediate barge-in and suppresses cancelled late
   assert.match(workspace, /realtimeActiveRef\.current\) \{/);
 });
 
+test("Safari invalid-constraint startup failures close WebRTC and recover through legacy voice", () => {
+  assert.match(workspace, /peer\.addTrack\(microphoneTrack\)/);
+  assert.doesNotMatch(workspace, /peer\.addTrack\(track, stream\)/);
+  assert.match(workspace, /channel\.close\(\);[\s\S]*peer\.close\(\);[\s\S]*audio\.srcObject = null;[\s\S]*throw reason/);
+  assert.match(workspace, /if \(shouldFallbackToLegacyVoice\(error\)\) \{[\s\S]*await startLegacyCall\(callIdRef\.current \?\? undefined\)/);
+});
+
 test("VAD speech start interrupts audio without cancelling an unfinished agent consult", () => {
   const speechStarted = workspace.match(
     /if \(event\.type === "input_audio_buffer\.speech_started"\) \{([\s\S]*?)\n    \}/
   )?.[1] ?? "";
-  assert.match(speechStarted, /interruptRealtimePlayback\(performance\.now\(\)\)/);
+  assert.match(speechStarted, /interruptRealtimePlayback\(performance\.now\(\)(?:,[^)]*)?\)/);
   assert.doesNotMatch(speechStarted, /cancelActiveRealtime(?:Turn|Consult)\(\)/);
   assert.match(workspace, /if \(activeRealtimeConsultRef\.current\) cancelActiveRealtimeConsult\(\)/);
 });
@@ -73,8 +80,48 @@ test("foreground recovery reuses the canonical call without replaying its start 
   assert.match(workspace, />\s*Reconnect\s*<\/button>/);
 });
 
+test("poor-network call control cannot leave the call UI waiting forever", () => {
+  assert.match(workspace, /CALL_CONTROL_REQUEST_TIMEOUT_MS = 8000/);
+  assert.match(workspace, /REALTIME_SESSION_REQUEST_TIMEOUT_MS = 15000/);
+  assert.match(
+    workspace,
+    /boundedFetch\(`\/api\/conversations\/\$\{conversationId\}\/calls`[\s\S]*?CALL_CONTROL_REQUEST_TIMEOUT_MS\)/,
+  );
+  assert.match(
+    workspace,
+    /boundedFetch\(`\/api\/conversations\/\$\{selectedId\}\/realtime\/session`[\s\S]*?REALTIME_SESSION_REQUEST_TIMEOUT_MS\)/,
+  );
+  assert.match(
+    workspace,
+    /savePendingConversationCallEnd\(pendingEnd\);[\s\S]*?await flushPendingCallEnds\(callId\)/,
+  );
+  assert.match(
+    workspace,
+    /Number\(right\.callId === requestedCallId\) - Number\(left\.callId === requestedCallId\)/,
+  );
+  assert.match(workspace, /if \(entry\.callId === requestedCallId\) break;/);
+  assert.match(workspace, /if \(saved\) window\.setTimeout\(\(\) => void flushPendingCallEnds\(\), 0\)/);
+});
+
+test("realtime tool requests are bounded and retry the same canonical intent", () => {
+  assert.match(workspace, /REALTIME_TOOL_REQUEST_TIMEOUT_MS = 15000/);
+  assert.match(workspace, /MAX_REALTIME_TOOL_NETWORK_FAILURES = 3/);
+  assert.match(
+    workspace,
+    /retrySameConversationIntent\(\(\) => boundedFetch\([\s\S]*realtime\/\$\{endpoint\}[\s\S]*consultBody[\s\S]*REALTIME_TOOL_REQUEST_TIMEOUT_MS/,
+  );
+  assert.match(
+    workspace,
+    /retrySameConversationIntent\(\(\) => boundedFetch\([\s\S]*realtime\/task[\s\S]*taskBody[\s\S]*REALTIME_TOOL_REQUEST_TIMEOUT_MS/,
+  );
+  assert.match(workspace, /tool_call_id: toolCallId/);
+  assert.match(workspace, /setCallState\("reconnecting"\)/);
+  assert.match(workspace, /Check Agent work before asking again; the task may already be running/);
+});
+
 test("partial provider tool arguments wait for response.done fallback", () => {
   assert.match(workspace, /parseRealtimeConsultArguments\(argumentsJson\)/);
+  assert.match(workspace, /parseRealtimeSpecialistArguments\(argumentsJson, callAgent\.agent_slug\)/);
   assert.match(workspace, /parseRealtimeTaskArguments\(argumentsJson\)/);
   assert.match(workspace, /if \(!parsedArguments && deferInvalidArguments\) return/);
   assert.match(workspace, /response\.function_call_arguments\.done[\s\S]*runRealtimeConsult\([^\n]+, true\)/);

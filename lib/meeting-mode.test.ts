@@ -85,7 +85,7 @@ test("Meeting Mode stays local-Whisper, staged and explicitly filed", () => {
   assert.match(component, /Unassigned draft/);
   assert.match(component, /candidate\.client_event_id \? `\$\{destination\}:event:\$\{candidate\.client_event_id\}`/);
   assert.match(component, /candidates\.find\(\(candidate\) => destinationValue\(candidate\) === selectedDestination\)/);
-  assert.match(lifecycle, /transcribe it with local Whisper only/i);
+  assert.match(lifecycle, /tool transcribes the private recording locally/i);
   assert.match(lifecycle, /Only the recorder can control this meeting capture/);
   assert.match(lifecycle, /inspectStorageObjectHead/);
   assert.match(lifecycle, /sniffFileKind/);
@@ -108,4 +108,19 @@ test("Meeting Mode stays local-Whisper, staged and explicitly filed", () => {
   assert.match(context, /lead_visit:\$\{lead\.id\}:\$\{lead\.site_visit_date\}/);
   assert.doesNotMatch(context, /\.not\("client_event_id", "is", null\)/);
   assert.match(migration, /minutes are already filed for this lead visit/i);
+});
+
+test("Meeting Mode bounds poor-network waits and reconciles consequential actions", () => {
+  const component = read("components/conversations/MeetingMode.tsx");
+  assert.match(component, /MEETING_READ_TIMEOUT_MS = 8_000/);
+  assert.match(component, /MEETING_ACTION_TIMEOUT_MS = 15_000/);
+  assert.match(component, /MEETING_UPLOAD_TIMEOUT_MS = 120_000/);
+  assert.match(component, /boundedMeetingUpload\([\s\S]*uploadToSignedUrl/);
+  assert.match(component, /boundedFetch\([\s\S]*meeting-mode\/context[\s\S]*MEETING_READ_TIMEOUT_MS/);
+  assert.match(component, /meetingPollActiveRef\.current/);
+  assert.match(component, /isMeetingTransportError\(reason\)[\s\S]*fetchMeetingSnapshot\(currentMeeting\.id\)[\s\S]*meetingActionConfirmed/);
+  assert.match(component, /action === "file"[\s\S]*will not be filed twice automatically/);
+  assert.match(component, /client_session_id === clientSessionId[\s\S]*confirmed Meeting Mode started/);
+  assert.match(component, /recording_deleted_at[\s\S]*transcript_deleted_at[\s\S]*will not retry this permanent action automatically/);
+  assert.doesNotMatch(component, /action === "file"[\s\S]{0,300}patchMeeting\("file"/);
 });

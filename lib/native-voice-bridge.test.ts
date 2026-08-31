@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   nativeVoiceBridgeAvailable,
   nativeRealtimeTransportAvailable,
+  nativeVoiceBridgeRequiresRealtimeUpgrade,
   prepareNativeRealtimeSession,
   prepareNativeVoiceSession,
 } from "./native-voice-bridge.ts";
@@ -103,6 +104,19 @@ test("version two native shell owns the realtime transport", async () => {
     assert.equal(nativeRealtimeTransportAvailable(), true);
     await prepareNativeRealtimeSession(start, 50);
     assert.deepEqual(posted, { ...start, transport: "native-realtime" });
+  } finally {
+    restore();
+  }
+});
+
+test("an older native shell is reported as requiring an upgrade", () => {
+  const target = new EventTarget() as TestWindow;
+  target.setTimeout = setTimeout;
+  target.clearTimeout = clearTimeout;
+  target.webkit = { messageHandlers: { resluVoice: { postMessage() {} } } };
+  const restore = installWindow(target);
+  try {
+    assert.equal(nativeVoiceBridgeRequiresRealtimeUpgrade(), true);
   } finally {
     restore();
   }

@@ -111,7 +111,7 @@ export async function PATCH(
 
   const { data: existing } = await supabase
     .from("board_tasks")
-    .select("id,title,project_id,column_id,phase_group_id,visit_id,contact_id,booking_date,booking_end_date")
+    .select("id,title,project_id,column_id,phase_group_id,visit_id,contact_id,booking_date,booking_end_date,updated_at")
     .eq("id", id)
     .is("deleted_at", null)
     .single();
@@ -124,6 +124,12 @@ export async function PATCH(
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const expectedUpdatedAt = body.expected_updated_at;
+  delete body.expected_updated_at;
+  if (expectedUpdatedAt && expectedUpdatedAt !== existing.updated_at) {
+    return NextResponse.json({ error: "Task changed since it was read; refresh the board and retry" }, { status: 409 });
   }
 
   let targetColumn: { id: string; name: string } | null = null;
@@ -245,20 +251,24 @@ export async function PATCH(
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
   }
 
+  let updateQuery = supabase
+    .from("board_tasks")
+    .update(update)
+    .eq("id", id)
+    .is("deleted_at", null);
+  if (expectedUpdatedAt) updateQuery = updateQuery.eq("updated_at", expectedUpdatedAt);
+
   const { data: task, error } =
     Object.keys(update).length > 0
-      ? await supabase
-          .from("board_tasks")
-          .update(update)
-          .eq("id", id)
-          .is("deleted_at", null)
-          .select()
-          .single()
+      ? await updateQuery.select().maybeSingle()
       : await supabase.from("board_tasks").select("*").eq("id", id).is("deleted_at", null).single();
 
   if (error) {
     const status = error.code === "23503" ? 400 : 500;
     return NextResponse.json({ error: error.message }, { status });
+  }
+  if (!task) {
+    return NextResponse.json({ error: "Task changed since it was read; refresh the board and retry" }, { status: 409 });
   }
 
   // Board v3.3 — WORKS-DATE / VISIT SYNC (see this route's own PATCH

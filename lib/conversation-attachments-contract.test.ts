@@ -58,7 +58,8 @@ test("modern composer exposes working camera and file entry points", () => {
   assert.match(workspace, /capture="environment"/);
   assert.match(workspace, /Photos or PDF/);
   assert.match(workspace, /draftAttachments/);
-  assert.match(workspace, /attachment_ids: attachmentIds/);
+  assert.match(workspace, /attachmentIds: attachments\.map\(\(attachment\) => attachment\.id\)/);
+  assert.match(workspace, /attachment_ids: entry\.attachmentIds/);
   assert.match(workspace, /message\.attachments\.map/);
   assert.match(workspace, /onDrop=/);
   assert.match(workspace, /Drop photos or PDFs here/);
@@ -99,6 +100,19 @@ test("a hung iPhone signed-upload response cannot block finalisation forever", (
   assert.match(uploadRecovery, /Promise\.race\(\[uploadSettled, delay/);
   assert.match(uploadRecovery, /CONVERSATION_UPLOAD_MAX_PROBES/);
   assert.match(uploadRecovery, /recoverable/);
+});
+
+test("attachment setup and draft recovery cannot wait forever on weak networks", () => {
+  assert.match(workspace, /ATTACHMENT_CONTROL_REQUEST_TIMEOUT_MS = 15000/);
+  assert.match(
+    workspace,
+    /boundedFetch\([\s\S]*attachments\/upload-url[\s\S]*ATTACHMENT_CONTROL_REQUEST_TIMEOUT_MS/,
+  );
+  assert.match(
+    workspace,
+    /boundedFetch\([\s\S]*attachments\?drafts=1[\s\S]*ATTACHMENT_CONTROL_REQUEST_TIMEOUT_MS/,
+  );
+  assert.match(workspace, /Uploading — you can keep typing/);
 });
 
 test("large phone photos are resized before their signed upload", () => {

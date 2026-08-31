@@ -21,6 +21,8 @@ html,
 body {
   background-color: #ede8de;
   color: #313131;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
@@ -55,6 +57,13 @@ body {
   line-height: 1.45;
 }
 
+/* Conversation metadata is operational information: delivery, attachment and
+   task states must remain readable without zooming on an iPhone. */
+.conversation-accessible .conversation-meta {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .conversation-accessible .text-subhead {
   font-size: 16px;
   line-height: 1.4;
@@ -63,6 +72,43 @@ body {
 .conversation-accessible .label-caps {
   font-size: 10px;
   line-height: 1.2;
+}
+
+/* Tailwind's charcoal opacity utilities were visually quiet but several common
+   conversation states landed below WCAG AA on cream, off-white and white
+   surfaces (as low as 2.2:1). Conversation metadata is actionable content, so
+   use one opaque muted tone that remains at least 4.5:1 across those surfaces.
+   Dark call surfaces keep their separate white/sand palette. */
+.conversation-accessible .text-charcoal\/40,
+.conversation-accessible .text-charcoal\/45,
+.conversation-accessible .text-charcoal\/50,
+.conversation-accessible .text-charcoal\/55,
+.conversation-accessible .text-charcoal\/60,
+.conversation-accessible .text-charcoal\/65,
+.meeting-mode-dialog .text-charcoal\/40,
+.meeting-mode-dialog .text-charcoal\/45,
+.meeting-mode-dialog .text-charcoal\/50,
+.meeting-mode-dialog .text-charcoal\/55,
+.meeting-mode-dialog .text-charcoal\/60,
+.meeting-mode-dialog .text-charcoal\/65 {
+  color: #696865;
+}
+
+.conversation-accessible input::placeholder,
+.conversation-accessible textarea::placeholder,
+.meeting-mode-dialog input::placeholder,
+.meeting-mode-dialog textarea::placeholder {
+  color: #696865;
+  opacity: 1;
+}
+
+.conversation-accessible .label-caps,
+.meeting-mode-dialog .label-caps {
+  color: #76634f;
+}
+
+.conversation-accessible .conversation-dark .label-caps {
+  color: #a08c72;
 }
 
 /* ============================================================

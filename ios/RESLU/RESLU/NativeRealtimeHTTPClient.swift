@@ -106,13 +106,16 @@ final class NativeRealtimeHTTPClient {
     private func pendingCallEnd(
         conversationId: String,
         callId: String,
-        nativeContinuity: [String: Any]
+        nativeContinuity: [String: Any],
+        voiceMetrics: [String: Any]?
     ) -> [String: Any] {
-        [
+        var entry: [String: Any] = [
             "conversation_id": conversationId,
             "call_id": callId,
             "native_continuity": nativeContinuity,
         ]
+        if let voiceMetrics { entry["voice_metrics"] = voiceMetrics }
+        return entry
     }
 
     private func storedPendingCallEnds() -> [[String: Any]] {
@@ -136,10 +139,14 @@ final class NativeRealtimeHTTPClient {
             let nativeContinuity = entry["native_continuity"] as? [String: Any]
         else { return true }
         do {
+            var body: [String: Any] = ["call_id": callId, "native_continuity": nativeContinuity]
+            if let voiceMetrics = entry["voice_metrics"] as? [String: Any] {
+                body["voice_metrics"] = voiceMetrics
+            }
             _ = try await json(
                 path: "/api/conversations/\(conversationId)/calls",
                 method: "PATCH",
-                body: ["call_id": callId, "native_continuity": nativeContinuity]
+                body: body
             )
             return true
         } catch {
@@ -147,11 +154,17 @@ final class NativeRealtimeHTTPClient {
         }
     }
 
-    func endCall(conversationId: String, callId: String, nativeContinuity: [String: Any]) {
+    func endCall(
+        conversationId: String,
+        callId: String,
+        nativeContinuity: [String: Any],
+        voiceMetrics: [String: Any]? = nil
+    ) {
         let entry = pendingCallEnd(
             conversationId: conversationId,
             callId: callId,
-            nativeContinuity: nativeContinuity
+            nativeContinuity: nativeContinuity,
+            voiceMetrics: voiceMetrics
         )
         // Persist before the first suspension point. A CallKit end action may
         // be followed by immediate background suspension, so waiting for the

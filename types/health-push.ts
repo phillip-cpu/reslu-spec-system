@@ -39,6 +39,8 @@ export interface HealthDiagnostic {
   id: string;
   requested_by: string | null;
   requested_at: string;
+  claimed_at: string | null;
+  claim_attempts: number;
   status: HealthDiagnosticStatus;
   report: string | null;
   completed_at: string | null;
@@ -99,6 +101,42 @@ export interface ConversationTransportHealth {
   voice_turns_observed: number;
   average_acknowledgement_ms: number | null;
   slowest_interruption_clear_ms: number | null;
+  voice_usage_calls_observed: number;
+  voice_usage_truncated: boolean;
+  realtime_usage_by_model: {
+    model: string;
+    calls: number;
+    responses: number;
+    total_tokens: number;
+    input_tokens: number;
+    output_tokens: number;
+    input_audio_tokens: number;
+    output_audio_tokens: number;
+    cached_tokens: number;
+  }[];
+  transcription_usage_by_model: {
+    model: string;
+    calls: number;
+    transcriptions: number;
+    total_tokens: number;
+    input_tokens: number;
+    output_tokens: number;
+    input_audio_tokens: number;
+    seconds: number;
+  }[];
+  openclaw_usage_runs_observed: number;
+  openclaw_usage_truncated: boolean;
+  openclaw_usage_by_model: {
+    provider: string;
+    model: string;
+    runs: number;
+    total_tokens: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+    reported_cost_usd: number;
+  }[];
   operational_incident: boolean;
   level: HealthPillLevel;
 }

@@ -34,6 +34,8 @@ const TARGET_KEYS: Record<string, { type: string; keys: string[] }> = {
   complete_lead_meeting_transcription: { type: "meeting_recording", keys: ["recording_id"] },
   complete_conversation_meeting_draft: { type: "meeting", keys: ["meeting_id"] },
   create_board_task: { type: "project", keys: ["project_id"] },
+  update_board_task: { type: "board_task", keys: ["task_id", "task_title"] },
+  update_board_group: { type: "board_group", keys: ["group_id", "group_name"] },
   submit_plan_analysis: { type: "project_file", keys: ["file_id"] },
   draft_sow_section: { type: "sow_section", keys: ["section_id"] },
   create_client_event: { type: "project", keys: ["project_id"] },
@@ -71,6 +73,8 @@ const TARGET_KEYS: Record<string, { type: string; keys: string[] }> = {
   request_learning_review: { type: "learning_candidate", keys: ["candidate_id"] },
   stage_learning_candidate: { type: "learning_candidate", keys: ["candidate_id"] },
   record_learning_monitor: { type: "learning_candidate", keys: ["candidate_id"] },
+  send_aria_email: { type: "email_delivery", keys: ["to", "subject"] },
+  ensure_supplier_contact_and_link_item: { type: "item", keys: ["item_id", "item_code"] },
 };
 
 function canonical(value: unknown): unknown {
@@ -155,7 +159,7 @@ function findObjectIdentity(value: unknown): { id?: string; version?: string; st
     return {};
   }
   const record = value as Record<string, unknown>;
-  const id = [record.id, record.uuid, record.record_id, record.booking_id, record.provider_id]
+  const id = [record.id, record.uuid, record.record_id, record.booking_id, record.provider_id, record.provider_message_id]
     .find((item) => typeof item === "string") as string | undefined;
   const version = [record.version, record.updated_at, record.created_at, record.receipt_id]
     .find((item) => typeof item === "string" || typeof item === "number");

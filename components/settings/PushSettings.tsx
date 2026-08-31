@@ -3,21 +3,12 @@
 import { useEffect, useState } from "react";
 
 // ============================================================
-// RESLU Spec System — Health + web push (r26)
+// RESLU Spec System — messaging continuity + web push (r27)
 // BUILD-SPEC.md item 2: "public/sw.js service worker registered ...
-// subscribe/unsubscribe toggle in Settings ... register /sw.js at app
-// scope from THIS component only (no root layout edit unless
-// required; document if required)."
-//
-// NOT REQUIRED: this round did not touch app/layout.tsx. Registration
-// happens lazily, only when a user actually presses "Enable push" (or
-// on mount IF a subscription already exists, to keep the toggle's
-// displayed state accurate across reloads) — never unconditionally on
-// every page load, so a user who never visits Settings never has a
-// service worker registered against their session at all. Scope is
-// the default ('/', the directory sw.js is served from, i.e. the
-// whole app) — no explicit `{ scope: ... }` needed since public/sw.js
-// sits at the root.
+// subscribe/unsubscribe toggle in Settings ... register /sw.js at app scope."
+// The root layout now registers the same worker for bounded offline messaging
+// continuity. This control still owns notification permission and the private
+// push subscription; disabling push does not remove the safe app-shell worker.
 // ============================================================
 
 const NOT_CONFIGURED = "Push isn't configured yet (missing NEXT_PUBLIC_VAPID_PUBLIC_KEY).";

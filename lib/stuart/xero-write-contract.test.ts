@@ -5,8 +5,14 @@ import test from "node:test";
 const draftSource = readFileSync(new URL("./xero-draft-bills.ts", import.meta.url), "utf8");
 const statementSource = readFileSync(new URL("./supplier-statements.ts", import.meta.url), "utf8");
 const sourceAttachment = readFileSync(new URL("./source-invoice-attachment.ts", import.meta.url), "utf8");
+const accountsAutomation = readFileSync(new URL("./accounts-invoice-automation.ts", import.meta.url), "utf8");
+const briefRoute = readFileSync(new URL("../../app/api/stuart/brief/route.ts", import.meta.url), "utf8");
 const mcpSource = readFileSync(new URL("../../mcp/src/index.mjs", import.meta.url), "utf8");
 const oauthSource = readFileSync(new URL("../xero/oauth.ts", import.meta.url), "utf8");
+const contactSearchSource = readFileSync(new URL("./xero-contacts.ts", import.meta.url), "utf8");
+const supplierContactSource = readFileSync(new URL("./xero-supplier-contacts.ts", import.meta.url), "utf8");
+const supplierContactRoute = readFileSync(new URL("../../app/api/stuart/xero-suppliers/route.ts", import.meta.url), "utf8");
+const invoiceEvidenceRoute = readFileSync(new URL("../../app/api/stuart/invoice-evidence/route.ts", import.meta.url), "utf8");
 
 test("Stuart creates only draft ACCPAY bills and never payments", () => {
   assert.match(draftSource, /Type: "ACCPAY"/);
@@ -21,6 +27,10 @@ test("draft bill path requires source evidence, exact contacts and idempotency",
   assert.match(draftSource, /stuart_xero_draft_bills/);
   assert.match(draftSource, /live Xero supplier bill already uses this invoice number/i);
   assert.match(draftSource, /Spec invoice total does not match the attached original/i);
+  assert.match(draftSource, /resolveLineAccountCodes/);
+  assert.match(mcpSource, /line_account_codes/);
+  assert.match(draftSource, /Invoice currency must be verified/);
+  assert.match(draftSource, /Non-AUD Xero drafts are not enabled/);
 });
 
 test("source invoice attachment is traceable, fingerprinted and does not write to Xero", () => {
@@ -29,6 +39,27 @@ test("source invoice attachment is traceable, fingerprinted and does not write t
   assert.match(sourceAttachment, /storage_path/);
   assert.doesNotMatch(sourceAttachment, /xeroPostJson|xeroPutBytes|api\.xro/);
   assert.match(mcpSource, /attach_stuart_source_invoice/);
+  assert.match(mcpSource, /get_stuart_invoice_evidence/);
+});
+
+test("bounded invoice evidence returns verified supplier identity without raw text or bank details", () => {
+  assert.match(invoiceEvidenceRoute, /extractVerifiedInvoiceIdentity/);
+  assert.match(invoiceEvidenceRoute, /verified_abn_candidates/);
+  assert.match(invoiceEvidenceRoute, /legal_name_present_in_source/);
+  assert.doesNotMatch(invoiceEvidenceRoute, /extracted_text:\s*evidenceText/);
+  assert.match(mcpSource, /never returns raw document text or bank details/i);
+});
+
+test("Accounts automation never reuses a rejected or voided invoice", () => {
+  assert.match(accountsAutomation, /\.not\("status", "in", "\(rejected,voided\)"\)/);
+  assert.match(accountsAutomation, /currency_code: extractedCurrency/);
+  assert.match(accountsAutomation, /Foreign-currency invoice needs manual Xero review/);
+});
+
+test("Stuart's finance brief uses the bounded response by default", () => {
+  assert.match(mcpSource, /\/api\/stuart\/brief\?response_format=concise/);
+  assert.match(briefRoute, /const conciseFindings = openFindings\.slice\(0, 10\)\.map/);
+  assert.match(briefRoute, /open_findings: conciseFindings/);
 });
 
 test("supplier statements reconcile locally and cannot post to Xero", () => {
@@ -42,5 +73,28 @@ test("OAuth requests invoice and attachment writes but payment reads only", () =
   assert.match(oauthSource, /"accounting\.invoices"/);
   assert.match(oauthSource, /"accounting\.attachments"/);
   assert.match(oauthSource, /"accounting\.payments\.read"/);
+  assert.match(oauthSource, /"accounting\.contacts"/);
+  assert.doesNotMatch(oauthSource, /"accounting\.contacts\.read"/);
   assert.doesNotMatch(oauthSource, /"accounting\.payments"\s*,/);
+});
+
+test("Stuart can resolve supplier contacts through a read-only bounded search", () => {
+  assert.match(contactSearchSource, /xeroGet/);
+  assert.doesNotMatch(contactSearchSource, /xeroPostJson|xeroPutBytes/);
+  assert.match(mcpSource, /search_stuart_xero_contacts/);
+});
+
+test("supplier contact creation is source-backed, approved, duplicate-safe and excludes bank details", () => {
+  assert.match(supplierContactSource, /input\.humanConfirmed !== true/);
+  assert.match(supplierContactSource, /invoice\.supplier.*legalName/);
+  assert.match(supplierContactSource, /evidenceHasName/);
+  assert.match(supplierContactSource, /evidenceHasAbn/);
+  assert.match(supplierContactSource, /where: `Name/);
+  assert.match(supplierContactSource, /where: `TaxNumber/);
+  assert.match(supplierContactSource, /xeroPutJson/);
+  assert.match(supplierContactSource, /api\.xro\/2\.0\/Contacts\/\$\{xeroContactId\}/);
+  assert.doesNotMatch(supplierContactSource, /BankAccountDetails|BankAccountNumber|BSB/);
+  assert.match(supplierContactRoute, /body\.human_confirmed !== true/);
+  assert.match(mcpSource, /create_stuart_xero_supplier_contact/);
+  assert.match(mcpSource, /never stores bank details/i);
 });

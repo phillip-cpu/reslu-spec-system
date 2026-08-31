@@ -33,8 +33,8 @@ test("source export stays member-scoped and raw-audio access stays recorder-only
 test("Meeting Mode discloses retention and requires explicit destructive confirmation", () => {
   const component = read("components/conversations/MeetingMode.tsx");
   assert.match(component, /Source privacy/);
-  assert.match(component, /proposed deletion dates/i);
-  assert.match(component, /Automatic purging remains off until RESLU approves the policy/);
+  assert.match(component, /scheduled source-retention dates/i);
+  assert.match(component, /Automatic deletion is governed in Settings/);
   assert.match(component, /Permanently delete the \$\{label\}/);
   assert.match(component, /Filed structured minutes will remain/);
   assert.match(component, /Export transcript/);

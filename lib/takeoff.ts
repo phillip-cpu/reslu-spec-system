@@ -14,7 +14,7 @@
 // anything unannotated is flagged, not guessed."
 // ============================================================
 
-import { roundMoney } from "./estimate";
+import { roundMoney } from "./estimate.ts";
 import type { PlanAnalysisRoomDimensions, PlanDiscrepancy } from "@/types/phase-12a-a";
 
 // ------------------------------------------------------------

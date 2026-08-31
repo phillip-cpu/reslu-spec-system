@@ -31,11 +31,23 @@ export async function PATCH(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: PatchBoardGroupInput;
+  let body: PatchBoardGroupInput & { expected_updated_at?: string };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const { data: existing } = await supabase
+    .from("board_groups")
+    .select("id,updated_at")
+    .eq("id", id)
+    .maybeSingle();
+  if (!existing) return NextResponse.json({ error: "Group not found" }, { status: 404 });
+  const expectedUpdatedAt = body.expected_updated_at;
+  delete body.expected_updated_at;
+  if (expectedUpdatedAt && expectedUpdatedAt !== existing.updated_at) {
+    return NextResponse.json({ error: "Group changed since it was read; refresh the board and retry" }, { status: 409 });
   }
 
   const update: Record<string, unknown> = {};
@@ -52,19 +64,19 @@ export async function PATCH(
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
   }
 
-  const { data: group, error } = await supabase
+  let updateQuery = supabase
     .from("board_groups")
     .update(update)
-    .eq("id", id)
+    .eq("id", id);
+  if (expectedUpdatedAt) updateQuery = updateQuery.eq("updated_at", expectedUpdatedAt);
+  const { data: group, error } = await updateQuery
     .select()
-    .single();
+    .maybeSingle();
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-  if (!group) {
-    return NextResponse.json({ error: "Group not found" }, { status: 404 });
-  }
+  if (!group) return NextResponse.json({ error: "Group changed since it was read; refresh the board and retry" }, { status: 409 });
 
   // ---- Unification: mirror a name change into the linked schedule_phases row ----
   if (typeof update.name === "string" && group.phase_id) {

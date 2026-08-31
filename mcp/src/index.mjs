@@ -53,8 +53,9 @@ import {
   policyMapFromResponse,
   splitAriaAuthorityArgs,
 } from "./aria-authority.mjs";
-import { normalizeProjectDetailsUpdate, verifyProjectDetails } from "./project-details.mjs";
 import { transcribePrivateMeetingSource } from "./local-whisper.mjs";
+import { compactProjectBoard, resolveBoardGroupUpdate, resolveBoardTaskUpdate, verifyBoardGroupUpdate, verifyBoardTaskUpdate } from "./project-board.mjs";
+import { assertItemCanBeLinked, chooseExactEmailContact, mergeVerifiedContactNotes, normalizeContactItemLinkInput } from "./contact-item-link.mjs";
 
 // ------------------------------------------------------------
 // Environment
@@ -242,83 +243,13 @@ const SUPPLIER_INVOICE_LINE_ITEMS_SCHEMA = {
   },
 };
 
-function compactProjectList(body) {
-  return {
-    projects: (body?.projects ?? []).map((project) => ({
-      id: project.id,
-      name: project.name,
-      client_name: project.client_name,
-      address: project.address,
-      status: project.status,
-      project_stage: project.project_stage,
-      project_type: project.project_type ?? null,
-      project_subtype: project.project_subtype ?? null,
-      budget: project.budget,
-      job_number: project.job_number,
-      updated_at: project.updated_at,
-      cover_image_url: project.cover_image_url ?? null,
-    })),
-    total: body?.total ?? body?.projects?.length ?? 0,
-  };
-}
-
-function compactSpecItemList(body) {
-  return {
-    items: (body?.items ?? []).map((item) => ({
-      id: item.id,
-      item_code: item.item_code,
-      category: item.category,
-      name: item.name,
-      supplier: item.supplier,
-      brand: item.brand,
-      quantity: item.quantity,
-      unit: item.unit,
-      location: item.location,
-      status: item.status,
-      product_url: item.product_url,
-      client_approved: item.client_approved,
-      scrape_flagged: item.scrape_flagged,
-      measurement_id: item.measurement_id,
-    })),
-    total: body?.total ?? body?.items?.length ?? 0,
-  };
-}
-
-function compactDetailedProjectHealth(body) {
-  if (!body?.issues) return body;
-  return {
-    ...body,
-    issues: body.issues.map(({ entity_keys: _entityKeys, ...issue }) => issue),
-  };
-}
-
-function compactProjectContext(body) {
-  if (!body?.project?.items) return body;
-  const items = body.project.items;
-  const missingPrice = items.filter((item) => item.price_trade == null && item.price_rrp == null);
-  const missingLeadTime = items.filter((item) => item.lead_time_weeks == null);
-  return {
-    ...body,
-    project: {
-      ...body.project,
-      items: items.slice(0, 12),
-      item_summary: {
-        total: items.length,
-        missing_price: missingPrice.length,
-        missing_lead_time: missingLeadTime.length,
-        sample_limit: 12,
-      },
-    },
-  };
-}
-
 const TOOLS = [
   {
     name: "list_projects",
     description:
-      "List all active (non-archived) projects as a bounded summary. Includes checked project type/subtype, lifecycle stage, budget and job number for cash-flow and programme triage; excludes private portal tokens and oversized project detail.",
+      "List all active (non-archived) projects. Returns id, name, client_name, address, status, and cover image URL for each.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    handler: async () => compactProjectList(await apiFetch("/api/projects")),
+    handler: async () => apiFetch("/api/projects"),
   },
   {
     name: "get_project",
@@ -334,15 +265,14 @@ const TOOLS = [
   {
     name: "list_items",
     description:
-      "List a bounded summary of every spec register item for a project (design data only — no pricing or lead times; use get_project_health and get_ordering_attention for cash-flow readiness). Oversized descriptions, images and scraped product details are omitted.",
+      "List spec register items for a project (design data only — no pricing; use the Pricing & Procurement view in the UI for financials, which this tool does not expose).",
     inputSchema: {
       type: "object",
       properties: { project_id: { type: "string", description: "Project UUID" } },
       required: ["project_id"],
       additionalProperties: false,
     },
-    handler: async ({ project_id }) =>
-      compactSpecItemList(await apiFetch(`/api/projects/${project_id}/items`)),
+    handler: async ({ project_id }) => apiFetch(`/api/projects/${project_id}/items`),
   },
   {
     name: "create_item",
@@ -471,43 +401,6 @@ const TOOLS = [
         method: "POST",
         body: JSON.stringify(args),
       }),
-  },
-  {
-    name: "update_project",
-    description:
-      "Update reversible project identity or contact details, such as a verified street address, then read the project back. Use this when the authenticated human asks to correct or complete an existing project record. This tool cannot change budget, status, stage, job number, document state, pricing, commitments or any external system. Pass the exact current project.updated_at as expected_updated_at so a stale write fails instead of overwriting newer work.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        project_id: { type: "string", description: "Exact projects.id" },
-        expected_updated_at: { type: "string", description: "Exact updated_at returned by get_project immediately before this write" },
-        name: { type: "string" },
-        client_name: { type: "string" },
-        address: { type: "string", description: "Verified full project address" },
-        client_email: { type: ["string", "null"] },
-        client_phone: { type: ["string", "null"] },
-        client_secondary_name: { type: ["string", "null"] },
-        client_secondary_email: { type: ["string", "null"] },
-        client_secondary_phone: { type: ["string", "null"] },
-        alias: { type: ["string", "null"] },
-      },
-      required: ["project_id", "expected_updated_at"],
-      additionalProperties: false,
-    },
-    handler: async (input = {}) => {
-      const { projectId, expectedUpdatedAt, patch } = normalizeProjectDetailsUpdate(input);
-      await apiFetch(`/api/projects/${encodeURIComponent(projectId)}`, {
-        method: "PUT",
-        body: JSON.stringify({ ...patch, expected_updated_at: expectedUpdatedAt }),
-      });
-      const readback = await apiFetch(`/api/projects/${encodeURIComponent(projectId)}`);
-      verifyProjectDetails(readback?.project, patch);
-      return {
-        project: readback.project,
-        updated_fields: Object.keys(patch),
-        completion_state: "verified",
-      };
-    },
   },
   {
     name: "list_leads",
@@ -860,6 +753,7 @@ const TOOLS = [
       type: "object",
       properties: {
         project_id: { type: "string", description: "Project UUID" },
+        task_query: { type: "string", description: "Optional card-title filter. Omit for a concise phase-group/status overview." },
       },
       required: ["project_id"],
       additionalProperties: false,
@@ -1021,6 +915,77 @@ const TOOLS = [
     },
   },
   {
+    name: "ensure_supplier_contact_and_link_item",
+    description:
+      "Create or reuse one verified Address Book supplier contact by exact email, then link it to one exact existing Spec item and verify the relationship by readback. This is an ordinary reversible R1 internal operation: no approval is needed when the owner asks Aria to add/link the contact. It never replaces a different existing supplier link, never creates a duplicate email contact, and never creates an Operations task instead of doing the work.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Exact project UUID" },
+        item_id: { type: "string", description: "Exact existing items UUID" },
+        item_code: { type: "string", description: "Exact item code, e.g. CP-01" },
+        company: { type: "string", minLength: 1, maxLength: 300 },
+        contact_name: { type: "string", minLength: 1, maxLength: 300 },
+        email: { type: "string", minLength: 3, maxLength: 320 },
+        phone: { type: "string", maxLength: 100 },
+        mobile: { type: "string", maxLength: 100 },
+        address: { type: "string", maxLength: 500 },
+        specialty: { type: "string", maxLength: 300 },
+        category: { type: "string", maxLength: 300 },
+      },
+      required: ["project_id", "item_id", "item_code", "company", "contact_name", "email"],
+      additionalProperties: false,
+    },
+    handler: async (rawInput) => {
+      const input = normalizeContactItemLinkInput(rawInput);
+      const listing = await apiFetch(`/api/contacts?q=${encodeURIComponent(input.email)}&limit=20`);
+      let contact = chooseExactEmailContact(listing?.contacts, input.email);
+      const contactCreated = !contact;
+      const contactPayload = {
+        company: input.company,
+        contact_name: input.contact_name,
+        email: input.email,
+        phone: input.phone,
+        specialty: input.specialty,
+        category: input.category,
+        notes: mergeVerifiedContactNotes(contact?.notes, input),
+      };
+      contact = contact
+        ? (await apiFetch(`/api/contacts/${encodeURIComponent(contact.id)}`, {
+            method: "PATCH", body: JSON.stringify(contactPayload),
+          })).contact
+        : (await apiFetch("/api/contacts", {
+            method: "POST", body: JSON.stringify(contactPayload),
+          })).contact;
+      if (!contact?.id) throw new Error("Contact write returned no contact id");
+
+      const before = (await apiFetch(`/api/items/${encodeURIComponent(input.item_id)}`))?.item;
+      assertItemCanBeLinked(before, input, contact.id);
+      const linkUpdated = before.supplier_contact_id !== contact.id;
+      if (linkUpdated) {
+        await apiFetch(`/api/items/${encodeURIComponent(input.item_id)}`, {
+          method: "PATCH", body: JSON.stringify({ supplier_contact_id: contact.id }),
+        });
+      }
+      const item = (await apiFetch(`/api/items/${encodeURIComponent(input.item_id)}`))?.item;
+      assertItemCanBeLinked(item, input, contact.id);
+      if (item.supplier_contact_id !== contact.id) throw new Error("Supplier contact link failed readback verification");
+      return {
+        contact: {
+          id: contact.id, company: contact.company, contact_name: contact.contact_name,
+          email: contact.email, phone: contact.phone, notes: contact.notes, updated_at: contact.updated_at,
+        },
+        item: {
+          id: item.id, project_id: item.project_id, item_code: item.item_code,
+          name: item.name, supplier_contact_id: item.supplier_contact_id, updated_at: item.updated_at,
+        },
+        contact_created: contactCreated,
+        link_updated: linkUpdated,
+        completion_state: "verified",
+      };
+    },
+  },
+  {
     name: "create_board_task",
     description:
       "Create a task card on a project's kanban board. column_id must be an existing board_columns id for that project — call get_project or the project's board API first if you don't already know it. Board v2 (Phase 12a-B): auto-assigns Aria herself if assignee_ids is omitted entirely — pass assignee_ids: [] for no assignee, or a list of profile UUIDs to assign specific people instead.",
@@ -1049,6 +1014,88 @@ const TOOLS = [
         method: "POST",
         body: JSON.stringify(body),
       }),
+  },
+  {
+    name: "get_project_board",
+    description:
+      "Read a project's current work board, including existing cards, status columns and phase groups. Use this before editing or moving a card so you update the existing task rather than creating a duplicate. Phase groups such as 'Rough In' are separate from status columns such as 'In Progress'.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project UUID" },
+      },
+      required: ["project_id"],
+      additionalProperties: false,
+    },
+    handler: async ({ project_id, task_query }) => compactProjectBoard(await apiFetch(`/api/projects/${project_id}/board`), task_query),
+  },
+  {
+    name: "update_board_task",
+    description:
+      "Edit or move an existing project work-board card, then verify it by authoritative readback. Read the board first. Use phase_group_name (for example 'Rough In') to move between project phases and target_column_name for status lanes. Never use create_board_task as a substitute when the card already exists.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project UUID" },
+        task_id: { type: "string", description: "Existing board_tasks UUID; preferred after get_project_board" },
+        task_title: { type: "string", description: "Existing title lookup only when task_id is unavailable; must match exactly one card" },
+        expected_updated_at: { type: "string", description: "Exact updated_at returned by get_project_board; stale edits fail with 409" },
+        target_column_id: { type: "string", description: "Target status-column UUID" },
+        target_column_name: { type: "string", description: "Target status-column name, e.g. In Progress" },
+        phase_group_id: { type: "string", description: "Target phase-group UUID" },
+        phase_group_name: { type: "string", description: "Target phase-group name, e.g. Rough In" },
+        title: { type: "string" },
+        description: { type: "string" },
+        due_date: { type: ["string", "null"] },
+        due_time: { type: ["string", "null"] },
+      },
+      required: ["project_id", "expected_updated_at"],
+      additionalProperties: false,
+    },
+    handler: async ({ project_id, ...input }) => {
+      const board = await apiFetch(`/api/projects/${project_id}/board`);
+      const resolved = resolveBoardTaskUpdate(board, input);
+      if (resolved.noOp) return { task: resolved.task, verified: true, unchanged: true };
+      await apiFetch(`/api/board-tasks/${resolved.task.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ ...resolved.patch, expected_updated_at: input.expected_updated_at }),
+      });
+      const readback = await apiFetch(`/api/projects/${project_id}/board`);
+      return { task: verifyBoardTaskUpdate(readback, resolved.task.id, resolved.patch), verified: true };
+    },
+  },
+  {
+    name: "update_board_group",
+    description:
+      "Edit or reorder an existing project work-board phase group, then verify by readback. Use this when the named thing is a group heading such as 'Plasterboard, Flushing & Cornice', not a card. For 'move Plasterboard under Rough-in', pass group_name='Plasterboard' and move_after_group_name='Rough-in'.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project UUID" },
+        group_id: { type: "string", description: "Existing board_groups UUID; preferred" },
+        group_name: { type: "string", description: "Unambiguous current phase-group name" },
+        expected_updated_at: { type: "string", description: "Exact group.updated_at from get_project_board" },
+        name: { type: "string", description: "New group name" },
+        sort: { type: "number", description: "Explicit sort value; normally prefer a relative move" },
+        move_after_group_id: { type: "string" },
+        move_after_group_name: { type: "string", description: "Place immediately after this group" },
+        move_before_group_id: { type: "string" },
+        move_before_group_name: { type: "string", description: "Place immediately before this group" },
+      },
+      required: ["project_id", "expected_updated_at"],
+      additionalProperties: false,
+    },
+    handler: async ({ project_id, ...input }) => {
+      const board = await apiFetch(`/api/projects/${project_id}/board`);
+      const resolved = resolveBoardGroupUpdate(board, input);
+      if (resolved.noOp) return { group: resolved.group, verified: true, unchanged: true };
+      await apiFetch(`/api/board-groups/${resolved.group.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ ...resolved.patch, expected_updated_at: input.expected_updated_at }),
+      });
+      const readback = await apiFetch(`/api/projects/${project_id}/board`);
+      return { group: verifyBoardGroupUpdate(readback, resolved.group.id, resolved.patch), verified: true };
+    },
   },
   // ------------------------------------------------------------
   // Phase 12a-A — SOW completion + Aria plan analysis + takeoff assist
@@ -1725,39 +1772,31 @@ const TOOLS = [
       apiFetch(`/api/second-brain/emails/${encodeURIComponent(id)}`),
   },
   {
+    name: "send_aria_email",
+    description:
+      "Send one exact approved plain-text email from RESLU <aria@reslu.com.au>. Use Aria's own tool, never a specialist's mailbox. A current authenticated owner instruction that already fixes the final recipient, subject, body and CC is the approval; do not ask for a redundant confirmation. If any final field changes materially, obtain refreshed authority. Returns Gmail's provider message id and timestamp so delivery can be verified and an uncertain send is never blindly retried.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "Single final recipient email address" },
+        cc: { type: "array", items: { type: "string" }, maxItems: 10, description: "Optional approved CC recipients" },
+        subject: { type: "string", minLength: 1, maxLength: 300 },
+        body: { type: "string", minLength: 1, maxLength: 50000, description: "Exact approved plain-text body" },
+      },
+      required: ["to", "subject", "body"],
+      additionalProperties: false,
+    },
+    handler: async (body) => apiFetch("/api/aria-email/send", { method: "POST", body: JSON.stringify(body) }),
+  },
+  {
     name: "search",
     description:
-      "Backwards-compatible alias for search_second_brain. Hybrid search across projects, leads, items, diary/portal updates, SOW documents, inbound emails and durable memory notes.",
+      "Hybrid search (full-text + semantic) across projects, leads, items, diary/portal updates, SOW documents, inbound emails and durable memory notes. Use it before deciding or drafting so current records and prior decisions inform the answer. Full-text catches exact codes; semantic search catches paraphrases. Use entity_type to scope to project/lead/item/diary/sow/email/memory. response_format 'concise' (default) returns a <=140-char snippet per result; 'detailed' returns the full indexed content.",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string", description: "Search text" },
         entity_type: { type: "string", enum: ["project", "lead", "item", "diary", "sow", "email", "memory"], description: "Optional — scope to one entity type" },
-        limit: { type: "number", description: "Max results, default 8, capped at 30" },
-        response_format: { type: "string", enum: ["concise", "detailed"], description: "Default concise" },
-      },
-      required: ["query"],
-      additionalProperties: false,
-    },
-    handler: async (args) => {
-      if (AGENT_ROLE === "marco" && args.entity_type && args.entity_type !== "memory") {
-        throw new Error("Marco may only search curated Second Brain memory");
-      }
-      return apiFetch("/api/second-brain/search", {
-        method: "POST",
-        body: JSON.stringify(AGENT_ROLE === "marco" ? { ...args, entity_type: "memory" } : args),
-      });
-    },
-  },
-  {
-    name: "search_second_brain",
-    description:
-      "Search RESLU Second Brain before asking the human for a missing business fact. Hybrid full-text and semantic search covers projects, leads, items, diary/portal updates, SOW documents, already-ingested inbound emails and durable memory notes. Use an entity_type when known; use email for historical correspondence. If a current operational record is incomplete, search here first, then use a live provider such as Gmail only when freshness or missing indexed evidence requires it. response_format 'concise' is the default; 'detailed' returns full indexed content.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Business fact, entity name, address, code or prior decision to find" },
-        entity_type: { type: "string", enum: ["project", "lead", "item", "diary", "sow", "email", "memory"] },
         limit: { type: "number", description: "Max results, default 8, capped at 30" },
         response_format: { type: "string", enum: ["concise", "detailed"], description: "Default concise" },
       },
@@ -1813,12 +1852,11 @@ const TOOLS = [
       const params = new URLSearchParams({ response_format: format });
       if (!project_id && Number.isFinite(offset)) params.set("offset", String(offset));
       if (!project_id && Number.isFinite(limit)) params.set("limit", String(limit));
-      const body = await apiFetch(
+      return apiFetch(
         project_id
           ? `/api/projects/${encodeURIComponent(project_id)}/data-quality?${params}`
           : `/api/projects/data-quality?${params}`
       );
-      return project_id && format === "detailed" ? compactDetailedProjectHealth(body) : body;
     },
   },
   {
@@ -1832,12 +1870,8 @@ const TOOLS = [
       },
       additionalProperties: false,
     },
-    handler: async ({ project_id } = {}) => {
-      const body = await apiFetch(
-        project_id ? `/api/me/context?project_id=${encodeURIComponent(project_id)}` : "/api/me/context"
-      );
-      return project_id ? compactProjectContext(body) : body;
-    },
+    handler: async ({ project_id } = {}) =>
+      apiFetch(project_id ? `/api/me/context?project_id=${encodeURIComponent(project_id)}` : "/api/me/context"),
   },
   // ------------------------------------------------------------
   // RESLU Second Brain, Step 11 (docs/RESLU-second-brain-build-brief.md).
@@ -2139,34 +2173,6 @@ const TOOLS = [
     handler: async () => apiFetch("/api/stuart/review", { method: "POST", body: "{}" }),
   },
   {
-    name: "commit_company_overhead_finance_intake",
-    description:
-      "After Phillip approves the exact visible task artifact, create one source-backed company-overhead one-time purchase as a DRAFT Cockpit outgoing. The tool re-reads the email and PDF metadata, rejects project evidence, foreign currency, amount changes and duplicates, and records the approval receipt. It creates an internal accounts@reslu.com.au routing result but does not send email, create a project cost, approve/pay a bill or write Xero.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        source_email_id: { type: "string" },
-        source_attachment_id: { type: "string" },
-        supplier: { type: "string" },
-        invoice_date: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
-        amount_ex_gst_minor: { type: "integer", minimum: 0 },
-        gst_minor: { type: "integer", minimum: 0 },
-        total_minor: { type: "integer", minimum: 1 },
-        currency_code: { type: "string", enum: ["AUD"] },
-        duplicate_key: { type: "string", pattern: "^company-overhead:[a-f0-9]{64}$" },
-        category: { type: "string", enum: ["rent", "marketing", "software", "insurance", "utilities", "professional_fees", "vehicles", "other"] },
-        route_to: { type: "string", enum: ["accounts@reslu.com.au"] },
-        frequency: { type: "string", enum: ["once"] },
-        status: { type: "string", enum: ["draft"] },
-        expense_scope: { type: "string", enum: ["company"] },
-        project_id: { type: "null" },
-      },
-      required: ["source_email_id", "source_attachment_id", "supplier", "invoice_date", "amount_ex_gst_minor", "gst_minor", "total_minor", "currency_code", "duplicate_key", "category", "route_to", "frequency", "status", "expense_scope", "project_id"],
-      additionalProperties: false,
-    },
-    handler: async (body) => apiFetch("/api/stuart/company-overhead-intake", { method: "POST", body: JSON.stringify(body) }),
-  },
-  {
     name: "attach_stuart_source_invoice",
     description:
       "Attach one already-ingested original supplier-invoice PDF to its traceable Spec invoice. Use only after the human approves the exact attachment artifact. Verifies email ownership, PDF storage, fingerprint and readable evidence. It does not change amounts, create a Xero bill, approve or pay anything.",
@@ -2192,23 +2198,6 @@ const TOOLS = [
       additionalProperties: false,
     },
     handler: async ({ email_id }) => apiFetch("/api/stuart/accounts-invoices", { method: "POST", body: JSON.stringify({ email_id }) }),
-  },
-  {
-    name: "create_stuart_xero_supplier_contact",
-    description:
-      "Create one verified Xero contact for a source-backed supplier after exact human approval. Requires the legal name and valid Australian ABN to match the attached original, searches Xero for name/ABN duplicates, records an audit, and performs provider readback. It never stores bank details, approves a bill or makes a payment. Xero marks the contact as a supplier after the subsequent DRAFT ACCPAY bill.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        invoice_id: { type: "string", description: "Exact source-backed Spec supplier invoices.id" },
-        legal_name: { type: "string", minLength: 2, maxLength: 255, description: "Exact legal supplier name from the attached original" },
-        abn: { type: "string", minLength: 11, maxLength: 20, description: "Australian ABN shown on the attached original" },
-        human_confirmed: { type: "boolean", description: "Must be true only after the human explicitly approves this exact legal name and ABN" },
-      },
-      required: ["invoice_id", "legal_name", "abn", "human_confirmed"],
-      additionalProperties: false,
-    },
-    handler: async (body) => apiFetch("/api/stuart/xero-suppliers", { method: "POST", body: JSON.stringify(body) }),
   },
   {
     name: "stage_stuart_company_expense_invoice",
@@ -2253,6 +2242,23 @@ const TOOLS = [
       additionalProperties: false,
     },
     handler: async (body) => apiFetch("/api/stuart/unallocated-invoices/classify", { method: "POST", body: JSON.stringify(body) }),
+  },
+  {
+    name: "create_stuart_xero_supplier_contact",
+    description:
+      "Create one verified Xero contact for a source-backed supplier after exact human approval. Requires the legal name and valid Australian ABN to match the attached original, searches Xero for name/ABN duplicates, records an audit, and performs provider readback. It never stores bank details, approves a bill or makes a payment. Xero marks the contact as a supplier after the subsequent DRAFT ACCPAY bill.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        invoice_id: { type: "string", description: "Exact source-backed Spec supplier invoices.id" },
+        legal_name: { type: "string", minLength: 2, maxLength: 255, description: "Exact legal supplier name from the attached original" },
+        abn: { type: "string", minLength: 11, maxLength: 20, description: "Australian ABN shown on the attached original" },
+        human_confirmed: { type: "boolean", description: "Must be true only after the human explicitly approves this exact legal name and ABN" },
+      },
+      required: ["invoice_id", "legal_name", "abn", "human_confirmed"],
+      additionalProperties: false,
+    },
+    handler: async (body) => apiFetch("/api/stuart/xero-suppliers", { method: "POST", body: JSON.stringify(body) }),
   },
   {
     name: "create_stuart_xero_draft_bill",

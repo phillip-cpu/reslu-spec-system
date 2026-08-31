@@ -591,7 +591,11 @@ export type SupplierInvoicePaymentStatus = "unpaid" | "part_paid" | "paid";
  */
 export interface Invoice {
   id: string;
-  project_id: string;
+  project_id: string | null;
+  expense_scope: "project" | "company" | "unallocated";
+  company_expense_category: import("./finance").FinanceRecurringCategory | null;
+  recurring_commitment_id: string | null;
+  currency_code: string | null;
   supplier: string;
   invoice_number: string;
   invoice_date: string | null;

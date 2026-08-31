@@ -80,6 +80,19 @@ test("the browser persists outbox entries before clearing the composer", () => {
   assert.ok(workspace.indexOf("await savePendingConversationMessage(entry)") < workspace.indexOf("clearDraft(conversationId, body)"));
 });
 
+test("legacy voice turns use the same durable idempotent outbox as typed chat", () => {
+  const legacyVoice = workspace.match(
+    /const queueLegacyVoiceMessage = useCallback\(async \(([\s\S]*?)\n  \}, \[flushOutbox, persistOutboxEntry\]\);/,
+  )?.[1] ?? "";
+  assert.match(outbox, /source: "text" \| "voice" \| "voice_note"/);
+  assert.match(legacyVoice, /clientMessageId: crypto\.randomUUID\(\)/);
+  assert.match(legacyVoice, /source: "voice"/);
+  assert.match(legacyVoice, /targetAgent/);
+  assert.match(legacyVoice, /await persistOutboxEntry\(entry\)/);
+  assert.match(legacyVoice, /await flushOutbox\(\)/);
+  assert.doesNotMatch(legacyVoice, /fetch\(/);
+});
+
 test("optimistic messages expose queued, sending, failed, delivered and retry states", () => {
   assert.match(workspace, /Waiting for connection/);
   assert.match(workspace, /Sending…/);
@@ -98,11 +111,46 @@ test("the device drains sends in order and a retryable failure cannot be overtak
   assert.doesNotMatch(workspace, /then\(\(\) => dispatchOutboxEntry\(queued\)\)/);
 });
 
+test("a lost POST response is reconciled against the canonical message before showing failure", () => {
+  assert.match(messageRoute, /client_message_id/);
+  assert.match(messageRoute, /\.eq\("author_profile_id", user\.id\)/);
+  assert.match(messageRoute, /canonical_message_id: canonicalMessage\?\.id \?\? null/);
+  assert.match(workspace, /messages\?client_message_id=\$\{entry\.clientMessageId\}/);
+  assert.match(workspace, /typeof reconciliation\.canonical_message_id === "string"/);
+  assert.match(workspace, /attempt < 3 && !canonicalMessageId/);
+  assert.match(workspace, /MESSAGE_RECONCILIATION_TIMEOUT_MS/);
+  assert.match(workspace, /await discardOutboxEntry\(entry\.clientMessageId\)/);
+  assert.ok(
+    workspace.indexOf("typeof reconciliation.canonical_message_id")
+      < workspace.indexOf('error: offline ? null : timedOut ? "Delivery confirmation timed out.'),
+    "canonical reconciliation must run before the device reports a retryable failure"
+  );
+});
+
 test("slow polling responses cannot overwrite a newer conversation or message snapshot", () => {
   assert.match(workspace, /conversationListRequestRef\.current !== requestNumber/);
   assert.match(workspace, /activeMessageRequestRef\.current\.has\(conversationId\)/);
   assert.match(workspace, /activeMessageRequestRef\.current\.get\(conversationId\) !== requestNumber/);
   assert.match(workspace, /activeMessageRequestRef\.current\.delete\(conversationId\)/);
+});
+
+test("poor-network reads are bounded and agent-work polling stays single-flight", () => {
+  assert.match(workspace, /boundedFetch\([\s\S]*"\/api\/conversations"[\s\S]*CONVERSATION_READ_TIMEOUT_MS/);
+  assert.match(workspace, /boundedFetch\([\s\S]*messages\$\{query\}[\s\S]*CONVERSATION_READ_TIMEOUT_MS/);
+  assert.match(workspace, /activeAgentTaskRequestRef\.current\.has\(conversationId\)/);
+  assert.match(workspace, /activeAgentTaskRequestRef\.current\.add\(conversationId\)/);
+  assert.match(workspace, /activeAgentTaskRequestRef\.current\.delete\(conversationId\)/);
+});
+
+test("interactive chat actions release their busy state after a bounded network wait", () => {
+  const boundedActionUses = workspace.match(/CONVERSATION_ACTION_TIMEOUT_MS/g)?.length ?? 0;
+  assert.match(workspace, /CONVERSATION_ACTION_TIMEOUT_MS = 15000/);
+  assert.ok(boundedActionUses >= 13, `expected every interactive action class to be bounded, found ${boundedActionUses}`);
+  assert.match(workspace, /boundedFetch\([\s\S]*messages\/\$\{message\.id\}\/forward[\s\S]*CONVERSATION_ACTION_TIMEOUT_MS/);
+  assert.match(workspace, /boundedFetch\([\s\S]*tasks\/\$\{taskId\}[\s\S]*CONVERSATION_ACTION_TIMEOUT_MS/);
+  assert.match(workspace, /boundedFetch\([\s\S]*\/preferences[\s\S]*CONVERSATION_ACTION_TIMEOUT_MS/);
+  assert.match(workspace, /boundedFetch\([\s\S]*\/reaction[\s\S]*CONVERSATION_ACTION_TIMEOUT_MS/);
+  assert.match(workspace, /boundedFetch\([\s\S]*\/pin[\s\S]*CONVERSATION_ACTION_TIMEOUT_MS/);
 });
 
 test("permanent send failures do not offer an endless retry loop", () => {

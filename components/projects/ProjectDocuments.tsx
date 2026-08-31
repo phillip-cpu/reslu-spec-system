@@ -143,6 +143,8 @@ function DocumentSection({
 }) {
   const [revisionLabel, setRevisionLabel] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   // Newest-revision-first: group is already scoped to this kind; sort
@@ -158,49 +160,59 @@ function DocumentSection({
   });
   const [latest, ...older] = sorted;
 
-  async function upload(file: File) {
+  async function upload(selectedFiles: File[]) {
+    if (selectedFiles.length === 0) return;
     setUploading(true);
+    setUploadProgress({ current: 1, total: selectedFiles.length });
+    setUploadError(null);
     onError(null);
     try {
-      // 1. Mint a signed upload URL (small request — filename only).
-      const urlRes = await fetch(`/api/projects/${projectId}/files/upload-url`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: file.name }),
-      });
-      if (!urlRes.ok) throw new Error((await urlRes.json()).error ?? "Could not start upload");
-      const { path, token } = await urlRes.json();
+      for (const [index, file] of selectedFiles.entries()) {
+        setUploadProgress({ current: index + 1, total: selectedFiles.length });
 
-      // 2. Upload the file DIRECTLY to Supabase Storage (browser → storage),
-      //    so large documents (plans etc.) bypass the ~4.5 MB app-request cap.
-      const supabase = createClient();
-      const { error: upErr } = await supabase.storage
-        .from(ASSET_BUCKET)
-        .uploadToSignedUrl(path, token, file, {
-          contentType: file.type || "application/octet-stream",
+        // 1. Mint a signed upload URL (small request — filename only).
+        const urlRes = await fetch(`/api/projects/${projectId}/files/upload-url`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: file.name }),
         });
-      if (upErr) throw new Error(upErr.message);
+        const urlBody = await urlRes.json().catch(() => ({}));
+        if (!urlRes.ok) throw new Error(urlBody.error ?? `Could not start upload for ${file.name}`);
 
-      // 3. Record the metadata row (no file body).
-      const res = await fetch(`/api/projects/${projectId}/files`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          storage_path: path,
-          filename: file.name,
-          kind,
-          revision_label: revisionLabel.trim() || null,
-        }),
-      });
-      if (!res.ok) throw new Error((await res.json()).error ?? "Upload failed");
-      const { file: row } = await res.json();
-      onUploaded(row);
+        // 2. Upload the file DIRECTLY to Supabase Storage (browser → storage),
+        //    so large documents (plans etc.) bypass the ~4.5 MB app-request cap.
+        const supabase = createClient();
+        const { error: upErr } = await supabase.storage
+          .from(ASSET_BUCKET)
+          .uploadToSignedUrl(urlBody.path, urlBody.token, file, {
+            contentType: file.type || "application/octet-stream",
+          });
+        if (upErr) throw new Error(`${file.name}: ${upErr.message}`);
+
+        // 3. Record the metadata row (no file body).
+        const res = await fetch(`/api/projects/${projectId}/files`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            storage_path: urlBody.path,
+            filename: file.name,
+            kind,
+            revision_label: revisionLabel.trim() || null,
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error ?? `${file.name}: upload failed`);
+        onUploaded(body.file);
+      }
       setRevisionLabel("");
       if (fileInput.current) fileInput.current.value = "";
     } catch (err) {
-      onError(err instanceof Error ? err.message : "Document upload failed");
+      const message = err instanceof Error ? err.message : "Document upload failed";
+      setUploadError(message);
+      onError(message);
     } finally {
       setUploading(false);
+      setUploadProgress(null);
     }
   }
 
@@ -244,10 +256,11 @@ function DocumentSection({
           <input
             ref={fileInput}
             type="file"
+            multiple
             hidden
             onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) upload(f);
+              const selected = Array.from(e.target.files ?? []);
+              if (selected.length > 0) void upload(selected);
             }}
           />
           <button
@@ -256,12 +269,21 @@ function DocumentSection({
             onClick={() => fileInput.current?.click()}
             className="border border-nearblack px-3 py-1.5 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white disabled:opacity-60"
           >
-            {uploading ? "Uploading…" : "Upload"}
+            {uploading
+              ? uploadProgress && uploadProgress.total > 1
+                ? `Uploading ${uploadProgress.current} of ${uploadProgress.total}…`
+                : "Uploading…"
+              : "Upload"}
           </button>
         </div>
       </div>
 
       <div className="px-4 py-3">
+        {uploadError && (
+          <p className="mb-3 border border-red-700/40 bg-red-50 px-3 py-2 text-caption text-red-700">
+            {uploadError}
+          </p>
+        )}
         {sorted.length === 0 ? (
           <p className="text-caption text-charcoal/40">No documents yet.</p>
         ) : (

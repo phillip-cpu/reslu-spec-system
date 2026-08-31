@@ -7,7 +7,7 @@ import type { CreateContactInput } from "@/types";
  * GET /api/contacts?limit=&offset=
  * Team-visible, not admin-gated (BUILD-SPEC.md "Address Book": "Team-
  * visible" — no financial data here). Query: ?q= (search across
- * company/contact_name/specialty), ?category= (exact match). Ordered
+ * company/contact_name/specialty/email), ?category= (exact match). Ordered
  * company asc, non-deleted only. Mirrors GET /api/library's search +
  * category-filter shape (see app/api/library/route.ts).
  *
@@ -74,7 +74,7 @@ export async function GET(request: NextRequest) {
   if (q) {
     const escaped = q.replace(/[%_]/g, (m) => `\\${m}`);
     query = query.or(
-      `company.ilike.%${escaped}%,contact_name.ilike.%${escaped}%,specialty.ilike.%${escaped}%`
+      `company.ilike.%${escaped}%,contact_name.ilike.%${escaped}%,specialty.ilike.%${escaped}%,email.ilike.%${escaped}%`
     );
   }
 

@@ -10,6 +10,7 @@ export type NativeVoiceBridgeEvent =
     }
   | { type: "call.connected" }
   | { type: "call.muted"; muted: boolean }
+  | { type: "call.audio-route"; route: "speaker" | "automatic" }
   | { type: "call.end" }
   | { type: "web.ready" }
   | { type: "realtime.event"; event: Record<string, unknown> };
@@ -31,9 +32,10 @@ type NativeVoiceWindow = Window & {
 };
 
 type NativeVoiceEventDetail = {
-  type?: "native-audio-ready" | "native-audio-error" | "native-realtime-connected" | "native-realtime-event" | "native-realtime-error" | "end-requested" | "mute-requested" | "mute-sync-error";
+  type?: "native-audio-ready" | "native-audio-error" | "native-realtime-connected" | "native-realtime-event" | "native-realtime-error" | "end-requested" | "mute-requested" | "mute-sync-error" | "audio-route-changed" | "audio-route-error";
   message?: string;
   muted?: boolean;
+  route?: "speaker" | "automatic";
   event?: Record<string, unknown>;
 };
 
@@ -52,6 +54,10 @@ export function nativeRealtimeTransportAvailable() {
   if (!nativeVoiceBridgeAvailable() || typeof window === "undefined") return false;
   const capabilities = (window as NativeVoiceWindow).__RESLU_NATIVE_VOICE_CAPABILITIES__;
   return capabilities?.version === 2 && capabilities.nativeRealtimeTransport === true;
+}
+
+export function nativeVoiceBridgeRequiresRealtimeUpgrade() {
+  return nativeVoiceBridgeAvailable() && !nativeRealtimeTransportAvailable();
 }
 
 /**

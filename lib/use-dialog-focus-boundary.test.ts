@@ -29,6 +29,12 @@ test("every interactive conversation modal installs one focus boundary", () => {
   assert.match(meeting, /useDialogFocusBoundary\(\{[\s\S]*containerRef: dialogRef/);
 });
 
+test("forwarding restores focus to the message action that opened it", () => {
+  assert.match(workspace, /forwardDialogReturnFocusRef\.current = messageMenuTriggerRefs\.current\.get\(message\.id\)/);
+  assert.match(workspace, /returnFocusRef=\{forwardDialogReturnFocusRef\}/);
+  assert.match(workspace, /containerRef: forwardDialogRef, returnFocusRef/);
+});
+
 test("the desktop compact call remains a non-modal persistent companion", () => {
   assert.match(workspace, /const callModal = Boolean\(callOpening \|\| callId \|\| callError\)/);
   assert.match(workspace, /!\(drawer && callCompact && desktopViewport\)/);

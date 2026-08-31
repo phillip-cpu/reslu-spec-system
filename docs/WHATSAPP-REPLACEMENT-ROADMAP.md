@@ -54,9 +54,14 @@ second inspection. PR #27 is now deployed and the restarted bridge stages each
 file privately inside the selected OpenClaw workspace, uses it in place, and
 cleans it up after the turn. A synthetic image benchmark on the production host
 completed in 4.5 seconds with native image input and no tool call, versus about
-30 seconds and three avoidable calls in the original real-image trace. This
-still requires the clean iPhone photo/PDF acceptance test before Stage 1 can
-close; the old 74-second trace is not evidence of the post-fix result.
+30 seconds and three avoidable calls in the original real-image trace. PR #119
+now gives each agent a bounded untrusted recall envelope for the 12 latest
+previously inspected attachments without reopening private bytes. Production
+zero-attachment follow-ups recovered the old photo's red harness/waterfront
+setting and a matching PDF's exact fixture id. This closes the backend
+prior-file recall gap. Stage 1 still requires the physical iPhone picker,
+retry, chat-switch and signed-link recovery matrix before it can close; the old
+74-second trace is not evidence of the post-fix picker result.
 
 Work:
 
@@ -110,8 +115,26 @@ older result loads its exact surrounding context without polling snapping back
 to newest, with an explicit return-to-latest action. Older history now pages
 backwards in bounded batches while preserving the reader's scroll position and
 remaining stable across background polling. Richer message actions,
-attachment-content search, full cold-start offline support and long-history
-virtualisation remain. Migration 105 adds author-owned 15-minute message edits
+attachment-content search and bounded cold-start messaging continuity are now
+implemented. Every client registers the narrow messaging service worker; it
+caches only the generic `/messages` shell and immutable public assets, never
+private APIs or attachment bytes. The latest 100 canonical messages per visited
+conversation and the conversation list are stored separately in a
+profile-scoped IndexedDB cache, with a visible offline label and the existing
+exact-once outbox still accepting new sends. Physical iPhone cold-start and
+cache-eviction behavior remain an acceptance gate. Loaded
+long histories retain every canonical row for search and accessibility while
+`content-visibility` lets the browser skip off-screen layout and paint. The
+merge/order and viewport-anchor algorithms now have behavioral coverage at
+2,000 rows; production keyset pagination returned the largest real 370-message
+thread in four complete, distinct pages. Physical 2,000-row mixed-media paint
+and composer responsiveness remain an acceptance gate.
+Attachment setup and reload-time draft recovery now use fifteen-second
+request/body deadlines; the existing independent storage probe still recovers
+bytes when an iPhone loses only the upload response. The composer explicitly
+states that typing can continue while a genuine transfer runs. Physical
+camera/library/PDF transfer and retry acceptance remains required.
+Migration 105 adds author-owned 15-minute message edits
 with multi-device conflict detection, plus a recoverable delete that leaves a
 truthful tombstone, keeps original text private to its author for 30 days and
 immediately blocks deleted attachments. Restore changes history without
@@ -330,6 +353,46 @@ task-cancellation path; the task card now requires a deliberate second “Stop
 task” action so a single or displaced mobile tap cannot terminate background
 work.
 
+A later seven-day production audit isolated the remaining synchronous latency:
+queue pickup was commonly below one second, but recent agent runs commonly took
+17-35 seconds. The long-lived OpenClaw conversation sessions had grown to about
+61k-74k tokens while the bridge also replayed bounded canonical history. A
+fresh isolated `gpt-5.6-terra` minimal-thinking run completed in 11.8 seconds.
+The current candidate therefore scopes only realtime voice sessions to the
+canonical call id: reconnects and turns within one call remain conversational,
+the next call starts bounded, and typed chat retains its durable conversation
+session. This does not change the selected model, agent identity, tool access,
+memory, canonical history or approval boundaries. Physical before/after voice
+timing remains required.
+
+The next bounded-context repair removes a second source of repeated prompt
+growth inside those call-scoped sessions. The first voice turn still receives
+the complete 16-message canonical history window. Every later turn in the same
+call receives only the canonical delta beginning at the previous voice turn;
+the current request is supplied once through its dedicated structured field.
+If the call or triggering message cannot be proven inside the bounded window,
+the bridge fails back to the complete history instead of guessing. A
+content-free seven-day production-shape audit found that 116 of 145 voice turns
+were same-call continuations; against those real row shapes this reduces the
+history envelope from 2,146 rows to 580 rows, or 73 percent, without changing
+the selected model, tools, memory, scope, agent identity, approval rules or
+canonical persistence. Physical post-release latency and contextual-follow-up
+acceptance remain required.
+
+A 19 August audit of the latest production calls confirmed the current shape
+more precisely: interruption mute/output clear was already 0-1 ms, OpenAI audio
+generation after the final RESLU answer was about 0.8-1.0 seconds, queue wait
+was normally below 1.3 seconds, and the latest successful OpenClaw runs took
+roughly 17-32 seconds. It also exposed a regression: the client retained all of
+the progress-cue cancellation and metrics machinery, but no browser or native
+path actually created a cue. The repair starts one separately identified,
+agent-specific acknowledgement only after RESLU has accepted the canonical
+consult request. Aria, Marco and Stuart rotate distinct short lines; the retired
+“I’m checking that now” phrase is absent. The cue is excluded from the transcript,
+can be interrupted independently, and is cleared before the canonical answer.
+This fixes the long silent wait without moving substantive answers, memory,
+tools or business actions out of the existing RESLU agent runtime.
+
 Foreground call-recovery candidate: a dropped WebRTC peer or data channel now
 reconnects to a fresh OpenAI audio session while retaining the existing RESLU
 call id, canonical conversation and any active Aria/Marco consult or durable
@@ -415,8 +478,8 @@ Stage gate:
 
 ## Stage 5 - iPhone background and in-car continuity
 
-Status: native foundation implemented; signing and physical-device acceptance
-pending.
+Status: native foundation implemented and signed; physical-device installation
+and acceptance pending.
 
 The PWA limit is now proven rather than assumed: foreground recovery is guarded
 by document visibility, and a web manifest cannot opt into the iOS audio session,
@@ -445,8 +508,9 @@ Stage gate:
 
 ## Stage 6 - Meeting Mode and intelligent filing
 
-Status: implementation, migrations, production deployment and Mac-mini runtime
-update are complete; real client-meeting acceptance is pending.
+Status: implementation, database safeguards and the deterministic Mac-side
+local Whisper worker are deployed and production-verified. Real client-meeting
+acceptance remains pending.
 
 Implemented in the core slice:
 
@@ -456,17 +520,22 @@ Implemented in the core slice:
   an unassigned fallback and no fuzzy-name auto-filing.
 - Explicit participant-consent gate, silent capture, pause/resume/finish,
   30-second private on-device audio/session checkpoints and recoverable upload.
-- Private Supabase source audio and local-Whisper transcription on the Mac mini;
-  full client meetings are not sent to OpenAI.
-- Durable strong-model Aria drafting that continues after the capture screen
-  closes, with seven editable minutes sections and the source transcript.
+- Private Supabase source audio and local-Whisper transcription on the Mac mini.
+  The deterministic worker authenticates as Aria, accepts only a bound Meeting
+  Mode job, validates the signed URL against the configured Supabase origin,
+  bounds the download, uses a mode-0600 temporary file and deletes the audio
+  after success or failure. Full client recordings are not sent to OpenAI.
+- Server-side strict-schema drafting with seven editable minutes sections and
+  the source transcript. The server owns the OpenAI credential; the Mac submits
+  only the exact transcript and the draft remains held for review.
 - Optimistic draft versioning, destination revalidation, duplicate-event
   confirmation, one transactional canonical record/timeline link and an audit
   trail for capture, destination, draft and filing state changes.
 
 Still required before the stage gate can pass:
 
-- Test the complete local-Whisper task on real production meeting data.
+- Test the complete local-Whisper task in a real client meeting. The synthetic
+  production path has already passed end to end.
 - Add speaker labels only if a locally approved diarization path proves reliable;
   the current source is a verbatim meeting-level transcript.
 - Prove lead, active-project and ambiguous-destination scenarios in real meetings.
@@ -495,25 +564,31 @@ Stage gate:
 
 ## Stage 7 - RESLU team intelligence
 
-Status: bounded owner/specialist consultation is deployed through production
-commit `45bc2ff`; migration 116 is production-verified and the Mac bridge is
-running the matching release. Live cross-domain acceptance remains pending.
+Status: bounded owner/specialist consultation and durable chat delegation are
+deployed. Production has completed the same read-only cross-domain acceptance
+scenario in both Aria→Marco and Marco→Aria directions with one canonical task,
+one owner-authored result, explicit specialist attribution and no duplicate.
+The corresponding physical voice-call acceptance remains pending.
 
-The first collaboration slice does not create a new agent layer. During a live
-Aria or Marco call, Realtime may choose one dedicated specialist-consult tool.
+The collaboration layer does not create replacement agents. During a live
+Aria, Marco or Stuart call, Realtime may choose one dedicated specialist-consult tool.
 The server verifies the visible owner is a participant in the active call and
-routes exactly one advisory job to the other active Aria/Marco OpenClaw runtime.
+routes exactly one advisory job to either of the other active RESLU OpenClaw runtimes.
 The specialist is not silently added to a direct conversation, cannot perform
 consequential work through this advisory path, and returns one answer authored
 by the owning agent with visible specialist attribution. A dedicated audit row,
 provider idempotency lock, exact cancellation boundary and atomic completion
 preserve one owner, one specialist job and one canonical answer. Durable work
-continues through the existing owner-agent task path, whose runtime can use its
-existing subagent facilities without moving approval or publication authority.
+continues through the existing owner-agent task path. Direct chat and background
+tasks may create a bounded, idempotent specialist task through the guarded
+delegation tool; its result returns to the same canonical thread under the
+original visible owner with the specialist explicitly attributed. The runtime
+can still use its existing subagent facilities without moving approval or
+publication authority.
 
 Work:
 
-- Distinct Aria and Marco identity, voice, avatar, lane and permissions.
+- Distinct Aria, Marco and Stuart identity, voice, avatar, lane and permissions.
 - Visible listening, thinking, speaking, consulting and preparing states.
 - One owning agent can consult another without duplicated actions.
 - Proactive briefings with priority, quiet hours, snooze and suppression.
@@ -543,6 +618,20 @@ Work:
 - VoiceOver, large text, contrast, captions and reduced-motion support.
 - A real iPhone/car/desktop test matrix under poor networks and long histories.
 
+Browser voice recovery now shares the durable typed-message outbox for legacy
+spoken turns, while Realtime consult, specialist and task requests use bounded
+same-intent retries keyed by their canonical tool-call id. Polling exposes a
+reconnecting state and an uncertain task outcome directs the user to Agent work
+instead of replaying potentially accepted work. Physical handoff, packet-loss
+and lock-screen acceptance is still required before this stage can pass.
+
+Long-history polling now retains the existing accumulated message, participant,
+agent-activity and pinned-message snapshots when the latest page is unchanged.
+It also suppresses redundant IndexedDB rewrites of the same newest 100-message
+offline cache. Canonical edits and new messages still replace or extend the
+ordered collection. The physical 2,000-row mixed-media responsiveness gate is
+still required.
+
 The bridge process already uses launchd `RunAtLoad`, `KeepAlive` and a bounded
 restart throttle. Push delivery has a six-attempt exponential retry budget.
 The bridge now also emits one content-free health report per minute for its
@@ -553,8 +642,11 @@ from an idle queue. The report contains only worker names/counts and liveness,
 never conversation text, identifiers, filenames or task content.
 This reporter is deployed through `5d200d9`; two production samples one minute
 apart proved the row advances and reports all five required workers active. A
-deliberate failure/recovery alert test remains pending and must use an isolated
-test path rather than interrupting the production bridge.
+separately named synthetic worker drill on 18 August used the real governed
+health route without stopping the production bridge: its first down report
+opened one incident and one notification, the repeated down report was deduped,
+and recovery resolved the incident and stale notification. The production bridge
+remained `ok` with a fresh report throughout.
 Durable Aria/Marco work deliberately enters `failed` instead of blindly
 replaying an uncertain run. Migration 111 adds a requester-only recovery action
 for failed work with no unresolved or completed approval boundary: it reuses the
@@ -563,12 +655,34 @@ and records a recovery event. A pending approval, an approved/published artifact
 an approved event or an approved failed task remains a visible dead letter until
 the relevant email, booking or record is inspected; RESLU never claims an
 uncertain external action was undone and never retries it automatically.
+Production commit `9493c7a` gives durable-task failures their own
+`conversation_tasks` incident lifecycle, separate from chat turns, calls and
+capability failures. The 18 August acceptance drill opened one incident and one
+notification for a synthetic read-only failed task, deduplicated the repeated
+open, requeued the same task id once, completed it through the live Aria worker
+and resolved only the task incident. The unrelated pre-existing chat transport
+incident remained open throughout, proving one lane cannot mask or falsely
+resolve the other.
+The 18 August production prompt-injection drill then exercised a direct Aria
+message, an exactly-once forward to Marco and a private PDF containing the same
+harmless hostile payload. The direct turn treated the quoted payload as data;
+the forward used the structurally tool-free `forwarded_context` lane; the PDF
+used only the fixed private PDF reader. Three jobs completed once, all outputs
+contained no secret-like values, and content-free before/after counts proved no
+task, authority run, approval receipt, email send or participant change. The
+repeatable PDF lives at
+`docs/security-fixtures/reslu-prompt-injection-fixture.pdf`.
 
 Keep Next.js on a currently patched stable release. The Stage 2 dependency
   audit moved the app from vulnerable 16.0.10 to stable 16.3.0 and cleared the
   framework/proxy advisories. Track the remaining no-fix advisories inherited
   by `@huggingface/transformers`; the current embedding wrapper is text-only
-  and must never receive untrusted images, archives or file bytes.
+  and must never receive untrusted images, archives or file bytes. The 19 August
+  audit patched `brace-expansion` and `js-yaml`, reducing the high-severity
+  count from six to four. The remaining four are one upstream ONNX/Sharp chain
+  with no published fix; the runtime now pins the exact immutable gte-small
+  model commit and rejects non-text, oversized-item and oversized-aggregate
+  inputs before loading the native pipeline.
 
 Final product gate:
 
@@ -580,15 +694,19 @@ Final product gate:
 ## Current next action
 
 The production database and deployment gates are complete through migration
-116 and production commit `45bc2ff`. The exact production deployment reached
-READY, the Mac bridge checkout is at that commit, and its launchd service was
-restarted on 12 August 2026. Run the Stage 7 live cross-agent checks: ask Aria
-for Marco's commercial view, then ask Marco for Aria's operational view. Each
-turn must retain one visible owner, one attributed specialist consultation, one
-canonical answer and no duplicate action.
+117 plus corrective migration
+`20260818171137_restore_single_active_call_creation`. Authenticated typed turns
+and one live Aria call now both survive in-app project, lead and Office
+navigation. The call remained `LISTENING`, ended with one canonical call record
+and left no active row. Run the Stage 7 voice collaboration checks next: ask
+Aria for Marco's commercial view, Marco for
+Aria's operational view and Stuart for either specialist's non-finance input.
+Each turn must retain one visible owner, one attributed specialist consultation,
+one canonical answer and no duplicate action.
 
-Repeat the iPhone voice acceptance call. Require a Gateway run id
-and visible safe progress before waiting for Aria's answer; interrupt one answer,
+When the paired iPhone is connected and unlocked, install the signed native
+target and run the Stage 3/5 acceptance call. Require a Gateway run id and
+visible safe progress before waiting for Aria's answer; interrupt one answer,
 start one durable task, end the call, and confirm that the durable task keeps
 working. Require saved content-free timing metadata for the call. Do not close
 Stage 3 until acknowledgement is below one second, interruption is under 250 ms,

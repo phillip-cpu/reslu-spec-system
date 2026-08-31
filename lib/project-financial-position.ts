@@ -1,4 +1,4 @@
-import { GST_RATE, roundMoney } from "./estimate";
+import { GST_RATE, roundMoney } from "./estimate.ts";
 
 export const FINANCIAL_SUMMARY_CHANGED_EVENT = "reslu:project-finances-changed";
 

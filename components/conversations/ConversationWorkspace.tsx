@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, FormEvent, PointerEvent as ReactPointerEvent, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { MeetingMode } from "@/components/conversations/MeetingMode";
 import Image from "next/image";
@@ -9,7 +9,13 @@ import {
   agentTaskArtifactText,
   normalizeAgentTaskArtifactContent,
 } from "@/lib/agent-task-artifact";
+import { latestAgentComputerState } from "@/lib/agent-operating-workspace";
 import { visibleAgentWorkTasks } from "@/lib/agent-work-visibility";
+import { boundedFetch } from "@/lib/bounded-request";
+import {
+  isTransientConversationNetworkError,
+  retrySameConversationIntent,
+} from "@/lib/conversation-network-retry";
 import {
   CONVERSATION_DIRECT_UPLOAD_MAX_BYTES,
   conversationAttachmentKind,
@@ -23,24 +29,46 @@ import {
   isRecoverableConversationUploadError,
   type ConversationUploadProbe,
 } from "@/lib/conversation-upload-recovery";
+import {
+  lastConversationCacheProfile,
+  loadCachedConversationList,
+  loadCachedConversationMessages,
+  saveCachedConversationList,
+  saveCachedConversationMessages,
+} from "@/lib/conversation-offline-cache";
 import { prepareConversationImageForUpload } from "@/lib/conversation-image-upload";
-import { isFatalSpeechRecognitionError, speechRecognitionErrorMessage } from "@/lib/conversation-voice";
+import {
+  isFatalSpeechRecognitionError,
+  shouldFallbackToLegacyVoice,
+  speechRecognitionErrorMessage,
+} from "@/lib/conversation-voice";
 import {
   listPendingConversationCallEnds,
   removePendingConversationCallEnd,
   savePendingConversationCallEnd,
   type PendingConversationCallEnd,
 } from "@/lib/conversation-call-outbox";
-import type { RealtimeVoiceLatencyMetric, RealtimeVoiceOutcome } from "@/lib/realtime-voice-metrics";
+import {
+  addRealtimeResponseUsage,
+  addRealtimeTranscriptionUsage,
+  createRealtimeVoiceUsageAccumulator,
+  realtimeVoiceUsageSnapshot,
+  setRealtimeVoiceUsageModels,
+  type RealtimeVoiceLatencyMetric,
+  type RealtimeVoiceOutcome,
+} from "@/lib/realtime-voice-metrics";
 import {
   nativeRealtimeTransportAvailable,
   nativeVoiceBridgeAvailable,
+  nativeVoiceBridgeRequiresRealtimeUpgrade,
   postNativeVoiceBridgeEvent,
   prepareNativeRealtimeSession,
   prepareNativeVoiceSession,
 } from "@/lib/native-voice-bridge";
+import { monitorMicrophoneHealth, type MicrophoneHealthMonitor } from "@/lib/microphone-health";
 import {
   parseRealtimeConsultArguments,
+  parseRealtimeSpecialistArguments,
   parseRealtimeTaskArguments,
 } from "@/lib/realtime-tool-arguments";
 import { realtimeConsultPollDelay } from "@/lib/realtime-consult-poll";
@@ -55,18 +83,28 @@ import {
   requestCallScreenWakeLock,
   type CallScreenWakeLock,
 } from "@/lib/call-screen-wake-lock";
-import { realtimeProgressCueId } from "@/lib/realtime-progress";
+import {
+  REALTIME_PROGRESS_KIND,
+  realtimeProgressAcknowledgement,
+  realtimeProgressCueId,
+} from "@/lib/realtime-progress";
 import {
   CONVERSATION_MESSAGE_REACTIONS,
   type ConversationMessageReactionValue,
 } from "@/lib/conversation-message-engagement";
 import {
+  conversationMenuTargetIndex,
+  type ConversationMenuNavigationKey,
+} from "@/lib/conversation-menu-keyboard";
+import {
   CONVERSATION_MESSAGE_LONG_PRESS_MS,
   conversationDayKey,
   conversationDayLabel,
   conversationLongPressMoved,
+  mergeConversationTimelineMessages,
+  preserveEqualConversationCollection,
+  preservedConversationScrollTop,
 } from "@/lib/conversation-timeline";
-import { conversationTextParts, insertConversationLink } from "@/lib/conversation-links";
 import {
   canStartConversationSwipeBack,
   conversationSwipeBackProgress,
@@ -104,9 +142,18 @@ import type {
   ConversationsResponse,
 } from "@/types/conversations";
 
-type CallState = "connecting" | "listening" | "thinking" | "speaking" | "interrupted" | "reconnecting";
+type CallState = "connecting" | "checking microphone" | "listening" | "thinking" | "speaking" | "interrupted" | "reconnecting";
 const MESSAGE_SEND_TIMEOUT_MS = 20000;
+const MESSAGE_RECONCILIATION_TIMEOUT_MS = 4000;
 const ATTACHMENT_FINALIZE_REQUEST_TIMEOUT_MS = 6000;
+const ATTACHMENT_CONTROL_REQUEST_TIMEOUT_MS = 15000;
+const CONVERSATION_READ_TIMEOUT_MS = 8000;
+const CONVERSATION_ACTION_TIMEOUT_MS = 15000;
+const CALL_CONTROL_REQUEST_TIMEOUT_MS = 8000;
+const REALTIME_SESSION_REQUEST_TIMEOUT_MS = 15000;
+const REALTIME_TOOL_REQUEST_TIMEOUT_MS = 15000;
+const MAX_REALTIME_TOOL_NETWORK_FAILURES = 3;
+const OFFLINE_CONVERSATION_NOTICE = "Offline — showing recent conversations saved on this device.";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface SpeechResultLike {
@@ -145,10 +192,20 @@ interface RealtimeEvent {
   delta?: string;
   transcript?: string;
   item_id?: string;
+  usage?: Record<string, unknown>;
+  session?: {
+    model?: string;
+    audio?: {
+      input?: {
+        transcription?: { model?: string };
+      };
+    };
+  };
   response?: {
     id?: string;
     status?: string;
     metadata?: Record<string, unknown>;
+    usage?: Record<string, unknown>;
     output?: Array<{
       type?: string;
       name?: string;
@@ -213,6 +270,7 @@ interface RealtimeConsultStatusResponse {
   status?: "pending" | "done" | "failed" | "cancelled";
   answer?: string | null;
   error?: string | null;
+  consulted_agent?: AgentSlug | null;
   latency?: {
     queue_wait_ms?: number | null;
     agent_processing_ms?: number | null;
@@ -261,13 +319,6 @@ interface DraftAttachment {
   voiceNoteDurationMs: number | null;
 }
 
-interface ComposerLinkDraft {
-  label: string;
-  url: string;
-  selectionStart: number;
-  selectionEnd: number;
-}
-
 interface ConversationTimelineItem {
   message: ConversationMessage;
   pending: PendingConversationMessage | null;
@@ -279,20 +330,6 @@ interface MessageSearchState {
   loading: boolean;
   error: string | null;
   hasSearched: boolean;
-}
-
-function ConversationMessageText({ body }: { body: string }) {
-  return conversationTextParts(body).map((part, index) => part.type === "link" ? (
-    <a
-      key={`${index}:${part.href}`}
-      href={part.href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="underline decoration-current/45 underline-offset-2 hover:decoration-current"
-    >
-      {part.text}
-    </a>
-  ) : <Fragment key={index}>{part.text}</Fragment>);
 }
 
 function Avatar({ participant, large = false }: { participant: ConversationParticipant; large?: boolean }) {
@@ -487,23 +524,76 @@ function taskStatusLabel(task: AgentTask) {
   }[task.status];
 }
 
+function taskStatusDot(task: AgentTask) {
+  if (task.status === "awaiting_approval") return "bg-amber-500";
+  if (task.status === "failed") return "bg-red-500";
+  if (task.status === "completed") return "bg-emerald-600";
+  if (task.status === "cancelled") return "bg-charcoal/25";
+  return task.status === "running" ? "bg-blue-600" : "bg-charcoal/45";
+}
+
+function taskCurrentDetail(task: AgentTask) {
+  return task.error
+    ?? task.result_summary
+    ?? task.progress_label
+    ?? task.events.at(-1)?.label
+    ?? (task.status === "queued" ? "Waiting for the agent to start" : task.objective);
+}
+
+function AgentTaskRow({
+  task,
+  selected,
+  onSelect,
+}: {
+  task: AgentTask;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const agentName = task.owner_agent?.display_name ?? "RESLU agent";
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={selected}
+      className={clsx(
+        "group flex w-full items-start gap-3 border-l-2 px-3 py-3 text-left transition-colors",
+        selected ? "border-nearblack bg-white" : "border-transparent hover:bg-white/55",
+      )}
+    >
+      <span aria-hidden className={clsx("mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full", taskStatusDot(task))} />
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center justify-between gap-2">
+          <span className="truncate text-[15px] font-semibold leading-snug text-nearblack">{task.title}</span>
+          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.11em] text-charcoal/45">{taskStatusLabel(task)}</span>
+        </span>
+        <span className="mt-1 line-clamp-2 block text-[13px] leading-snug text-charcoal/60">{taskCurrentDetail(task)}</span>
+        <span className="mt-1.5 block text-[11px] text-charcoal/40">{agentName}{task.events.length > 0 ? ` · ${task.events.length} update${task.events.length === 1 ? "" : "s"}` : ""}</span>
+      </span>
+    </button>
+  );
+}
+
 function AgentTaskCard({
   task,
   compact = false,
   dark = false,
   canRetry = false,
   onAction,
+  onDiscuss,
 }: {
   task: AgentTask;
   compact?: boolean;
   dark?: boolean;
   canRetry?: boolean;
   onAction: (taskId: string, action: "cancel" | "approve" | "reject" | "retry" | "dismiss", artifactId?: string) => void;
+  onDiscuss?: (task: AgentTask) => void;
 }) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [confirmingRetry, setConfirmingRetry] = useState(false);
   const latestEvent = task.events.at(-1);
+  const computer = latestAgentComputerState(task);
   const active = task.status === "queued" || task.status === "running";
+  const dismissible = task.status === "failed" || task.status === "completed" || task.status === "cancelled";
   const hasApprovedArtifact = task.artifacts.some((artifact) => artifact.status === "approved" || artifact.status === "published");
   const approvalAlreadyDecided = task.status === "awaiting_approval"
     && !task.artifacts.some((artifact) => artifact.status === "draft")
@@ -515,6 +605,7 @@ function AgentTaskCard({
   const retryable = task.status === "failed" && !retryBlockedByApproval && canRetry;
   const statusDetail = task.error
     ?? task.result_summary
+    ?? task.progress_label
     ?? (!approvalAlreadyDecided ? latestEvent?.label : null);
   return (
     <article className={clsx(
@@ -523,7 +614,7 @@ function AgentTaskCard({
     )}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className={clsx("text-[11px] font-semibold uppercase tracking-[0.13em]", dark ? "text-sand" : "text-charcoal/50") }>
+          <p className={clsx("conversation-meta font-semibold uppercase tracking-[0.13em]", dark ? "text-sand" : "text-charcoal/60") }>
             {taskStatusLabel(task)} · {task.model_tier} model{task.delegated_by_agent_id && task.owner_agent?.display_name ? ` · ${task.owner_agent.display_name}` : ""}
           </p>
           <h3 className="mt-1 break-words text-[17px] font-semibold leading-snug md:text-[18px]">{task.title}</h3>
@@ -540,7 +631,7 @@ function AgentTaskCard({
         )}
         {active && confirmingCancel && !task.cancellation_requested_at && (
           <div className="flex shrink-0 flex-col items-end gap-1" role="group" aria-label={`Confirm stopping ${task.title}`}>
-            <span className={clsx("text-[11px] font-semibold", dark ? "text-white/65" : "text-charcoal/65")}>Stop this task?</span>
+            <span className={clsx("conversation-meta font-semibold", dark ? "text-white/75" : "text-charcoal/70")}>Stop this task?</span>
             <div className="flex gap-1.5">
               <button
                 type="button"
@@ -562,7 +653,7 @@ function AgentTaskCard({
             </div>
           </div>
         )}
-        {task.status === "failed" && (
+        {dismissible && (
           <button
             type="button"
             onClick={() => onAction(task.id, "dismiss")}
@@ -627,6 +718,36 @@ function AgentTaskCard({
           <p className={clsx("mt-1 text-caption", dark ? "text-white/45" : "text-charcoal/45")}>The draft will appear here when it is ready to read.</p>
         </div>
       )}
+      {!compact && (computer.application || computer.location || computer.tool || computer.controlUrl) && (
+        <div className={clsx("mt-4 flex items-center justify-between gap-3 border px-3 py-2.5", dark ? "border-white/15 bg-black/15" : "border-[#d8d0c4] bg-[#f8f5ef]") }>
+          <div className="min-w-0">
+            <p className={clsx("conversation-meta font-semibold uppercase tracking-[0.12em]", dark ? "text-white/45" : "text-charcoal/55")}>Live computer</p>
+            <p className={clsx("mt-1 truncate text-caption", dark ? "text-white/70" : "text-charcoal/70")}>
+              {[computer.application, computer.tool, computer.location].filter(Boolean).join(" · ")}
+            </p>
+          </div>
+          {computer.controlUrl && (
+            <a href={computer.controlUrl} target="_blank" rel="noreferrer" className={clsx("flex min-h-10 shrink-0 items-center px-3 text-caption font-semibold", dark ? "bg-sand text-nearblack" : "bg-nearblack text-white")}>Take control</a>
+          )}
+        </div>
+      )}
+      {!compact && task.events.length > 0 && (
+        <div className={clsx("mt-4 border-t pt-3", dark ? "border-white/10" : "border-[#ded7cd]") }>
+          <p className={clsx("text-[10px] font-semibold uppercase tracking-[0.14em]", dark ? "text-white/45" : "text-charcoal/45")}>Activity</p>
+          <ol className="mt-2 space-y-2">
+            {task.events.slice(-5).reverse().map((event, index) => (
+              <li key={event.id} className="flex gap-2.5 text-[13px] leading-snug">
+                <span aria-hidden className={clsx("mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full", index === 0 ? taskStatusDot(task) : dark ? "bg-white/25" : "bg-charcoal/20")} />
+                <span className="min-w-0 flex-1">
+                  <span className={clsx("font-medium", dark ? "text-white/80" : "text-charcoal/80")}>{event.label}</span>
+                  {event.detail && <span className={clsx("mt-0.5 block", dark ? "text-white/45" : "text-charcoal/50")}>{event.detail}</span>}
+                </span>
+                <time className={clsx("shrink-0 text-[11px]", dark ? "text-white/30" : "text-charcoal/35")} dateTime={event.created_at}>{timeLabel(event.created_at)}</time>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
       {task.artifacts.map((artifact) => {
         const content = normalizeAgentTaskArtifactContent(artifact.content);
         const recipient = typeof content.to === "string" ? content.to : null;
@@ -650,10 +771,19 @@ function AgentTaskCard({
                 <button type="button" onClick={() => onAction(task.id, "approve", artifact.id)} className={clsx("min-h-11 rounded-lg px-3 py-2 text-body font-semibold", dark ? "bg-sand text-nearblack" : "bg-nearblack text-white")}>Approve</button>
               </div>
             )}
-            {artifact.status !== "draft" && <p className={clsx("mt-2 text-[10px] font-semibold uppercase tracking-[0.14em]", dark ? "text-sand" : "text-charcoal/45")}>{artifact.status}</p>}
+            {artifact.status !== "draft" && <p className={clsx("conversation-meta mt-2 font-semibold uppercase tracking-[0.14em]", dark ? "text-sand" : "text-charcoal/60")}>{artifact.status}</p>}
           </div>
         );
       })}
+      {!compact && onDiscuss && (
+        <button
+          type="button"
+          onClick={() => onDiscuss(task)}
+          className={clsx("mt-4 min-h-11 w-full rounded-lg border px-4 py-2 text-body font-semibold", dark ? "border-white/20 text-white hover:bg-white/10" : "border-[#cfc6b8] text-nearblack hover:bg-[#eee8de]")}
+        >
+          Ask or steer in chat
+        </button>
+      )}
     </article>
   );
 }
@@ -720,23 +850,27 @@ function NewConversation({ people, scope, onCreated, onClose }: {
       createIntentRef.current = { signature, id: crypto.randomUUID() };
     }
     try {
-      const response = await fetch(scope ? "/api/conversations/scoped" : "/api/conversations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(scope ? {
-          scope_kind: scope.kind,
-          scope_id: scope.id,
-          purpose_key: `topic_${createIntentRef.current.id.replaceAll("-", "")}`,
-          title,
-          agent_slug: agentSlugs[0],
-          client_conversation_id: createIntentRef.current.id,
-        } : {
-          profile_ids: profileIds,
-          agent_slugs: agentSlugs,
-          title,
-          client_conversation_id: createIntentRef.current.id,
-        }),
-      });
+      const response = await boundedFetch(
+        scope ? "/api/conversations/scoped" : "/api/conversations",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(scope ? {
+            scope_kind: scope.kind,
+            scope_id: scope.id,
+            purpose_key: `topic_${createIntentRef.current.id.replaceAll("-", "")}`,
+            title,
+            agent_slug: agentSlugs[0],
+            client_conversation_id: createIntentRef.current.id,
+          } : {
+            profile_ids: profileIds,
+            agent_slugs: agentSlugs,
+            title,
+            client_conversation_id: createIntentRef.current.id,
+          }),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Could not create conversation");
       onCreated(body.id);
@@ -799,11 +933,13 @@ function NewConversation({ people, scope, onCreated, onClose }: {
 function ForwardMessageDialog({
   message,
   conversations,
+  returnFocusRef,
   onClose,
   onForwarded,
 }: {
   message: ConversationMessage;
   conversations: ConversationSummary[];
+  returnFocusRef: RefObject<HTMLElement | null>;
   onClose: () => void;
   onForwarded: (destinationIds: string[]) => void;
 }) {
@@ -813,7 +949,7 @@ function ForwardMessageDialog({
   const [error, setError] = useState<string | null>(null);
   const intentRef = useRef<{ signature: string; id: string } | null>(null);
   const forwardDialogRef = useRef<HTMLFormElement>(null);
-  useDialogFocusBoundary({ active: true, containerRef: forwardDialogRef, onEscape: onClose });
+  useDialogFocusBoundary({ active: true, containerRef: forwardDialogRef, returnFocusRef, onEscape: onClose });
   const visible = useMemo(() => {
     const term = filter.trim().toLowerCase();
     if (!term) return conversations;
@@ -834,7 +970,7 @@ function ForwardMessageDialog({
     setSaving(true);
     setError(null);
     try {
-      const response = await fetch(
+      const response = await boundedFetch(
         `/api/conversations/${message.conversation_id}/messages/${message.id}/forward`,
         {
           method: "POST",
@@ -843,7 +979,8 @@ function ForwardMessageDialog({
             destination_conversation_ids: destinationIds,
             client_forward_id: intentRef.current.id,
           }),
-        }
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
       );
       const body = await response.json().catch(() => ({})) as { error?: string };
       if (!response.ok) throw new Error(body.error ?? "Could not forward this message");
@@ -955,11 +1092,15 @@ function GroupDetailsDialog({
     setError(null);
     let applied = false;
     try {
-      const response = await fetch(`/api/conversations/${conversation.id}/group`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...payload, client_action_id: actionIntentRef.current.id }),
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${conversation.id}/group`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...payload, client_action_id: actionIntentRef.current.id }),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const body = await response.json().catch(() => ({})) as { error?: string };
       if (!response.ok) throw new Error(body.error ?? "Could not update this group");
       applied = true;
@@ -1022,11 +1163,15 @@ function GroupDetailsDialog({
     setError(null);
     let applied = false;
     try {
-      const response = await fetch(`/api/conversations/${conversation.id}/group`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...payload, client_action_id: actionIntentRef.current.id }),
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${conversation.id}/group`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...payload, client_action_id: actionIntentRef.current.id }),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const body = await response.json().catch(() => ({})) as { error?: string };
       if (!response.ok) throw new Error(body.error ?? "Could not leave this group");
       applied = true;
@@ -1222,7 +1367,6 @@ export function ConversationWorkspace({
   const [messageMutationId, setMessageMutationId] = useState<string | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<ConversationMessage | null>(null);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
-  const [composerLink, setComposerLink] = useState<ComposerLinkDraft | null>(null);
   const [draftAttachments, setDraftAttachments] = useState<DraftAttachment[]>([]);
   const [voiceNoteRecording, setVoiceNoteRecording] = useState(false);
   const [attachmentDropActive, setAttachmentDropActive] = useState(false);
@@ -1232,13 +1376,17 @@ export function ConversationWorkspace({
   const [callOpening, setCallOpening] = useState(false);
   const [callState, setCallState] = useState<CallState>("connecting");
   const [muted, setMuted] = useState(false);
+  const [nativeAudioRouting, setNativeAudioRouting] = useState(false);
+  const [speakerEnabled, setSpeakerEnabled] = useState(false);
   const [interim, setInterim] = useState("");
   const [callError, setCallError] = useState<string | null>(null);
   const [lastSpoken, setLastSpoken] = useState("");
   const [callTranscript, setCallTranscript] = useState<CallTranscriptEntry[]>([]);
   const [callTranscriptExpanded, setCallTranscriptExpanded] = useState(false);
   const [agentTasks, setAgentTasks] = useState<AgentTask[]>([]);
-  const [agentWorkExpanded, setAgentWorkExpanded] = useState(false);
+  const [agentWorkExpanded, setAgentWorkExpanded] = useState(true);
+  const [selectedAgentTaskId, setSelectedAgentTaskId] = useState<string | null>(null);
+  const [composerAgentTask, setComposerAgentTask] = useState<AgentTask | null>(null);
   const [meetingModeOpen, setMeetingModeOpen] = useState(false);
   const [meetingSourceCallId, setMeetingSourceCallId] = useState<string | null>(null);
   const [meetingMinutesId, setMeetingMinutesId] = useState<string | null>(null);
@@ -1258,6 +1406,9 @@ export function ConversationWorkspace({
   const messageSearchDialogRef = useRef<HTMLDivElement>(null);
   const mediaViewerDialogRef = useRef<HTMLDivElement>(null);
   const callDialogRef = useRef<HTMLDivElement>(null);
+  const messageMenuRef = useRef<HTMLDivElement>(null);
+  const messageMenuTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
+  const forwardDialogReturnFocusRef = useRef<HTMLButtonElement | null>(null);
   const draftAttachmentsRef = useRef<DraftAttachment[]>([]);
   const draftAttachmentsByConversationRef = useRef(new Map<string, DraftAttachment[]>());
   const draftAttachmentLoadSequenceRef = useRef(new Map<string, number>());
@@ -1290,6 +1441,8 @@ export function ConversationWorkspace({
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const microphoneStreamRef = useRef<MediaStream | null>(null);
+  const microphoneHealthMonitorRef = useRef<MicrophoneHealthMonitor | null>(null);
+  const providerSpeechTimerRef = useRef<number | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const interactionActiveRef = useRef(active);
   const realtimeActiveRef = useRef(false);
@@ -1309,6 +1462,7 @@ export function ConversationWorkspace({
   const lastRealtimeSpeechStoppedAtRef = useRef<number | null>(null);
   const realtimeTurnSequenceRef = useRef(0);
   const realtimeTurnTimingsRef = useRef(new Map<string, RealtimeTurnTiming>());
+  const realtimeUsageRef = useRef(createRealtimeVoiceUsageAccumulator());
   const realtimeResponseToolCallIdsRef = useRef(new Map<string, string>());
   const realtimeProgressResponseToolCallIdsRef = useRef(new Map<string, string>());
   const activeRealtimeProgressCueRef = useRef<RealtimeProgressCue | null>(null);
@@ -1322,6 +1476,9 @@ export function ConversationWorkspace({
   const conversationListRequestRef = useRef(0);
   const messageRequestSequenceRef = useRef(0);
   const activeMessageRequestRef = useRef(new Map<string, number>());
+  const activeAgentTaskRequestRef = useRef(new Set<string>());
+  const offlineMessageCacheHydratedRef = useRef(new Set<string>());
+  const offlineMessageCacheSnapshotRef = useRef<{ conversationId: string; fingerprint: string } | null>(null);
   const messageLongPressRef = useRef<{ timer: number; messageId: string; x: number; y: number } | null>(null);
   const swipeBackRef = useRef<{ pointerId: number; x: number; y: number; latestX: number; latestY: number } | null>(null);
 
@@ -1339,6 +1496,38 @@ export function ConversationWorkspace({
     active: callModal,
     containerRef: callDialogRef,
   });
+
+  useEffect(() => {
+    if (!messageMenuId) return;
+    const openMessageId = messageMenuId;
+    const menu = messageMenuRef.current;
+    const trigger = messageMenuTriggerRefs.current.get(openMessageId) ?? null;
+    const firstItem = menu?.querySelector<HTMLElement>('[role="menuitem"]') ?? null;
+    const focusFrame = window.requestAnimationFrame(() => firstItem?.focus());
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setMessageMenuId(null);
+      window.requestAnimationFrame(() => messageMenuTriggerRefs.current.get(openMessageId)?.focus());
+    }
+
+    function onPointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (menu?.contains(target) || trigger?.contains(target)) return;
+      setMessageMenuId(null);
+    }
+
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [messageMenuId]);
 
   const cancelMessageLongPress = useCallback(() => {
     if (messageLongPressRef.current) window.clearTimeout(messageLongPressRef.current.timer);
@@ -1398,10 +1587,20 @@ export function ConversationWorkspace({
   }, [callTranscript]);
 
   const loadAgentTasks = useCallback(async (conversationId: string) => {
-    const response = await fetch(`/api/conversations/${conversationId}/tasks`, { cache: "no-store" });
-    const body = await response.json() as { tasks?: AgentTask[]; error?: string };
-    if (!response.ok) throw new Error(body.error ?? "Could not load background tasks");
-    if (selectedIdRef.current === conversationId) setAgentTasks(body.tasks ?? []);
+    if (activeAgentTaskRequestRef.current.has(conversationId)) return;
+    activeAgentTaskRequestRef.current.add(conversationId);
+    try {
+      const response = await boundedFetch(
+        `/api/conversations/${conversationId}/tasks`,
+        { cache: "no-store" },
+        CONVERSATION_READ_TIMEOUT_MS,
+      );
+      const body = await response.json() as { tasks?: AgentTask[]; error?: string };
+      if (!response.ok) throw new Error(body.error ?? "Could not load background tasks");
+      if (selectedIdRef.current === conversationId) setAgentTasks(body.tasks ?? []);
+    } finally {
+      activeAgentTaskRequestRef.current.delete(conversationId);
+    }
   }, []);
 
   const updateAgentTask = useCallback(async (
@@ -1411,11 +1610,15 @@ export function ConversationWorkspace({
   ) => {
     const conversationId = selectedIdRef.current;
     if (!conversationId) return;
-    const response = await fetch(`/api/conversations/${conversationId}/tasks/${taskId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, artifact_id: artifactId }),
-    });
+    const response = await boundedFetch(
+      `/api/conversations/${conversationId}/tasks/${taskId}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, artifact_id: artifactId }),
+      },
+      CONVERSATION_ACTION_TIMEOUT_MS,
+    );
     const body = await response.json() as { error?: string };
     if (!response.ok) throw new Error(body.error ?? "Could not update task");
     await loadAgentTasks(conversationId);
@@ -1460,6 +1663,24 @@ export function ConversationWorkspace({
   const visibleAgentTasks = useMemo(() => {
     return visibleAgentWorkTasks(agentTasks);
   }, [agentTasks]);
+  const selectedAgentTask = visibleAgentTasks.find((task) => task.id === selectedAgentTaskId)
+    ?? visibleAgentTasks[0]
+    ?? null;
+  const activeAgentWorkCount = visibleAgentTasks.filter((task) => task.status === "queued" || task.status === "running").length
+    + agentActivity.reduce((total, activity) => total + Math.max(1, activity.pending_turns), 0);
+  const attentionAgentWorkCount = visibleAgentTasks.filter((task) => task.status === "awaiting_approval" || task.status === "failed").length;
+  const recentAgentWorkCount = visibleAgentTasks.filter((task) => task.status === "completed" || task.status === "cancelled").length;
+  // Keep the collaboration surface present even before an agent creates a task.
+  // Hiding it in the empty state made the redesigned workflow indistinguishable
+  // from the old chat and left people with no clear place to start or return to.
+  const agentWorkVisible = Boolean(selectedConversation);
+  const agentWorkSummary = attentionAgentWorkCount > 0
+    ? `${attentionAgentWorkCount} need${attentionAgentWorkCount === 1 ? "s" : ""} you`
+    : activeAgentWorkCount > 0
+      ? `${activeAgentWorkCount} active`
+      : recentAgentWorkCount > 0
+        ? `${recentAgentWorkCount} recent`
+        : "No tasks yet";
   const latestCallTranscript = callTranscript.at(-1);
   const handleTaskAction = useCallback((taskId: string, action: "cancel" | "approve" | "reject" | "retry" | "dismiss", artifactId?: string) => {
     void updateAgentTask(taskId, action, artifactId).catch((reason) => {
@@ -1519,12 +1740,7 @@ export function ConversationWorkspace({
   const loadConversations = useCallback(async (options?: { preserveError?: boolean }) => {
     const requestNumber = conversationListRequestRef.current + 1;
     conversationListRequestRef.current = requestNumber;
-    try {
-      const response = await fetch("/api/conversations", { cache: "no-store" });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error ?? "Could not load conversations");
-      if (conversationListRequestRef.current !== requestNumber) return;
-      const conversationData = body as ConversationsResponse;
+    const applyConversationData = (conversationData: ConversationsResponse) => {
       const signedInProfileId = conversationData.people.find((person) => person.is_self)?.id ?? null;
       currentUserIdRef.current = signedInProfileId;
       setCurrentUserId(signedInProfileId);
@@ -1542,9 +1758,42 @@ export function ConversationWorkspace({
         selectedIdRef.current = next;
         return next;
       });
+      return signedInProfileId;
+    };
+    try {
+      const response = await boundedFetch(
+        "/api/conversations",
+        { cache: "no-store" },
+        CONVERSATION_READ_TIMEOUT_MS,
+      );
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Could not load conversations");
+      if (conversationListRequestRef.current !== requestNumber) return;
+      const conversationData = body as ConversationsResponse;
+      const signedInProfileId = applyConversationData(conversationData);
+      if (signedInProfileId) {
+        void saveCachedConversationList(signedInProfileId, conversationData).catch(() => null);
+      }
+      setNotice((current) => current === OFFLINE_CONVERSATION_NOTICE ? null : current);
       if (!options?.preserveError) setError(null);
     } catch (reason) {
       if (conversationListRequestRef.current !== requestNumber) return;
+      const cachedProfileId = currentUserIdRef.current ?? lastConversationCacheProfile();
+      if (cachedProfileId) {
+        try {
+          const cached = await loadCachedConversationList(cachedProfileId);
+          if (conversationListRequestRef.current !== requestNumber) return;
+          if (cached?.ownerProfileId === cachedProfileId) {
+            applyConversationData(cached.data);
+            setNotice(OFFLINE_CONVERSATION_NOTICE);
+            setError(null);
+            return;
+          }
+        } catch {
+          // Preserve the original network error when the device cache is not
+          // available or has been evicted by the browser.
+        }
+      }
       setError(reason instanceof Error ? reason.message : "Could not load conversations");
     } finally {
       if (conversationListRequestRef.current === requestNumber) setLoading(false);
@@ -1583,11 +1832,15 @@ export function ConversationWorkspace({
     if (lastReadMessageByConversationRef.current.get(conversationId) === throughMessageId) return;
     lastReadMessageByConversationRef.current.set(conversationId, throughMessageId);
     try {
-      const response = await fetch(`/api/conversations/${conversationId}/read`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ through_message_id: throughMessageId }),
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${conversationId}/read`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ through_message_id: throughMessageId }),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       if (!response.ok) throw new Error("Could not update read state");
       void loadConversations({ preserveError: true });
     } catch {
@@ -1614,7 +1867,11 @@ export function ConversationWorkspace({
         parameters.set("before_id", options.before.id);
       }
       const query = parameters.size > 0 ? `?${parameters.toString()}` : "";
-      const response = await fetch(`/api/conversations/${conversationId}/messages${query}`, { cache: "no-store" });
+      const response = await boundedFetch(
+        `/api/conversations/${conversationId}/messages${query}`,
+        { cache: "no-store" },
+        CONVERSATION_READ_TIMEOUT_MS,
+      );
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Could not load messages");
       if (
@@ -1626,24 +1883,52 @@ export function ConversationWorkspace({
       setHistoryAnchorMessageId(anchorMessageId);
       const shouldMerge = options?.mergeOlder || (!anchorMessageId && historyExpandedRef.current && !options?.latest);
       if (shouldMerge) {
-        setMessages((current) => {
-          const merged = new Map(current.map((message) => [message.id, message]));
-          for (const message of incoming) merged.set(message.id, message);
-          return [...merged.values()].sort((left, right) => (
-            left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id)
-          ));
-        });
+        setMessages((current) => mergeConversationTimelineMessages(current, incoming));
       } else {
-        setMessages(incoming);
+        setMessages((current) => preserveEqualConversationCollection(current, incoming));
       }
       if (options?.latest) historyExpandedRef.current = false;
       if (options?.mergeOlder) historyExpandedRef.current = true;
       if (!historyExpandedRef.current || options?.mergeOlder || options?.latest || anchorMessageId) {
         setHasOlderMessages(Boolean(body.context?.has_older));
       }
-      setParticipants(body.participants);
-      setAgentActivity(Array.isArray(body.agent_activity) ? body.agent_activity as ConversationAgentActivity[] : []);
-      setPinnedMessages(Array.isArray(body.pinned_messages) ? body.pinned_messages as ConversationMessage[] : []);
+      setParticipants((current) => preserveEqualConversationCollection(current, body.participants));
+      setAgentActivity((current) => preserveEqualConversationCollection(
+        current,
+        Array.isArray(body.agent_activity) ? body.agent_activity as ConversationAgentActivity[] : [],
+      ));
+      setPinnedMessages((current) => preserveEqualConversationCollection(
+        current,
+        Array.isArray(body.pinned_messages) ? body.pinned_messages as ConversationMessage[] : [],
+      ));
+      const cacheOwnerProfileId = currentUserIdRef.current;
+      if (cacheOwnerProfileId && !anchorMessageId && !options?.before && !options?.mergeOlder) {
+        offlineMessageCacheHydratedRef.current.delete(conversationId);
+        const cacheSnapshot = {
+          ownerProfileId: cacheOwnerProfileId,
+          conversationId,
+          messages: incoming,
+          participants: body.participants,
+          agentActivity: Array.isArray(body.agent_activity) ? body.agent_activity as ConversationAgentActivity[] : [],
+          pinnedMessages: Array.isArray(body.pinned_messages) ? body.pinned_messages as ConversationMessage[] : [],
+          hasOlder: Boolean(body.context?.has_older),
+        };
+        const cacheFingerprint = JSON.stringify(cacheSnapshot);
+        if (
+          offlineMessageCacheSnapshotRef.current?.conversationId !== conversationId
+          || offlineMessageCacheSnapshotRef.current.fingerprint !== cacheFingerprint
+        ) {
+          offlineMessageCacheSnapshotRef.current = { conversationId, fingerprint: cacheFingerprint };
+          void saveCachedConversationMessages(cacheSnapshot).catch(() => {
+            if (
+              offlineMessageCacheSnapshotRef.current?.conversationId === conversationId
+              && offlineMessageCacheSnapshotRef.current.fingerprint === cacheFingerprint
+            ) {
+              offlineMessageCacheSnapshotRef.current = null;
+            }
+          });
+        }
+      }
       const requestedMessage = requestedMessageIdRef.current
         ? incoming.find((message) => message.id === requestedMessageIdRef.current)
         : null;
@@ -1679,6 +1964,35 @@ export function ConversationWorkspace({
       }
     } catch (reason) {
       if (activeMessageRequestRef.current.get(conversationId) === requestNumber) {
+        const ownerProfileId = currentUserIdRef.current ?? lastConversationCacheProfile();
+        if (ownerProfileId && offlineMessageCacheHydratedRef.current.has(conversationId)) {
+          setNotice(OFFLINE_CONVERSATION_NOTICE);
+          setError(null);
+          return;
+        }
+        if (ownerProfileId && !offlineMessageCacheHydratedRef.current.has(conversationId)) {
+          try {
+            const cached = await loadCachedConversationMessages(ownerProfileId, conversationId);
+            if (
+              cached?.ownerProfileId === ownerProfileId
+              && activeMessageRequestRef.current.get(conversationId) === requestNumber
+              && selectedIdRef.current === conversationId
+            ) {
+              offlineMessageCacheHydratedRef.current.add(conversationId);
+              setMessages(cached.messages);
+              setParticipants(cached.participants);
+              setAgentActivity(cached.agentActivity);
+              setPinnedMessages(cached.pinnedMessages);
+              setHasOlderMessages(cached.hasOlder);
+              setNotice(OFFLINE_CONVERSATION_NOTICE);
+              setError(null);
+              return;
+            }
+          } catch {
+            // Preserve the original network error if no bounded local
+            // snapshot is available for this profile and conversation.
+          }
+        }
         setError(reason instanceof Error ? reason.message : "Could not load messages");
       }
     } finally {
@@ -1698,6 +2012,23 @@ export function ConversationWorkspace({
       setError("This draft could not be saved on this device.");
     });
   }, []);
+
+  const discussAgentTask = useCallback((task: AgentTask) => {
+    const conversationId = selectedIdRef.current;
+    if (!conversationId) return;
+    const agentName = task.owner_agent?.display_name;
+    const mention = participants.length > 2 && agentName ? `@${agentName} ` : "";
+    const prompt = `${mention}About “${task.title}”: `;
+    const current = draftsByConversationRef.current[conversationId] ?? "";
+    updateDraft(conversationId, current.trim() ? `${current.trimEnd()}\n\n${prompt}` : prompt);
+    setComposerAgentTask(task);
+    setAgentWorkExpanded(false);
+    window.setTimeout(() => {
+      const input = composerInputRef.current;
+      input?.focus();
+      input?.setSelectionRange(input.value.length, input.value.length);
+    }, 0);
+  }, [participants.length, updateDraft]);
 
   const clearDraft = useCallback((conversationId: string, sentBody?: string) => {
     if (sentBody !== undefined && (draftsByConversationRef.current[conversationId] ?? "") !== sentBody) return;
@@ -1751,6 +2082,7 @@ export function ConversationWorkspace({
           body: entry.body,
           source: entry.source,
           target_agent_slugs: entry.targetAgent ? [entry.targetAgent] : undefined,
+          agent_task_id: entry.agentTaskId,
           attachment_ids: entry.attachmentIds,
           client_message_id: entry.clientMessageId,
           reply_to_id: entry.replyToId,
@@ -1790,6 +2122,44 @@ export function ConversationWorkspace({
     } catch (reason) {
       const offline = !navigator.onLine;
       const timedOut = reason instanceof DOMException && reason.name === "AbortError";
+      if (!offline) {
+        const reconciliationController = new AbortController();
+        const reconciliationTimeout = window.setTimeout(
+          () => reconciliationController.abort(),
+          MESSAGE_RECONCILIATION_TIMEOUT_MS
+        );
+        let canonicalMessageId: string | null = null;
+        try {
+          for (let attempt = 0; attempt < 3 && !canonicalMessageId; attempt += 1) {
+            const reconciliationResponse = await fetch(
+              `/api/conversations/${entry.conversationId}/messages?client_message_id=${entry.clientMessageId}`,
+              { cache: "no-store", signal: reconciliationController.signal }
+            );
+            const reconciliation = await reconciliationResponse.json().catch(() => ({}));
+            if (reconciliationResponse.ok && typeof reconciliation.canonical_message_id === "string") {
+              canonicalMessageId = reconciliation.canonical_message_id;
+              break;
+            }
+            if (attempt < 2) {
+              await new Promise((resolve) => window.setTimeout(resolve, (attempt + 1) * 250));
+            }
+          }
+        } catch {
+          // The canonical lookup is a bounded recovery attempt. Preserve the
+          // original retryable failure if the network is still unavailable.
+        } finally {
+          window.clearTimeout(reconciliationTimeout);
+        }
+        if (canonicalMessageId) {
+          await discardOutboxEntry(entry.clientMessageId).catch(() => null);
+          if (selectedIdRef.current === entry.conversationId) {
+            shouldStickToBottomRef.current = true;
+            void loadMessages(entry.conversationId, { latest: true });
+          }
+          void loadConversations({ preserveError: true });
+          return;
+        }
+      }
       await persistOutboxEntry({
         ...entry,
         status: offline ? "queued" : "failed",
@@ -1800,7 +2170,7 @@ export function ConversationWorkspace({
       window.clearTimeout(timeout);
       outboxInFlightRef.current.delete(entry.clientMessageId);
     }
-  }, [discardOutboxEntry, loadConversations, persistOutboxEntry]);
+  }, [discardOutboxEntry, loadConversations, loadMessages, persistOutboxEntry]);
 
   const flushOutbox = useCallback(async () => {
     const ownerProfileId = currentUserIdRef.current;
@@ -1915,15 +2285,19 @@ export function ConversationWorkspace({
     setMessageMutationId(message.id);
     setError(null);
     try {
-      const response = await fetch(`/api/conversations/${selectedIdRef.current}/messages/${message.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "edit",
-          body: normalized,
-          expected_version: message.edited_at ?? message.created_at,
-        }),
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${selectedIdRef.current}/messages/${message.id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "edit",
+            body: normalized,
+            expected_version: message.edited_at ?? message.created_at,
+          }),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const result = await response.json().catch(() => ({})) as { message?: ConversationMessage; error?: string };
       if (!response.ok || !result.message) throw new Error(result.error ?? "Could not edit this message");
       applyMessageMutation(result.message);
@@ -1943,7 +2317,11 @@ export function ConversationWorkspace({
     setMessageMutationId(message.id);
     setError(null);
     try {
-      const response = await fetch(`/api/conversations/${conversationId}/messages/${message.id}`, { method: "DELETE" });
+      const response = await boundedFetch(
+        `/api/conversations/${conversationId}/messages/${message.id}`,
+        { method: "DELETE" },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const result = await response.json().catch(() => ({})) as { message?: ConversationMessage; error?: string };
       if (!response.ok || !result.message) throw new Error(result.error ?? "Could not delete this message");
       applyMessageMutation(result.message);
@@ -1961,11 +2339,15 @@ export function ConversationWorkspace({
     setMessageMutationId(message.id);
     setError(null);
     try {
-      const response = await fetch(`/api/conversations/${conversationId}/messages/${message.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "restore" }),
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${conversationId}/messages/${message.id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "restore" }),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const result = await response.json().catch(() => ({})) as { message?: ConversationMessage; error?: string };
       if (!response.ok || !result.message) throw new Error(result.error ?? "Could not restore this message");
       applyMessageMutation(result.message);
@@ -1986,11 +2368,15 @@ export function ConversationWorkspace({
     setMessageMutationId(message.id);
     setError(null);
     try {
-      const response = await fetch(`/api/conversations/${conversationId}/messages/${message.id}/reaction`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reaction }),
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${conversationId}/messages/${message.id}/reaction`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reaction }),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const result = await response.json().catch(() => ({})) as { reactions?: ConversationMessage["reactions"]; error?: string };
       if (!response.ok || !result.reactions) throw new Error(result.error ?? "Could not update reaction");
       setMessages((current) => current.map((candidate) => candidate.id === message.id
@@ -2014,11 +2400,15 @@ export function ConversationWorkspace({
     setMessageMutationId(message.id);
     setError(null);
     try {
-      const response = await fetch(`/api/conversations/${conversationId}/messages/${message.id}/pin`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pinned: nextPinned }),
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${conversationId}/messages/${message.id}/pin`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pinned: nextPinned }),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const result = await response.json().catch(() => ({})) as { pinned_at?: string | null; pinned_by?: string | null; error?: string };
       if (!response.ok || !("pinned_at" in result)) throw new Error(result.error ?? "Could not update pinned message");
       const updated = { ...message, pinned_at: result.pinned_at ?? null, pinned_by: result.pinned_by ?? null };
@@ -2330,6 +2720,7 @@ export function ConversationWorkspace({
     setEditingMessageId(null);
     setEditingMessageBody("");
     setAgentWorkExpanded(false);
+    setComposerAgentTask(null);
     messageSearchRequestRef.current += 1;
     if (selectedId) activeMessageRequestRef.current.delete(selectedId);
     if (conversationId) activeMessageRequestRef.current.delete(conversationId);
@@ -2400,11 +2791,15 @@ export function ConversationWorkspace({
     setConversationMenuOpen(false);
     setError(null);
     try {
-      const response = await fetch(`/api/conversations/${selectedId}/preferences`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(changes),
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${selectedId}/preferences`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(changes),
+        },
+        CONVERSATION_ACTION_TIMEOUT_MS,
+      );
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Could not update this conversation");
       const preferences = body.preferences as {
@@ -2440,9 +2835,10 @@ export function ConversationWorkspace({
     messageSearchRequestRef.current = requestNumber;
     setMessageSearch((current) => ({ ...current, loading: true, error: null, hasSearched: true }));
     try {
-      const response = await fetch(
+      const response = await boundedFetch(
         `/api/conversations/${selectedId}/search?q=${encodeURIComponent(query)}`,
-        { cache: "no-store" }
+        { cache: "no-store" },
+        CONVERSATION_READ_TIMEOUT_MS,
       );
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Could not search this conversation");
@@ -2514,7 +2910,11 @@ export function ConversationWorkspace({
       window.requestAnimationFrame(() => {
         const currentScroller = messagesScrollerRef.current;
         if (!currentScroller) return;
-        currentScroller.scrollTop = previousTop + (currentScroller.scrollHeight - previousHeight);
+        currentScroller.scrollTop = preservedConversationScrollTop(
+          previousTop,
+          previousHeight,
+          currentScroller.scrollHeight,
+        );
       });
     });
     setHistoryLoading(false);
@@ -2593,19 +2993,23 @@ export function ConversationWorkspace({
         return;
       }
 
-      const urlResponse = await fetch(`/api/conversations/${conversationId}/attachments/upload-url`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          filename: file.name,
-          mime_type: draft.mimeType,
-          byte_size: file.size,
-          ...(draft.voiceNoteDurationMs != null ? {
-            voice_note: true,
-            duration_ms: draft.voiceNoteDurationMs,
-          } : {}),
-        }),
-      });
+      const urlResponse = await boundedFetch(
+        `/api/conversations/${conversationId}/attachments/upload-url`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: file.name,
+            mime_type: draft.mimeType,
+            byte_size: file.size,
+            ...(draft.voiceNoteDurationMs != null ? {
+              voice_note: true,
+              duration_ms: draft.voiceNoteDurationMs,
+            } : {}),
+          }),
+        },
+        ATTACHMENT_CONTROL_REQUEST_TIMEOUT_MS,
+      );
       const urlBody = await urlResponse.json();
       if (!urlResponse.ok) throw new Error(urlBody.error ?? "Could not start upload");
       stagedAttachmentId = urlBody.attachment_id;
@@ -2716,9 +3120,11 @@ export function ConversationWorkspace({
     const requestNumber = (draftAttachmentLoadSequenceRef.current.get(conversationId) ?? 0) + 1;
     draftAttachmentLoadSequenceRef.current.set(conversationId, requestNumber);
     try {
-      const response = await fetch(`/api/conversations/${conversationId}/attachments?drafts=1`, {
-        cache: "no-store",
-      });
+      const response = await boundedFetch(
+        `/api/conversations/${conversationId}/attachments?drafts=1`,
+        { cache: "no-store" },
+        ATTACHMENT_CONTROL_REQUEST_TIMEOUT_MS,
+      );
       const body = await response.json() as { attachments?: ConversationAttachment[]; error?: string };
       if (!response.ok) throw new Error(body.error ?? "Could not restore attachment drafts");
       if (draftAttachmentLoadSequenceRef.current.get(conversationId) !== requestNumber) return;
@@ -2864,59 +3270,51 @@ export function ConversationWorkspace({
     void uploadDraftAttachment(draftAttachment);
   }, [commitDraftAttachments, uploadDraftAttachment]);
 
-  const sendMessage = useCallback(async (
+  const queueLegacyVoiceMessage = useCallback(async (
     body: string,
-    source: "text" | "voice" = "text",
-    targetAgent?: AgentSlug,
-    attachmentIds: string[] = []
+    targetAgent: AgentSlug,
   ) => {
-    if (!selectedId || (!body.trim() && attachmentIds.length === 0)) return;
+    const conversationId = selectedIdRef.current;
+    const ownerProfileId = currentUserIdRef.current;
+    if (!conversationId || !ownerProfileId || !body.trim()) return;
     historyAnchorMessageIdRef.current = null;
     setHistoryAnchorMessageId(null);
     shouldStickToBottomRef.current = true;
     setSending(true);
-    if (source === "voice") setCallState("thinking");
+    setCallState("thinking");
+    const entry: PendingConversationMessage = {
+      clientMessageId: crypto.randomUUID(),
+      ownerProfileId,
+      conversationId,
+      body: body.trim(),
+      source: "voice",
+      targetAgent,
+      replyToId: null,
+      attachmentIds: [],
+      attachments: [],
+      createdAt: new Date().toISOString(),
+      status: "queued",
+      error: null,
+      retryable: true,
+    };
     try {
-      const response = await fetch(`/api/conversations/${selectedId}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          body,
-          source,
-          target_agent_slugs: targetAgent ? [targetAgent] : undefined,
-          attachment_ids: attachmentIds,
-          client_message_id: crypto.randomUUID(),
-        }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not send message");
-      const queueWarning = result.queue_error
-        ? `Message saved, but ${targetAgent ? targetAgent[0].toUpperCase() + targetAgent.slice(1) : "the agent"} could not be notified. Please try again shortly.`
-        : null;
+      await persistOutboxEntry(entry);
       setInterim("");
-      if (attachmentIds.length > 0) {
-        commitDraftAttachments((current) => {
-          current.forEach((item) => item.previewUrl?.startsWith("blob:") && URL.revokeObjectURL(item.previewUrl));
-          return [];
-        }, selectedId);
-      }
-      shouldStickToBottomRef.current = true;
-      await loadMessages(selectedId);
-      await loadConversations();
-      if (queueWarning) setError(queueWarning);
+      await flushOutbox();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not send message");
-      if (source === "voice") setCallState("listening");
+      setError(reason instanceof Error ? reason.message : "This voice turn could not be saved for sending.");
+      setCallState("listening");
     } finally {
       setSending(false);
     }
-  }, [commitDraftAttachments, selectedId, loadMessages, loadConversations]);
+  }, [flushOutbox, persistOutboxEntry]);
 
   const queueDraftMessage = useCallback(async (
     conversationId: string,
     body: string,
     attachments: ConversationAttachment[],
-    replyTarget: ConversationMessage | null
+    replyTarget: ConversationMessage | null,
+    agentTask: AgentTask | null,
   ) => {
     const ownerProfileId = currentUserIdRef.current;
     if (!ownerProfileId) {
@@ -2947,6 +3345,8 @@ export function ConversationWorkspace({
       conversationId,
       body: messageBody,
       source: voiceNote ? "voice_note" : "text",
+      targetAgent: agentTask?.owner_agent?.agent_slug,
+      agentTaskId: agentTask?.id,
       replyToId: replyTarget?.id ?? null,
       attachmentIds: attachments.map((attachment) => attachment.id),
       attachments,
@@ -2967,6 +3367,7 @@ export function ConversationWorkspace({
       setOutbox(next);
       clearDraft(conversationId, body);
       setReplyingTo((current) => current?.id === replyTarget?.id ? null : current);
+      setComposerAgentTask((current) => current?.id === agentTask?.id ? null : current);
       const sentAttachmentIds = new Set(entry.attachmentIds);
       commitDraftAttachments((current) => {
         current.forEach((item) => {
@@ -3065,7 +3466,7 @@ export function ConversationWorkspace({
       consult.abortController.abort();
       activeRealtimeConsultRef.current = null;
       if (selectedId && callAgent?.agent_slug) {
-        void fetch(`/api/conversations/${selectedId}/realtime/${consult.endpoint}`, {
+        void boundedFetch(`/api/conversations/${selectedId}/realtime/${consult.endpoint}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -3074,7 +3475,9 @@ export function ConversationWorkspace({
               ? { owner_agent_slug: callAgent.agent_slug }
               : { agent_slug: callAgent.agent_slug }),
           }),
-        }).catch(() => null);
+        }, CALL_CONTROL_REQUEST_TIMEOUT_MS)
+          .then((response) => response.text())
+          .catch(() => null);
       }
     }
   }, [callAgent, selectedId]);
@@ -3089,18 +3492,21 @@ export function ConversationWorkspace({
     if (!ownerProfileId || !navigator.onLine) return false;
     let requestedCallSaved = requestedCallId == null;
     let refreshedConversationId: string | null = null;
-    const pending = listPendingConversationCallEnds(ownerProfileId);
+    const pending = listPendingConversationCallEnds(ownerProfileId)
+      .sort((left, right) => Number(right.callId === requestedCallId) - Number(left.callId === requestedCallId));
     for (const entry of pending) {
       try {
-        const response = await fetch(`/api/conversations/${entry.conversationId}/calls`, {
+        const response = await boundedFetch(`/api/conversations/${entry.conversationId}/calls`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ call_id: entry.callId, voice_metrics: entry.voiceMetrics }),
-        });
+        }, CALL_CONTROL_REQUEST_TIMEOUT_MS);
+        await response.text();
         if (!response.ok) continue;
         removePendingConversationCallEnd(ownerProfileId, entry.callId);
         if (entry.callId === requestedCallId) requestedCallSaved = true;
         if (selectedIdRef.current === entry.conversationId) refreshedConversationId = entry.conversationId;
+        if (entry.callId === requestedCallId) break;
       } catch {
         // The durable device entry remains queued for the next online event.
       }
@@ -3125,14 +3531,17 @@ export function ConversationWorkspace({
     };
     try {
       savePendingConversationCallEnd(pendingEnd);
-      return await flushPendingCallEnds(callId);
+      const saved = await flushPendingCallEnds(callId);
+      if (saved) window.setTimeout(() => void flushPendingCallEnds(), 0);
+      return saved;
     } catch {
       try {
-        const response = await fetch(`/api/conversations/${conversationId}/calls`, {
+        const response = await boundedFetch(`/api/conversations/${conversationId}/calls`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ call_id: callId, voice_metrics: voiceMetrics }),
-        });
+        }, CALL_CONTROL_REQUEST_TIMEOUT_MS);
+        await response.text();
         if (!response.ok) return false;
         if (selectedIdRef.current === conversationId) await loadMessages(conversationId);
         return true;
@@ -3163,13 +3572,22 @@ export function ConversationWorkspace({
     realtimeReconnectAttemptsRef.current = 0;
     realtimeReconnectInFlightRef.current = false;
     cancelActiveRealtimeTurn();
-    const voiceMetrics = realtimeVoiceMetrics(realtimeTurnTimingsRef.current);
+    const voiceMetrics = {
+      turns: realtimeVoiceMetrics(realtimeTurnTimingsRef.current),
+      usage: realtimeVoiceUsageSnapshot(realtimeUsageRef.current),
+    };
     dataChannelRef.current?.close();
     dataChannelRef.current = null;
     peerConnectionRef.current?.close();
     peerConnectionRef.current = null;
     microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
     microphoneStreamRef.current = null;
+    microphoneHealthMonitorRef.current?.stop();
+    microphoneHealthMonitorRef.current = null;
+    if (providerSpeechTimerRef.current != null) {
+      window.clearTimeout(providerSpeechTimerRef.current);
+      providerSpeechTimerRef.current = null;
+    }
     if (remoteAudioRef.current) {
       remoteAudioRef.current.pause();
       remoteAudioRef.current.srcObject = null;
@@ -3206,6 +3624,7 @@ export function ConversationWorkspace({
     lastRealtimeSpeechStoppedAtRef.current = null;
     realtimeTurnSequenceRef.current = 0;
     realtimeTurnTimingsRef.current.clear();
+    realtimeUsageRef.current = createRealtimeVoiceUsageAccumulator();
     realtimeResponseToolCallIdsRef.current.clear();
     realtimeProgressResponseToolCallIdsRef.current.clear();
     realtimeProgressResponseCueIdsRef.current.clear();
@@ -3219,12 +3638,13 @@ export function ConversationWorkspace({
     setCallTranscript([]);
     mutedRef.current = false;
     setMuted(false);
+    setSpeakerEnabled(false);
     return callRecordSaved;
   }, [cancelActiveRealtimeTurn, persistCallEnd, selectedId]);
 
   useEffect(() => {
     const handleNativeVoiceCommand = (event: Event) => {
-      const detail = (event as CustomEvent<{ type?: string; message?: string; muted?: boolean; callId?: string; event?: RealtimeEvent }>).detail;
+      const detail = (event as CustomEvent<{ type?: string; message?: string; muted?: boolean; route?: "speaker" | "automatic"; callId?: string; event?: RealtimeEvent }>).detail;
       if (detail?.callId && detail.callId !== callIdRef.current) return;
       if (detail?.type === "end-requested" && callActiveRef.current && callIdRef.current) void endCall();
       if ((detail?.type === "native-audio-error" || detail?.type === "native-realtime-error") && callIdRef.current) {
@@ -3258,9 +3678,17 @@ export function ConversationWorkspace({
       if (detail?.type === "mute-sync-error") {
         setNotice(`The iPhone lock-screen mute control could not update. ${detail.message ?? "The in-app microphone control is still active."}`);
       }
+      if (detail?.type === "audio-route-changed" && detail.route) {
+        setSpeakerEnabled(detail.route === "speaker");
+      }
+      if (detail?.type === "audio-route-error") {
+        setNotice(`The iPhone audio output could not change. ${detail.message ?? "Please try again."}`);
+      }
     };
     window.addEventListener("reslu-native-voice", handleNativeVoiceCommand);
-    if (nativeVoiceBridgeAvailable()) postNativeVoiceBridgeEvent({ type: "web.ready" });
+    const bridgeAvailable = nativeVoiceBridgeAvailable();
+    setNativeAudioRouting(bridgeAvailable);
+    if (bridgeAvailable) postNativeVoiceBridgeEvent({ type: "web.ready" });
     return () => window.removeEventListener("reslu-native-voice", handleNativeVoiceCommand);
   }, [endCall, loadAgentTasks, loadMessages]);
 
@@ -3274,8 +3702,8 @@ export function ConversationWorkspace({
     }
     if (command === "end the call" || command === "hang up") { void endCall(); return; }
     if (command === "repeat" && lastSpoken) { speak(lastSpoken); return; }
-    if (text.trim() && callAgent?.agent_slug) void sendMessage(text.trim(), "voice", callAgent.agent_slug);
-  }, [callAgent, endCall, lastSpoken, sendMessage, speak]);
+    if (text.trim() && callAgent?.agent_slug) void queueLegacyVoiceMessage(text.trim(), callAgent.agent_slug);
+  }, [callAgent, endCall, lastSpoken, queueLegacyVoiceMessage, speak]);
 
   const beginRealtimeTurnTiming = useCallback((toolCallId: string) => {
     const existing = realtimeTurnTimingsRef.current.get(toolCallId);
@@ -3322,6 +3750,41 @@ export function ConversationWorkspace({
     activeRealtimeProgressCueRef.current = null;
   }, [sendRealtimeEvent]);
 
+  const startRealtimeProgressCue = useCallback((toolCallId: string) => {
+    const timing = realtimeTurnTimingsRef.current.get(toolCallId);
+    const consult = activeRealtimeConsultRef.current;
+    if (
+      !timing
+      || !callAgent?.agent_slug
+      || consult?.toolCallId !== toolCallId
+      || activeRealtimeProgressCueRef.current
+      || cancelledToolCallIdsRef.current.has(toolCallId)
+    ) return;
+    const cueId = crypto.randomUUID();
+    const requestedAt = performance.now();
+    const acknowledgement = realtimeProgressAcknowledgement(callAgent.agent_slug, timing.turn);
+    timing.progressRequestedAt = requestedAt;
+    activeRealtimeProgressCueRef.current = {
+      cueId,
+      toolCallId,
+      responseId: null,
+      speechStoppedAt: timing.speechStoppedAt ?? requestedAt,
+      requestedAt,
+      audioAt: null,
+      done: false,
+      timerId: null,
+    };
+    sendRealtimeEvent({
+      type: "response.create",
+      response: {
+        metadata: { reslu_kind: REALTIME_PROGRESS_KIND, reslu_cue_id: cueId },
+        output_modalities: ["audio"],
+        tool_choice: "none",
+        instructions: `Say exactly: ${JSON.stringify(acknowledgement)} Do not add any other words.`,
+      },
+    });
+  }, [callAgent, sendRealtimeEvent]);
+
   const runRealtimeConsult = useCallback(async (
     toolCallId: string,
     responseId: string | null,
@@ -3330,7 +3793,9 @@ export function ConversationWorkspace({
     specialist = false,
   ) => {
     if (!selectedId || !callAgent?.agent_slug || !callIdRef.current || handledToolCallIdsRef.current.has(toolCallId)) return;
-    const parsedArguments = parseRealtimeConsultArguments(argumentsJson);
+    const parsedArguments = specialist
+      ? parseRealtimeSpecialistArguments(argumentsJson, callAgent.agent_slug)
+      : parseRealtimeConsultArguments(argumentsJson);
     if (!parsedArguments && deferInvalidArguments) return;
     handledToolCallIdsRef.current.add(toolCallId);
     const timing = beginRealtimeTurnTiming(toolCallId);
@@ -3341,6 +3806,9 @@ export function ConversationWorkspace({
       return;
     }
     const { query } = parsedArguments;
+    const targetAgent = specialist && "targetAgent" in parsedArguments
+      ? parsedArguments.targetAgent
+      : null;
 
     // A completed newer utterance is the point at which the prior consult is
     // genuinely superseded. Abort its local poll and cancel that exact job;
@@ -3358,30 +3826,63 @@ export function ConversationWorkspace({
     setCallState("thinking");
     try {
       timing.consultStartedAt = performance.now();
-      const start = await fetch(`/api/conversations/${selectedId}/realtime/${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: abortController.signal,
-        body: JSON.stringify({
-          query,
-          ...(specialist
-            ? { owner_agent_slug: callAgent.agent_slug }
-            : { agent_slug: callAgent.agent_slug }),
-          call_id: callIdRef.current,
-          tool_call_id: toolCallId,
-          response_id: responseId,
-        }),
+      const consultBody = JSON.stringify({
+        query,
+        ...(specialist
+          ? { owner_agent_slug: callAgent.agent_slug, target_agent_slug: targetAgent }
+          : { agent_slug: callAgent.agent_slug }),
+        call_id: callIdRef.current,
+        tool_call_id: toolCallId,
+        response_id: responseId,
       });
+      const start = await retrySameConversationIntent(() => boundedFetch(
+        `/api/conversations/${selectedId}/realtime/${endpoint}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: abortController.signal,
+          body: consultBody,
+        },
+        REALTIME_TOOL_REQUEST_TIMEOUT_MS,
+      ));
       const startBody = await start.json() as { error?: string };
       timing.consultAcceptedAt = performance.now();
       if (!start.ok) throw new Error(startBody.error ?? "Could not consult the RESLU agent");
+      startRealtimeProgressCue(toolCallId);
 
+      let consecutiveNetworkFailures = 0;
       while (!abortController.signal.aborted && callActiveRef.current) {
-        const statusResponse = await fetch(
-          `/api/conversations/${selectedId}/realtime/${endpoint}?tool_call_id=${encodeURIComponent(toolCallId)}&${specialist ? "owner_agent_slug" : "agent_slug"}=${callAgent.agent_slug}`,
-          { cache: "no-store", signal: abortController.signal }
-        );
-        const statusBody = await statusResponse.json() as RealtimeConsultStatusResponse;
+        let statusResponse: Response;
+        let statusBody: RealtimeConsultStatusResponse;
+        try {
+          statusResponse = await boundedFetch(
+            `/api/conversations/${selectedId}/realtime/${endpoint}?tool_call_id=${encodeURIComponent(toolCallId)}&${specialist ? "owner_agent_slug" : "agent_slug"}=${callAgent.agent_slug}`,
+            { cache: "no-store", signal: abortController.signal },
+            REALTIME_TOOL_REQUEST_TIMEOUT_MS,
+          );
+          statusBody = await statusResponse.json() as RealtimeConsultStatusResponse;
+          consecutiveNetworkFailures = 0;
+          setCallState("thinking");
+        } catch (reason) {
+          if (
+            isTransientConversationNetworkError(reason)
+            && consecutiveNetworkFailures < MAX_REALTIME_TOOL_NETWORK_FAILURES
+            && !abortController.signal.aborted
+            && callActiveRef.current
+          ) {
+            consecutiveNetworkFailures += 1;
+            setCallState("reconnecting");
+            await new Promise<void>((resolve, reject) => {
+              const timer = window.setTimeout(resolve, realtimeConsultPollDelay(consecutiveNetworkFailures * 1000));
+              abortController.signal.addEventListener("abort", () => {
+                window.clearTimeout(timer);
+                reject(new DOMException("Aborted", "AbortError"));
+              }, { once: true });
+            });
+            continue;
+          }
+          throw reason;
+        }
         if (!statusResponse.ok) throw new Error(statusBody.error ?? "Could not read the RESLU agent response");
         if (statusBody.latency) {
           timing.queueWaitMs = statusBody.latency.queue_wait_ms ?? timing.queueWaitMs;
@@ -3411,6 +3912,7 @@ export function ConversationWorkspace({
               call_id: toolCallId,
               output: JSON.stringify({
                 answer: statusBody.answer,
+                ...(specialist ? { consulted_agent: statusBody.consulted_agent ?? targetAgent } : {}),
                 instruction: specialist
                   ? "Speak this specialist-informed answer as the owning RESLU agent. Add no new facts or actions."
                   : "Speak this existing RESLU agent answer faithfully. Add no new facts or actions.",
@@ -3457,7 +3959,7 @@ export function ConversationWorkspace({
       setCallError(reason instanceof Error ? reason.message : "The RESLU agent could not answer");
       setCallState("listening");
     }
-  }, [beginRealtimeTurnTiming, callAgent, cancelActiveRealtimeConsult, loadMessages, selectedId, sendRealtimeEvent, stopRealtimeProgressCue]);
+  }, [beginRealtimeTurnTiming, callAgent, cancelActiveRealtimeConsult, loadMessages, selectedId, sendRealtimeEvent, startRealtimeProgressCue, stopRealtimeProgressCue]);
 
   const runRealtimeTask = useCallback(async (
     toolCallId: string,
@@ -3480,19 +3982,24 @@ export function ConversationWorkspace({
     if (activeRealtimeConsultRef.current) cancelActiveRealtimeConsult();
     setCallState("thinking");
     try {
-      const response = await fetch(`/api/conversations/${selectedId}/realtime/task`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title,
-          objective,
-          model_tier: modelTier,
-          agent_slug: callAgent.agent_slug,
-          call_id: callIdRef.current,
-          tool_call_id: toolCallId,
-          response_id: responseId,
-        }),
+      const taskBody = JSON.stringify({
+        title,
+        objective,
+        model_tier: modelTier,
+        agent_slug: callAgent.agent_slug,
+        call_id: callIdRef.current,
+        tool_call_id: toolCallId,
+        response_id: responseId,
       });
+      const response = await retrySameConversationIntent(() => boundedFetch(
+        `/api/conversations/${selectedId}/realtime/task`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: taskBody,
+        },
+        REALTIME_TOOL_REQUEST_TIMEOUT_MS,
+      ));
       const body = await response.json() as { acknowledgement?: string; task?: AgentTask; error?: string };
       if (!response.ok || !body.task || !body.acknowledgement) {
         throw new Error(body.error ?? "Could not start the background task");
@@ -3532,6 +4039,9 @@ export function ConversationWorkspace({
     } catch (reason) {
       timing.outcome = "failed";
       stopRealtimeProgressCue();
+      if (isTransientConversationNetworkError(reason)) {
+        setNotice("The connection was interrupted. Check Agent work before asking again; the task may already be running.");
+      }
       setCallError(reason instanceof Error ? reason.message : "Could not start the background task");
       setCallState("listening");
     }
@@ -3553,7 +4063,26 @@ export function ConversationWorkspace({
   }, [callAgent, endCall, selectedId, upsertCallTranscript]);
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
+    if ((event.type === "session.created" || event.type === "session.updated") && event.session) {
+      setRealtimeVoiceUsageModels(
+        realtimeUsageRef.current,
+        event.session.model,
+        event.session.audio?.input?.transcription?.model,
+      );
+    }
+    if (event.type === "conversation.item.input_audio_transcription.completed" && event.usage) {
+      addRealtimeTranscriptionUsage(realtimeUsageRef.current, event.usage);
+    }
+    if (event.type === "response.done" && event.response?.usage) {
+      addRealtimeResponseUsage(realtimeUsageRef.current, event.response.usage);
+    }
     if (event.type === "input_audio_buffer.speech_started") {
+      if (providerSpeechTimerRef.current != null) {
+        window.clearTimeout(providerSpeechTimerRef.current);
+        providerSpeechTimerRef.current = null;
+      }
+      setCallError(null);
+      setCallState("listening");
       interruptRealtimePlayback(performance.now(), event.native_handled === true);
       setInterim("");
       return;
@@ -3743,14 +4272,14 @@ export function ConversationWorkspace({
     const clientCallId = clientCallIdRef.current ?? crypto.randomUUID();
     callConversationIdRef.current = conversationId;
     clientCallIdRef.current = clientCallId;
-    const response = await fetch(`/api/conversations/${conversationId}/calls`, {
+    const response = await boundedFetch(`/api/conversations/${conversationId}/calls`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         presentation: window.innerWidth < 700 ? "driving" : "office",
         client_call_id: clientCallId,
       }),
-    });
+    }, CALL_CONTROL_REQUEST_TIMEOUT_MS);
     const body = await response.json();
     if (!response.ok) throw new Error(body.error ?? "Could not start call");
     callIdRef.current = body.call.id;
@@ -3784,13 +4313,18 @@ export function ConversationWorkspace({
 
   const startRealtimeCall = useCallback(async (stream: MediaStream, activeCallId: string) => {
     if (!selectedId || !callAgent?.agent_slug) throw new Error("No RESLU agent selected");
+    const microphoneTrack = stream.getAudioTracks()[0];
+    if (!microphoneTrack) throw new Error("Microphone audio is unavailable");
     const generation = ++realtimeConnectionGenerationRef.current;
     const peer = new RTCPeerConnection();
     const audio = document.createElement("audio");
     audio.autoplay = true;
     audio.setAttribute("playsinline", "true");
     peer.ontrack = (event) => { audio.srcObject = event.streams[0]; };
-    stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+    // Match OpenAI's browser WebRTC contract exactly. Omitting the optional
+    // MediaStream argument avoids Safari generating a stream constraint that
+    // some audio routes reject during SDP negotiation.
+    peer.addTrack(microphoneTrack);
     const channel = peer.createDataChannel("oai-events");
     channel.onopen = () => {
       if (generation !== realtimeConnectionGenerationRef.current || !callActiveRef.current) return;
@@ -3799,7 +4333,28 @@ export function ConversationWorkspace({
       realtimeReconnectInFlightRef.current = false;
       setCallOpening(false);
       setCallError(null);
-      setCallState(activeRealtimeConsultRef.current ? "thinking" : "listening");
+      if (activeRealtimeConsultRef.current) {
+        setCallState("thinking");
+        return;
+      }
+      microphoneHealthMonitorRef.current?.stop();
+      microphoneHealthMonitorRef.current = monitorMicrophoneHealth(stream, {
+        onActivity: () => {
+          if (generation !== realtimeConnectionGenerationRef.current || !callActiveRef.current) return;
+          setCallState("listening");
+          if (providerSpeechTimerRef.current != null) window.clearTimeout(providerSpeechTimerRef.current);
+          providerSpeechTimerRef.current = window.setTimeout(() => {
+            providerSpeechTimerRef.current = null;
+            if (generation !== realtimeConnectionGenerationRef.current || !callActiveRef.current) return;
+            setCallError("Your microphone is working, but the voice service is not receiving speech. Tap Try again to reconnect the audio.");
+          }, 6_000);
+        },
+        onSilence: () => {
+          if (generation !== realtimeConnectionGenerationRef.current || !callActiveRef.current) return;
+          setCallError("No microphone sound was detected. Check microphone access for RESLU, then tap Try again.");
+        },
+      });
+      setCallState(microphoneHealthMonitorRef.current ? "checking microphone" : "listening");
     };
     channel.onmessage = (message) => {
       if (generation !== realtimeConnectionGenerationRef.current) return;
@@ -3815,24 +4370,29 @@ export function ConversationWorkspace({
         scheduleRealtimeReconnect();
       }
     };
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-    const response = await fetch(`/api/conversations/${selectedId}/realtime/session`, {
-      method: "POST",
-      headers: { "Content-Type": "application/sdp", "X-RESLU-Agent": callAgent.agent_slug },
-      body: offer.sdp,
-    });
-    if (!response.ok) {
-      let body: { error?: string; code?: string } = {};
-      try { body = await response.json(); } catch { /* provider returned non-JSON */ }
-      const error = new Error(body.error ?? "Could not start realtime voice") as Error & { code?: string };
-      error.code = body.code;
+    try {
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      const response = await boundedFetch(`/api/conversations/${selectedId}/realtime/session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/sdp", "X-RESLU-Agent": callAgent.agent_slug },
+        body: offer.sdp,
+      }, REALTIME_SESSION_REQUEST_TIMEOUT_MS);
+      if (!response.ok) {
+        let body: { error?: string; code?: string } = {};
+        try { body = await response.json(); } catch { /* provider returned non-JSON */ }
+        const error = new Error(body.error ?? "Could not start realtime voice") as Error & { code?: string };
+        error.code = body.code;
+        throw error;
+      }
+      await peer.setRemoteDescription({ type: "answer", sdp: await response.text() });
+    } catch (reason) {
+      channel.close();
       peer.close();
       audio.pause();
       audio.srcObject = null;
-      throw error;
+      throw reason;
     }
-    await peer.setRemoteDescription({ type: "answer", sdp: await response.text() });
     if (generation !== realtimeConnectionGenerationRef.current || !callActiveRef.current) {
       channel.close();
       peer.close();
@@ -4075,6 +4635,7 @@ export function ConversationWorkspace({
     activeOutputAudioResponseIdRef.current = null;
     realtimeTurnSequenceRef.current = 0;
     realtimeTurnTimingsRef.current.clear();
+    realtimeUsageRef.current = createRealtimeVoiceUsageAccumulator();
     realtimeResponseToolCallIdsRef.current.clear();
     realtimeProgressResponseToolCallIdsRef.current.clear();
     realtimeProgressResponseCueIdsRef.current.clear();
@@ -4093,6 +4654,9 @@ export function ConversationWorkspace({
     messages.forEach((message) => spokenIdsRef.current.add(message.id));
 
     try {
+      if (nativeVoiceBridgeRequiresRealtimeUpgrade()) {
+        throw new Error("This RESLU iPhone app needs the latest voice update. Reinstall the current app build, then try the call again.");
+      }
       if (nativeRealtimeTransportAvailable()) {
         const activeCallId = await createCallRecord();
         callIdRef.current = activeCallId;
@@ -4136,6 +4700,10 @@ export function ConversationWorkspace({
         await startLegacyCall(callIdRef.current ?? undefined);
         return;
       }
+      if (shouldFallbackToLegacyVoice(error)) {
+        await startLegacyCall(callIdRef.current ?? undefined);
+        return;
+      }
       callActiveRef.current = false;
       postNativeVoiceBridgeEvent({ type: "call.end" });
       const failedCallId = callIdRef.current;
@@ -4168,6 +4736,11 @@ export function ConversationWorkspace({
     postNativeVoiceBridgeEvent({ type: "call.muted", muted: next });
   }
 
+  function toggleSpeaker() {
+    const next = !speakerEnabled;
+    postNativeVoiceBridgeEvent({ type: "call.audio-route", route: next ? "speaker" : "automatic" });
+  }
+
   function repeatLastReply() {
     if (!lastSpoken) return;
     if (realtimeActiveRef.current) {
@@ -4193,47 +4766,7 @@ export function ConversationWorkspace({
     const attachments = draftAttachments.flatMap((item) =>
       item.status === "ready" && item.attachment ? [item.attachment] : []
     );
-    void queueDraftMessage(selectedId, draft, attachments, replyingTo);
-  }
-
-  function openComposerLink() {
-    const input = composerInputRef.current;
-    const selectionStart = input?.selectionStart ?? draft.length;
-    const selectionEnd = input?.selectionEnd ?? selectionStart;
-    setAttachmentMenuOpen(false);
-    setComposerLink({
-      label: draft.slice(selectionStart, selectionEnd),
-      url: "",
-      selectionStart,
-      selectionEnd,
-    });
-  }
-
-  function addComposerLink() {
-    if (!selectedId || !composerLink) return;
-    const insertion = insertConversationLink(
-      draft,
-      composerLink.selectionStart,
-      composerLink.selectionEnd,
-      composerLink.label,
-      composerLink.url,
-    );
-    if (!insertion) {
-      setError("Enter a valid web address, such as https://example.com.");
-      return;
-    }
-    if (insertion.text.length > 20000) {
-      setError("The link would make this message too long.");
-      return;
-    }
-    updateDraft(selectedId, insertion.text);
-    setComposerLink(null);
-    setError(null);
-    window.setTimeout(() => {
-      const input = composerInputRef.current;
-      input?.focus();
-      input?.setSelectionRange(insertion.cursor, insertion.cursor);
-    }, 0);
+    void queueDraftMessage(selectedId, draft, attachments, replyingTo, composerAgentTask);
   }
 
   if (loading) return <div className={clsx("flex items-center justify-center text-body text-charcoal/50", drawer ? "h-full" : "h-[70vh]")}>Loading conversations…</div>;
@@ -4251,7 +4784,7 @@ export function ConversationWorkspace({
       <aside className={clsx("flex min-h-0 w-full shrink-0 flex-col border-r border-[#d4cbbd] bg-[#ede8de]", drawer ? "md:w-64" : "md:w-80", selectedId && "hidden md:flex")}>
         <div className="flex items-center justify-between border-b border-[#d4cbbd] py-3 pl-20 pr-3 md:p-4">
           <p className="label-caps">Conversations</p>
-          <button onClick={() => setNewOpen(true)} disabled={sending || voiceNoteRecording} className="bg-nearblack px-3 py-2 text-caption text-white disabled:opacity-30">New chat</button>
+          <button onClick={() => setNewOpen(true)} disabled={sending || voiceNoteRecording} className="min-h-11 bg-nearblack px-4 py-2 text-body text-white disabled:opacity-30">New chat</button>
         </div>
         {data.conversations.length === 0 ? (
           <div className="p-6 text-body text-charcoal/60">
@@ -4264,20 +4797,20 @@ export function ConversationWorkspace({
               <button
                 type="button"
                 onClick={() => setShowArchived(false)}
-                className={clsx("px-3 py-2 text-caption font-medium", !showArchived ? "bg-[#f5f1e8] text-nearblack shadow-sm" : "text-charcoal/55")}
+                className={clsx("min-h-11 px-3 py-2 text-body font-medium", !showArchived ? "bg-[#f5f1e8] text-nearblack shadow-sm" : "text-charcoal/55")}
               >
-                Chats <span className="ml-1 text-[10px] opacity-55">{activeConversations.length}</span>
+                Chats <span className="ml-1 text-caption opacity-55">{activeConversations.length}</span>
               </button>
               <button
                 type="button"
                 onClick={() => setShowArchived(true)}
-                className={clsx("px-3 py-2 text-caption font-medium", showArchived ? "bg-[#f5f1e8] text-nearblack shadow-sm" : "text-charcoal/55")}
+                className={clsx("min-h-11 px-3 py-2 text-body font-medium", showArchived ? "bg-[#f5f1e8] text-nearblack shadow-sm" : "text-charcoal/55")}
               >
-                Archived <span className="ml-1 text-[10px] opacity-55">{archivedConversations.length}</span>
+                Archived <span className="ml-1 text-caption opacity-55">{archivedConversations.length}</span>
               </button>
             </div>
             <div className="border-b border-[#d4cbbd] bg-[#ede8de] p-2.5">
-              <label className="flex items-center gap-2 rounded-xl border border-[#d4cbbd] bg-[#f8f5ee] px-3 py-2 focus-within:border-nearblack">
+              <label className="flex min-h-11 items-center gap-2 rounded-xl border border-[#d4cbbd] bg-[#f8f5ee] px-3 py-2 focus-within:border-nearblack">
                 <span aria-hidden className="text-charcoal/40">⌕</span>
                 <span className="sr-only">Search conversations</span>
                 <input
@@ -4305,7 +4838,7 @@ export function ConversationWorkspace({
                         <span className={clsx("min-w-0 flex-1 truncate text-body text-nearblack", conversation.unread_count > 0 ? "font-semibold" : "font-medium")}>{conversation.display_title}</span>
                         {conversation.unread_count > 0 && (
                           <span
-                            className="flex min-h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-nearblack px-1.5 text-[10px] font-semibold text-white"
+                            className="conversation-meta flex min-h-6 min-w-6 shrink-0 items-center justify-center rounded-full bg-nearblack px-1.5 font-semibold text-white"
                             aria-label={`${conversation.unread_count} unread message${conversation.unread_count === 1 ? "" : "s"}`}
                           >
                             {conversation.unread_count > 99 ? "99+" : conversation.unread_count}
@@ -4320,7 +4853,7 @@ export function ConversationWorkspace({
                           : conversation.last_message?.body ?? "New conversation"}
                       </span>
                       {(conversation.pinned_at || conversation.notifications_muted) && (
-                        <span className="mt-1.5 block text-[9px] font-medium uppercase tracking-[0.14em] text-charcoal/40">
+                        <span className="conversation-meta mt-1.5 block font-medium uppercase tracking-[0.14em] text-charcoal/55">
                           {[conversation.pinned_at ? "Pinned" : null, conversation.notifications_muted ? "Muted" : null].filter(Boolean).join(" · ")}
                         </span>
                       )}
@@ -4488,11 +5021,11 @@ export function ConversationWorkspace({
               </div>
             </header>
 
-            {visibleAgentTasks.length > 0 && (
+            {agentWorkVisible && (
               <section
                 className={clsx(
-                  "relative w-full min-w-0 max-w-full shrink-0 overflow-hidden border-b border-[#d4cbbd] bg-[#eee9df] md:px-4 md:py-2.5",
-                  drawer && "md:z-20 md:overflow-visible md:py-1.5",
+                  "relative z-20 w-full min-w-0 max-w-full shrink-0 border-b border-[#d4cbbd] bg-[#eee9df]",
+                  drawer && "md:overflow-visible",
                 )}
                 aria-label="Agent work"
               >
@@ -4501,41 +5034,107 @@ export function ConversationWorkspace({
                   onClick={() => setAgentWorkExpanded((expanded) => !expanded)}
                   aria-expanded={agentWorkExpanded}
                   aria-controls="conversation-agent-work-details"
-                  className="flex min-h-14 w-full items-center gap-3 px-3 py-2 text-left md:min-h-12 md:px-0 md:py-1"
+                  className="flex min-h-16 w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-white/30 md:px-4"
                 >
-                  <span aria-hidden className={clsx(
-                    "h-2.5 w-2.5 shrink-0 rounded-full",
-                    visibleAgentTasks[0].status === "failed" ? "bg-red-500"
-                      : visibleAgentTasks[0].status === "awaiting_approval" ? "bg-amber-500"
-                        : visibleAgentTasks[0].status === "completed" ? "bg-emerald-600"
-                          : "bg-charcoal/45",
-                  )} />
+                  <span aria-hidden className="flex h-9 min-w-14 shrink-0 items-center justify-center rounded-lg border border-[#c9beae] bg-[#f8f5ef] px-2 text-[10px] font-bold uppercase tracking-[0.16em] text-charcoal/65">
+                    Work
+                  </span>
                   <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.13em] text-charcoal/50">
+                    <span className="conversation-meta flex flex-wrap items-center gap-x-2 gap-y-1 font-semibold uppercase tracking-[0.13em] text-charcoal/60">
                       <span>Agent work</span>
                       <span aria-hidden>·</span>
-                      <span>{taskStatusLabel(visibleAgentTasks[0])}</span>
-                      {visibleAgentTasks.length > 1 && <span>+{visibleAgentTasks.length - 1}</span>}
+                      <span>{agentWorkSummary}</span>
+                      {activeAgentWorkCount > 0 && attentionAgentWorkCount > 0 && <span>{activeAgentWorkCount} active</span>}
                     </span>
                     <span className="mt-0.5 block truncate text-[14px] font-semibold leading-snug text-nearblack">
-                      {visibleAgentTasks[0].title}
+                      {selectedAgentTask?.title
+                        ?? agentActivity[0]?.progress_label
+                        ?? (agentActivity[0]?.status === "processing"
+                          ? "Working on your request"
+                          : "Tasks, approvals, and results stay connected to this chat")}
                     </span>
                   </span>
+                  <span className="hidden shrink-0 text-caption font-semibold text-charcoal/50 sm:block">{agentWorkExpanded ? "Close" : "View work"}</span>
                   <span aria-hidden className="shrink-0 text-[18px] text-charcoal/45">{agentWorkExpanded ? "⌃" : "⌄"}</span>
                 </button>
                 <div
                   id="conversation-agent-work-details"
                   className={clsx(
-                    "max-h-[46vh] min-w-0 max-w-full grid-cols-1 gap-3 overflow-y-auto px-3 pb-3 md:max-h-52 md:snap-x md:overflow-x-auto md:overflow-y-hidden md:px-0 md:pb-1",
-                    drawer && "md:absolute md:left-4 md:right-4 md:top-full md:z-30 md:grid-cols-1 md:overflow-y-auto md:rounded-xl md:border md:border-[#d4cbbd] md:bg-[#eee9df] md:p-3 md:shadow-2xl",
-                    agentWorkExpanded ? "grid md:flex" : "hidden",
+                    "min-w-0 max-w-full border-t border-[#d4cbbd] bg-[#f4f0e8]",
+                    drawer && "md:absolute md:left-3 md:right-3 md:top-full md:max-h-[min(70vh,680px)] md:rounded-b-xl md:border md:border-t-0 md:shadow-2xl",
+                    agentWorkExpanded ? "block" : "hidden",
                   )}
                 >
-                  {visibleAgentTasks.map((task) => (
-                    <div key={task.id} className={clsx("min-w-0 max-w-full", drawer ? "md:w-full md:shrink-0" : "md:w-80 md:shrink-0 md:snap-start")}>
-                      <AgentTaskCard task={task} compact canRetry={task.requested_by === selfParticipant?.id && task.retry_count < 3} onAction={handleTaskAction} />
+                  <div className="flex items-start justify-between gap-4 border-b border-[#ddd5c8] px-4 py-3">
+                    <div>
+                      <p className="text-[15px] font-semibold text-nearblack">Work in this conversation</p>
+                      <p className="mt-0.5 text-[12px] leading-snug text-charcoal/55">Follow progress, review decisions, or steer an agent without losing the chat.</p>
                     </div>
-                  ))}
+                    <span className="shrink-0 text-[11px] text-charcoal/40">{visibleAgentTasks.length} task{visibleAgentTasks.length === 1 ? "" : "s"}</span>
+                  </div>
+                  <div className="grid max-h-[58vh] min-h-0 grid-cols-1 overflow-y-auto md:grid-cols-[minmax(220px,0.85fr)_minmax(320px,1.35fr)] md:overflow-hidden">
+                    <div className="min-w-0 border-b border-[#ddd5c8] md:max-h-[52vh] md:overflow-y-auto md:border-b-0 md:border-r">
+                      {agentActivity.length > 0 && (
+                        <div className="border-b border-[#ddd5c8] p-2">
+                          <p className="px-2 pb-1.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-charcoal/45">Live now</p>
+                          {agentActivity.map((activity) => {
+                            const agent = participants.find((participant) => participant.id === activity.agent_id && participant.type === "agent");
+                            return (
+                              <div key={activity.agent_id} className="flex items-start gap-3 rounded-lg bg-blue-50 px-3 py-2.5" role="status" aria-live="polite">
+                                <span aria-hidden className="mt-1.5 h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-blue-600" />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block text-[13px] font-semibold text-nearblack">{agent?.display_name ?? "Agent"}</span>
+                                  <span className="mt-0.5 block text-[12px] leading-snug text-charcoal/60">{activity.status === "processing" ? activity.progress_label ?? "Working on your request" : "Waiting to start"}</span>
+                                  {activity.pending_turns > 1 && <span className="mt-1 block text-[10px] text-charcoal/40">{activity.pending_turns} requests in progress</span>}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {visibleAgentTasks.length > 0 ? (
+                        <div className="divide-y divide-[#e1dacf]">
+                          {visibleAgentTasks.map((task) => (
+                            <AgentTaskRow
+                              key={task.id}
+                              task={task}
+                              selected={selectedAgentTask?.id === task.id}
+                              onSelect={() => setSelectedAgentTaskId(task.id)}
+                            />
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="p-4">
+                          <p className="text-[13px] font-semibold text-nearblack">No agent tasks yet</p>
+                          <p className="mt-1 text-[12px] leading-relaxed text-charcoal/55">When an agent starts longer work, its status will remain here instead of getting buried in the message timeline.</p>
+                        </div>
+                      )}
+                    </div>
+                    <div className="min-w-0 bg-white/45 p-3 md:max-h-[52vh] md:overflow-y-auto md:p-4">
+                      {selectedAgentTask ? (
+                        <AgentTaskCard
+                          task={selectedAgentTask}
+                          canRetry={selectedAgentTask.requested_by === selfParticipant?.id && selectedAgentTask.retry_count < 3}
+                          onAction={handleTaskAction}
+                          onDiscuss={discussAgentTask}
+                        />
+                      ) : (
+                        <div className="flex min-h-44 flex-col items-center justify-center px-6 text-center">
+                          <p className="text-[15px] font-semibold text-nearblack">Start work together</p>
+                          <p className="mt-1.5 max-w-sm text-[13px] leading-relaxed text-charcoal/55">
+                            Give an agent a clear outcome in chat. This board will show what is active, what needs your decision, and what was delivered.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => composerInputRef.current?.focus()}
+                            className="mt-4 rounded-lg bg-nearblack px-4 py-2.5 text-[12px] font-semibold text-white hover:bg-charcoal"
+                          >
+                            Start in chat
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </section>
             )}
@@ -4593,13 +5192,13 @@ export function ConversationWorkspace({
                       <span className="mx-auto block max-w-3xl">
                         <span className="flex items-baseline justify-between gap-3">
                           <span className="text-caption font-semibold text-nearblack">{message.author.display_name}</span>
-                          <span className="shrink-0 text-[10px] text-charcoal/40">{timeLabel(message.created_at)}</span>
+                          <span className="conversation-meta shrink-0 text-charcoal/55">{timeLabel(message.created_at)}</span>
                         </span>
                         <span className="mt-1.5 block max-h-12 overflow-hidden text-body leading-6 text-charcoal/70">{message.body}</span>
                         {(message.search_match?.attachment_filenames.length ?? 0) > 0 && (
                           <span className="mt-2 flex flex-wrap gap-1.5">
                             {message.search_match?.attachment_filenames.map((filename, index) => (
-                              <span key={`${message.id}:${index}:${filename}`} className="max-w-full truncate rounded-full bg-[#e8e1d5] px-2.5 py-1 text-[10px] font-medium text-charcoal/70">
+                              <span key={`${message.id}:${index}:${filename}`} className="conversation-meta max-w-full truncate rounded-full bg-[#e8e1d5] px-2.5 py-1 font-medium text-charcoal/75">
                                 File · {filename}
                               </span>
                             ))}
@@ -4624,7 +5223,7 @@ export function ConversationWorkspace({
             {pinnedMessages.length > 0 && (
               <div className="shrink-0 border-b border-[#d4cbbd] bg-[#f5f1e8] px-3 py-2 md:px-5" aria-label="Pinned messages">
                 <div className="mx-auto flex max-w-3xl items-center gap-2 overflow-x-auto">
-                  <span className="shrink-0 text-[10px] font-semibold uppercase tracking-widest text-charcoal/45">Pinned</span>
+                  <span className="conversation-meta shrink-0 font-semibold uppercase tracking-widest text-charcoal/60">Pinned</span>
                   {pinnedMessages.map((message) => (
                     <button
                       key={message.id}
@@ -4671,7 +5270,7 @@ export function ConversationWorkspace({
                   const showDaySeparator = !previousMessage || conversationDayKey(previousMessage.created_at) !== conversationDayKey(message.created_at);
                   const daySeparator = showDaySeparator ? (
                     <div className="sticky top-2 z-[5] flex justify-center py-1" role="separator" aria-label={conversationDayLabel(message.created_at)}>
-                      <span className="rounded-full border border-[#d4cbbd] bg-[#f5f1e8]/95 px-3 py-1 text-[11px] font-semibold text-charcoal/60 shadow-sm backdrop-blur">
+                      <span className="conversation-meta rounded-full border border-[#d4cbbd] bg-[#f5f1e8]/95 px-3 py-1 font-semibold text-charcoal/70 shadow-sm backdrop-blur">
                         {conversationDayLabel(message.created_at)}
                       </span>
                     </div>
@@ -4732,8 +5331,12 @@ export function ConversationWorkspace({
                       >
                         <div className="flex items-baseline gap-2">
                           <span className={clsx("text-caption font-semibold", own ? "text-white" : "text-nearblack")}>{message.author.display_name}</span>
-                          <span className={clsx("text-[10px]", own ? "text-white/45" : "text-charcoal/40")}>{timeLabel(message.created_at)}</span>
+                          <span className={clsx("conversation-meta", own ? "text-white/60" : "text-charcoal/55")}>{timeLabel(message.created_at)}</span>
                           <button
+                            ref={(node) => {
+                              if (node) messageMenuTriggerRefs.current.set(message.id, node);
+                              else messageMenuTriggerRefs.current.delete(message.id);
+                            }}
                             type="button"
                             onClick={() => setMessageMenuId((current) => current === message.id ? null : message.id)}
                             aria-label={`Actions for message from ${message.author.display_name}`}
@@ -4745,7 +5348,25 @@ export function ConversationWorkspace({
                           </button>
                         </div>
                         {messageMenuId === message.id && (
-                          <div role="menu" className="absolute right-2 top-10 z-20 w-48 overflow-hidden rounded-xl border border-[#d4cbbd] bg-white py-1 text-caption text-nearblack shadow-2xl">
+                          <div
+                            ref={messageMenuRef}
+                            role="menu"
+                            aria-label={`Actions for message from ${message.author.display_name}`}
+                            onKeyDown={(event) => {
+                              if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+                              const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+                              const currentIndex = items.indexOf(document.activeElement as HTMLElement);
+                              const targetIndex = conversationMenuTargetIndex(
+                                event.key as ConversationMenuNavigationKey,
+                                currentIndex,
+                                items.length,
+                              );
+                              if (targetIndex === null) return;
+                              event.preventDefault();
+                              items[targetIndex]?.focus();
+                            }}
+                            className="absolute right-2 top-10 z-20 w-48 overflow-hidden rounded-xl border border-[#d4cbbd] bg-white py-1 text-caption text-nearblack shadow-2xl"
+                          >
                             {!pending && !message.deleted_at && (
                               <div className="flex items-center justify-between border-b border-[#eee8de] px-2 py-2" aria-label="React to message">
                                 {CONVERSATION_MESSAGE_REACTIONS.map((reaction) => (
@@ -4772,6 +5393,7 @@ export function ConversationWorkspace({
                                 type="button"
                                 role="menuitem"
                                 onClick={() => {
+                                  forwardDialogReturnFocusRef.current = messageMenuTriggerRefs.current.get(message.id) ?? null;
                                   setMessageMenuId(null);
                                   setForwardingMessage(message);
                                 }}
@@ -4813,7 +5435,7 @@ export function ConversationWorkspace({
                             onClick={() => jumpToReferencedMessage(message.reply_to_id!)}
                             className={clsx("mt-2 block w-full border-l-2 px-3 py-2 text-left", own ? "border-white/40 bg-white/10" : "border-charcoal/30 bg-white/55")}
                           >
-                            <span className={clsx("block truncate text-[10px] font-semibold", own ? "text-white/65" : "text-charcoal/55")}>{repliedMessage?.author.display_name ?? "Earlier message"}</span>
+                            <span className={clsx("conversation-meta block truncate font-semibold", own ? "text-white/75" : "text-charcoal/65")}>{repliedMessage?.author.display_name ?? "Earlier message"}</span>
                             <span className={clsx("mt-1 block truncate text-caption", own ? "text-white/80" : "text-charcoal/70")}>{repliedMessage?.deleted_at ? "Message deleted" : repliedMessage?.body ?? "Open original message"}</span>
                           </button>
                         )}
@@ -4831,10 +5453,10 @@ export function ConversationWorkspace({
                               <button type="button" onClick={cancelMessageEdit} className="rounded-lg px-3 py-2 text-white/70 hover:bg-white/10">Cancel</button>
                               <button type="button" onClick={() => void saveMessageEdit(message)} disabled={messageMutationId === message.id || !editingMessageBody.trim()} className="rounded-lg bg-white px-3 py-2 font-semibold text-nearblack disabled:opacity-40">Save</button>
                             </div>
-                            <p className="mt-2 text-[9px] uppercase tracking-widest text-white/40">Editing changes the message history; it does not resend the request.</p>
+                            <p className="conversation-meta mt-2 uppercase tracking-widest text-white/60">Editing changes the message history; it does not resend the request.</p>
                           </div>
                         ) : !voiceNoteAttachment ? (
-                          <p className={clsx("mt-2 whitespace-pre-wrap break-words text-[16px] leading-[1.55] md:text-[15px]", message.deleted_at && "italic opacity-60")}><ConversationMessageText body={message.body} /></p>
+                          <p className={clsx("mt-2 whitespace-pre-wrap break-words text-[16px] leading-[1.55] md:text-[15px]", message.deleted_at && "italic opacity-60")}>{message.body}</p>
                         ) : null}
                         {!message.deleted_at && (message.attachments ?? []).length > 0 && (
                           <div className={clsx("mt-3 grid gap-2", message.attachments.length > 1 && "grid-cols-2")}>
@@ -4857,12 +5479,12 @@ export function ConversationWorkspace({
                                     unoptimized
                                     className="h-36 w-full object-cover md:h-48"
                                   />
-                                  <span className="block truncate px-2 py-2 text-[10px] opacity-65">{attachment.filename}</span>
+                                  <span className="conversation-meta block truncate px-2 py-2 opacity-75">{attachment.filename}</span>
                                 </button>
                               );
                               if (attachmentKind === "audio" && attachment.url && isVoiceNoteMetadata(attachment.metadata)) return (
                                 <div key={attachment.id} className={clsx("min-w-[240px] rounded-xl border p-3", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/55") }>
-                                  <div className="mb-2 flex items-center justify-between gap-3 text-[10px] uppercase tracking-widest opacity-60">
+                                  <div className="conversation-meta mb-2 flex items-center justify-between gap-3 uppercase tracking-widest opacity-75">
                                     <span>Voice note</span>
                                     <span>{voiceNoteDurationLabel(attachment.metadata.duration_ms)}</span>
                                   </div>
@@ -4871,10 +5493,10 @@ export function ConversationWorkspace({
                               );
                               return (
                                 <a key={attachment.id} href={attachment.url ?? undefined} target="_blank" rel="noreferrer" className={clsx("flex min-w-0 items-center gap-3 border px-3 py-3", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/50", !attachment.url && "pointer-events-none opacity-50")}>
-                                  <span aria-hidden className="flex h-10 w-10 shrink-0 items-center justify-center border border-current text-[10px] font-semibold">{imageAttachment ? "IMG" : attachmentKind === "audio" ? "AUDIO" : "PDF"}</span>
+                                  <span aria-hidden className="conversation-meta flex h-10 w-10 shrink-0 items-center justify-center border border-current font-semibold">{imageAttachment ? "IMG" : attachmentKind === "audio" ? "AUDIO" : "PDF"}</span>
                                   <span className="min-w-0">
                                     <span className="block truncate text-caption font-semibold">{attachment.filename}</span>
-                                    <span className="mt-1 block text-[10px] opacity-55">{fileSizeLabel(attachment.byte_size)}</span>
+                                    <span className="conversation-meta mt-1 block opacity-70">{fileSizeLabel(attachment.byte_size)}</span>
                                   </span>
                                 </a>
                               );
@@ -4902,23 +5524,23 @@ export function ConversationWorkspace({
                             ))}
                           </div>
                         )}
-                        {!message.deleted_at && message.pinned_at && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Pinned</p>}
-                        {!message.deleted_at && message.metadata.source === "forward" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Forwarded</p>}
-                        {!message.deleted_at && message.metadata.source === "voice_note" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Voice note</p>}
-                        {!message.deleted_at && message.metadata.source === "voice" && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Voice transcript</p>}
+                        {!message.deleted_at && message.pinned_at && <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>Pinned</p>}
+                        {!message.deleted_at && message.metadata.source === "forward" && <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>Forwarded</p>}
+                        {!message.deleted_at && message.metadata.source === "voice_note" && <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>Voice note</p>}
+                        {!message.deleted_at && message.metadata.source === "voice" && <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>Voice transcript</p>}
                         {!message.deleted_at && message.metadata.source === "agent_consultation" && typeof message.metadata.consulted_agent_slug === "string" && (
-                          <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>
+                          <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>
                             Consulted {message.metadata.consulted_agent_slug === "marco" ? "Marco" : "Aria"}
                           </p>
                         )}
                         {!message.deleted_at && message.metadata.source === "agent_task" && typeof message.metadata.delegated_agent_name === "string" && (
-                          <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>
+                          <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>
                             Completed by {message.metadata.delegated_agent_name}
                           </p>
                         )}
-                        {!message.deleted_at && message.edited_at && <p className={clsx("mt-2 text-[9px] uppercase tracking-widest", own ? "text-white/40" : "text-charcoal/35")}>Edited</p>}
+                        {!message.deleted_at && message.edited_at && <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>Edited</p>}
                         {own && (pending || message.client_message_id) && (
-                          <div className="mt-2 flex items-center justify-end gap-2 text-[9px] uppercase tracking-widest text-white/45">
+                          <div className="conversation-meta mt-2 flex items-center justify-end gap-2 uppercase tracking-widest text-white/65">
                             <span>
                               {pending?.status === "failed"
                                 ? "Not sent"
@@ -4962,34 +5584,11 @@ export function ConversationWorkspace({
                           </div>
                         )}
                         {pending?.status === "failed" && pending.error && (
-                          <p className="mt-1 text-right text-[10px] text-white/60">{pending.error}</p>
+                          <p className="conversation-meta mt-1 text-right text-white/75">{pending.error}</p>
                         )}
                       </div>
                     </div>
                     </Fragment>
-                  );
-                })}
-                {!historyAnchorMessageId && agentActivity.map((activity) => {
-                  const agent = participants.find((participant) => participant.id === activity.agent_id && participant.type === "agent");
-                  if (!agent) return null;
-                  return (
-                    <div key={activity.agent_id} className="flex gap-3" role="status" aria-live="polite">
-                      <Avatar participant={agent} />
-                      <div className="max-w-[78%] rounded-2xl rounded-tl-sm border border-[#d4cbbd] bg-[#f5f1e8] px-4 py-3 text-charcoal">
-                        <p className="text-caption font-semibold text-nearblack">{agent.display_name}</p>
-                        <div className="mt-2 flex items-center gap-2 text-[16px] leading-[1.45] text-charcoal/60 md:text-[15px]">
-                          <span>{activity.status === "processing" ? activity.progress_label ?? "Working on your request" : "Waiting to start"}</span>
-                          <span className="flex gap-1" aria-hidden>
-                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-charcoal/45" />
-                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-charcoal/45 [animation-delay:150ms]" />
-                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-charcoal/45 [animation-delay:300ms]" />
-                          </span>
-                        </div>
-                        {activity.pending_turns > 1 && (
-                          <p className="mt-1 text-[10px] text-charcoal/40">{activity.pending_turns} requests in progress</p>
-                        )}
-                      </div>
-                    </div>
                   );
                 })}
               </div>
@@ -4997,7 +5596,7 @@ export function ConversationWorkspace({
 
             <form onSubmit={submitDraft} className="shrink-0 border-t border-[#d4cbbd] bg-[#f5f1e8] px-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 md:p-4">
               {!online && (
-                <p className="mx-auto mb-2 max-w-3xl text-center text-[10px] font-medium text-amber-800" role="status">
+                <p className="conversation-meta mx-auto mb-2 max-w-3xl text-center font-medium text-amber-800" role="status">
                   Offline — messages will stay on this device and send when the connection returns.
                 </p>
               )}
@@ -5024,10 +5623,21 @@ export function ConversationWorkspace({
                 }}
               />
               <div className="mx-auto max-w-3xl rounded-2xl border border-[#cfc6b8] bg-white shadow-[0_8px_30px_rgba(35,31,25,0.08)] focus-within:border-nearblack">
+                {composerAgentTask && (
+                  <div className="flex items-start gap-3 border-b border-[#e3ddd2] bg-[#f7f2e9] px-3 py-2.5">
+                    <div className="min-w-0 flex-1 border-l-2 border-[#9c7c4c] pl-3">
+                      <p className="conversation-meta font-semibold uppercase tracking-[0.12em] text-charcoal/60">Steering {composerAgentTask.owner_agent?.display_name ?? "agent work"}</p>
+                      <p className="mt-1 truncate text-caption font-semibold text-nearblack">{composerAgentTask.title}</p>
+                    </div>
+                    <button type="button" onClick={() => setComposerAgentTask(null)} aria-label="Stop linking this message to the agent task" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-lg text-charcoal/50 hover:bg-[#eee8de]">
+                      ×
+                    </button>
+                  </div>
+                )}
                 {replyingTo && (
                   <div className="flex items-start gap-3 border-b border-[#e3ddd2] px-3 py-2.5">
                     <div className="min-w-0 flex-1 border-l-2 border-nearblack pl-3">
-                      <p className="text-[10px] font-semibold text-nearblack">Replying to {replyingTo.author.display_name}</p>
+                      <p className="conversation-meta font-semibold text-nearblack">Replying to {replyingTo.author.display_name}</p>
                       <p className="mt-1 truncate text-caption text-charcoal/55">{replyingTo.body}</p>
                     </div>
                     <button type="button" onClick={() => setReplyingTo(null)} aria-label="Cancel reply" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-lg text-charcoal/50 hover:bg-[#f1ece3]">
@@ -5042,17 +5652,17 @@ export function ConversationWorkspace({
                         {item.previewUrl ? (
                           <Image src={item.previewUrl} alt="" width={48} height={48} unoptimized className="h-12 w-12 shrink-0 rounded-lg object-cover" />
                         ) : (
-                          <span aria-hidden className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-[#e9e2d6] text-[10px] font-semibold text-charcoal">
+                          <span aria-hidden className="conversation-meta flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-[#e9e2d6] font-semibold text-charcoal">
                             {item.mimeType.startsWith("image/") ? "IMG" : item.voiceNoteDurationMs != null ? "VOICE" : "PDF"}
                           </span>
                         )}
                         <div className="min-w-0 flex-1 pr-4">
                           <span className="block truncate text-caption font-semibold text-nearblack">{item.filename}</span>
-                          <span className={clsx("mt-1 block truncate text-[10px]", item.status === "error" ? "text-red-700" : "text-charcoal/50")}>
+                          <span className={clsx("conversation-meta mt-1 block truncate", item.status === "error" ? "text-red-700" : "text-charcoal/60")}>
                             {item.status === "preparing"
                               ? "Preparing…"
                               : item.status === "uploading"
-                                ? item.voiceNoteDurationMs != null ? "Uploading voice note…" : "Uploading…"
+                                ? item.voiceNoteDurationMs != null ? "Uploading voice note — you can keep typing" : "Uploading — you can keep typing"
                                 : item.status === "error"
                                   ? item.error
                                   : item.voiceNoteDurationMs != null
@@ -5063,7 +5673,7 @@ export function ConversationWorkspace({
                             <button
                               type="button"
                               onClick={() => retryDraftAttachment(item.localId)}
-                              className="mt-1 text-[10px] font-semibold text-red-800 underline underline-offset-2"
+                              className="conversation-meta mt-1 font-semibold text-red-800 underline underline-offset-2"
                             >
                               Retry upload
                             </button>
@@ -5084,48 +5694,9 @@ export function ConversationWorkspace({
                   </div>
                 )}
                 {attachmentUploadFailed && (
-                  <p className="border-b border-[#e3ddd2] px-3 py-2 text-[10px] text-red-700">
+                  <p className="conversation-meta border-b border-[#e3ddd2] px-3 py-2 text-red-700">
                     Retry or remove failed files before sending, so nothing is silently left behind.
                   </p>
-                )}
-                {composerLink && (
-                  <div className="border-b border-[#e3ddd2] bg-[#faf7f0] p-3" aria-label="Add hyperlink">
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <label className="text-[10px] font-semibold uppercase tracking-widest text-charcoal/55">
-                        Link text
-                        <input
-                          autoFocus={Boolean(composerLink.label)}
-                          value={composerLink.label}
-                          onChange={(event) => setComposerLink((current) => current ? { ...current, label: event.target.value } : null)}
-                          placeholder="What the link should say"
-                          className="mt-1.5 h-11 w-full rounded-lg border border-[#d4cbbd] bg-white px-3 text-[16px] font-normal normal-case tracking-normal text-nearblack outline-none focus:border-nearblack"
-                        />
-                      </label>
-                      <label className="text-[10px] font-semibold uppercase tracking-widest text-charcoal/55">
-                        Web address
-                        <input
-                          autoFocus={!composerLink.label}
-                          inputMode="url"
-                          autoCapitalize="none"
-                          autoCorrect="off"
-                          value={composerLink.url}
-                          onChange={(event) => setComposerLink((current) => current ? { ...current, url: event.target.value } : null)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") {
-                              event.preventDefault();
-                              addComposerLink();
-                            }
-                          }}
-                          placeholder="https://example.com"
-                          className="mt-1.5 h-11 w-full rounded-lg border border-[#d4cbbd] bg-white px-3 text-[16px] font-normal normal-case tracking-normal text-nearblack outline-none focus:border-nearblack"
-                        />
-                      </label>
-                    </div>
-                    <div className="mt-2 flex justify-end gap-2">
-                      <button type="button" onClick={() => setComposerLink(null)} className="min-h-11 rounded-lg px-4 text-caption text-charcoal/65 hover:bg-[#eee8de]">Cancel</button>
-                      <button type="button" onClick={addComposerLink} disabled={!composerLink.url.trim()} className="min-h-11 rounded-lg bg-nearblack px-4 text-caption font-semibold text-white disabled:opacity-30">Insert link</button>
-                    </div>
-                  </div>
                 )}
                 <textarea
                   ref={composerInputRef}
@@ -5145,12 +5716,15 @@ export function ConversationWorkspace({
                     }
                   }}
                   rows={1}
-                  placeholder={participants.some((p) => p.type === "agent") && participants.length > 2 ? "Message the group — use @Aria, @Marco or @Stuart" : `Message ${callAgent?.display_name ?? "the conversation"}`}
+                  placeholder={composerAgentTask
+                    ? `Steer ${composerAgentTask.owner_agent?.display_name ?? "the agent"} about this task`
+                    : participants.some((p) => p.type === "agent") && participants.length > 2
+                      ? "Message the group — use @Aria, @Marco or @Stuart"
+                      : `Message ${callAgent?.display_name ?? "the conversation"}`}
                   className="max-h-36 min-h-12 w-full resize-none rounded-t-2xl bg-transparent px-4 pb-2 pt-3 text-[16px] outline-none disabled:opacity-60 md:text-body"
                 />
                 <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
-                  <div className={clsx("flex items-center gap-1.5", voiceNoteRecording && "hidden")}>
-                    <div className="relative">
+                  <div className={clsx("relative", voiceNoteRecording && "hidden")}>
                     <button
                       type="button"
                       disabled={sending}
@@ -5171,20 +5745,6 @@ export function ConversationWorkspace({
                         </button>
                       </div>
                     )}
-                    </div>
-                    <button
-                      type="button"
-                      disabled={sending}
-                      onClick={openComposerLink}
-                      aria-label="Add hyperlink"
-                      aria-expanded={Boolean(composerLink)}
-                      className="flex h-11 w-11 items-center justify-center rounded-full border border-[#d7d0c5] text-nearblack hover:bg-[#f1ece3] disabled:opacity-40"
-                    >
-                      <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" strokeWidth="1.8">
-                        <path d="M10.2 13.8a4 4 0 0 0 5.7 0l2.1-2.1A4 4 0 0 0 12.3 6l-1.2 1.2" />
-                        <path d="M13.8 10.2a4 4 0 0 0-5.7 0L6 12.3A4 4 0 0 0 11.7 18l1.2-1.2" />
-                      </svg>
-                    </button>
                   </div>
                   <VoiceNoteRecorder
                     conversationId={selectedConversation.id}
@@ -5193,7 +5753,7 @@ export function ConversationWorkspace({
                     onError={setError}
                     onRecordingChange={setVoiceNoteRecording}
                   />
-                  {!voiceNoteRecording && <span className="hidden flex-1 text-center text-[10px] text-charcoal/40 sm:block">Up to 6 files · voice notes up to 5 min</span>}
+                  {!voiceNoteRecording && <span className="conversation-meta hidden flex-1 text-center text-charcoal/55 sm:block">Up to 6 files · voice notes up to 5 min</span>}
                   {!voiceNoteRecording && (
                     <button
                       disabled={composerBusy || attachmentUploadFailed || (!draft.trim() && !draftAttachments.some((item) => item.status === "ready"))}
@@ -5262,6 +5822,7 @@ export function ConversationWorkspace({
         <ForwardMessageDialog
           message={forwardingMessage}
           conversations={activeConversations}
+          returnFocusRef={forwardDialogReturnFocusRef}
           onClose={() => setForwardingMessage(null)}
           onForwarded={(destinationIds) => {
             setForwardingMessage(null);
@@ -5298,7 +5859,7 @@ export function ConversationWorkspace({
 
       {(callOpening || callId || callError) && callAgent && (
         <div ref={callDialogRef} tabIndex={-1} role={callModal ? "dialog" : "region"} aria-modal={callModal ? true : undefined} aria-labelledby="active-call-agent" className={clsx(
-          "visible pointer-events-auto fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[70] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col overflow-hidden bg-nearblack text-white",
+          "conversation-dark visible pointer-events-auto fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-[70] flex h-[var(--conversation-vh,100dvh)] min-h-0 flex-col overflow-hidden bg-nearblack text-white",
           drawer && callCompact && "md:inset-auto md:bottom-5 md:right-5 md:h-auto md:w-[26rem] md:max-w-[calc(100vw-2.5rem)] md:rounded-2xl md:border md:border-white/15 md:shadow-[0_20px_70px_rgba(20,18,15,0.45)]",
         )}>
           <header className="flex shrink-0 items-center gap-3 border-b border-white/10 px-3 pb-3 pt-[calc(env(safe-area-inset-top)+0.75rem)] md:px-6 md:py-4">
@@ -5338,7 +5899,7 @@ export function ConversationWorkspace({
               <div className="flex items-end justify-between gap-4 border-b border-white/10 px-4 py-3 md:px-6 md:py-4">
                 <div>
                   <p className="label-caps text-sand">Agent work</p>
-                  <p className="mt-1 text-[15px] text-white/65 md:text-[16px]">Email drafts, approvals and structured results appear here.</p>
+                <p className="mt-1 text-[15px] text-white/65 md:text-[16px]">Every delegated task, decision and result stays visible here.</p>
                 </div>
                 <p className="shrink-0 text-caption text-white/35">Continues after the call</p>
               </div>
@@ -5361,7 +5922,7 @@ export function ConversationWorkspace({
                   <div className="col-span-full flex h-full min-h-48 items-center justify-center text-center">
                     <div className="max-w-lg">
                       <p className="text-[20px] font-semibold text-white/80">Nothing to review</p>
-                      <p className="mt-2 text-[16px] leading-relaxed text-white/45">Email drafts, approvals, tables and useful lists will appear here. Routine work stays out of the way.</p>
+                      <p className="mt-2 text-[16px] leading-relaxed text-white/45">Tasks, live progress, approvals and useful results will appear here as you work together.</p>
                     </div>
                   </div>
                 ) : visibleAgentTasks.map((task) => (
@@ -5376,9 +5937,9 @@ export function ConversationWorkspace({
                 aria-expanded={callTranscriptExpanded}
                 className="flex min-h-12 w-full items-center gap-3 px-4 py-2 text-left md:px-6"
               >
-                <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.14em] text-sand">Captions</span>
+                <span className="shrink-0 text-caption font-semibold uppercase tracking-[0.14em] text-sand">Captions</span>
                 <span className="min-w-0 flex-1 truncate text-caption text-white/45">
-                  {interim || latestCallTranscript?.text || (callState === "connecting" ? "Connecting…" : "Optional live transcript")}
+                  {interim || latestCallTranscript?.text || (callState === "connecting" ? "Connecting…" : callState === "checking microphone" ? "Say something to test your microphone…" : "Optional live transcript")}
                 </span>
                 <span aria-hidden className="shrink-0 text-white/45">{callTranscriptExpanded ? "⌄" : "⌃"}</span>
               </button>
@@ -5398,7 +5959,7 @@ export function ConversationWorkspace({
                         entry.speaker === "user" ? "bg-white text-nearblack" : entry.speaker === "system" ? "border border-sand/30 bg-sand/10 text-white" : "bg-white/10 text-white",
                         !entry.final && "opacity-65",
                       )}>
-                        <p className={clsx("text-[11px] font-semibold uppercase tracking-[0.12em]", entry.speaker === "user" ? "text-charcoal/45" : "text-sand") }>
+                        <p className={clsx("text-caption font-semibold uppercase tracking-[0.12em]", entry.speaker === "user" ? "text-charcoal/55" : "text-sand") }>
                           {entry.speaker === "user" ? "You" : entry.speaker === "agent" ? callAgent.display_name : "Agent work"}
                         </p>
                         <p className="mt-0.5 whitespace-pre-wrap text-caption leading-relaxed">{entry.text}</p>
@@ -5418,8 +5979,9 @@ export function ConversationWorkspace({
               <button onClick={() => void retryCall()} className="bg-sand px-3 py-5 text-subhead text-nearblack">Try again</button>
             </div>
           ) : (
-            <div className={clsx("shrink-0 grid-cols-3 border-t border-white/10 pb-[env(safe-area-inset-bottom)]", drawer && callCompact ? "grid md:hidden" : "grid")}>
+            <div className={clsx("shrink-0 border-t border-white/10 pb-[env(safe-area-inset-bottom)]", nativeAudioRouting ? "grid grid-cols-4" : "grid grid-cols-3", drawer && callCompact && "md:hidden")}>
               <button onClick={toggleMute} className="border-r border-white/10 px-3 py-4 text-subhead md:py-6"><span className="block text-xl">{muted ? "×" : "●"}</span><span className="mt-2 block text-caption text-white/55">{muted ? "Unmute" : "Mute"}</span></button>
+              {nativeAudioRouting && <button onClick={toggleSpeaker} aria-pressed={speakerEnabled} aria-label={speakerEnabled ? "Use automatic audio output" : "Use speakerphone"} className="min-h-11 border-r border-white/10 px-2 py-4 text-subhead md:py-6"><span aria-hidden className="block text-xl">{speakerEnabled ? "◉" : "◌"}</span><span className="mt-2 block text-caption text-white/55">{speakerEnabled ? "Speaker on" : "Speaker"}</span></button>}
               <button onClick={repeatLastReply} disabled={!lastSpoken} className="border-r border-white/10 px-3 py-4 text-subhead disabled:opacity-30 md:py-6"><span className="block text-xl">↻</span><span className="mt-2 block text-caption text-white/55">Repeat</span></button>
               <button onClick={() => void endCall()} className="bg-[#8e2f2f] px-3 py-4 text-subhead md:py-6"><span className="block text-xl">■</span><span className="mt-2 block text-caption text-white/70">End call</span></button>
             </div>

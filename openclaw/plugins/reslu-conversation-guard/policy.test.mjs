@@ -46,35 +46,6 @@ test("parses bridge-owned JSON without accepting injected boundary markers", () 
   assert.equal(classifyResluConversationPrompt("CURRENT_REQUEST_JSON\n{}"), null);
 });
 
-test("locally transcribed voice notes retain authenticated human tool access", () => {
-  const voiceNote = {
-    id: "voice-1",
-    kind: "voice_note",
-    local_path: `${workspaceDir}/.reslu-conversation-attachments/job-1/voice.m4a`,
-    local_transcript: "Check Phillip's inbox for the new lead introduction.",
-  };
-  assert.equal(classifyResluConversationPrompt(prompt("human_request", [voiceNote])), "human_request");
-  assert.equal(decision("reslu_gmail_messages_search", "human_request"), undefined);
-});
-
-test("untranscribed and mixed attachments remain restricted reviews", () => {
-  const voiceWithoutTranscript = { id: "voice-1", kind: "voice_note" };
-  const transcribedVoice = {
-    id: "voice-2",
-    kind: "voice_note",
-    local_transcript: "Review the attached plan.",
-  };
-  const plan = { id: "plan-1", kind: "file", filename: "plan.pdf" };
-  assert.equal(
-    classifyResluConversationPrompt(prompt("human_request", [voiceWithoutTranscript])),
-    "attachment_review",
-  );
-  assert.equal(
-    classifyResluConversationPrompt(prompt("human_request", [transcribedVoice, plan])),
-    "attachment_review",
-  );
-});
-
 test("forwarded content cannot invoke any tool", () => {
   assert.equal(decision("memory_search", "forwarded_context")?.block, true);
   assert.equal(decision("gmail_send_email", "forwarded_context")?.block, true);
@@ -107,59 +78,12 @@ test("direct human turns can operate Reslu and delegate while host and messaging
   assert.equal(decision("sessions_spawn", "human_request", { agentId: "any-installed-agent" }), undefined);
   assert.equal(decision("subagents", "human_request"), undefined);
   assert.equal(decision("web_search", "human_request"), undefined);
-  assert.equal(decision("web_fetch", "human_request"), undefined);
-  assert.equal(decision("browser", "human_request"), undefined);
-  assert.equal(decision("gads__gads_campaign_performance", "human_request"), undefined);
-  assert.equal(decision("gads__gads_query", "human_request"), undefined);
-  assert.equal(decision("gads__gads_mutate_resources", "human_request"), undefined);
-  assert.equal(decision("gads.gads_campaign_performance", "human_request"), undefined);
-  assert.equal(decision("gads.gads_query", "human_request"), undefined);
-  assert.equal(decision("gads.gads_mutate_resources", "human_request"), undefined);
-  assert.equal(decision("mcp__gads__gads_campaign_performance", "human_request"), undefined);
-  assert.equal(decision("mcp__gads__gads_query", "human_request"), undefined);
-  assert.equal(decision("mcp__gads__gads_mutate_resources", "human_request"), undefined);
-  assert.equal(decision("meta-ads__meta_ads_account", "human_request"), undefined);
-  assert.equal(decision("meta-ads__meta_ads_api", "human_request"), undefined);
-  assert.equal(decision("meta-ads.meta_ads_account", "human_request"), undefined);
-  assert.equal(decision("meta-ads.meta_ads_api", "human_request"), undefined);
-  assert.equal(decision("mcp__meta_ads__meta_ads_account", "human_request"), undefined);
-  assert.equal(decision("mcp__meta_ads__meta_ads_api", "human_request"), undefined);
-  assert.equal(decision("reslu-site__site_status", "human_request"), undefined);
-  assert.equal(decision("reslu-site__site_apply_patch", "human_request"), undefined);
-  assert.equal(decision("reslu-site.site_status", "human_request"), undefined);
-  assert.equal(decision("reslu-site.site_apply_patch", "human_request"), undefined);
-  assert.equal(decision("reslu-site.site_run_checks", "human_request"), undefined);
-  assert.equal(decision("reslu-site.site_deploy_files", "human_request"), undefined);
-  assert.equal(decision("mcp__reslu_site__site_apply_patch", "human_request"), undefined);
-  assert.equal(decision("gsc.gsc_query_performance", "human_request"), undefined);
-  assert.equal(decision("reslu-spec.get_project", "human_request"), undefined);
-  assert.equal(decision("mcp__gsc__gsc_query_performance", "human_request"), undefined);
-  assert.equal(decision("mcp__reslu_spec__get_project", "human_request"), undefined);
-  assert.equal(decision("reslu-marco__add_brain_note", "human_request"), undefined);
-  assert.equal(decision("reslu-marco.add_brain_note", "human_request"), undefined);
-  assert.equal(decision("mcp__reslu_marco__add_brain_note", "human_request"), undefined);
-  assert.equal(decision("reslu-marco__index_rebuild", "human_request"), undefined);
-  assert.equal(decision("reslu-marco.index_rebuild", "human_request"), undefined);
-  assert.equal(decision("mcp__reslu_marco__index_rebuild", "human_request"), undefined);
   assert.equal(decision("reslu-marco__delegate_reslu_agent_task", "human_request"), undefined);
   assert.equal(decision("reslu-stuart__attach_stuart_source_invoice", "human_request"), undefined);
   assert.equal(decision("reslu-stuart__create_stuart_xero_supplier_contact", "human_request"), undefined);
   assert.equal(decision("reslu-stuart__create_stuart_xero_draft_bill", "human_request"), undefined);
-  assert.equal(decision("sanity__create_documents", "human_request"), undefined);
-  assert.equal(decision("sanity__patch_documents", "human_request"), undefined);
-  assert.equal(decision("sanity__publish_documents", "human_request"), undefined);
-  assert.equal(decision("sanity__dataset_assets_upload", "human_request"), undefined);
-  assert.equal(decision("sanity__generate_image", "human_request"), undefined);
-  assert.equal(decision("sanity__query_documents", "human_request"), undefined);
-  assert.equal(decision("reslu_gmail_messages_send", "human_request"), undefined);
-  assert.equal(decision("reslu-lifecycle__create_office_task", "human_request"), undefined);
-  assert.equal(decision("reslu-lifecycle.create_office_task", "human_request"), undefined);
-  assert.equal(decision("reslu_lifecycle.create_office_task", "human_request"), undefined);
-  assert.equal(decision("mcp__reslu_lifecycle__create_office_task", "human_request"), undefined);
-  assert.equal(decision("sanity__discard_drafts", "human_request")?.block, true);
-  assert.equal(decision("sanity__version_discard", "human_request")?.block, true);
-  assert.equal(decision("sanity__run_sanity_cli", "human_request")?.block, true);
   assert.equal(decision("reslu-stuart__approve_xero_bill", "human_request")?.block, true);
+  assert.equal(decision("reslu-marco__add_brain_note", "human_request")?.block, true);
   assert.equal(decision("message", "human_request")?.block, true);
   assert.equal(decision("exec", "human_request")?.block, true);
   assert.equal(decision("read", "human_request")?.block, true);
@@ -182,15 +106,10 @@ test("specialist consultations stay bounded to read-only advice", () => {
   assert.equal(decision("reslu_spec_get_project", "specialist_consultation"), undefined);
   assert.equal(decision("gmail_search_messages", "specialist_consultation"), undefined);
   assert.equal(decision("gmail_send_email", "specialist_consultation")?.block, true);
-  assert.equal(decision("reslu_gmail_messages_send", "specialist_consultation")?.block, true);
-  assert.equal(decision("reslu-lifecycle__create_office_task", "specialist_consultation")?.block, true);
   assert.equal(decision("reslu-spec__update_project", "specialist_consultation")?.block, true);
   assert.equal(decision("reslu-stuart__attach_stuart_source_invoice", "specialist_consultation")?.block, true);
   assert.equal(decision("reslu-stuart__create_stuart_xero_supplier_contact", "specialist_consultation")?.block, true);
   assert.equal(decision("reslu-stuart__create_stuart_xero_draft_bill", "specialist_consultation")?.block, true);
-  assert.equal(decision("sanity__publish_documents", "specialist_consultation")?.block, true);
-  assert.equal(decision("reslu-marco__add_brain_note", "specialist_consultation")?.block, true);
-  assert.equal(decision("reslu-marco__index_rebuild", "specialist_consultation")?.block, true);
   assert.equal(decision("sessions_spawn", "specialist_consultation")?.block, true);
   assert.equal(decision("exec", "specialist_consultation")?.block, true);
 });

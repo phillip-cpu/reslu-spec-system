@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   parseRealtimeConsultArguments,
+  parseRealtimeSpecialistArguments,
   parseRealtimeTaskArguments,
 } from "./realtime-tool-arguments.ts";
 
@@ -11,6 +12,24 @@ test("consult arguments wait for a complete bounded query", () => {
   assert.deepEqual(parseRealtimeConsultArguments('{"query":"  What is first today?  "}'), {
     query: "What is first today?",
   });
+});
+
+test("specialist arguments require a different known RESLU agent", () => {
+  assert.deepEqual(parseRealtimeSpecialistArguments(JSON.stringify({
+    query: " Ask Stuart for the finance risk. ",
+    target_agent_slug: "stuart",
+  }), "aria"), {
+    query: "Ask Stuart for the finance risk.",
+    targetAgent: "stuart",
+  });
+  assert.equal(parseRealtimeSpecialistArguments(JSON.stringify({
+    query: "Ask Aria",
+    target_agent_slug: "aria",
+  }), "aria"), null);
+  assert.equal(parseRealtimeSpecialistArguments(JSON.stringify({
+    query: "Ask an external adviser",
+    target_agent_slug: "external",
+  }), "aria"), null);
 });
 
 test("task arguments wait for a complete title and objective", () => {

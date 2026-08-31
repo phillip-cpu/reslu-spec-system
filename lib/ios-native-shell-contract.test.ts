@@ -14,6 +14,7 @@ const voice = read("ios/RESLU/RESLU/VoiceSessionCoordinator.swift");
 const nativeTransport = read("ios/RESLU/RESLU/NativeRealtimeTransport.swift");
 const nativeHTTP = read("ios/RESLU/RESLU/NativeRealtimeHTTPClient.swift");
 const nativeTools = read("ios/RESLU/RESLU/NativeRealtimeToolRouter.swift");
+const nativeLatency = read("ios/RESLU/RESLU/NativeRealtimeLatencyMetrics.swift");
 const nativeContinuity = read("ios/RESLU/RESLU/NativeVoiceContinuityMetrics.swift");
 const bridge = read("lib/native-voice-bridge.ts");
 const recovery = read("lib/realtime-call-recovery.ts");
@@ -38,6 +39,11 @@ test("native iOS owns lock-safe WebRTC audio and CallKit without duplicating RES
   assert.match(voice, /CXEndCallAction/);
   assert.match(voice, /CXSetMutedCallAction/);
   assert.match(voice, /case "call\.muted"[\s\S]*setMutedFromWeb/);
+  assert.match(voice, /case "call\.audio-route"[\s\S]*setAudioRouteFromWeb/);
+  assert.match(voice, /route == "speaker" \|\| route == "automatic"/);
+  assert.match(voice, /overrideOutputAudioPort\(wantsSpeaker \? \.speaker : \.none\)/);
+  assert.match(voice, /audio-route-changed/);
+  assert.match(voice, /audio-route-error/);
   assert.match(voice, /mute-requested/);
   assert.match(voice, /mute-sync-error/);
   assert.match(voice, /reportOutgoingCall/);
@@ -104,6 +110,17 @@ test("the shell keeps canonical RESLU authentication, server SDP and production 
     voice,
     /let nativeContinuity = continuity\.payload[\s\S]*realtimeHTTPClient\.endCall\([\s\S]*realtimeTransport\.stop\(\)/,
   );
+  assert.match(voice, /NativeRealtimeUsageMetrics/);
+  assert.match(voice, /realtimeUsage\.observe\(event\)/);
+  assert.match(voice, /openai_realtime_response_done_client_observed/);
+  assert.match(nativeHTTP, /body\["voice_metrics"\] = voiceMetrics/);
+  assert.match(voice, /"turns": realtimeTransport\.voiceLatencyMetrics/);
+  assert.match(nativeLatency, /maximumTurns = 20/);
+  assert.match(nativeLatency, /speech_to_ack_ms/);
+  assert.match(nativeLatency, /queue_wait_ms/);
+  assert.match(nativeLatency, /agent_processing_ms/);
+  assert.match(nativeLatency, /interruption_to_buffer_cleared_ms/);
+  assert.doesNotMatch(nativeLatency, /"transcript"|"query"|"tool_call_id"|"response_id"/);
 });
 
 test("web and native exchange provider events while the browser path remains optional", () => {
@@ -123,6 +140,8 @@ test("web and native exchange provider events while the browser path remains opt
   assert.match(workspace, /detail\?\.type === "mute-requested"/);
   assert.match(workspace, /track\.enabled = !detail\.muted/);
   assert.match(workspace, /type: "call\.muted", muted: next/);
+  assert.match(workspace, /type: "call\.audio-route", route: next \? "speaker" : "automatic"/);
+  assert.match(workspace, /nativeAudioRouting && <button[\s\S]*Use speakerphone/);
   assert.match(workspace, /nativeRealtimeEventHandlerRef/);
   assert.match(workspace, /native_handled: true/);
   assert.match(workspace, /type: "web\.ready"/);
@@ -133,10 +152,18 @@ test("web and native exchange provider events while the browser path remains opt
   assert.match(workspace, /detail\.callId !== callIdRef\.current/);
   assert.match(nativeTools, /\/realtime\/\\\(endpoint\)/);
   assert.match(nativeTools, /\/realtime\/task/);
+  assert.match(nativeTools, /payload\["target_agent_slug"\]/);
+  assert.match(nativeTools, /targetAgent == context\.agentSlug/);
+  assert.match(nativeTools, /body\["target_agent_slug"\] = targetAgent/);
   assert.match(nativeTools, /cancelConsult\(toolCallId: activeConsult\.id/);
   assert.match(nativeTools, /guard !Task\.isCancelled, isActiveConsult\(toolCallId\)/);
   assert.match(nativeTools, /activeOutputAudioResponseId/);
   assert.match(nativeTools, /output_audio_buffer\.clear/);
+  assert.match(nativeTools, /reslu_progress/);
+  assert.match(nativeTools, /startProgressCue\(toolCallId:/);
+  assert.match(nativeTools, /didAcceptConsult\(toolCallId\)\s+startProgressCue\(toolCallId: toolCallId\)/);
+  assert.match(nativeTools, /stopProgressCue\(\)/);
+  assert.doesNotMatch(nativeTools, /checking that now/i);
   assert.match(nativeTools, /conversation\.item\.create/);
   assert.match(nativeTools, /response\.create/);
 });

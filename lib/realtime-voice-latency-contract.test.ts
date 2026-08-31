@@ -24,12 +24,18 @@ test("realtime calls measure actual WebRTC output audio instead of transcript ti
   assert.match(workspace, /interruption_to_buffer_cleared_ms/);
 });
 
-test("speech stop becomes visually thinking without generating spoken progress filler", () => {
+test("speech stop stays visual while an accepted consult starts one bounded acknowledgement", () => {
   assert.match(workspace, /input_audio_buffer\.speech_stopped/);
   assert.match(workspace, /setCallState\("thinking"\)/);
-  assert.doesNotMatch(workspace, /startRealtimeProgressCue/);
+  const speechStopHandler = workspace.match(/if \(event\.type === "input_audio_buffer\.speech_stopped"\) \{([\s\S]*?)\n    \}/)?.[1] ?? "";
+  assert.doesNotMatch(speechStopHandler, /response\.create|startRealtimeProgressCue/);
+  assert.match(workspace, /if \(!start\.ok\) throw[\s\S]*?startRealtimeProgressCue\(toolCallId\);/);
+  const completedResponseHandler = workspace.match(/if \(event\.type === "response\.done"[\s\S]*?return;\n    \}/)?.[0] ?? "";
+  assert.doesNotMatch(completedResponseHandler, /startRealtimeProgressCue/);
+  assert.match(workspace, /reslu_kind: REALTIME_PROGRESS_KIND/);
+  assert.match(workspace, /realtimeProgressAcknowledgement\(callAgent\.agent_slug, timing\.turn\)/);
   assert.doesNotMatch(workspace, /buildRealtimeProgressResponse/);
-  assert.doesNotMatch(progress, /response\.create|Say exactly|PROGRESS_LINES/);
+  assert.doesNotMatch(progress, /checking/i);
   assert.match(workspace, /activeRealtimeConsultRef\.current \? "thinking" : "listening"/);
 });
 
@@ -61,6 +67,16 @@ test("call records retain bounded timing metadata without transcript or provider
   assert.match(callsRoute, /continuityToRecord/);
   assert.match(nativeContinuity, /peak_buffered_web_events/);
   assert.doesNotMatch(nativeContinuity, /transcript:/);
+});
+
+test("browser and native Realtime calls retain content-free model usage from provider completion events", () => {
+  assert.match(workspace, /event\.response\?\.usage/);
+  assert.match(workspace, /event\.usage/);
+  assert.match(workspace, /realtimeVoiceUsageSnapshot/);
+  assert.match(metrics, /openai_realtime_response_done_client_observed/);
+  assert.match(metrics, /input_audio_tokens/);
+  assert.match(metrics, /output_audio_tokens/);
+  assert.match(metrics, /cached_tokens/);
 });
 
 test("the spoken response is requested before refreshing canonical messages", () => {

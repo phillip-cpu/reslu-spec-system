@@ -5,6 +5,7 @@ import {
   conversationTransportHasIncident,
   conversationTransportLevel,
   summarizeConversationVoiceHealth,
+  summarizeOpenClawUsage,
 } from "@/lib/conversation-health";
 import type { SpecHealthSummary } from "@/types/health-push";
 
@@ -48,6 +49,11 @@ const REQUIRED_CONVERSATION_CAPABILITIES = [
     rpc: "rename_conversation_group",
     args: { p_conversation_id: null, p_title: null, p_client_action_id: null },
   },
+  {
+    key: "realtime_voice_priority_lane",
+    rpc: "claim_agent_realtime_voice_job",
+    args: { p_agent_slug: "__health_probe__" },
+  },
 ] as const;
 
 interface CronDef {
@@ -77,6 +83,11 @@ const MONITORED_CRONS: CronDef[] = [
     key: "aria_weekly_review_enqueue",
     label: "Aria weekly synthesis",
     expectedIntervalHours: 168,
+  },
+  {
+    key: "meeting_source_retention",
+    label: "Meeting source retention",
+    expectedIntervalHours: 24,
   },
 ];
 
@@ -138,6 +149,18 @@ async function cronExecution(supabase: ServiceClient, key: string): Promise<Cron
     };
   }
   return latestJobExecution(supabase, key);
+}
+
+async function monitoredCrons(supabase: ServiceClient): Promise<CronDef[]> {
+  const { data, error } = await supabase
+    .from("meeting_source_retention_policy")
+    .select("enabled")
+    .eq("singleton", true)
+    .maybeSingle();
+  if (error || !data?.enabled) {
+    return MONITORED_CRONS.filter((definition) => definition.key !== "meeting_source_retention");
+  }
+  return MONITORED_CRONS;
 }
 
 function cronExecutionLevel(execution: CronExecution, expectedIntervalHours: number) {
@@ -211,10 +234,12 @@ async function conversationTransportHealth(supabase: ServiceClient) {
     supabase.from("agent_conversation_jobs").select("id", { count: "exact", head: true }).eq("status", "processing").lt("claimed_at", stuckJobCutoff),
     supabase.from("agent_conversation_jobs").select("id", { count: "exact", head: true }).eq("status", "failed").gte("completed_at", failureCutoff),
     supabase.from("agent_tasks").select("id", { count: "exact", head: true }).eq("status", "queued"),
-    supabase.from("agent_tasks").select("id", { count: "exact", head: true }).eq("status", "running").lt("claimed_at", stuckTaskCutoff),
+    supabase.from("agent_tasks").select("claimed_at,updated_at,progress_updated_at").eq("status", "running"),
     supabase.from("agent_tasks").select("id", { count: "exact", head: true }).eq("status", "failed").gte("completed_at", failureCutoff),
     supabase.from("conversation_calls").select("id", { count: "exact", head: true }).eq("status", "active").lt("started_at", staleCallCutoff),
-    supabase.from("conversation_calls").select("realtime_voice_latency:metadata->realtime_voice_latency").gte("started_at", voiceCutoff).order("started_at", { ascending: false }).limit(50),
+    supabase.from("conversation_calls").select("realtime_voice_latency:metadata->realtime_voice_latency").gte("started_at", voiceCutoff).order("started_at", { ascending: false }).limit(1000),
+    supabase.from("agent_conversation_jobs").select("openclaw_usage").gte("completed_at", voiceCutoff).not("openclaw_usage", "is", null).order("completed_at", { ascending: false }).limit(1000),
+    supabase.from("agent_tasks").select("openclaw_usage").gte("completed_at", voiceCutoff).not("openclaw_usage", "is", null).order("completed_at", { ascending: false }).limit(1000),
   ]), Promise.all(REQUIRED_CONVERSATION_CAPABILITIES.map(async (capability) => {
     const { error } = await supabase.rpc(capability.rpc, capability.args);
     if (!error) return { key: capability.key, unavailable: false, queryError: false };
@@ -226,11 +251,23 @@ async function conversationTransportHealth(supabase: ServiceClient) {
     // transport failure is a health-read error rather than evidence of absence.
     return { key: capability.key, unavailable: false, queryError: error.code !== "P0001" };
   }))]);
-  const [pending, oldestPending, stuckJobs, failedJobs, queuedTasks, stuckTasks, failedTasks, staleCalls, voiceCalls] = results;
+  const [pending, oldestPending, stuckJobs, failedJobs, queuedTasks, runningTasks, failedTasks, staleCalls, voiceCalls, openclawJobs, openclawTasks] = results;
   const oldestCreatedAt = oldestPending.data && typeof oldestPending.data.created_at === "string"
     ? Date.parse(oldestPending.data.created_at)
     : Number.NaN;
-  const voice = summarizeConversationVoiceHealth(voiceCalls.data ?? []);
+  const voiceRows = voiceCalls.data ?? [];
+  const voice = summarizeConversationVoiceHealth(voiceRows, voiceRows.length >= 1000);
+  const openclawJobRows = openclawJobs.data ?? [];
+  const openclawTaskRows = openclawTasks.data ?? [];
+  const openclaw = summarizeOpenClawUsage(
+    [...openclawJobRows, ...openclawTaskRows],
+    openclawJobRows.length >= 1000 || openclawTaskRows.length >= 1000,
+  );
+  const runningTasksStuck = (runningTasks.data ?? []).filter((task) => {
+    const freshestAt = task.progress_updated_at ?? task.updated_at ?? task.claimed_at;
+    const freshestMs = typeof freshestAt === "string" ? Date.parse(freshestAt) : Number.NaN;
+    return Number.isFinite(freshestMs) && freshestMs < Date.parse(stuckTaskCutoff);
+  }).length;
   const core = {
     query_errors: results.filter((result) => result.error).length
       + capabilityProbes.filter((probe) => probe.queryError).length,
@@ -240,10 +277,11 @@ async function conversationTransportHealth(supabase: ServiceClient) {
     processing_jobs_stuck: stuckJobs.count ?? 0,
     failed_jobs_24h: failedJobs.count ?? 0,
     queued_tasks: queuedTasks.count ?? 0,
-    running_tasks_stuck: stuckTasks.count ?? 0,
+    running_tasks_stuck: runningTasksStuck,
     failed_tasks_24h: failedTasks.count ?? 0,
     active_calls_stale: staleCalls.count ?? 0,
     ...voice,
+    ...openclaw,
   };
   return {
     ...core,
@@ -253,9 +291,10 @@ async function conversationTransportHealth(supabase: ServiceClient) {
 }
 
 export async function computeSpecHealth(supabase: ServiceClient): Promise<SpecHealthSummary> {
+  const cronDefinitions = await monitoredCrons(supabase);
   const [crons, failedEmailSends7d, stuckAriaQueue, needsAriaBacklog, conversationTransport] = await Promise.all([
     Promise.all(
-      MONITORED_CRONS.map(async (def) => {
+      cronDefinitions.map(async (def) => {
         const execution = await cronExecution(supabase, def.key);
         return {
           key: def.key,

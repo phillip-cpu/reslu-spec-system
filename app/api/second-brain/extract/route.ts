@@ -95,7 +95,7 @@ export async function GET(request: NextRequest) {
               amount_ex_gst: result.supplier_invoice?.amount_ex_gst,
               gst: result.supplier_invoice?.gst,
               total: result.supplier_invoice?.total,
-              currency_code: result.supplier_invoice?.currency_code,
+              currency_code: result.supplier_invoice?.currency,
               job_hints: result.supplier_invoice?.job_hints,
               job_mentions: result.job_mentions?.map((mention) => mention.text) ?? [],
               subject: email.subject,

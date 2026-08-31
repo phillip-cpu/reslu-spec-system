@@ -9,6 +9,7 @@ const read = (path: string) => readFileSync(resolve(root, path), "utf8");
 const searchRoute = read("app/api/conversations/[id]/search/route.ts");
 const messageRoute = read("app/api/conversations/[id]/messages/route.ts");
 const workspace = read("components/conversations/ConversationWorkspace.tsx");
+const timeline = read("lib/conversation-timeline.ts");
 const migration = read("supabase/migrations/097_conversation_message_search.sql");
 const verifier = read("supabase/fixtures/097_conversation_message_search_verify.sql");
 
@@ -62,7 +63,8 @@ test("long conversations page backwards without losing scroll position or pollin
   assert.match(workspace, /Load earlier messages/);
   assert.match(workspace, /before: \{ createdAt: oldestMessage\.created_at, id: oldestMessage\.id \}/);
   assert.match(workspace, /historyExpandedRef\.current/);
-  assert.match(workspace, /currentScroller\.scrollTop = previousTop \+ \(currentScroller\.scrollHeight - previousHeight\)/);
+  assert.match(workspace, /currentScroller\.scrollTop = preservedConversationScrollTop\(/);
+  assert.match(timeline, /Math\.max\(0, previousTop \+ currentHeight - previousHeight\)/);
 });
 
 test("message order has an id tie-breaker so equal timestamps cannot skip history", () => {

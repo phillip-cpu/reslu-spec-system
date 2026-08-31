@@ -6,7 +6,8 @@ import type { SowDocument, SowLineKind } from "@/types";
 import type { SowLineWithTrade, SowSectionWithTradedLines, SuggestTradeTagsResponse } from "@/types/sow-trade-tags";
 import type { ExportPresetRow } from "@/types/round-export-batch";
 import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
-import { distinctTaggedTrades } from "@/lib/sow-trade-tags";
+import { distinctTaggedTrades, groupSowLinesByTrade } from "@/lib/sow-trade-tags";
+import { reorderSowLines } from "@/lib/sow-reorder";
 
 interface Props {
   projectId: string;
@@ -52,6 +53,7 @@ export function SowBuilder({ projectId }: Props) {
   // backlog): sticky section outline sidebar, current section
   // highlighted via IntersectionObserver.
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
+  const [reorderingSectionId, setReorderingSectionId] = useState<string | null>(null);
 
   const loadRevisions = useCallback(async () => {
     const res = await fetch(`/api/projects/${projectId}/sow`);
@@ -379,6 +381,54 @@ export function SowBuilder({ projectId }: Props) {
     }
   }
 
+  /**
+   * Reorders lines within a section. The UI moves immediately, then each
+   * changed sort value is persisted through the existing immutable-aware
+   * line PATCH route. A failed request reloads the revision so a partial
+   * network failure can never leave the screen out of sync with storage.
+   */
+  async function reorderLines(sectionId: string, lineId: string, destinationIndex: number) {
+    if (!sow || reorderingSectionId) return;
+    const section = sections.find((candidate) => candidate.id === sectionId);
+    if (!section) return;
+
+    // Reordering operates on the same grouped order the builder shows.
+    // This also normalises any legacy interleaved lines into one
+    // contiguous block per trade when an order change is saved.
+    const displayedLines = groupSowLinesByTrade(section.lines).flatMap((group) => group.lines);
+    const reordered = reorderSowLines(displayedLines, lineId, destinationIndex);
+    if (reordered === section.lines) return;
+
+    const originalSort = new Map(section.lines.map((line) => [line.id, line.sort]));
+    const changed = reordered.filter((line) => originalSort.get(line.id) !== line.sort);
+    setSections((current) =>
+      current.map((candidate) =>
+        candidate.id === sectionId ? { ...candidate, lines: reordered } : candidate
+      )
+    );
+    setReorderingSectionId(sectionId);
+    setError(null);
+
+    try {
+      await Promise.all(
+        changed.map(async (line) => {
+          const res = await fetch(`/api/sow/lines/${line.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sort: line.sort }),
+          });
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(body.error ?? "Could not save the new line order.");
+        })
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the new line order.");
+      await loadSow(sow.id).catch(() => {});
+    } finally {
+      setReorderingSectionId(null);
+    }
+  }
+
   // "Trade-scoped SOW extracts" round — which trade chips to offer
   // alongside "Full" in the download group below: presets with >=1
   // tagged line anywhere in the CURRENT revision (BUILD-SPEC.md's own
@@ -558,6 +608,10 @@ export function SowBuilder({ projectId }: Props) {
                     onAddLine={(text, kind) => addLine(section.id, text, kind)}
                     onPatchLine={patchLine}
                     onDeleteLine={deleteLine}
+                    onReorderLine={(lineId, destinationIndex) =>
+                      reorderLines(section.id, lineId, destinationIndex)
+                    }
+                    reordering={reorderingSectionId === section.id}
                   />
                 </div>
               ))}
@@ -728,6 +782,8 @@ function SectionBlock({
   onAddLine,
   onPatchLine,
   onDeleteLine,
+  onReorderLine,
+  reordering,
 }: {
   section: SowSectionWithTradedLines;
   readOnly: boolean;
@@ -738,8 +794,49 @@ function SectionBlock({
   onAddLine: (text: string, kind: SowLineKind) => Promise<void>;
   onPatchLine: (line: SowLineWithTrade, patch: Partial<SowLineWithTrade>) => Promise<SowLineWithTrade>;
   onDeleteLine: (line: SowLineWithTrade) => void;
+  onReorderLine: (lineId: string, destinationIndex: number) => Promise<void>;
+  reordering: boolean;
 }) {
   const [expanded, setExpanded] = useState(true);
+  const [draggedLineId, setDraggedLineId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const lineGroups = groupSowLinesByTrade(section.lines);
+  const displayedLines = lineGroups.flatMap((group) => group.lines);
+  const hasTradeHeadings = lineGroups.some((group) => group.trade !== null);
+
+  function tradeKey(line: SowLineWithTrade): string | null {
+    return line.trade?.trim() || null;
+  }
+
+  function clearDragState() {
+    setDraggedLineId(null);
+    setDropTargetId(null);
+  }
+
+  function dropBefore(targetLineId: string) {
+    if (!draggedLineId || draggedLineId === targetLineId || reordering) {
+      clearDragState();
+      return;
+    }
+    const sourceLine = displayedLines.find((line) => line.id === draggedLineId);
+    const targetLine = displayedLines.find((line) => line.id === targetLineId);
+    const sourceIndex = displayedLines.findIndex((line) => line.id === draggedLineId);
+    const targetIndex = displayedLines.findIndex((line) => line.id === targetLineId);
+    if (
+      !sourceLine ||
+      !targetLine ||
+      tradeKey(sourceLine) !== tradeKey(targetLine) ||
+      sourceIndex === -1 ||
+      targetIndex === -1
+    ) {
+      clearDragState();
+      return;
+    }
+    const destinationIndex = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex;
+    const lineId = draggedLineId;
+    clearDragState();
+    void onReorderLine(lineId, destinationIndex);
+  }
 
   return (
     <section className="border border-[#dcd6cc]">
@@ -776,17 +873,85 @@ function SectionBlock({
       </div>
 
       {expanded && (
-        <div className="divide-y divide-[#e5e0d6]">
-          {section.lines.map((line) => (
-            <LineRow
-              key={line.id}
-              line={line}
-              readOnly={readOnly}
-              presetNames={presetNames}
-              onPatch={(patch) => onPatchLine(line, patch)}
-              onDelete={() => onDeleteLine(line)}
-            />
-          ))}
+        <div>
+          {lineGroups.map((group, groupIndex) => {
+            const groupStartIndex = lineGroups
+              .slice(0, groupIndex)
+              .reduce((total, candidate) => total + candidate.lines.length, 0);
+            const draggedLine = displayedLines.find((line) => line.id === draggedLineId);
+            const draggingThisGroup = draggedLine && tradeKey(draggedLine) === group.trade;
+
+            return (
+              <div
+                key={group.trade ?? "general"}
+                className={groupIndex > 0 ? "border-t border-[#dcd6cc]" : undefined}
+              >
+                {hasTradeHeadings && (
+                  <div className="border-b border-[#dcd6cc] bg-offwhite px-4 py-2">
+                    <p className="label-caps font-semibold !text-nearblack">
+                      {group.trade ?? "General"}
+                    </p>
+                  </div>
+                )}
+                <div className="divide-y divide-[#e5e0d6]">
+                  {group.lines.map((line, lineIndex) => {
+                    const displayIndex = groupStartIndex + lineIndex;
+                    return (
+                      <LineRow
+                        key={line.id}
+                        line={line}
+                        readOnly={readOnly}
+                        presetNames={presetNames}
+                        onPatch={(patch) => onPatchLine(line, patch)}
+                        onDelete={() => onDeleteLine(line)}
+                        dragging={draggedLineId === line.id}
+                        dropTarget={dropTargetId === line.id && draggedLineId !== line.id}
+                        reordering={reordering}
+                        canMoveUp={lineIndex > 0}
+                        canMoveDown={lineIndex < group.lines.length - 1}
+                        onMoveUp={() => void onReorderLine(line.id, displayIndex - 1)}
+                        onMoveDown={() => void onReorderLine(line.id, displayIndex + 1)}
+                        onDragStart={(event) => {
+                          event.dataTransfer.effectAllowed = "move";
+                          event.dataTransfer.setData("text/plain", line.id);
+                          setDraggedLineId(line.id);
+                        }}
+                        onDragEnd={clearDragState}
+                        onDragOver={(event) => {
+                          if (!draggedLine || reordering || tradeKey(draggedLine) !== group.trade) return;
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = "move";
+                          setDropTargetId(line.id);
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          dropBefore(line.id);
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+                {!readOnly && draggingThisGroup && group.lines.length > 1 && (
+                  <div
+                    className="h-8 border-t-2 border-dashed border-sand bg-sand/10 text-center text-caption leading-8 text-charcoal"
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = "move";
+                      setDropTargetId(null);
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      const lineId = draggedLineId;
+                      clearDragState();
+                      if (lineId) void onReorderLine(lineId, groupStartIndex + group.lines.length - 1);
+                    }}
+                  >
+                    Drop at end of {group.trade ?? "General"}
+                  </div>
+                )}
+              </div>
+            );
+          })}
           {!readOnly && <DraftLineRow onAdd={onAddLine} />}
           {section.lines.length === 0 && readOnly && (
             <p className="px-4 py-3 text-caption text-charcoal/40">No lines in this section.</p>
@@ -857,6 +1022,17 @@ function LineRow({
   presetNames,
   onPatch,
   onDelete,
+  dragging,
+  dropTarget,
+  reordering,
+  canMoveUp,
+  canMoveDown,
+  onMoveUp,
+  onMoveDown,
+  onDragStart,
+  onDragEnd,
+  onDragOver,
+  onDrop,
 }: {
   line: SowLineWithTrade;
   readOnly: boolean;
@@ -864,6 +1040,17 @@ function LineRow({
   presetNames: string[];
   onPatch: (patch: Partial<SowLineWithTrade>) => Promise<SowLineWithTrade>;
   onDelete: () => void;
+  dragging: boolean;
+  dropTarget: boolean;
+  reordering: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDragEnd: () => void;
+  onDragOver: (event: React.DragEvent<HTMLDivElement>) => void;
+  onDrop: (event: React.DragEvent<HTMLDivElement>) => void;
 }) {
   const [draft, setDraft] = useState(line.text);
   const [dirty, setDirty] = useState(false);
@@ -908,33 +1095,56 @@ function LineRow({
       <div className="flex items-start gap-3 px-4 py-2">
         <span
           className={clsx(
-            "label-caps mt-0.5 w-20 shrink-0",
+            "label-caps mt-0.5 w-20 shrink-0 !text-charcoal",
             line.kind === "exclusion" && "!text-[#A32D2D]",
-            line.kind === "note" && "!text-charcoal/40"
+            line.kind === "note" && "!text-charcoal/70"
           )}
         >
           {KIND_LABEL[line.kind]}
         </span>
-        <p className={clsx("flex-1 text-body text-charcoal", line.kind === "note" && "italic")}>
+        <p className={clsx("flex-1 text-body text-nearblack", line.kind === "note" && "italic text-charcoal/80")}>
           {line.text}
         </p>
         {/* "Trade-scoped SOW extracts" round — small sand chip, read-only display only (no select once the SOW is issued). */}
         {line.trade && (
-          <span className="mt-0.5 shrink-0 bg-sand px-2 py-0.5 text-caption text-white">{line.trade}</span>
+          <span className="mt-0.5 shrink-0 border border-nearblack bg-nearblack px-2 py-0.5 text-caption font-semibold text-white">
+            {line.trade}
+          </span>
         )}
       </div>
     );
   }
 
   return (
-    <div className={clsx("flex items-start gap-3 px-4 py-2", dirty && "bg-cream/60")}>
+    <div
+      className={clsx(
+        "flex items-start gap-2 border-t-2 border-transparent px-4 py-2 transition-colors",
+        dirty && "bg-cream/60",
+        dragging && "opacity-40",
+        dropTarget && "border-t-sand bg-sand/10"
+      )}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
+      <button
+        type="button"
+        draggable={!reordering}
+        disabled={reordering}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
+        aria-label={`Drag to reorder: ${line.text}`}
+        title="Drag to reorder"
+        className="mt-1 shrink-0 cursor-grab select-none px-1 text-body text-charcoal/35 hover:text-nearblack active:cursor-grabbing disabled:cursor-wait"
+      >
+        ⠿
+      </button>
       <select
         value={line.kind}
         onChange={(e) => setKind(e.target.value as SowLineKind)}
         className={clsx(
-          "label-caps mt-1 w-24 shrink-0 border-none bg-transparent focus:outline-none",
+          "label-caps mt-1 w-24 shrink-0 border-none bg-transparent !text-charcoal focus:outline-none",
           line.kind === "exclusion" && "!text-[#A32D2D]",
-          line.kind === "note" && "!text-charcoal/40"
+          line.kind === "note" && "!text-charcoal/70"
         )}
       >
         <option value="inclusion">Inclusion</option>
@@ -950,13 +1160,13 @@ function LineRow({
         onChange={(e) => setTrade(e.target.value)}
         title="Trade tag — drives which extract PDF this line appears in"
         className={clsx(
-          "label-caps mt-1 w-28 shrink-0 border px-1.5 py-0.5 text-caption focus:outline-none",
+          "label-caps mt-1 w-28 shrink-0 border px-1.5 py-0.5 text-caption font-semibold focus:outline-none focus:ring-2 focus:ring-sand/50",
           line.trade
-            ? "border-sand bg-sand text-white"
-            : "border-[#c9c2b4] bg-transparent text-charcoal/40"
+            ? "border-nearblack bg-nearblack !text-white"
+            : "border-charcoal bg-white !text-charcoal"
         )}
       >
-        <option value="">— trade —</option>
+        <option value="" className="bg-white text-nearblack">— trade —</option>
         {/* A line tagged with a preset name that no longer exists
             (renamed/deleted since tagging) still shows its actual
             value here rather than silently rendering blank — the tag
@@ -964,10 +1174,12 @@ function LineRow({
             044_sow_trade_tags.sql's own comment for why `trade` isn't
             a constrained lookup). */}
         {line.trade && !presetNames.includes(line.trade) && (
-          <option value={line.trade}>{line.trade} (no longer a preset)</option>
+          <option value={line.trade} className="bg-white text-nearblack">
+            {line.trade} (no longer a preset)
+          </option>
         )}
         {presetNames.map((name) => (
-          <option key={name} value={name}>
+          <option key={name} value={name} className="bg-white text-nearblack">
             {name}
           </option>
         ))}
@@ -984,8 +1196,8 @@ function LineRow({
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
           }}
           className={clsx(
-            "w-full border-none bg-transparent px-1 py-1 text-body text-charcoal focus:bg-nearwhite focus:outline-none",
-            line.kind === "note" && "italic"
+            "w-full border-none bg-transparent px-1 py-1 text-body text-nearblack focus:bg-nearwhite focus:outline-none",
+            line.kind === "note" && "italic text-charcoal/80"
           )}
         />
         {rowError && <p className="px-1 pt-1 text-caption text-red-700">⚠ {rowError}</p>}
@@ -1002,6 +1214,28 @@ function LineRow({
           {saving ? "…" : "✓"}
         </button>
       )}
+      <div className="mt-0.5 flex shrink-0 flex-col leading-none">
+        <button
+          type="button"
+          onClick={onMoveUp}
+          disabled={!canMoveUp || reordering}
+          aria-label={`Move ${line.text} up`}
+          title="Move up"
+          className="px-1 text-caption text-charcoal/35 hover:text-nearblack disabled:opacity-20"
+        >
+          ↑
+        </button>
+        <button
+          type="button"
+          onClick={onMoveDown}
+          disabled={!canMoveDown || reordering}
+          aria-label={`Move ${line.text} down`}
+          title="Move down"
+          className="px-1 text-caption text-charcoal/35 hover:text-nearblack disabled:opacity-20"
+        >
+          ↓
+        </button>
+      </div>
       <button
         type="button"
         onClick={() => {

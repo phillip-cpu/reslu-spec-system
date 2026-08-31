@@ -4,6 +4,107 @@ import Combine
 import Foundation
 import WebKit
 
+private final class NativeRealtimeUsageMetrics {
+    private let maximum = 1_000_000_000
+    private(set) var realtimeModel: String?
+    private(set) var transcriptionModel: String?
+    private var responses: [String: Int] = [:]
+    private var transcriptions: [String: Int] = [:]
+    private var transcriptionSeconds = 0.0
+
+    func reset() {
+        realtimeModel = nil
+        transcriptionModel = nil
+        responses.removeAll(keepingCapacity: true)
+        transcriptions.removeAll(keepingCapacity: true)
+        transcriptionSeconds = 0
+    }
+
+    private func model(_ value: Any?) -> String? {
+        guard let value = value as? String, !value.isEmpty, value.count <= 160 else { return nil }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:-")
+        return value.unicodeScalars.allSatisfy(allowed.contains) ? value : nil
+    }
+
+    private func integer(_ value: Any?) -> Int {
+        guard let number = value as? NSNumber else { return 0 }
+        let candidate = number.intValue
+        return candidate >= 0 && candidate <= maximum ? candidate : 0
+    }
+
+    private func add(_ value: Int, to key: String, in totals: inout [String: Int]) {
+        totals[key] = min(maximum, (totals[key] ?? 0) + value)
+    }
+
+    private func recordTokenUsage(_ usage: [String: Any], response: Bool) {
+        let input = usage["input_token_details"] as? [String: Any] ?? [:]
+        let output = usage["output_token_details"] as? [String: Any] ?? [:]
+        if response {
+            add(1, to: "count", in: &responses)
+            add(integer(usage["total_tokens"]), to: "total_tokens", in: &responses)
+            add(integer(usage["input_tokens"]), to: "input_tokens", in: &responses)
+            add(integer(usage["output_tokens"]), to: "output_tokens", in: &responses)
+            add(integer(input["text_tokens"]), to: "input_text_tokens", in: &responses)
+            add(integer(input["audio_tokens"]), to: "input_audio_tokens", in: &responses)
+            add(integer(input["image_tokens"]), to: "input_image_tokens", in: &responses)
+            add(integer(input["cached_tokens"]), to: "cached_tokens", in: &responses)
+            add(integer(output["text_tokens"]), to: "output_text_tokens", in: &responses)
+            add(integer(output["audio_tokens"]), to: "output_audio_tokens", in: &responses)
+        } else {
+            add(1, to: "count", in: &transcriptions)
+            add(integer(usage["total_tokens"]), to: "total_tokens", in: &transcriptions)
+            add(integer(usage["input_tokens"]), to: "input_tokens", in: &transcriptions)
+            add(integer(usage["output_tokens"]), to: "output_tokens", in: &transcriptions)
+            add(integer(input["text_tokens"]), to: "input_text_tokens", in: &transcriptions)
+            add(integer(input["audio_tokens"]), to: "input_audio_tokens", in: &transcriptions)
+            if let seconds = usage["seconds"] as? NSNumber, seconds.doubleValue >= 0, seconds.doubleValue <= 86_400 {
+                transcriptionSeconds = min(86_400, transcriptionSeconds + seconds.doubleValue)
+            }
+        }
+    }
+
+    func observe(_ event: [String: Any]) {
+        guard let type = event["type"] as? String else { return }
+        if type == "session.created" || type == "session.updated" {
+            let session = event["session"] as? [String: Any]
+            realtimeModel = model(session?["model"]) ?? realtimeModel
+            let audio = session?["audio"] as? [String: Any]
+            let input = audio?["input"] as? [String: Any]
+            let transcription = input?["transcription"] as? [String: Any]
+            transcriptionModel = model(transcription?["model"]) ?? transcriptionModel
+        }
+        if type == "response.done",
+           let response = event["response"] as? [String: Any],
+           let usage = response["usage"] as? [String: Any] {
+            recordTokenUsage(usage, response: true)
+        }
+        if type == "conversation.item.input_audio_transcription.completed",
+           let usage = event["usage"] as? [String: Any] {
+            recordTokenUsage(usage, response: false)
+        }
+    }
+
+    var payload: [String: Any]? {
+        guard (responses["count"] ?? 0) > 0 || (transcriptions["count"] ?? 0) > 0 else { return nil }
+        let responseDefaults = [
+            "count", "total_tokens", "input_tokens", "output_tokens", "input_text_tokens",
+            "input_audio_tokens", "input_image_tokens", "cached_tokens", "output_text_tokens", "output_audio_tokens",
+        ].reduce(into: [String: Int]()) { $0[$1] = responses[$1] ?? 0 }
+        var transcriptionDefaults = [
+            "count", "total_tokens", "input_tokens", "output_tokens", "input_text_tokens", "input_audio_tokens",
+        ].reduce(into: [String: Any]()) { $0[$1] = transcriptions[$1] ?? 0 }
+        transcriptionDefaults["seconds"] = (transcriptionSeconds * 1000).rounded() / 1000
+        return [
+            "schema_version": 1,
+            "source": "openai_realtime_response_done_client_observed",
+            "realtime_model": realtimeModel ?? NSNull(),
+            "transcription_model": transcriptionModel ?? NSNull(),
+            "responses": responseDefaults,
+            "transcriptions": transcriptionDefaults,
+        ]
+    }
+}
+
 @MainActor
 final class VoiceSessionCoordinator: NSObject, ObservableObject {
     nonisolated static let handlerName = "resluVoice"
@@ -12,6 +113,7 @@ final class VoiceSessionCoordinator: NSObject, ObservableObject {
     private let provider: CXProvider
     private let realtimeHTTPClient = NativeRealtimeHTTPClient()
     private let continuity = NativeVoiceContinuityMetrics()
+    private let realtimeUsage = NativeRealtimeUsageMetrics()
     private lazy var realtimeTransport = NativeRealtimeTransport(
         client: realtimeHTTPClient,
         continuity: continuity,
@@ -24,6 +126,7 @@ final class VoiceSessionCoordinator: NSObject, ObservableObject {
     private var webReady = false
     private var webDocumentReady = false
     private var appIsBackgrounded = false
+    private var speakerRequested = false
     private var pendingWebPayloads = [[String: Any]]()
     private let maximumPendingWebPayloads = 80
 
@@ -103,6 +206,8 @@ final class VoiceSessionCoordinator: NSObject, ObservableObject {
         trace("begin call; nativeRealtime=\(context.usesNativeRealtime)")
         guard callUUID == nil else { return }
         continuity.reset()
+        realtimeUsage.reset()
+        speakerRequested = false
         if context.usesNativeRealtime {
             realtimeTransport.setMuted(false)
         }
@@ -147,6 +252,26 @@ final class VoiceSessionCoordinator: NSObject, ObservableObject {
         }
     }
 
+    private func setAudioRouteFromWeb(_ route: String) {
+        guard callUUID != nil else {
+            sendToWeb(type: "audio-route-error", message: "Start the call before changing its audio route.")
+            return
+        }
+        guard route == "speaker" || route == "automatic" else {
+            sendToWeb(type: "audio-route-error", message: "That audio route is not supported.")
+            return
+        }
+        let wantsSpeaker = route == "speaker"
+        do {
+            try AVAudioSession.sharedInstance().overrideOutputAudioPort(wantsSpeaker ? .speaker : .none)
+            speakerRequested = wantsSpeaker
+            continuity.didChangeAudioRoute()
+            sendToWeb(type: "audio-route-changed", route: wantsSpeaker ? "speaker" : "automatic")
+        } catch {
+            sendToWeb(type: "audio-route-error", message: error.localizedDescription)
+        }
+    }
+
     private func endCallFromWeb() {
         guard let callUUID else {
             deactivateAudioSession()
@@ -164,15 +289,20 @@ final class VoiceSessionCoordinator: NSObject, ObservableObject {
         if appIsBackgrounded { continuity.didEndWhileBackground() }
         let nativeContinuity = continuity.payload
         if let callContext, callContext.usesNativeRealtime {
+            var voiceMetrics: [String: Any] = ["turns": realtimeTransport.voiceLatencyMetrics]
+            if let usage = realtimeUsage.payload { voiceMetrics["usage"] = usage }
             realtimeHTTPClient.endCall(
                 conversationId: callContext.conversationId,
                 callId: callContext.callId,
-                nativeContinuity: nativeContinuity
+                nativeContinuity: nativeContinuity,
+                voiceMetrics: voiceMetrics
             )
         }
         if callContext?.usesNativeRealtime == true {
             realtimeTransport.stop()
         }
+        try? AVAudioSession.sharedInstance().overrideOutputAudioPort(.none)
+        speakerRequested = false
         callUUID = nil
         callContext = nil
         let shouldNotify = notifyWeb && !endingFromWeb
@@ -259,12 +389,14 @@ final class VoiceSessionCoordinator: NSObject, ObservableObject {
         message: String? = nil,
         muted: Bool? = nil,
         event: [String: Any]? = nil,
-        callId: String? = nil
+        callId: String? = nil,
+        route: String? = nil
     ) {
         var payload: [String: Any] = ["type": type]
         if let message { payload["message"] = message }
         if let muted { payload["muted"] = muted }
         if let event { payload["event"] = event }
+        if let route { payload["route"] = route }
         if let callId = callId ?? callContext?.callId { payload["callId"] = callId }
         deliverToWeb(payload)
     }
@@ -311,6 +443,8 @@ extension VoiceSessionCoordinator: WKScriptMessageHandler {
                 markConnected()
             case "call.muted":
                 setMutedFromWeb(body["muted"] as? Bool ?? false)
+            case "call.audio-route":
+                setAudioRouteFromWeb(body["route"] as? String ?? "automatic")
             case "call.end":
                 endCallFromWeb()
             case "realtime.event":
@@ -383,6 +517,15 @@ extension VoiceSessionCoordinator: CXProviderDelegate {
             // browser-owned audio; native-Realtime clients ignore it while
             // they wait for native-realtime-connected.
             sendToWeb(type: "native-audio-ready")
+            if speakerRequested {
+                do {
+                    try audioSession.overrideOutputAudioPort(.speaker)
+                    sendToWeb(type: "audio-route-changed", route: "speaker")
+                } catch {
+                    speakerRequested = false
+                    sendToWeb(type: "audio-route-error", message: error.localizedDescription)
+                }
+            }
             if let callContext, callContext.usesNativeRealtime {
                 realtimeTransport.setAudioActive(true)
                 realtimeTransport.start(context: callContext)
@@ -407,6 +550,7 @@ extension VoiceSessionCoordinator: NativeRealtimeTransportDelegate {
     }
 
     func nativeRealtimeDidReceive(event: [String: Any]) {
+        realtimeUsage.observe(event)
         sendToWeb(type: "native-realtime-event", event: event)
     }
 

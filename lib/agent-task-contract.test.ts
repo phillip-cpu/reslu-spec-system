@@ -39,7 +39,7 @@ test("the call surface exposes captions, durable work and approvals", () => {
   assert.match(workspace, /setCallTranscriptExpanded\(false\)/);
   assert.ok(workspace.indexOf("Background agent work") < workspace.indexOf("Call captions"));
   assert.match(workspace, /Continues after the call/);
-  assert.match(workspace, /Email drafts, approvals and structured results appear here/);
+  assert.match(workspace, /Every delegated task, decision and result stays visible here/);
   assert.match(workspace, /Approve/);
   assert.match(workspace, /Reject/);
   assert.match(workspace, /<span>Agent work<\/span>/);
@@ -56,9 +56,9 @@ test("cancelling durable work needs a deliberate second action", () => {
 test("agent work stays compact by default and the composer does not trigger iPhone zoom", () => {
   assert.match(workspace, /max-w-full flex-1 flex-col overflow-x-hidden/);
   assert.match(workspace, /aria-controls="conversation-agent-work-details"/);
-  assert.match(workspace, /agentWorkExpanded \? "grid md:flex" : "hidden"/);
+  assert.match(workspace, /agentWorkExpanded \? "block" : "hidden"/);
   assert.doesNotMatch(workspace, /pb-3 md:flex md:max-h-52/);
-  assert.match(workspace, /drawer && "md:absolute md:left-4 md:right-4 md:top-full/);
+  assert.match(workspace, /drawer && "md:absolute md:left-3 md:right-3 md:top-full/);
   assert.match(workspace, /block truncate text-\[14px\]/);
   assert.match(workspace, /text-\[16px\].*md:text-body/);
   const artifact = read("lib/agent-task-artifact.ts");
@@ -68,6 +68,17 @@ test("agent work stays compact by default and the composer does not trigger iPho
   assert.doesNotMatch(workspace, /JSON\.stringify\(content, null, 2\)/);
 });
 
+test("the work centre unifies overview, progress history and steering", () => {
+  assert.match(workspace, /Work in this conversation/);
+  assert.match(workspace, /Live now/);
+  assert.match(workspace, /task\.events\.slice\(-5\)\.reverse\(\)/);
+  assert.match(workspace, /Ask or steer in chat/);
+  assert.match(workspace, /About “\$\{task\.title\}”: /);
+  assert.match(workspace, /attentionAgentWorkCount/);
+  assert.match(workspace, /activeAgentWorkCount/);
+  assert.match(workspace, /selectedAgentTaskId/);
+});
+
 test("terminal Agent Work can be cleared per person without hiding active work", () => {
   assert.match(dismissals, /primary key \(task_id, profile_id\)/i);
   assert.match(dismissals, /profile_id = auth\.uid\(\)/i);
@@ -75,6 +86,7 @@ test("terminal Agent Work can be cleared per person without hiding active work",
   assert.match(taskDetailRoute, /body\.action === "dismiss"/);
   assert.match(taskDetailRoute, /Active Agent Work cannot be cleared\. Stop it first\./);
   assert.match(workspace, /Clear \$\{task\.title\} from Agent Work/);
+  assert.match(workspace, /task\.status === "failed" \|\| task\.status === "completed" \|\| task\.status === "cancelled"/);
 });
 
 test("chat copy remains readable on mobile and decided work does not show stale approval copy", () => {
