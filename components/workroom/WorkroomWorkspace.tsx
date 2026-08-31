@@ -12,6 +12,7 @@ import {
   workroomCounts,
   type HistoryFilter,
   type RecoveryFilter,
+  type RoutineFilter,
   type WorkroomView,
 } from "@/lib/workroom";
 import {
@@ -36,7 +37,7 @@ const VIEWS: Array<{ id: WorkroomView; label: string; quietLabel: string }> = [
 ];
 
 type TaskAction = "cancel" | "retry" | "dismiss" | "approve" | "reject" | "request_changes";
-type WorkroomFilter = RecoveryFilter | HistoryFilter;
+type WorkroomFilter = RecoveryFilter | HistoryFilter | RoutineFilter;
 
 interface WorkroomWorkspaceProps {
   conversationId?: string | null;
@@ -72,9 +73,41 @@ function noticeFor(action: TaskAction) {
 }
 
 function validFilter(value: string | null | undefined): WorkroomFilter {
-  return ["needs-diagnosis", "approved-work", "retryable", "completed", "cancelled"].includes(value ?? "")
+  return ["needs-diagnosis", "approved-work", "retryable", "completed", "cancelled", "needs-attention", "healthy", "unmonitored"].includes(value ?? "")
     ? value as WorkroomFilter
     : "all";
+}
+
+function routineStatusLabel(status: WorkroomResponse["routines"][number]["monitoring_status"]) {
+  if (status === "healthy") return "Healthy";
+  if (status === "warning") return "Warning";
+  if (status === "failed") return "Failed";
+  if (status === "late") return "Late";
+  if (status === "never") return "No runs recorded";
+  return "Not reporting";
+}
+
+function routineStatusClass(status: WorkroomResponse["routines"][number]["monitoring_status"]) {
+  if (status === "healthy") return "bg-[#e4f0e7] text-[#254c36]";
+  if (status === "warning" || status === "late") return "bg-[#fff2cb] text-[#75500d]";
+  if (status === "failed") return "bg-red-100 text-red-900";
+  return "bg-[#e7dfd1] text-charcoal/65";
+}
+
+function runDate(value: string | null) {
+  if (!value) return "Never recorded";
+  return new Intl.DateTimeFormat("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit", timeZone: "Australia/Adelaide" }).format(new Date(value));
+}
+
+function duration(value: number) {
+  if (value < 1000) return `${value} ms`;
+  if (value < 60_000) return `${(value / 1000).toFixed(1)} sec`;
+  return `${Math.round(value / 60_000)} min`;
+}
+
+function runSummary(summary: Record<string, unknown>) {
+  const entries = Object.entries(summary).filter(([, value]) => ["string", "number", "boolean"].includes(typeof value)).slice(0, 4);
+  return entries.length ? entries.map(([key, value]) => `${key.replaceAll("_", " ")}: ${String(value)}`).join(" · ") : "Run completed without a recorded outcome summary.";
 }
 
 function localNextRun(value: string | null) {
@@ -170,7 +203,7 @@ export function WorkroomWorkspace({
     for (const task of tasks) if (task.owner_agent) unique.set(task.owner_agent.id, task.owner_agent);
     return [...unique.values()];
   }, [tasks]);
-  const filtered = useMemo(() => filterWorkroomTasks(tasks, view, agentId, deferredQuery, filter, data?.self_profile_id), [agentId, data?.self_profile_id, deferredQuery, filter, tasks, view]);
+  const filtered = useMemo(() => filterWorkroomTasks(tasks, view, agentId, deferredQuery, view === "recurring" ? "all" : filter as RecoveryFilter | HistoryFilter, data?.self_profile_id), [agentId, data?.self_profile_id, deferredQuery, filter, tasks, view]);
   const selected = selectedId ? filtered.find((task) => task.id === selectedId) ?? null : filtered[0] ?? null;
   const policies = data?.approval_policies ?? [];
 
@@ -268,12 +301,12 @@ export function WorkroomWorkspace({
           </div>
 
           <div className="grid gap-2 border-b border-[#cfc5b6] bg-[#f5f1e8] p-3 sm:grid-cols-[minmax(12rem,1fr)_auto_auto] md:px-4">
-            {view !== "recurring" ? <label className="relative block"><span className="sr-only">Search this Workroom view</span><span aria-hidden className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-charcoal/45">⌕</span><input type="search" value={query} onChange={(event) => { setQuery(event.target.value); setSelectedId(null); setMobileDetailOpen(false); writeUrl({ query: event.target.value, task: null }, "replace"); }} placeholder={`Search ${VIEWS.find((item) => item.id === view)?.label.toLowerCase() ?? "work"}`} className="min-h-11 w-full border border-[#cfc5b6] bg-[#faf6ec] pl-9 pr-3 text-[14px] text-nearblack placeholder:text-charcoal/45" /></label> : <div className="hidden sm:block" />}
-            {(view === "recovery" || view === "history") && <label className="grid grid-cols-[auto_1fr] items-center gap-2 text-[12px] text-charcoal/60"><span>Show</span><select value={filter} onChange={(event) => { const next = validFilter(event.target.value); setFilter(next); setSelectedId(null); setMobileDetailOpen(false); writeUrl({ filter: next, task: null }, "replace"); }} className="min-h-11 border border-[#cfc5b6] bg-[#faf6ec] px-3 text-[14px] text-nearblack">{view === "recovery" ? <><option value="all">All recovery</option><option value="approved-work">Approved work to verify</option><option value="needs-diagnosis">Needs diagnosis</option><option value="retryable">Ready to retry</option></> : <><option value="all">All history</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option></>}</select></label>}
+            <label className="relative block"><span className="sr-only">Search this Workroom view</span><span aria-hidden className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-charcoal/45">⌕</span><input type="search" value={query} onChange={(event) => { setQuery(event.target.value); setSelectedId(null); setMobileDetailOpen(false); writeUrl({ query: event.target.value, task: null }, "replace"); }} placeholder={`Search ${VIEWS.find((item) => item.id === view)?.label.toLowerCase() ?? "work"}`} className="min-h-11 w-full border border-[#cfc5b6] bg-[#faf6ec] pl-9 pr-3 text-[14px] text-nearblack placeholder:text-charcoal/45" /></label>
+            {(view === "recovery" || view === "history" || view === "recurring") && <label className="grid grid-cols-[auto_1fr] items-center gap-2 text-[12px] text-charcoal/60"><span>Show</span><select value={filter} onChange={(event) => { const next = validFilter(event.target.value); setFilter(next); setSelectedId(null); setMobileDetailOpen(false); writeUrl({ filter: next, task: null }, "replace"); }} className="min-h-11 border border-[#cfc5b6] bg-[#faf6ec] px-3 text-[14px] text-nearblack">{view === "recovery" ? <><option value="all">All recovery</option><option value="approved-work">Approved work to verify</option><option value="needs-diagnosis">Needs diagnosis</option><option value="retryable">Ready to retry</option></> : view === "history" ? <><option value="all">All history</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option></> : <><option value="all">All routines</option><option value="needs-attention">Needs attention</option><option value="healthy">Healthy</option><option value="unmonitored">Not reporting</option></>}</select></label>}
             <label className="grid grid-cols-[auto_1fr] items-center gap-2 text-[12px] text-charcoal/60"><span>Agent</span><select value={agentId} onChange={(event) => { setAgentId(event.target.value); setSelectedId(null); setMobileDetailOpen(false); writeUrl({ agent: event.target.value, task: null }, "replace"); }} className="min-h-11 border border-[#cfc5b6] bg-[#faf6ec] px-3 text-[14px] text-nearblack"><option value="all">All agents</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name}</option>)}</select></label>
           </div>
 
-          {view === "recurring" ? <RoutineGrid routines={data?.routines ?? []} agents={agents} agentId={agentId} /> : (
+          {view === "recurring" ? <RoutineGrid routines={data?.routines ?? []} agents={agents} agentId={agentId} query={deferredQuery} filter={filter as RoutineFilter} /> : (
             <div className="grid min-h-[620px] lg:grid-cols-[minmax(300px,0.72fr)_minmax(0,1.55fr)] xl:grid-cols-[370px_minmax(0,1fr)]">
               <div className={clsx("border-[#cfc5b6] bg-[#f5f1e8] lg:block lg:border-r", mobileDetailOpen ? "hidden" : "block")}>
                 {filtered.length ? <TaskQueue tasks={filtered} view={view} selectedId={selected?.id ?? null} onSelect={selectTask} /> : <Empty view={view} searching={Boolean(deferredQuery.trim()) || filter !== "all" || agentId !== "all"} />}
@@ -317,9 +350,34 @@ function Empty({ view, searching = false }: { view: WorkroomView; searching?: bo
   return <div className="flex min-h-72 flex-col justify-center px-8 text-center"><p className="font-display text-[25px] text-nearblack">{copy[0]}</p><p className="mt-2 text-[13px] leading-6 text-charcoal/55">{copy[1]}</p></div>;
 }
 
-function RoutineGrid({ routines, agents, agentId }: { routines: WorkroomResponse["routines"]; agents: Array<NonNullable<WorkroomTask["owner_agent"]>>; agentId: string }) {
-  const visible = routines.filter((routine) => agentId === "all" || agents.find((agent) => agent.id === agentId)?.display_name === routine.owner);
-  return <div className="grid items-start gap-px bg-[#d4cbbd] md:grid-cols-2 xl:grid-cols-3">{visible.map((routine, index) => <details key={routine.id} className="group bg-[#faf6ec] open:shadow-[inset_0_0_0_1px_#a08c72]"><summary className="min-h-56 cursor-pointer list-none p-5 marker:content-none sm:p-6"><div className="flex items-start justify-between gap-4"><span className="font-display text-[34px] leading-none text-[#c8b99f]">{String(index + 1).padStart(2, "0")}</span><span className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#76634f]">{routine.owner}<span aria-hidden className="text-[18px] font-normal transition-transform group-open:rotate-45">＋</span></span></div><h2 className="mt-5 font-display text-[25px] leading-tight text-nearblack">{routine.label}</h2><p className="mt-4 text-[14px] font-semibold text-charcoal/75">{routine.cadence}</p><p className="mt-2 text-[13px] leading-5 text-[#274690]">{localNextRun(routine.next_run_at)}</p><p className="mt-4 text-[11px] font-semibold uppercase tracking-[0.12em] text-charcoal/45 group-open:hidden">Open routine details</p></summary><div className="border-t border-[#d8d2c6] px-5 pb-6 pt-5 sm:px-6"><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#76634f]">What it does</p><p className="mt-2 text-[14px] leading-6 text-charcoal/75">{routine.description}</p><dl className="mt-5 space-y-3 border-t border-[#e2dacd] pt-4 text-[12px]"><div><dt className="font-semibold text-charcoal/50">Owner</dt><dd className="mt-1 text-nearblack">{routine.owner}</dd></div><div><dt className="font-semibold text-charcoal/50">Endpoint</dt><dd className="mt-1 break-all font-mono text-[11px] text-nearblack">{routine.id}</dd></div><div><dt className="font-semibold text-charcoal/50">Technical schedule</dt><dd className="mt-1 font-mono text-[11px] text-nearblack">{routine.schedule} · UTC</dd></div></dl></div></details>)}</div>;
+function RoutineGrid({ routines, agents, agentId, query, filter }: { routines: WorkroomResponse["routines"]; agents: Array<NonNullable<WorkroomTask["owner_agent"]>>; agentId: string; query: string; filter: RoutineFilter }) {
+  const owner = agents.find((agent) => agent.id === agentId)?.display_name;
+  const cleanQuery = query.trim().toLowerCase();
+  const visible = routines
+    .filter((routine) => agentId === "all" || routine.owner === owner)
+    .filter((routine) => !cleanQuery || [routine.label, routine.description, routine.owner, routine.id].join(" ").toLowerCase().includes(cleanQuery))
+    .filter((routine) => {
+      if (filter === "healthy") return routine.monitoring_status === "healthy";
+      if (filter === "unmonitored") return routine.monitoring_status === "unmonitored";
+      if (filter === "needs-attention") return ["warning", "failed", "late", "never"].includes(routine.monitoring_status);
+      return true;
+    })
+    .sort((left, right) => {
+      const priority = { failed: 5, late: 4, warning: 3, never: 2, unmonitored: 1, healthy: 0 };
+      return priority[right.monitoring_status] - priority[left.monitoring_status] || left.label.localeCompare(right.label);
+    });
+  const healthy = routines.filter((routine) => routine.monitoring_status === "healthy").length;
+  const attention = routines.filter((routine) => ["warning", "failed", "late", "never"].includes(routine.monitoring_status)).length;
+  const unmonitored = routines.filter((routine) => routine.monitoring_status === "unmonitored").length;
+
+  return <div>
+    <div className="grid gap-px border-b border-[#d4cbbd] bg-[#d4cbbd] sm:grid-cols-3">
+      <div className="bg-[#edf5ef] px-4 py-3"><p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-[#3f7958]">Healthy</p><p className="mt-1 font-display text-[24px] text-[#254c36]">{healthy}</p></div>
+      <div className="bg-[#fff7df] px-4 py-3"><p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-[#8a5c0a]">Needs attention</p><p className="mt-1 font-display text-[24px] text-[#75500d]">{attention}</p></div>
+      <div className="bg-[#eee7dc] px-4 py-3"><p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-charcoal/55">Not reporting</p><p className="mt-1 font-display text-[24px] text-nearblack">{unmonitored}</p></div>
+    </div>
+    {visible.length === 0 ? <div className="flex min-h-72 flex-col justify-center bg-[#faf6ec] px-8 text-center"><p className="font-display text-[25px] text-nearblack">No matching routines</p><p className="mt-2 text-[13px] leading-6 text-charcoal/55">Try a broader search or reset the status and agent filters.</p></div> : <div className="grid items-start gap-px bg-[#d4cbbd] md:grid-cols-2 xl:grid-cols-3">{visible.map((routine, index) => <details key={routine.id} className="group bg-[#faf6ec] open:shadow-[inset_0_0_0_1px_#a08c72]"><summary className="min-h-64 cursor-pointer list-none p-5 marker:content-none sm:p-6"><div className="flex items-start justify-between gap-4"><span className="font-display text-[34px] leading-none text-[#c8b99f]">{String(index + 1).padStart(2, "0")}</span><span className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#76634f]">{routine.owner}<span aria-hidden className="text-[18px] font-normal transition-transform group-open:rotate-45">＋</span></span></div><div className="mt-5 flex flex-wrap items-center gap-2"><span className={clsx("px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.12em]", routineStatusClass(routine.monitoring_status))}>{routineStatusLabel(routine.monitoring_status)}</span>{routine.recent_runs.length > 0 && <span className="flex gap-1" aria-label={`${routine.recent_runs.length} recent runs`}>{routine.recent_runs.slice(0, 8).map((run) => <span key={run.id} className={clsx("h-2 w-2", run.status === "succeeded" ? "bg-[#3f7958]" : run.status === "degraded" ? "bg-[#b98517]" : "bg-[#b33a32]")} title={`${run.status} · ${runDate(run.finished_at)}`} />)}</span>}</div><h2 className="mt-4 font-display text-[25px] leading-tight text-nearblack">{routine.label}</h2><p className="mt-4 text-[14px] font-semibold text-charcoal/75">{routine.cadence}</p><p className="mt-2 text-[13px] leading-5 text-[#274690]">{localNextRun(routine.next_run_at)}</p><p className="mt-2 text-[12px] text-charcoal/55">Last run · {runDate(routine.last_run_at)}</p><p className="mt-4 text-[11px] font-semibold uppercase tracking-[0.12em] text-charcoal/45 group-open:hidden">Open routine details</p></summary><div className="border-t border-[#d8d2c6] px-5 pb-6 pt-5 sm:px-6"><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#76634f]">What it does</p><p className="mt-2 text-[14px] leading-6 text-charcoal/75">{routine.description}</p>{routine.monitoring_status === "unmonitored" && <div className="mt-5 border-l-2 border-[#b98517] bg-[#fff7df] px-4 py-3 text-[12px] leading-5 text-[#75500d]"><strong>Monitoring gap.</strong> This routine is scheduled, but it does not yet write completion evidence to RESLU&apos;s job-run ledger. Its schedule is visible; its success is not being claimed.</div>}{routine.last_error && <div className="mt-5 border-l-2 border-red-700 bg-red-50 px-4 py-3 text-[12px] leading-5 text-red-900">{routine.last_error}</div>}<dl className="mt-5 grid gap-3 border-t border-[#e2dacd] pt-4 text-[12px] sm:grid-cols-2"><div><dt className="font-semibold text-charcoal/50">Owner</dt><dd className="mt-1 text-nearblack">{routine.owner}</dd></div><div><dt className="font-semibold text-charcoal/50">Last success</dt><dd className="mt-1 text-nearblack">{runDate(routine.last_success_at)}</dd></div><div className="sm:col-span-2"><dt className="font-semibold text-charcoal/50">Endpoint</dt><dd className="mt-1 break-all font-mono text-[11px] text-nearblack">{routine.id}</dd></div><div><dt className="font-semibold text-charcoal/50">Technical schedule</dt><dd className="mt-1 font-mono text-[11px] text-nearblack">{routine.schedule} · UTC</dd></div><div><dt className="font-semibold text-charcoal/50">Monitoring key</dt><dd className="mt-1 break-all font-mono text-[11px] text-nearblack">{routine.monitoring_key ?? "Not instrumented"}</dd></div></dl>{routine.recent_runs.length > 0 && <section className="mt-6 border-t border-[#e2dacd] pt-4"><h3 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#76634f]">Recent runs</h3><ol className="mt-3 divide-y divide-[#e6dfd3]">{routine.recent_runs.map((run) => <li key={run.id} className="py-3"><div className="flex items-center justify-between gap-3"><span className={clsx("px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.1em]", routineStatusClass(run.status === "succeeded" ? "healthy" : run.status === "degraded" ? "warning" : "failed"))}>{run.status}</span><span className="text-[11px] text-charcoal/50">{runDate(run.finished_at)} · {duration(run.duration_ms)}</span></div><p className="mt-2 text-[12px] leading-5 text-charcoal/65">{run.error || runSummary(run.summary)}</p></li>)}</ol></section>}</div></details>)}</div>}
+  </div>;
 }
 
 function TaskDetail({ task, selfId, policies, busy, onBack, onAction }: { task: WorkroomTask; selfId: string; policies: WorkroomApprovalPolicy[]; busy: string | null; onBack: () => void; onAction: (task: WorkroomTask, action: TaskAction, artifactId?: string, note?: string) => void }) {

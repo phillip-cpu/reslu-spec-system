@@ -33,4 +33,6 @@ test("each routine opens to explain its purpose and technical schedule", () => {
   assert.match(workspace, /What it does/);
   assert.match(workspace, /Adelaide time/);
   assert.match(workspace, /Endpoint/);
+  assert.match(workspace, /Recent runs/);
+  assert.match(workspace, /Monitoring gap/);
 });

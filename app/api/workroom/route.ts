@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import vercel from "@/vercel.json";
 import { createClient } from "@/lib/supabase/server";
-import { workroomRoutines } from "@/lib/workroom";
+import { hydrateWorkroomRoutines, workroomRoutines } from "@/lib/workroom";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,7 +27,17 @@ export async function GET() {
 
   const rows = (data ?? []) as unknown as TaskRow[];
   const taskIds = rows.map((task) => task.id);
-  const [eventsResult, artifactsResult, dismissalsResult, policiesResult] = taskIds.length > 0
+  const routineDefinitions = workroomRoutines(vercel.crons);
+  const monitoringKeys = routineDefinitions.flatMap((routine) => routine.monitoring_key ? [routine.monitoring_key] : []);
+  const runsPromise = monitoringKeys.length > 0
+    ? supabase
+        .from("system_job_runs")
+        .select("id,job_key,status,started_at,finished_at,summary,error")
+        .in("job_key", monitoringKeys)
+        .order("finished_at", { ascending: false })
+        .limit(100)
+    : Promise.resolve({ data: [], error: null });
+  const [eventsResult, artifactsResult, dismissalsResult, policiesResult, runsResult] = taskIds.length > 0
     ? await Promise.all([
         supabase.from("agent_task_events").select("*").in("task_id", taskIds).order("created_at"),
         supabase.from("agent_task_artifacts").select("*").in("task_id", taskIds).order("created_at"),
@@ -37,9 +47,10 @@ export async function GET() {
           .select("tool_name,owner,purpose,risk_tier,approval_rule,verification_kind,rollback_kind")
           .eq("active", true)
           .in("risk_tier", ["R2", "R3"]),
+        runsPromise,
       ])
-    : [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }, { data: [], error: null }];
-  const relatedError = eventsResult.error ?? artifactsResult.error ?? dismissalsResult.error ?? policiesResult.error;
+    : [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }, { data: [], error: null }, await runsPromise];
+  const relatedError = eventsResult.error ?? artifactsResult.error ?? dismissalsResult.error ?? policiesResult.error ?? runsResult.error;
   if (relatedError) return NextResponse.json({ error: relatedError.message }, { status: 500 });
 
   const artifactRows = artifactsResult.data ?? [];
@@ -83,7 +94,7 @@ export async function GET() {
 
   return NextResponse.json({
     tasks,
-    routines: workroomRoutines(vercel.crons),
+    routines: hydrateWorkroomRoutines(routineDefinitions, runsResult.data ?? []),
     approval_policies: policiesResult.data ?? [],
     self_profile_id: user.id,
     generated_at: new Date().toISOString(),

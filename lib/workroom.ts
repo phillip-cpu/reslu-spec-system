@@ -1,9 +1,10 @@
 import type { AgentTask } from "@/types/conversations";
-import type { WorkroomRoutine, WorkroomTask } from "@/types/workroom";
+import type { WorkroomRoutine, WorkroomRoutineRun, WorkroomTask } from "@/types/workroom";
 
 export type WorkroomView = "approvals" | "recovery" | "outstanding" | "recurring" | "history";
 export type RecoveryFilter = "all" | "needs-diagnosis" | "approved-work" | "retryable";
 export type HistoryFilter = "all" | "completed" | "cancelled";
+export type RoutineFilter = "all" | "needs-attention" | "healthy" | "unmonitored";
 
 export const WORKROOM_VIEWS: WorkroomView[] = ["approvals", "recovery", "outstanding", "recurring", "history"];
 
@@ -177,6 +178,67 @@ const ROUTINE_META: Record<string, { label: string; owner: string; description: 
   "/api/quote-requests/reconcile": { label: "Quote request reconciliation", owner: "Stuart", description: "Matches supplier quote responses back to their requests and flags missing information." },
 };
 
+const ROUTINE_MONITORING_KEYS: Record<string, string> = {
+  "/api/visit-emails/run": "visit_emails",
+  "/api/aria-queue/routines/daily_review": "aria_daily_review_enqueue",
+  "/api/aria-queue/routines/weekly_review": "aria_weekly_review_enqueue",
+  "/api/meeting-retention/purge": "meeting_source_retention",
+};
+
+interface RoutineJobRunRow {
+  id: string;
+  job_key: string;
+  status: WorkroomRoutineRun["status"];
+  started_at: string;
+  finished_at: string;
+  summary: Record<string, unknown> | null;
+  error: string | null;
+}
+
+function cronIntervalMinutes(schedule: string, from = new Date("2026-01-05T00:00:00.000Z")) {
+  const first = nextCronRun(schedule, from);
+  if (!first) return null;
+  const second = nextCronRun(schedule, new Date(first));
+  return second ? (Date.parse(second) - Date.parse(first)) / 60_000 : null;
+}
+
+function routineStatus(routine: WorkroomRoutine, now: Date): WorkroomRoutine["monitoring_status"] {
+  if (!routine.monitoring_key) return "unmonitored";
+  const latest = routine.recent_runs[0];
+  if (!latest) return "never";
+  if (latest.status === "failed") return "failed";
+  if (latest.status === "degraded") return "warning";
+  const interval = cronIntervalMinutes(routine.schedule);
+  if (interval && now.getTime() - Date.parse(latest.finished_at) > interval * 2.5 * 60_000) return "late";
+  return "healthy";
+}
+
+export function hydrateWorkroomRoutines(routines: WorkroomRoutine[], rows: RoutineJobRunRow[], now = new Date()) {
+  return routines.map((routine) => {
+    const recentRuns = rows
+      .filter((row) => row.job_key === routine.monitoring_key)
+      .sort((left, right) => Date.parse(right.finished_at) - Date.parse(left.finished_at))
+      .slice(0, 8)
+      .map((row): WorkroomRoutineRun => ({
+        id: row.id,
+        status: row.status,
+        started_at: row.started_at,
+        finished_at: row.finished_at,
+        duration_ms: Math.max(0, Date.parse(row.finished_at) - Date.parse(row.started_at)),
+        summary: row.summary ?? {},
+        error: row.error,
+      }));
+    const hydrated = {
+      ...routine,
+      recent_runs: recentRuns,
+      last_run_at: recentRuns[0]?.finished_at ?? null,
+      last_success_at: recentRuns.find((run) => run.status === "succeeded")?.finished_at ?? null,
+      last_error: recentRuns[0]?.error ?? null,
+    };
+    return { ...hydrated, monitoring_status: routineStatus(hydrated, now) };
+  });
+}
+
 export function workroomRoutines(crons: Array<{ path: string; schedule: string }>, now = new Date()): WorkroomRoutine[] {
   return crons.map((cron) => {
     const meta = ROUTINE_META[cron.path] ?? {
@@ -192,6 +254,12 @@ export function workroomRoutines(crons: Array<{ path: string; schedule: string }
       schedule: cron.schedule,
       cadence: cronCadence(cron.schedule),
       next_run_at: nextCronRun(cron.schedule, now),
+      monitoring_key: ROUTINE_MONITORING_KEYS[cron.path] ?? null,
+      monitoring_status: "unmonitored",
+      last_run_at: null,
+      last_success_at: null,
+      last_error: null,
+      recent_runs: [],
     };
   });
 }

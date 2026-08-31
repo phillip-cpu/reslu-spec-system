@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { cronCadence, filterWorkroomTasks, nextCronRun, recoveryGuidance, recoveryKind, workroomCounts, workroomRoutines, workroomView } from "./workroom.ts";
+import { cronCadence, filterWorkroomTasks, hydrateWorkroomRoutines, nextCronRun, recoveryGuidance, recoveryKind, workroomCounts, workroomRoutines, workroomView } from "./workroom.ts";
 import type { AgentTask } from "../types/conversations.ts";
 import type { WorkroomTask } from "../types/workroom.ts";
 
@@ -36,9 +36,35 @@ test("deployment schedules become transparent Workroom routines", () => {
     schedule: "15 21 * * *",
     cadence: "Daily",
     next_run_at: "2026-08-31T21:15:00.000Z",
+    monitoring_key: "aria_daily_review_enqueue",
+    monitoring_status: "unmonitored",
+    last_run_at: null,
+    last_success_at: null,
+    last_error: null,
+    recent_runs: [],
   });
   assert.equal(nextCronRun("*/15 * * * *", new Date("2026-08-31T20:07:00.000Z")), "2026-08-31T20:15:00.000Z");
   assert.equal(nextCronRun("30 22,23,1,2,5,6 * * *", new Date("2026-08-31T22:31:00.000Z")), "2026-08-31T23:30:00.000Z");
+});
+
+test("routine monitoring is honest about health, history and coverage gaps", () => {
+  const definitions = workroomRoutines([
+    { path: "/api/aria-queue/routines/daily_review", schedule: "15 21 * * *" },
+    { path: "/api/health/check", schedule: "*/10 * * * *" },
+  ], new Date("2026-08-31T21:16:00.000Z"));
+  const routines = hydrateWorkroomRoutines(definitions, [{
+    id: "run-1",
+    job_key: "aria_daily_review_enqueue",
+    status: "succeeded",
+    started_at: "2026-08-31T21:15:00.000Z",
+    finished_at: "2026-08-31T21:15:05.000Z",
+    summary: { inserted: true },
+    error: null,
+  }], new Date("2026-08-31T21:16:00.000Z"));
+  assert.equal(routines[0].monitoring_status, "healthy");
+  assert.equal(routines[0].recent_runs[0].duration_ms, 5000);
+  assert.equal(routines[0].last_success_at, "2026-08-31T21:15:05.000Z");
+  assert.equal(routines[1].monitoring_status, "unmonitored");
 });
 
 function workroomTask(overrides: Partial<WorkroomTask>): WorkroomTask {
