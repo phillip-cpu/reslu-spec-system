@@ -7,6 +7,7 @@ import type { SowLineWithTrade, SowSectionWithTradedLines, SuggestTradeTagsRespo
 import type { ExportPresetRow } from "@/types/round-export-batch";
 import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
 import { distinctTaggedTrades } from "@/lib/sow-trade-tags";
+import { reorderSowLines } from "@/lib/sow-reorder";
 
 interface Props {
   projectId: string;
@@ -52,6 +53,7 @@ export function SowBuilder({ projectId }: Props) {
   // backlog): sticky section outline sidebar, current section
   // highlighted via IntersectionObserver.
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
+  const [reorderingSectionId, setReorderingSectionId] = useState<string | null>(null);
 
   const loadRevisions = useCallback(async () => {
     const res = await fetch(`/api/projects/${projectId}/sow`);
@@ -379,6 +381,50 @@ export function SowBuilder({ projectId }: Props) {
     }
   }
 
+  /**
+   * Reorders lines within a section. The UI moves immediately, then each
+   * changed sort value is persisted through the existing immutable-aware
+   * line PATCH route. A failed request reloads the revision so a partial
+   * network failure can never leave the screen out of sync with storage.
+   */
+  async function reorderLines(sectionId: string, lineId: string, destinationIndex: number) {
+    if (!sow || reorderingSectionId) return;
+    const section = sections.find((candidate) => candidate.id === sectionId);
+    if (!section) return;
+
+    const reordered = reorderSowLines(section.lines, lineId, destinationIndex);
+    if (reordered === section.lines) return;
+
+    const originalSort = new Map(section.lines.map((line) => [line.id, line.sort]));
+    const changed = reordered.filter((line) => originalSort.get(line.id) !== line.sort);
+    setSections((current) =>
+      current.map((candidate) =>
+        candidate.id === sectionId ? { ...candidate, lines: reordered } : candidate
+      )
+    );
+    setReorderingSectionId(sectionId);
+    setError(null);
+
+    try {
+      await Promise.all(
+        changed.map(async (line) => {
+          const res = await fetch(`/api/sow/lines/${line.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sort: line.sort }),
+          });
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(body.error ?? "Could not save the new line order.");
+        })
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the new line order.");
+      await loadSow(sow.id).catch(() => {});
+    } finally {
+      setReorderingSectionId(null);
+    }
+  }
+
   // "Trade-scoped SOW extracts" round — which trade chips to offer
   // alongside "Full" in the download group below: presets with >=1
   // tagged line anywhere in the CURRENT revision (BUILD-SPEC.md's own
@@ -558,6 +604,10 @@ export function SowBuilder({ projectId }: Props) {
                     onAddLine={(text, kind) => addLine(section.id, text, kind)}
                     onPatchLine={patchLine}
                     onDeleteLine={deleteLine}
+                    onReorderLine={(lineId, destinationIndex) =>
+                      reorderLines(section.id, lineId, destinationIndex)
+                    }
+                    reordering={reorderingSectionId === section.id}
                   />
                 </div>
               ))}
@@ -728,6 +778,8 @@ function SectionBlock({
   onAddLine,
   onPatchLine,
   onDeleteLine,
+  onReorderLine,
+  reordering,
 }: {
   section: SowSectionWithTradedLines;
   readOnly: boolean;
@@ -738,8 +790,34 @@ function SectionBlock({
   onAddLine: (text: string, kind: SowLineKind) => Promise<void>;
   onPatchLine: (line: SowLineWithTrade, patch: Partial<SowLineWithTrade>) => Promise<SowLineWithTrade>;
   onDeleteLine: (line: SowLineWithTrade) => void;
+  onReorderLine: (lineId: string, destinationIndex: number) => Promise<void>;
+  reordering: boolean;
 }) {
   const [expanded, setExpanded] = useState(true);
+  const [draggedLineId, setDraggedLineId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+
+  function clearDragState() {
+    setDraggedLineId(null);
+    setDropTargetId(null);
+  }
+
+  function dropBefore(targetLineId: string) {
+    if (!draggedLineId || draggedLineId === targetLineId || reordering) {
+      clearDragState();
+      return;
+    }
+    const sourceIndex = section.lines.findIndex((line) => line.id === draggedLineId);
+    const targetIndex = section.lines.findIndex((line) => line.id === targetLineId);
+    if (sourceIndex === -1 || targetIndex === -1) {
+      clearDragState();
+      return;
+    }
+    const destinationIndex = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex;
+    const lineId = draggedLineId;
+    clearDragState();
+    void onReorderLine(lineId, destinationIndex);
+  }
 
   return (
     <section className="border border-[#dcd6cc]">
@@ -777,7 +855,7 @@ function SectionBlock({
 
       {expanded && (
         <div className="divide-y divide-[#e5e0d6]">
-          {section.lines.map((line) => (
+          {section.lines.map((line, index) => (
             <LineRow
               key={line.id}
               line={line}
@@ -785,8 +863,49 @@ function SectionBlock({
               presetNames={presetNames}
               onPatch={(patch) => onPatchLine(line, patch)}
               onDelete={() => onDeleteLine(line)}
+              dragging={draggedLineId === line.id}
+              dropTarget={dropTargetId === line.id && draggedLineId !== line.id}
+              reordering={reordering}
+              canMoveUp={index > 0}
+              canMoveDown={index < section.lines.length - 1}
+              onMoveUp={() => void onReorderLine(line.id, index - 1)}
+              onMoveDown={() => void onReorderLine(line.id, index + 1)}
+              onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", line.id);
+                setDraggedLineId(line.id);
+              }}
+              onDragEnd={clearDragState}
+              onDragOver={(event) => {
+                if (!draggedLineId || reordering) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                setDropTargetId(line.id);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                dropBefore(line.id);
+              }}
             />
           ))}
+          {!readOnly && draggedLineId && section.lines.length > 1 && (
+            <div
+              className="h-8 border-t-2 border-dashed border-sand bg-sand/10 text-center text-caption leading-8 text-sand"
+              onDragOver={(event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                setDropTargetId(null);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                const lineId = draggedLineId;
+                clearDragState();
+                void onReorderLine(lineId, section.lines.length - 1);
+              }}
+            >
+              Drop at end
+            </div>
+          )}
           {!readOnly && <DraftLineRow onAdd={onAddLine} />}
           {section.lines.length === 0 && readOnly && (
             <p className="px-4 py-3 text-caption text-charcoal/40">No lines in this section.</p>
@@ -857,6 +976,17 @@ function LineRow({
   presetNames,
   onPatch,
   onDelete,
+  dragging,
+  dropTarget,
+  reordering,
+  canMoveUp,
+  canMoveDown,
+  onMoveUp,
+  onMoveDown,
+  onDragStart,
+  onDragEnd,
+  onDragOver,
+  onDrop,
 }: {
   line: SowLineWithTrade;
   readOnly: boolean;
@@ -864,6 +994,17 @@ function LineRow({
   presetNames: string[];
   onPatch: (patch: Partial<SowLineWithTrade>) => Promise<SowLineWithTrade>;
   onDelete: () => void;
+  dragging: boolean;
+  dropTarget: boolean;
+  reordering: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDragEnd: () => void;
+  onDragOver: (event: React.DragEvent<HTMLDivElement>) => void;
+  onDrop: (event: React.DragEvent<HTMLDivElement>) => void;
 }) {
   const [draft, setDraft] = useState(line.text);
   const [dirty, setDirty] = useState(false);
@@ -927,7 +1068,28 @@ function LineRow({
   }
 
   return (
-    <div className={clsx("flex items-start gap-3 px-4 py-2", dirty && "bg-cream/60")}>
+    <div
+      className={clsx(
+        "flex items-start gap-2 border-t-2 border-transparent px-4 py-2 transition-colors",
+        dirty && "bg-cream/60",
+        dragging && "opacity-40",
+        dropTarget && "border-t-sand bg-sand/10"
+      )}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
+      <button
+        type="button"
+        draggable={!reordering}
+        disabled={reordering}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
+        aria-label={`Drag to reorder: ${line.text}`}
+        title="Drag to reorder"
+        className="mt-1 shrink-0 cursor-grab select-none px-1 text-body text-charcoal/35 hover:text-nearblack active:cursor-grabbing disabled:cursor-wait"
+      >
+        ⠿
+      </button>
       <select
         value={line.kind}
         onChange={(e) => setKind(e.target.value as SowLineKind)}
@@ -1002,6 +1164,28 @@ function LineRow({
           {saving ? "…" : "✓"}
         </button>
       )}
+      <div className="mt-0.5 flex shrink-0 flex-col leading-none">
+        <button
+          type="button"
+          onClick={onMoveUp}
+          disabled={!canMoveUp || reordering}
+          aria-label={`Move ${line.text} up`}
+          title="Move up"
+          className="px-1 text-caption text-charcoal/35 hover:text-nearblack disabled:opacity-20"
+        >
+          ↑
+        </button>
+        <button
+          type="button"
+          onClick={onMoveDown}
+          disabled={!canMoveDown || reordering}
+          aria-label={`Move ${line.text} down`}
+          title="Move down"
+          className="px-1 text-caption text-charcoal/35 hover:text-nearblack disabled:opacity-20"
+        >
+          ↓
+        </button>
+      </div>
       <button
         type="button"
         onClick={() => {
