@@ -10,13 +10,14 @@ function task(status: AgentTask["status"]): AgentTask {
   return { status } as AgentTask;
 }
 
-test("Workroom separates attention, outstanding and finished assignments", () => {
-  assert.equal(workroomView(task("awaiting_approval")), "attention");
-  assert.equal(workroomView(task("failed")), "attention");
+test("Workroom separates approvals, recovery, outstanding and finished assignments", () => {
+  assert.equal(workroomView(task("awaiting_approval")), "approvals");
+  assert.equal(workroomView(task("failed")), "recovery");
   assert.equal(workroomView(task("running")), "outstanding");
   assert.equal(workroomView(task("completed")), "history");
   assert.deepEqual(workroomCounts([task("queued"), task("failed"), task("completed")]), {
-    attention: 1,
+    approvals: 0,
+    recovery: 1,
     outstanding: 1,
     history: 1,
   });
