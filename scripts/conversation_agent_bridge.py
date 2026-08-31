@@ -1849,7 +1849,16 @@ def process_task(rest: SupabaseRest, task: dict) -> str:
     completed_at = None if awaiting_approval else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     completion_values: dict[str, object] = {
         "status": "awaiting_approval" if awaiting_approval else "completed",
-        "approval_state": "pending" if awaiting_approval else task.get("approval_state", "none"),
+        # A requested-changes pass is a fresh review cycle, not standing
+        # authority. Keep approved only while executing an exact receipt;
+        # otherwise settle a completed task back to the neutral state.
+        "approval_state": (
+            "pending"
+            if awaiting_approval
+            else "approved"
+            if task.get("approval_state") == "approved"
+            else "none"
+        ),
         "result_summary": result["summary"],
         "model_name": task_model_override(task["model_tier"]) or f"{agent['slug']}-default",
         "completed_at": completed_at,
