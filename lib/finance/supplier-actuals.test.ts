@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolveEffectiveContributions } from "./projection.ts";
+import { calculateShadowProjection, resolveEffectiveContributions } from "./projection.ts";
 import { reconcileSupplierInvoiceActuals } from "./supplier-actuals.ts";
 
 test("supplier actual replaces the invoiced plan slice instead of doubling it", () => {
@@ -82,4 +82,46 @@ test("item allocations replace their FF&E category plan", () => {
   });
   assert.equal(result.contributions[0].plannedMinor, 44_000);
   assert.equal(result.matchedAllocations, 1);
+});
+
+test("historical paid supplier cash is not forecast again in the current week", () => {
+  const result = reconcileSupplierInvoiceActuals({
+    contributions: [{
+      contributionKey: "project:p1|cost_line:ram-board|scope:base",
+      direction: "outflow",
+      description: "Ram Board Flooring",
+      plannedMinor: 28_600,
+      plannedDate: "2026-07-08",
+    }],
+    invoices: [{
+      id: "bunnings-1",
+      project_id: "p1",
+      supplier: "Bunnings",
+      invoice_number: "INV-RAM",
+      invoice_date: "2026-07-08",
+      due_date: null,
+      amount_ex_gst: 231.75,
+      gst: 23.18,
+      total: 254.93,
+      status: "approved",
+      payment_status: "paid",
+      amount_paid: 254.93,
+      paid_at: "2026-07-16",
+      invoice_allocations: [{
+        id: "ram-allocation",
+        match_type: "cost_line",
+        match_id: "ram-board",
+        amount_ex_gst: 231.75,
+      }],
+    }],
+  });
+
+  const projection = calculateShadowProjection({
+    asOfDate: "2026-08-31",
+    openingCashMinor: 0,
+    contributions: result.contributions,
+  });
+  assert.equal(projection.totalOutflowMinor, 3_107);
+  assert.equal(projection.periods[0].contributions.length, 1);
+  assert.equal(projection.periods[0].contributions[0].state, "planned");
 });

@@ -11,7 +11,11 @@ import {
   formatFinanceDate,
   formatMinorCurrency,
 } from "@/lib/finance/presentation";
-import type { FinanceCockpitResponse, FinanceProjectionPeriod } from "@/types/finance";
+import type {
+  EffectiveFinanceContribution,
+  FinanceCockpitResponse,
+  FinanceProjectionPeriod,
+} from "@/types/finance";
 
 type CockpitTab = "cash" | "commitments" | "bills" | "projects";
 
@@ -45,7 +49,67 @@ function MetricCard({
   );
 }
 
-function PeriodDetail({ period }: { period: FinanceProjectionPeriod }) {
+type ContributionAction =
+  | { kind: "link"; href: string; label: string }
+  | { kind: "tab"; tab: "commitments" | "bills"; label: string };
+
+function contributionAction(item: EffectiveFinanceContribution): ContributionAction | null {
+  const trace = item.sourceTrace;
+  const projectId = typeof trace.project_id === "string" ? trace.project_id : null;
+  const sourceType = typeof trace.source_type === "string" ? trace.source_type : null;
+
+  if (sourceType === "supplier_invoice_allocation" && projectId) {
+    const invoiceId = typeof trace.supplier_invoice_id === "string"
+      ? trace.supplier_invoice_id
+      : null;
+    return {
+      kind: "link",
+      href: `/projects/${projectId}/invoices${invoiceId ? `?invoice=${encodeURIComponent(invoiceId)}` : ""}`,
+      label: "Open invoice",
+    };
+  }
+  if (sourceType === "client_claim" && projectId) {
+    return { kind: "link", href: `/projects/${projectId}/invoices`, label: "Open claim" };
+  }
+  if (sourceType?.startsWith("estimate_") && projectId) {
+    return { kind: "link", href: `/projects/${projectId}/timeline`, label: "Edit timing" };
+  }
+  if (trace.source === "recurring_commitment") {
+    return { kind: "tab", tab: "commitments", label: "Edit outgoing" };
+  }
+  if (sourceType === "xero_invoice") {
+    return { kind: "tab", tab: "bills", label: "Open bill" };
+  }
+  if (projectId) {
+    return { kind: "link", href: `/projects/${projectId}/finance`, label: "Open project" };
+  }
+  return null;
+}
+
+function contributionTimingLabel(
+  item: EffectiveFinanceContribution,
+  period: FinanceProjectionPeriod
+): string {
+  if (!item.effectiveDate) return "Timing not set";
+  const formatted = formatFinanceDate(item.effectiveDate);
+  if (item.state === "actual_paid") return `Paid ${formatted}`;
+  if (item.state === "actual_accrued") {
+    return item.effectiveDate < period.startsOn
+      ? `Due ${formatted} · overdue`
+      : `Due ${formatted}`;
+  }
+  return item.effectiveDate < period.startsOn
+    ? `Scheduled ${formatted} · rolled forward for review`
+    : `Scheduled ${formatted}`;
+}
+
+function PeriodDetail({
+  period,
+  onOpenTab,
+}: {
+  period: FinanceProjectionPeriod;
+  onOpenTab: (tab: "commitments" | "bills") => void;
+}) {
   const inflows = period.contributions.filter((item) => item.direction === "inflow");
   const outflows = period.contributions.filter((item) => item.direction === "outflow");
   return (
@@ -79,17 +143,56 @@ function PeriodDetail({ period }: { period: FinanceProjectionPeriod }) {
                 <p className="mt-3 text-body text-charcoal/50">{String(empty)}</p>
               ) : (
                 <ul className="mt-3 divide-y divide-charcoal/10">
-                  {(contributions as typeof period.contributions).map((item) => (
-                    <li key={`${item.contributionKey}:${item.state}`} className="flex items-start justify-between gap-4 py-3 text-body">
-                      <span>
-                        <span className="block text-nearblack">{item.description}</span>
-                        <span className="mt-1 block text-caption text-charcoal/50">
-                          {String(item.sourceTrace.project_name ?? item.sourceTrace.supplier_or_payee ?? item.sourceTrace.category ?? item.state)} · {item.confidence} confidence
+                  {(contributions as typeof period.contributions).map((item) => {
+                    const action = contributionAction(item);
+                    const projectOrSupplier = String(
+                      item.sourceTrace.project_name ??
+                      item.sourceTrace.supplier_or_payee ??
+                      item.sourceTrace.supplier ??
+                      item.sourceTrace.category ??
+                      item.state
+                    );
+                    const content = (
+                      <>
+                        <span className="min-w-0">
+                          <span className="block text-nearblack">{item.description}</span>
+                          <span className="mt-1 block text-caption text-charcoal/55">
+                            {projectOrSupplier} · {contributionTimingLabel(item, period)}
+                          </span>
+                          <span className="mt-1 block text-[9px] font-semibold uppercase tracking-[0.12em] text-charcoal/45">
+                            {action?.label ?? `${item.confidence} confidence`}
+                          </span>
                         </span>
-                      </span>
-                      <span className="shrink-0 text-nearblack">{formatMinorCurrency(item.amountMinor)}</span>
-                    </li>
-                  ))}
+                        <span className="shrink-0 text-nearblack">{formatMinorCurrency(item.amountMinor)}</span>
+                      </>
+                    );
+                    return (
+                      <li key={`${item.contributionKey}:${item.state}`}>
+                        {action?.kind === "link" ? (
+                          <Link
+                            href={action.href}
+                            className="flex items-start justify-between gap-4 py-3 text-body transition-colors hover:bg-offwhite focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-nearblack"
+                            aria-label={`${action.label}: ${item.description}`}
+                          >
+                            {content}
+                          </Link>
+                        ) : action?.kind === "tab" ? (
+                          <button
+                            type="button"
+                            onClick={() => onOpenTab(action.tab)}
+                            className="flex w-full items-start justify-between gap-4 py-3 text-left text-body transition-colors hover:bg-offwhite focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-nearblack"
+                            aria-label={`${action.label}: ${item.description}`}
+                          >
+                            {content}
+                          </button>
+                        ) : (
+                          <div className="flex items-start justify-between gap-4 py-3 text-body">
+                            {content}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </div>
@@ -384,7 +487,12 @@ export function FinanceCockpit() {
             )}
           </section>
 
-          {selectedPeriod && <PeriodDetail period={selectedPeriod} />}
+          {selectedPeriod && (
+            <PeriodDetail
+              period={selectedPeriod}
+              onOpenTab={(tab) => setActiveTab(tab)}
+            />
+          )}
 
           <section className="grid gap-4 md:grid-cols-3">
             <div className="border border-[#c9971e]/40 bg-[#c9971e]/5 p-5">
