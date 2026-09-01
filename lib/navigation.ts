@@ -8,12 +8,13 @@ export interface SidebarNavItem {
   badgeKey?: SidebarBadgeKey;
   external?: boolean;
   feature?: "finance";
+  insertAfter?: string;
 }
 
 /** Stable ids are persisted in user_navigation_preferences.sidebar_order. */
 export const SIDEBAR_NAV_ITEMS: SidebarNavItem[] = [
   { id: "messages", label: "Messages", href: "/messages" },
-  { id: "workroom", label: "Workroom", href: "/workroom" },
+  { id: "workroom", label: "Workroom", href: "/workroom", insertAfter: "messages" },
   { id: "my-work", label: "My Work", href: "/my-work", badgeKey: "my_work_due" },
   { id: "friday-review", label: "Friday Review", href: "/friday-review" },
   { id: "projects", label: "Projects", href: "/" },
@@ -48,9 +49,10 @@ export function visibleSidebarItems(
 }
 
 /**
- * Keeps known visible ids in the saved order and appends new/missing
- * navigation entries in their product-default order. Duplicate and stale
- * ids are discarded, so a future nav addition never strands a user's menu.
+ * Keeps known visible ids in the saved order and appends new/missing entries
+ * in product-default order. A priority entry may name a familiar neighbour
+ * so it is immediately discoverable without undoing an order the user has
+ * deliberately arranged. Duplicate and stale ids are discarded.
  */
 export function normalizeSidebarOrder(
   value: unknown,
@@ -62,8 +64,15 @@ export function normalizeSidebarOrder(
   const saved = Array.isArray(value)
     ? value.filter((id): id is string => typeof id === "string" && allowed.has(id))
     : [];
-  const unique = [...new Set(saved)];
-  return [...unique, ...visible.filter((id) => !unique.includes(id))];
+  const normalized = [...new Set(saved)];
+  for (const id of visible) {
+    if (normalized.includes(id)) continue;
+    const item = SIDEBAR_NAV_ITEMS.find((candidate) => candidate.id === id);
+    const anchor = item?.insertAfter ? normalized.indexOf(item.insertAfter) : -1;
+    normalized.splice(anchor >= 0 ? anchor + 1 : normalized.length, 0, id);
+  }
+
+  return normalized;
 }
 
 export function projectShortcutLabel(name: string): string {
