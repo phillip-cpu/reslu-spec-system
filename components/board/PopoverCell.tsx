@@ -60,13 +60,11 @@ export function PopoverCell({
     <div ref={wrapperRef} className="relative inline-block">
       <button
         type="button"
-        onClick={() =>
-          setOpen((o) => {
-            const next = !o;
-            if (next) onOpen?.();
-            return next;
-          })
-        }
+        onClick={() => {
+          const next = !open;
+          setOpen(next);
+          if (next) onOpen?.();
+        }}
         title={triggerTitle}
         className="px-1 py-0.5 text-left hover:opacity-70"
       >

@@ -14,6 +14,11 @@ import { buildCompanyClientClaimPortfolio } from "@/lib/finance/company-client-c
 import { generateRecurringContributions } from "@/lib/finance/recurrence";
 import { isIsoDate } from "@/lib/finance/readiness";
 import { buildSectionForecastDates } from "@/lib/finance/schedule-cost-timing";
+import {
+  loadProjectFfeForecastTiming,
+  type ProjectFfeForecastTiming,
+} from "@/lib/finance/ffe-timing-server";
+import type { FfeForecastTiming } from "@/lib/finance/ffe-timing";
 import { includesConstructionCosts } from "@/lib/finance/construction-cost-eligibility";
 import { summarizeCreditLiquidity } from "@/lib/finance/liquidity";
 import {
@@ -125,13 +130,19 @@ function grossMinorFromNet(value: number | string, label: string): number {
 function toContribution(
   line: ForecastLineRow,
   projectName: string,
-  sectionDates: Record<string, string>
+  sectionDates: Record<string, string>,
+  itemTimings: Record<string, FfeForecastTiming>,
+  timingOverrides: Record<string, string>
 ): FinanceContributionInput {
   const sectionId =
     typeof line.dimension?.section_id === "string"
       ? line.dimension.section_id
       : null;
   const scheduleDate = sectionId ? sectionDates[sectionId] ?? null : null;
+  const itemTiming = line.source_type === "estimate_ffe_item" && line.source_record_id
+    ? itemTimings[line.source_record_id]
+    : null;
+  const timingOverride = timingOverrides[line.contribution_key] ?? null;
   return {
     contributionKey: line.contribution_key,
     direction: line.direction,
@@ -142,12 +153,14 @@ function toContribution(
     committedMinor: grossMinorFromNet(line.committed_net_minor, `${line.id}.committed`),
     actualAccruedMinor: grossMinorFromNet(line.actual_accrued_net_minor, `${line.id}.actual_accrued`),
     actualPaidMinor: grossMinorFromNet(line.actual_paid_net_minor, `${line.id}.actual_paid`),
-    plannedDate: scheduleDate ?? line.planned_date,
+    plannedDate: timingOverride ?? itemTiming?.plannedDate ?? scheduleDate ?? line.planned_date,
     committedDate: line.committed_date,
     actualDueDate: line.actual_due_date,
     actualPaidDate: line.actual_paid_date,
     baseEligible: true,
-    confidence: scheduleDate ? "medium" : line.confidence,
+    confidence: timingOverride || scheduleDate
+      ? "medium"
+      : itemTiming?.confidence ?? line.confidence,
     sourceTrace: {
       project_id: line.project_id,
       project_name: projectName,
@@ -155,8 +168,15 @@ function toContribution(
       source_type: line.source_type,
       source_record_id: line.source_record_id,
       source_version_id: line.source_version_id,
+      ...(line.dimension ?? {}),
       dimension: line.dimension ?? {},
-      timing_source: scheduleDate ? "construction_schedule" : "baseline",
+      timing_source: timingOverride
+        ? "cockpit_override"
+        : itemTiming?.timingSource
+          ?? (scheduleDate ? "construction_schedule" : "baseline"),
+      order_by_status: itemTiming?.orderByStatus ?? null,
+      works_date: itemTiming?.worksDate ?? null,
+      trade_name: itemTiming?.tradeName ?? null,
       cash_basis: "gross_inc_gst",
       net_minor: safeMinor(line.planned_net_minor, `${line.id}.planned_net_trace`),
     },
@@ -355,7 +375,14 @@ export async function GET(request: NextRequest) {
   let contractVariations: ClientContractVariation[] = [];
   let supplierInvoices: SupplierCashInvoice[] = [];
   let itemCategories: Record<string, string> = {};
+  let ffeForecastTiming: ProjectFfeForecastTiming = {
+    itemCategories: {},
+    timings: {},
+    directItemCount: 0,
+    datedItemCount: 0,
+  };
   if (companyProjectIds.length > 0) {
+    try {
     const [
       scheduleResult,
       phaseResult,
@@ -365,7 +392,7 @@ export async function GET(request: NextRequest) {
       costSectionResult,
       contractVariationResult,
       supplierInvoiceResult,
-      itemResult,
+      loadedFfeForecastTiming,
     ] = await Promise.all([
       supabase
         .from("client_payment_schedule")
@@ -409,11 +436,7 @@ export async function GET(request: NextRequest) {
         .select("id,project_id,supplier,invoice_number,invoice_date,due_date,amount_ex_gst,gst,total,status,payment_status,amount_paid,paid_at,proposed_match_type,proposed_match_id,invoice_allocations(id,match_type,match_id,amount_ex_gst)")
         .in("project_id", companyProjectIds)
         .eq("status", "approved"),
-      supabase
-        .from("items")
-        .select("id,category")
-        .in("project_id", companyProjectIds)
-        .is("deleted_at", null),
+      loadProjectFfeForecastTiming(supabase, companyProjectIds),
     ]);
     const companyReadError =
       scheduleResult.error ??
@@ -423,7 +446,7 @@ export async function GET(request: NextRequest) {
       estimateResult.error ??
       costSectionResult.error;
       // keep the first read error deterministic across all company sources
-    const allCompanyReadError = companyReadError ?? contractVariationResult.error ?? supplierInvoiceResult.error ?? itemResult.error;
+    const allCompanyReadError = companyReadError ?? contractVariationResult.error ?? supplierInvoiceResult.error;
     if (allCompanyReadError) {
       return NextResponse.json({ error: allCompanyReadError.message }, { status: 500 });
     }
@@ -435,9 +458,14 @@ export async function GET(request: NextRequest) {
     costSections = (costSectionResult.data ?? []) as CostSectionForecastRow[];
     contractVariations = (contractVariationResult.data ?? []) as ClientContractVariation[];
     supplierInvoices = (supplierInvoiceResult.data ?? []) as unknown as SupplierCashInvoice[];
-    itemCategories = Object.fromEntries(
-      (itemResult.data ?? []).map((item) => [item.id, item.category || "Uncategorised"])
-    );
+    ffeForecastTiming = loadedFfeForecastTiming;
+    itemCategories = loadedFfeForecastTiming.itemCategories;
+    } catch (readError) {
+      return NextResponse.json(
+        { error: readError instanceof Error ? readError.message : "Could not load project forecast timing" },
+        { status: 500 }
+      );
+    }
   }
 
   try {
@@ -463,7 +491,9 @@ export async function GET(request: NextRequest) {
       toContribution(
         line,
         projectNameById.get(line.project_id) ?? "Project",
-        sectionDatesByProjectId.get(line.project_id) ?? {}
+        sectionDatesByProjectId.get(line.project_id) ?? {},
+        ffeForecastTiming.timings,
+        {}
       )
     );
     const latestEstimateByProjectId = new Map<string, EstimateVersionRow>();
@@ -505,6 +535,8 @@ export async function GET(request: NextRequest) {
         estimateVersionId: estimate.id,
         snapshot: estimate.snapshot,
         sectionDates: sectionDatesByProjectId.get(projectId) ?? {},
+        itemTimings: ffeForecastTiming.timings,
+        timingOverrides: {},
       })) {
         connectedEstimateContributions.push({
           ...contribution,

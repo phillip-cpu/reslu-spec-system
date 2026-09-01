@@ -82,6 +82,58 @@ test("item allocations replace their FF&E category plan", () => {
   });
   assert.equal(result.contributions[0].plannedMinor, 44_000);
   assert.equal(result.matchedAllocations, 1);
+  assert.equal(result.contributions[1].sourceTrace?.category, "Tapware");
+});
+
+test("item allocations prefer the item-level FF&E plan when available", () => {
+  const result = reconcileSupplierInvoiceActuals({
+    contributions: [
+      {
+        contributionKey: "project:p1|ffe_item:item1|scope:base",
+        direction: "outflow",
+        description: "Basin mixer",
+        plannedMinor: 55_000,
+      },
+      {
+        contributionKey: "project:p1|ffe_category:Tapware|scope:base",
+        direction: "outflow",
+        description: "Legacy category fallback",
+        plannedMinor: 10_000,
+      },
+    ],
+    itemCategories: { item1: "Tapware" },
+    invoices: [{
+      id: "i4", project_id: "p1", supplier: "Supplier", invoice_number: "F2",
+      invoice_date: "2026-08-01", due_date: "2026-08-10", amount_ex_gst: 100,
+      gst: 10, total: 110, status: "approved", payment_status: "unpaid",
+      amount_paid: 0, paid_at: null,
+      invoice_allocations: [{ id: "a4", match_type: "item", match_id: "item1", amount_ex_gst: 100 }],
+    }],
+  });
+  assert.equal(result.contributions[0].plannedMinor, 44_000);
+  assert.equal(result.contributions[1].plannedMinor, 10_000);
+  assert.equal(result.matchedAllocations, 1);
+});
+
+test("a saved item identity still reconciles after the live item is removed", () => {
+  const result = reconcileSupplierInvoiceActuals({
+    contributions: [{
+      contributionKey: "project:p1|ffe_item:deleted-item|scope:base",
+      direction: "outflow",
+      description: "Archived selection",
+      plannedMinor: 22_000,
+    }],
+    itemCategories: {},
+    invoices: [{
+      id: "i5", project_id: "p1", supplier: "Supplier", invoice_number: "F3",
+      invoice_date: "2026-08-01", due_date: "2026-08-10", amount_ex_gst: 100,
+      gst: 10, total: 110, status: "approved", payment_status: "unpaid",
+      amount_paid: 0, paid_at: null,
+      invoice_allocations: [{ id: "a5", match_type: "item", match_id: "deleted-item", amount_ex_gst: 100 }],
+    }],
+  });
+  assert.equal(result.contributions[0].plannedMinor, 11_000);
+  assert.equal(result.matchedAllocations, 1);
 });
 
 test("historical paid supplier cash is not forecast again in the current week", () => {

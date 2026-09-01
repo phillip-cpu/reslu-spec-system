@@ -277,7 +277,12 @@ active item count ever exceeds it.
 ### POST /api/projects/[id]/items
 Auth: session. Body: `CreateItemInput` (`name`, `category` required;
 optional `library_item_id` hydrates defaults from the library catalogue,
-including `price_rrp`/`price_trade`). Response: `{ item }` (201).
+including `price_rrp`/`price_trade`). A directly purchased item may also
+include `price_rrp` as a positive ex-GST amount; a staff-entered value wins
+over the library default, while trade-package references ignore it. Response:
+`{ item }` (201) through the same explicit non-financial spec projection as
+the GET route, so neither the entered RRP nor negotiated trade pricing is
+returned here.
 `item_code` is DB-trigger-generated, never client-supplied. If
 `product_url` is present, kicks off scraping fire-and-forget via
 `after()` (never blocks the response). **Aria-relevant.**

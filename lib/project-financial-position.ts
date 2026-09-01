@@ -27,6 +27,12 @@ export interface ProjectFinancialPositionInput {
   originalContractIncGst: number | null;
   approvedVariationsExGst: number;
   plannedCostExGst: number;
+  /**
+   * False for design/quoting engagements where the prospective build
+   * estimate is intentionally outside this contract's financial position.
+   * Defaults to true for backwards compatibility with construction jobs.
+   */
+  costPlanRequired?: boolean;
 }
 
 export interface FinancialTally {
@@ -55,6 +61,7 @@ export interface ProjectFinancialPosition {
   progress_gap_points: number | null;
   contract_configured: boolean;
   cost_plan_configured: boolean;
+  cost_plan_required: boolean;
   status: FinancialPositionStatus;
   story: string;
 }
@@ -149,7 +156,8 @@ export function calculateProjectFinancialPosition(
   );
 
   const contractConfigured = originalContractIncGst > 0;
-  const costPlanConfigured = plannedCostExGst > 0;
+  const costPlanRequired = input.costPlanRequired !== false;
+  const costPlanConfigured = !costPlanRequired || plannedCostExGst > 0;
   const forecastMarginPct =
     adjustedContractExGst > 0
       ? roundPercent((forecastMarginExGst / adjustedContractExGst) * 100)
@@ -217,6 +225,7 @@ export function calculateProjectFinancialPosition(
     progress_gap_points: progressGapPoints,
     contract_configured: contractConfigured,
     cost_plan_configured: costPlanConfigured,
+    cost_plan_required: costPlanRequired,
     status,
     story,
   };

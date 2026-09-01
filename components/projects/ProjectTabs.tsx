@@ -3,6 +3,7 @@
 import clsx from "clsx";
 import Link from "next/link";
 import { PortalLinkAction } from "./PortalLinkAction";
+import { ProjectLifecycle } from "./ProjectLifecycle";
 
 export type ProjectTabKey =
   | "overview"
@@ -79,7 +80,8 @@ export function ProjectTabs({ projectId, active, isAdmin, portalUrl }: Props) {
   };
 
   return (
-    <nav className="border-b border-[#dcd6cc] bg-cream" aria-label="Project navigation">
+    <>
+      <nav className="border-b border-[#dcd6cc] bg-cream" aria-label="Project navigation">
       <div className="flex items-center justify-between gap-3 px-4 md:px-8">
         <div className="flex min-w-0 flex-1 overflow-x-auto">
           {primary.map((item) => (
@@ -120,6 +122,8 @@ export function ProjectTabs({ projectId, active, isAdmin, portalUrl }: Props) {
           ))}
         </div>
       )}
-    </nav>
+      </nav>
+      <ProjectLifecycle projectId={projectId} canEdit={isAdmin} />
+    </>
   );
 }

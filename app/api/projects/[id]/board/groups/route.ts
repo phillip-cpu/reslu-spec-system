@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { namesMatch } from "@/lib/phase-template";
+import { normalizeBoardPhaseName } from "@/lib/board-readiness";
 import type { CreateBoardGroupInput } from "@/types/phase-12a-b";
 
 const SORT_STEP = 1000;
@@ -56,6 +57,29 @@ export async function POST(
   }
   const trimmedName = body.name.trim();
 
+  // Prevent a second phase with the same user-facing name. Existing
+  // historical duplicates remain visible in the board readiness summary so
+  // staff can repair them deliberately; new duplicates are blocked here as
+  // well as in the client so concurrent/stale browsers cannot recreate the
+  // ambiguity.
+  const { data: existingGroups, error: existingGroupsError } = await supabase
+    .from("board_groups")
+    .select("id,name")
+    .eq("project_id", projectId);
+  if (existingGroupsError) {
+    return NextResponse.json({ error: existingGroupsError.message }, { status: 500 });
+  }
+  if (
+    (existingGroups ?? []).some(
+      (group) => normalizeBoardPhaseName(group.name) === normalizeBoardPhaseName(trimmedName)
+    )
+  ) {
+    return NextResponse.json(
+      { error: `A phase named “${trimmedName}” already exists` },
+      { status: 409 }
+    );
+  }
+
   const { data: maxRow } = await supabase
     .from("board_groups")
     .select("sort")
@@ -69,7 +93,7 @@ export async function POST(
   // ---- Unification invariant: find/create the linked schedule_phases row FIRST ----
   const { data: unlinkedPhases } = await supabase
     .from("schedule_phases")
-    .select("id,name")
+    .select("id,name,start_date,end_date")
     .eq("project_id", projectId)
     .eq("kind", "phase")
     .is("deleted_at", null);
@@ -87,6 +111,9 @@ export async function POST(
   );
 
   let phaseId: string | null = matchingPhase?.id ?? null;
+  let phaseStartDate: string | null = matchingPhase?.start_date ?? null;
+  let phaseEndDate: string | null = matchingPhase?.end_date ?? null;
+  let createdPhaseId: string | null = null;
 
   if (!phaseId) {
     const today = new Date();
@@ -102,7 +129,7 @@ export async function POST(
       .limit(1)
       .maybeSingle();
 
-    const { data: newPhase } = await supabase
+    const { data: newPhase, error: newPhaseError } = await supabase
       .from("schedule_phases")
       .insert({
         project_id: projectId,
@@ -112,9 +139,18 @@ export async function POST(
         color_key: "sand",
         sort: (maxPhaseSort?.sort ?? -SORT_STEP) + SORT_STEP,
       })
-      .select("id")
+      .select("id,start_date,end_date")
       .single();
+    if (newPhaseError || !newPhase) {
+      return NextResponse.json(
+        { error: newPhaseError?.message ?? "Could not create linked timeline phase" },
+        { status: 500 }
+      );
+    }
     phaseId = newPhase?.id ?? null;
+    createdPhaseId = newPhase.id;
+    phaseStartDate = newPhase.start_date;
+    phaseEndDate = newPhase.end_date;
   }
 
   const { data: group, error } = await supabase
@@ -124,8 +160,25 @@ export async function POST(
     .single();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    // The group insert can lose a concurrent duplicate-name race after this
+    // request created its linked Timeline phase. Remove only that newly
+    // created phase so the rejected request cannot leave an orphan/duplicate
+    // phase behind. A reused pre-existing phase is never deleted here.
+    if (createdPhaseId) {
+      await supabase.from("schedule_phases").delete().eq("id", createdPhaseId);
+    }
+    const status = error.code === "23505" ? 409 : 500;
+    return NextResponse.json({ error: error.message }, { status });
   }
 
-  return NextResponse.json({ group }, { status: 201 });
+  return NextResponse.json(
+    {
+      group: {
+        ...group,
+        phase_start_date: phaseStartDate,
+        phase_end_date: phaseEndDate,
+      },
+    },
+    { status: 201 }
+  );
 }

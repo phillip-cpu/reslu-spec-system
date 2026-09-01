@@ -178,6 +178,7 @@ export function FinancialPositionSummary({ projectId }: Props) {
     position.forecast_margin_pct === null
       ? "Contract or cost plan required"
       : `${position.forecast_margin_pct.toFixed(1)}% of adjusted contract`;
+  const costPlanExcluded = !position.cost_plan_required;
 
   return (
     <section className="border border-[#c9c2b4] bg-offwhite">
@@ -191,6 +192,12 @@ export function FinancialPositionSummary({ projectId }: Props) {
             </span>
           </div>
           <p className="max-w-2xl text-subhead text-nearblack">{position.story}</p>
+          {costPlanExcluded && (
+            <p className="mt-2 max-w-2xl text-small text-charcoal/60">
+              The prospective build estimate is excluded while this is a design or quoting engagement.
+              Approved supplier invoices are still counted.
+            </p>
+          )}
           {error && <p className="mt-2 text-small text-red-700">{error}</p>}
         </div>
         <div className="min-w-[220px] lg:text-right">
@@ -234,9 +241,13 @@ export function FinancialPositionSummary({ projectId }: Props) {
           detail={`${money(position.approved_variations_inc_gst)} approved variations · inc GST`}
         />
         <Tally
-          label="Forecast project cost"
+          label={costPlanExcluded ? "Recorded design cost exposure" : "Forecast project cost"}
           value={money(position.forecast_cost_ex_gst)}
-          detail={`${money(position.planned_cost_ex_gst)} current cost plan · ex GST`}
+          detail={
+            costPlanExcluded
+              ? "Approved supplier invoices only · ex GST"
+              : `${money(position.planned_cost_ex_gst)} current cost plan · ex GST`
+          }
         />
         <Tally
           label="Current recorded position"
@@ -259,8 +270,10 @@ export function FinancialPositionSummary({ projectId }: Props) {
       </div>
 
       <div className="border-t border-[#dcd6cc] bg-cream/40 px-6 py-4 text-small leading-relaxed text-charcoal/55">
-        Forecast: adjusted contract less the current cost plan, or approved supplier costs if
-        they have already exceeded that plan. Current recorded position compares invoices issued
+        {costPlanExcluded
+          ? "Forecast: adjusted design contract less approved supplier costs. The prospective construction estimate is not treated as spend against this engagement. "
+          : "Forecast: adjusted contract less the current cost plan, or approved supplier costs if they have already exceeded that plan. "}
+        Current recorded position compares invoices issued
         with approved supplier costs; it is not bank cash or final profit.
         {position.client_drafts.count > 0 && (
           <>

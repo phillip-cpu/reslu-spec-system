@@ -7,6 +7,12 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path: string) => readFileSync(resolve(root, path), "utf8");
 const migration = read("supabase/migrations/20260812215025_project_scoped_conversations.sql");
+const sharedProjectChatMigration = read(
+  "supabase/migrations/20260901112433_join_existing_scoped_conversation.sql"
+);
+const projectChatConflictRepair = read(
+  "supabase/migrations/20260901113056_fix_scoped_conversation_participant_conflict.sql"
+);
 const scopedRoute = read("app/api/conversations/scoped/route.ts");
 const conversationRoute = read("app/api/conversations/route.ts");
 const workspace = read("components/conversations/ConversationWorkspace.tsx");
@@ -31,6 +37,24 @@ test("scoped creation deduplicates by project and purpose rather than participan
   assert.match(scopedRoute, /get_or_create_scoped_conversation/);
   assert.match(scopedRoute, /scope_kind/);
   assert.doesNotMatch(scopedRoute, /create_conversation_idempotent/);
+});
+
+test("an existing project conversation safely joins the visiting staff member", () => {
+  assert.match(sharedProjectChatMigration, /if p_scope_kind = 'project' then/);
+  assert.match(sharedProjectChatMigration, /insert into conversation_participants/);
+  assert.match(
+    projectChatConflictRepair,
+    /values \(found_conversation_id, actor_id, 'member'\)[\s\S]*on conflict do nothing/
+  );
+  assert.doesNotMatch(
+    projectChatConflictRepair,
+    /on conflict \(conversation_id, profile_id\)/
+  );
+  assert.match(sharedProjectChatMigration, /return query select found_conversation_id, true/);
+  assert.match(
+    sharedProjectChatMigration,
+    /elsif not is_conversation_member\(found_conversation_id\) then[\s\S]*conversation scope already exists/
+  );
 });
 
 test("conversation inbox and project UI preserve and visibly constrain scope", () => {

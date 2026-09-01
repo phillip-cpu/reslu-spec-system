@@ -3,6 +3,7 @@ import type { FinanceContributionInput, FinanceShadowProjection } from "../../ty
 const ALLOWANCE_SOURCES = new Set([
   "estimate_cost_line",
   "estimate_ffe_category",
+  "estimate_ffe_item",
   "estimate_approved_variations",
 ]);
 
@@ -55,4 +56,3 @@ export function estimateAllowanceSummary(projection: FinanceShadowProjection): {
     itemCount: allowances.length,
   };
 }
-

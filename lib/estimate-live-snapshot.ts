@@ -1,4 +1,10 @@
-import { projectRollup, sectionRollup, ffeRollup, wholeJobSummary } from "@/lib/estimate";
+import {
+  projectRollup,
+  sectionRollup,
+  ffeRollup,
+  wholeJobSummary,
+} from "@/lib/estimate";
+import { buildEstimateFfeItemSnapshots } from "@/lib/estimate-ffe-snapshot";
 import { createClient } from "@/lib/supabase/server";
 import type { CostSectionWithLines, Measurement, MeasurementWithGroup } from "@/types";
 import type { EstimateSnapshot } from "@/types/phase-12a-a";
@@ -38,7 +44,7 @@ export async function buildLiveSnapshot(
       .is("deleted_at", null),
     supabase
       .from("items")
-      .select("id, category, quantity, price_trade, price_rrp, markup_pct, cost_scope")
+      .select("id,item_code,name,category,quantity,price_trade,price_rrp,markup_pct,cost_scope,lead_time_weeks,ordered_at")
       .eq("project_id", projectId)
       .is("deleted_at", null),
     supabase
@@ -89,12 +95,14 @@ export async function buildLiveSnapshot(
     measurementsById,
   });
   const ffe = ffeRollup(items ?? []);
+  const ffeItems = buildEstimateFfeItemSnapshots(items ?? [], ffe);
 
   return {
     sections: sectionsWithLines,
     markup_pct: project.estimate_markup_pct ?? 0,
     rollup,
     ffe,
+    ffe_items: ffeItems,
     wholeJob: wholeJobSummary(rollup, ffe),
     measurements,
     sow_revision_label: sowRows?.[0]?.revision_label ?? null,

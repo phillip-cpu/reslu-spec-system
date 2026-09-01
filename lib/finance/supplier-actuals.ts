@@ -58,18 +58,19 @@ function apportionMinor(total: number, weights: number[]): number[] {
   return allocated;
 }
 
-function planKey(
+function planKeys(
   projectId: string,
   allocation: SupplierCashAllocation,
   itemCategories: Record<string, string>
-): string | null {
+): string[] {
   if (allocation.match_type === "cost_line") {
-    return `project:${projectId}|cost_line:${allocation.match_id}|scope:base`;
+    return [`project:${projectId}|cost_line:${allocation.match_id}|scope:base`];
   }
-  const category = allocation.match_type === "item" ? itemCategories[allocation.match_id] : null;
-  return category
-    ? `project:${projectId}|ffe_category:${category}|scope:base`
-    : null;
+  if (allocation.match_type !== "item") return [];
+  const keys = [`project:${projectId}|ffe_item:${allocation.match_id}|scope:base`];
+  const category = itemCategories[allocation.match_id];
+  if (category) keys.push(`project:${projectId}|ffe_category:${category}|scope:base`);
+  return keys;
 }
 
 /**
@@ -119,8 +120,16 @@ export function reconcileSupplierInvoiceActuals(input: {
     paidMinor += invoicePaidMinor;
 
     allocations.forEach((allocation, index) => {
-      const matchedPlanKey = planKey(invoice.project_id, allocation, input.itemCategories ?? {});
-      const matched = matchedPlanKey !== null && planIndex.has(matchedPlanKey);
+      const matchedPlanKey = planKeys(
+        invoice.project_id,
+        allocation,
+        input.itemCategories ?? {}
+      ).find((key) => planIndex.has(key)) ?? null;
+      const matched = matchedPlanKey !== null;
+      const matchedPlanIndex = matchedPlanKey ? planIndex.get(matchedPlanKey) : undefined;
+      const matchedPlan = matchedPlanIndex === undefined
+        ? null
+        : contributions[matchedPlanIndex];
       if (matched && matchedPlanKey) {
         accruedByPlan.set(matchedPlanKey, (accruedByPlan.get(matchedPlanKey) ?? 0) + grossShares[index]);
         matchedAllocations += 1;
@@ -148,6 +157,12 @@ export function reconcileSupplierInvoiceActuals(input: {
           match_type: allocation.match_type,
           match_id: allocation.match_id,
           matched_plan_key: matchedPlanKey,
+          category: matchedPlan?.sourceTrace?.category ??
+            (allocation.match_type === "item"
+              ? input.itemCategories?.[allocation.match_id] ?? null
+              : null),
+          section_id: matchedPlan?.sourceTrace?.section_id ?? null,
+          section_name: matchedPlan?.sourceTrace?.section_name ?? null,
           reconciliation: matched ? "estimate_replaced" : "unmatched_actual",
           payment_status: invoice.payment_status,
           cash_basis: "gross_inc_gst",

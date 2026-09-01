@@ -11,26 +11,12 @@ import type {
   FinanceShadowProjectionResponse,
   ProjectCommercialProfile,
   ProjectFinanceResponse,
-  ProjectStage,
 } from "@/types/finance";
+import { projectStageLabel } from "@/lib/project-lifecycle";
 
 type WorkspaceTab = "position" | "setup";
 
 type ApiError = { error?: string };
-
-const STAGE_OPTIONS: Array<{ value: ProjectStage; label: string }> = [
-  { value: "design", label: "Design" },
-  { value: "quoting", label: "Quote" },
-  { value: "preconstruction", label: "Pre-construction" },
-  { value: "construction", label: "Construction" },
-  { value: "handover", label: "Handover" },
-  { value: "complete", label: "Complete" },
-  { value: "on_hold", label: "On hold" },
-];
-
-function stageLabel(stage: ProjectStage): string {
-  return STAGE_OPTIONS.find((option) => option.value === stage)?.label ?? stage;
-}
 
 function CommercialSetup({
   projectId,
@@ -43,7 +29,7 @@ function CommercialSetup({
   onSaved: (profile: ProjectFinanceResponse) => void;
   onError: (message: string | null) => void;
 }) {
-  const [projectStage, setProjectStage] = useState(profile.project_stage);
+  const projectStage = profile.project_stage;
   const [contractType, setContractType] = useState(profile.contract_type);
   const [contractLabel, setContractLabel] = useState(profile.contract_label);
   const [contractAmount, setContractAmount] = useState(String(profile.contract_amount_inc_gst || ""));
@@ -105,12 +91,13 @@ function CommercialSetup({
         </p>
       </div>
       <form onSubmit={save} className="grid gap-5 p-5 md:grid-cols-2 md:p-7 xl:grid-cols-3">
-        <label>
-          <span className="label-caps">Project stage</span>
-          <select value={projectStage} onChange={(event) => setProjectStage(event.target.value as ProjectStage)} className="mt-2 w-full border border-charcoal/20 bg-cream px-3 py-2 text-body">
-            {STAGE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-        </label>
+        <div>
+          <span className="label-caps">Job stage</span>
+          <div className="mt-2 border border-charcoal/20 bg-cream px-3 py-2 text-body text-charcoal/70">
+            {projectStageLabel(projectStage)}
+          </div>
+          <p className="mt-1 text-caption text-charcoal/45">Managed in the Job lifecycle bar above.</p>
+        </div>
         <label>
           <span className="label-caps">Contract type</span>
           <select value={contractType} onChange={(event) => setContractType(event.target.value as ProjectCommercialProfile["contract_type"])} className="mt-2 w-full border border-charcoal/20 bg-cream px-3 py-2 text-body">
@@ -226,31 +213,25 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Initial snapshot; Timeline links and dates are read from the server.
 
-  const uniqueLines = useMemo(() => {
-    const byKey = new Map<string, FinanceShadowProjectionResponse["projection"]["effectiveContributions"][number]>();
-    for (const contribution of shadow?.projection.effectiveContributions ?? []) {
-      if (!byKey.has(contribution.contributionKey)) byKey.set(contribution.contributionKey, contribution);
-    }
-    return [...byKey.values()].sort((a, b) => {
-      const sectionA = String(a.sourceTrace.section_name ?? "ZZZ");
-      const sectionB = String(b.sourceTrace.section_name ?? "ZZZ");
-      return sectionA.localeCompare(sectionB) || a.description.localeCompare(b.description);
-    });
-  }, [shadow]);
-
   const sectionTotals = useMemo(() => {
-    const totals = new Map<string, { amount: number; count: number; unknown: number }>();
-    for (const line of uniqueLines) {
+    const totals = new Map<string, { amount: number; keys: Set<string>; unknown: number }>();
+    for (const line of shadow?.projection.effectiveContributions ?? []) {
       if (line.direction !== "outflow") continue;
       const section = String(line.sourceTrace.section_name ?? line.sourceTrace.category ?? "Other");
-      const current = totals.get(section) ?? { amount: 0, count: 0, unknown: 0 };
+      const current = totals.get(section) ?? { amount: 0, keys: new Set<string>(), unknown: 0 };
       current.amount += line.amountMinor;
-      current.count += 1;
+      current.keys.add(line.contributionKey);
       if (!line.effectiveDate) current.unknown += line.amountMinor;
       totals.set(section, current);
     }
-    return [...totals.entries()].sort((a, b) => b[1].amount - a[1].amount);
-  }, [uniqueLines]);
+    return [...totals.entries()]
+      .map(([section, total]) => [section, {
+        amount: total.amount,
+        count: total.keys.size,
+        unknown: total.unknown,
+      }] as const)
+      .sort((a, b) => b[1].amount - a[1].amount);
+  }, [shadow]);
 
   const projection = shadow?.projection ?? null;
   const totalExposure = projection
@@ -316,7 +297,7 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
                   Finance connected
                 </span>
                 <span className="border border-sand/60 bg-sand/10 px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] text-[#76570a]">
-                  {stageLabel(finance.project.project_stage)}
+                  {projectStageLabel(finance.project.project_stage)}
                 </span>
                 <span className="border border-charcoal/20 px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] text-charcoal/60">
                   Live forecast
@@ -387,9 +368,14 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
               <p className="label-caps">{constructionCostsIncluded ? "Pulled from your existing project" : "Design-stage finance"}</p>
               <p className="mt-2 text-body text-charcoal/65">
                 {constructionCostsIncluded
-                  ? "Amounts come from the saved estimate. Projected expense dates come from the linked Timeline phase and move automatically with the construction schedule."
+                  ? "Amounts stay frozen to the saved estimate. Trade costs follow their linked Timeline phase; FF&E follows each item's order-by date from its lead time and linked trade booking. Missing links remain visibly undated."
                   : "This position shows the design fee and its client payments only. The prospective build estimate is excluded until the project moves beyond Design/Quote with a construction contract."}
               </p>
+              {constructionCostsIncluded && (shadow?.source.ffe_direct_item_count ?? 0) > 0 && (
+                <p className="mt-2 text-caption text-charcoal/50">
+                  FF&amp;E timing connected for {shadow?.source.ffe_timing_link_count ?? 0} of {shadow?.source.ffe_direct_item_count ?? 0} directly purchased items.
+                </p>
+              )}
             </div>
             {constructionCostsIncluded && (
               <a href={`/projects/${projectId}/timeline`} className="shrink-0 border border-nearblack px-4 py-2 text-center text-subhead text-nearblack hover:bg-nearblack hover:text-white">
@@ -408,7 +394,7 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
             ))}
           </div>
           {projection && <section className="border border-charcoal/20 bg-offwhite"><div className="border-b border-charcoal/20 p-5 md:p-7"><p className="label-caps">Project cash impact</p><h2 className="mt-2 font-display text-section text-nearblack">13-week movement</h2></div><div className="p-4 md:p-7"><FinanceCashCurve periods={projection.periods} selectedIndex={selectedIndex} onSelect={setSelectedIndex} /></div>{selectedPeriod && <div className="grid grid-cols-2 border-t border-charcoal/20 md:grid-cols-4">{[["Opening",selectedPeriod.openingCashMinor],["Inflows",selectedPeriod.inflowMinor],["Outflows",-selectedPeriod.outflowMinor],["Closing",selectedPeriod.closingCashMinor]].map(([label,value])=><div key={String(label)} className="border-r border-charcoal/15 p-4 last:border-r-0"><p className="label-caps">{String(label)}</p><p className="mt-2 text-subhead">{formatMinorCurrency(Number(value))}</p></div>)}</div>}</section>}
-          {constructionCostsIncluded && <section className="border border-charcoal/20 bg-offwhite"><div className="border-b border-charcoal/20 p-5 md:p-7"><p className="label-caps">Cost position</p><h2 className="mt-2 font-display text-section text-nearblack">By estimate section</h2></div><div className="overflow-x-auto"><table className="w-full min-w-[620px] text-left"><thead className="bg-nearblack text-[7px] uppercase tracking-[0.14em] text-white"><tr><th className="px-5 py-3">Section</th><th className="px-5 py-3 text-right">Exposure</th><th className="px-5 py-3 text-right">Unknown</th><th className="px-5 py-3 text-right">Lines</th></tr></thead><tbody className="divide-y divide-charcoal/10">{sectionTotals.map(([section,total])=><tr key={section} className="text-body"><td className="px-5 py-4">{section}</td><td className="px-5 py-4 text-right">{formatMinorCurrency(total.amount)}</td><td className="px-5 py-4 text-right text-[#76570a]">{formatMinorCurrency(total.unknown)}</td><td className="px-5 py-4 text-right">{total.count}</td></tr>)}</tbody></table></div></section>}
+          {constructionCostsIncluded && <section className="border border-charcoal/20 bg-offwhite"><div className="border-b border-charcoal/20 p-5 md:p-7"><p className="label-caps">Cost position</p><h2 className="mt-2 font-display text-section text-nearblack">By estimate section and FF&amp;E category</h2></div><div className="overflow-x-auto"><table className="w-full min-w-[620px] text-left"><thead className="bg-nearblack text-[7px] uppercase tracking-[0.14em] text-white"><tr><th className="px-5 py-3">Section / category</th><th className="px-5 py-3 text-right">Exposure</th><th className="px-5 py-3 text-right">Unknown</th><th className="px-5 py-3 text-right">Lines</th></tr></thead><tbody className="divide-y divide-charcoal/10">{sectionTotals.map(([section,total])=><tr key={section} className="text-body"><td className="px-5 py-4">{section}</td><td className="px-5 py-4 text-right">{formatMinorCurrency(total.amount)}</td><td className="px-5 py-4 text-right text-[#76570a]">{formatMinorCurrency(total.unknown)}</td><td className="px-5 py-4 text-right">{total.count}</td></tr>)}</tbody></table></div></section>}
         </>
       )}
     </div>

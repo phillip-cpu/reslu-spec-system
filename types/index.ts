@@ -335,6 +335,8 @@ export interface CreateItemInput {
   height_mm?: number;
   length_mm?: number;
   depth_mm?: number;
+  /** Canonical retail/reference price stored ex GST. */
+  price_rrp?: number;
   library_item_id?: string;
 }
 

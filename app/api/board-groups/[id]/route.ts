@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import type { PatchBoardGroupInput } from "@/types/phase-12a-b";
+import { normalizeBoardPhaseName } from "@/lib/board-readiness";
 
 /**
  * PATCH /api/board-groups/[id]
@@ -40,7 +41,7 @@ export async function PATCH(
 
   const { data: existing } = await supabase
     .from("board_groups")
-    .select("id,updated_at")
+    .select("id,project_id,updated_at")
     .eq("id", id)
     .maybeSingle();
   if (!existing) return NextResponse.json({ error: "Group not found" }, { status: 404 });
@@ -55,7 +56,26 @@ export async function PATCH(
     if (!body.name.trim()) {
       return NextResponse.json({ error: "name cannot be empty" }, { status: 400 });
     }
-    update.name = body.name.trim();
+    const trimmedName = body.name.trim();
+    const { data: siblingGroups, error: siblingGroupsError } = await supabase
+      .from("board_groups")
+      .select("id,name")
+      .eq("project_id", existing.project_id)
+      .neq("id", id);
+    if (siblingGroupsError) {
+      return NextResponse.json({ error: siblingGroupsError.message }, { status: 500 });
+    }
+    if (
+      (siblingGroups ?? []).some(
+        (group) => normalizeBoardPhaseName(group.name) === normalizeBoardPhaseName(trimmedName)
+      )
+    ) {
+      return NextResponse.json(
+        { error: `A phase named “${trimmedName}” already exists` },
+        { status: 409 }
+      );
+    }
+    update.name = trimmedName;
   }
   if (body.sort !== undefined) {
     update.sort = Number(body.sort);
@@ -74,7 +94,8 @@ export async function PATCH(
     .maybeSingle();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const status = error.code === "23505" ? 409 : 500;
+    return NextResponse.json({ error: error.message }, { status });
   }
   if (!group) return NextResponse.json({ error: "Group changed since it was read; refresh the board and retry" }, { status: 409 });
 

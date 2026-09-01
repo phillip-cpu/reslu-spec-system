@@ -51,6 +51,10 @@ import { ReconfirmAffordance } from "@/components/gantt/ReconfirmAffordance";
 import { StatusPill } from "./StatusPill";
 import { DueDateCell, WorksDateCell } from "./DateCell";
 import { PopoverCell } from "./PopoverCell";
+import {
+  normalizeBoardPhaseName,
+  summarizeBoardReadiness,
+} from "@/lib/board-readiness";
 
 interface Props {
   projectId: string;
@@ -61,6 +65,7 @@ interface Props {
 }
 
 const SORT_STEP = 1000;
+type GroupDropPosition = "before" | "after";
 
 // Board v3.2 — "Reorder slot animation". Row height in px, matching
 // GroupRows' row className (`h-8` = 2rem = 32px) — used purely to
@@ -254,6 +259,9 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   // preference in a Next.js app accepts).
   useEffect(() => {
     const saved = window.localStorage.getItem(BOARD_LAYOUT_STORAGE_KEY);
+    // Browser-only preference hydration; the server must render the stable
+    // stacked fallback first to avoid a markup mismatch.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (saved === "stacked" || saved === "side-by-side") setLayout(saved);
   }, []);
 
@@ -267,6 +275,10 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
 
   // Every non-deleted task, flat, for a quick lookup shared by both views.
   const allTasks = useMemo(() => columns.flatMap((c) => c.tasks), [columns]);
+  const planReadiness = useMemo(
+    () => summarizeBoardReadiness(groups, allTasks),
+    [groups, allTasks]
+  );
 
   // Board v3 — Monday parity round: stage-complete dependency chips —
   // pure derivation (lib/board-constants.ts's computeDependencyChips),
@@ -654,6 +666,11 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   async function addGroup(e: React.FormEvent) {
     e.preventDefault();
     if (!newGroupName.trim()) return;
+    const normalizedName = normalizeBoardPhaseName(newGroupName);
+    if (groups.some((group) => normalizeBoardPhaseName(group.name) === normalizedName)) {
+      setError(`A phase named “${newGroupName.trim()}” already exists. Rename or use the existing phase.`);
+      return;
+    }
     setError(null);
     try {
       const res = await fetch(`/api/projects/${projectId}/board/groups`, {
@@ -662,15 +679,21 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
         body: JSON.stringify({ name: newGroupName.trim() }),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? "Could not add phase group.");
-      const { group }: { group: BoardGroup } = await res.json();
-      // POST .../board/groups always links (or creates) a schedule_phases
-      // row server-side (see that route's own "unification invariant"
-      // doc comment) but its response is a bare board_groups row — no
-      // joined phase dates. Round A's compact date inputs simply show
-      // nothing for this brand-new group until the next full board GET
-      // (e.g. a reload), same "populates properly on next load" gap the
-      // groups/seed path already has above.
-      setGroups((cur) => [...cur, { ...group, tasks: [], phase_start_date: null, phase_end_date: null }]);
+      const { group }: {
+        group: BoardGroup & {
+          phase_start_date?: string | null;
+          phase_end_date?: string | null;
+        };
+      } = await res.json();
+      setGroups((cur) => [
+        ...cur,
+        {
+          ...group,
+          tasks: [],
+          phase_start_date: group.phase_start_date ?? null,
+          phase_end_date: group.phase_end_date ?? null,
+        },
+      ]);
       setNewGroupName("");
       setAddingGroup(false);
     } catch (err) {
@@ -679,6 +702,17 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
   }
 
   async function renameGroup(groupId: string, name: string) {
+    const normalizedName = normalizeBoardPhaseName(name);
+    if (
+      groups.some(
+        (group) =>
+          group.id !== groupId &&
+          normalizeBoardPhaseName(group.name) === normalizedName
+      )
+    ) {
+      setError(`A phase named “${name}” already exists. Choose a unique phase name.`);
+      return;
+    }
     const prev = groups;
     setGroups((cur) => cur.map((g) => (g.id === groupId ? { ...g, name } : g)));
     const res = await fetch(`/api/board-groups/${groupId}`, {
@@ -918,13 +952,13 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
 
   /**
    * Drop a dragged phase-group section onto another group's header —
-   * reorders the whole section, inserting it immediately before the
-   * drop target. Same before/after midpoint sort-ladder math as
+   * reorders the whole section, inserting it on the indicated edge of
+   * the drop target. Same before/after midpoint sort-ladder math as
    * onDropInGroup above, computed against `groups` (already ordered by
    * `sort`, per GET /api/projects/[id]/board's query) with the dragged
    * group removed first, so its own old slot never double-counts.
    */
-  async function onDropOnGroup(targetGroupId: string) {
+  async function onDropOnGroup(targetGroupId: string, position: GroupDropPosition) {
     if (!dragGroupId || dragGroupId === targetGroupId) {
       setDragGroupId(null);
       return;
@@ -935,9 +969,10 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     const withoutDragged = groups.filter((g) => g.id !== draggedId);
     const targetIndex = withoutDragged.findIndex((g) => g.id === targetGroupId);
     if (targetIndex === -1) return;
+    const insertionIndex = targetIndex + (position === "after" ? 1 : 0);
 
-    const before = withoutDragged[targetIndex - 1];
-    const after = withoutDragged[targetIndex];
+    const before = withoutDragged[insertionIndex - 1];
+    const after = withoutDragged[insertionIndex];
     let nextSort: number;
     if (before && after) {
       nextSort = Math.round((before.sort + after.sort) / 2);
@@ -954,17 +989,21 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     const reordered = [...withoutDragged];
     const dragged = groups.find((g) => g.id === draggedId);
     if (!dragged) return;
-    reordered.splice(targetIndex, 0, { ...dragged, sort: nextSort });
+    reordered.splice(insertionIndex, 0, { ...dragged, sort: nextSort });
     setGroups(reordered);
 
-    const res = await fetch(`/api/board-groups/${draggedId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sort: nextSort }),
-    });
-    if (!res.ok) {
+    try {
+      const res = await fetch(`/api/board-groups/${draggedId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sort: nextSort }),
+      });
+      if (res.ok) return;
       setGroups(prev);
       setError((await res.json()).error ?? "Could not reorder phase group.");
+    } catch {
+      setGroups(prev);
+      setError("Could not reorder phase group.");
     }
   }
 
@@ -1092,7 +1131,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               view === "kanban" ? "border-nearblack text-nearblack" : "border-transparent text-charcoal/50 hover:text-nearblack"
             )}
           >
-            Kanban
+            By status
           </button>
           <button
             type="button"
@@ -1102,7 +1141,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               view === "grouped" ? "border-nearblack text-nearblack" : "border-transparent text-charcoal/50 hover:text-nearblack"
             )}
           >
-            Grouped list
+            Plan
           </button>
         </div>
 
@@ -1113,13 +1152,14 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
             view === "kanban" (Grouped list has always been vertical),
             but the preference is shared across both views. */}
         <div className="mb-1 flex items-center gap-1 self-start">
-          <span className="label-caps !text-charcoal/40">Layout</span>
+          <span className={clsx("label-caps !text-charcoal/40", view !== "kanban" && "hidden")}>Layout</span>
           <button
             type="button"
             onClick={() => changeLayout("stacked")}
             title="Stacked (vertical) — default"
             className={clsx(
               "border px-2 py-1 text-caption",
+              view !== "kanban" && "hidden",
               layout === "stacked" ? "border-nearblack bg-nearblack text-white" : "border-[#c9c2b4] text-charcoal hover:border-nearblack"
             )}
           >
@@ -1131,6 +1171,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
             title="Side-by-side kanban"
             className={clsx(
               "border px-2 py-1 text-caption",
+              view !== "kanban" && "hidden",
               layout === "side-by-side" ? "border-nearblack bg-nearblack text-white" : "border-[#c9c2b4] text-charcoal hover:border-nearblack"
             )}
           >
@@ -1314,6 +1355,44 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
 
       {view === "grouped" && (
         <div className="space-y-6">
+          <div
+            className={clsx(
+              "border px-4 py-3",
+              planReadiness.ready
+                ? "border-emerald-700/30 bg-emerald-50/60"
+                : "border-amber-700/35 bg-amber-50/70"
+            )}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="label-caps">Plan readiness</p>
+                <p className="mt-1 text-body text-charcoal/70">
+                  {planReadiness.ready
+                    ? "Phases, dates and item assignments are ready to feed the Timeline."
+                    : "Resolve these structural gaps before relying on the Timeline or cash forecast."}
+                </p>
+              </div>
+              {!planReadiness.ready && (
+                <div className="flex flex-wrap gap-2 text-caption">
+                  {planReadiness.phasesMissingDates > 0 && (
+                    <span className="border border-amber-700/30 bg-nearwhite px-2 py-1 text-amber-900">
+                      {planReadiness.phasesMissingDates} phase{planReadiness.phasesMissingDates === 1 ? "" : "s"} missing dates
+                    </span>
+                  )}
+                  {planReadiness.ungroupedItems > 0 && (
+                    <span className="border border-amber-700/30 bg-nearwhite px-2 py-1 text-amber-900">
+                      {planReadiness.ungroupedItems} ungrouped item{planReadiness.ungroupedItems === 1 ? "" : "s"}
+                    </span>
+                  )}
+                  {planReadiness.duplicatePhaseNames.length > 0 && (
+                    <span className="border border-amber-700/30 bg-nearwhite px-2 py-1 text-amber-900">
+                      Duplicate: {planReadiness.duplicatePhaseNames.join(", ")}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
           {/* Board v3 — Monday parity round: "Apply stage template"
               banner. SPARSE, for this banner's purposes, is defined at
               the WHOLE-BOARD level — zero tasks across the ENTIRE
@@ -1362,6 +1441,10 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               onBookVisit={(task) => setGroupBookSeed([task.id])}
               onUnlinkVisit={(taskId) => unlinkVisit(taskId)}
               onPatchPhaseDates={(patch) => group.phase_id && patchGroupPhaseDates(group.id, group.phase_id, patch)}
+              draggingGroup={dragGroupId !== null}
+              onDragStartGroup={() => setDragGroupId(group.id)}
+              onDragEndGroup={() => setDragGroupId(null)}
+              onDropGroup={(position) => onDropOnGroup(group.id, position)}
               onDragStartTask={onDragStart}
               onDropInGroup={(index) => onDropInGroup(group.id, index)}
               onMoveTask={moveTaskWithinGroup}
@@ -2238,12 +2321,11 @@ function MilestoneDiamond() {
  * (app/api/board-tasks/[id]/route.ts's EDITABLE_FIELDS); only the UI
  * affordance was missing.
  *
- * Click-to-rename directly on the visible title text — same
- * interaction shape as GanttChart.tsx's PhaseNameInline (click -> input
- * -> blur/Enter saves, Escape cancels) and GroupTable's own stage-
- * heading rename, so a task's title now follows the same "click the
- * text itself" convention already established everywhere else in this
- * app rather than introducing a new pattern. Used by both BoardCard
+ * Double-click (or Enter/F2 while focused) renames the visible title;
+ * a dedicated pencil provides a reliable one-tap phone fallback. A
+ * single pointer click now focuses/selects the title without suddenly
+ * turning it into a field, which prevents accidental edits while staff
+ * scan, expand or drag rows. Used by both BoardCard
  * (Kanban) and GroupRows (Grouped-list "line items") — each row/card
  * still has its own SEPARATE expand toggle for the full card editor
  * (description/assignees/etc.), since overloading one click target for
@@ -2286,6 +2368,11 @@ function TaskTitleInline({
     setRenaming(false);
   }
 
+  function beginRename() {
+    setDraft(title);
+    setRenaming(true);
+  }
+
   if (renaming) {
     return (
       <input
@@ -2304,21 +2391,43 @@ function TaskTitleInline({
   }
 
   return (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        setDraft(title);
-        setRenaming(true);
-      }}
-      title={truncate ? title : "Click to rename"}
-      className={clsx(
-        "text-left text-body text-nearblack hover:text-sand",
-        truncate && "min-w-0 flex-1 truncate"
-      )}
-    >
-      {title}
-    </button>
+    <span className={clsx("group/title inline-flex min-w-0 items-center gap-0.5", truncate && "flex-1")}>
+      <button
+        type="button"
+        onClick={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => {
+          event.stopPropagation();
+          beginRename();
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === "F2") {
+            event.preventDefault();
+            event.stopPropagation();
+            beginRename();
+          }
+        }}
+        aria-label={`${title}. Double-click or press Enter to rename.`}
+        title={truncate ? `${title} — double-click to rename` : "Double-click or press Enter to rename"}
+        className={clsx(
+          "text-left text-body text-nearblack hover:text-sand focus:outline-none focus-visible:ring-1 focus-visible:ring-sand",
+          truncate && "min-w-0 flex-1 truncate"
+        )}
+      >
+        {title}
+      </button>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          beginRename();
+        }}
+        aria-label={`Rename ${title}`}
+        title="Rename item"
+        className="shrink-0 px-1 text-caption text-charcoal/35 hover:text-sand focus:text-sand sm:opacity-40 sm:group-hover/title:opacity-100"
+      >
+        ✎
+      </button>
+    </span>
   );
 }
 
@@ -2418,6 +2527,10 @@ function GroupTable({
   onPatchPhaseDates,
   onAddTask,
   onAddSubTask,
+  draggingGroup,
+  onDragStartGroup,
+  onDragEndGroup,
+  onDropGroup,
   onDragStartTask,
   onDropInGroup,
   onMoveTask,
@@ -2469,6 +2582,13 @@ function GroupTable({
   onAddTask: (title: string, assigneeIds: string[]) => void;
   /** Board v3 — Monday parity round: row-level "Add sub-item" — creates a board_tasks row with parent_task_id set to the given parent, inheriting the parent's phase_group_id server-side (see POST /api/projects/[id]/board's doc comment). Threaded down to GroupRows, which renders the actual per-row affordance. */
   onAddSubTask: (parentTask: BoardTaskV3, title: string) => void;
+  /** Whether a phase section (rather than an item row) is currently being dragged. Keeps the two native-DnD paths from sharing drop targets. */
+  draggingGroup: boolean;
+  /** Starts/stops dragging this whole phase from the dedicated header handle. */
+  onDragStartGroup: () => void;
+  onDragEndGroup: () => void;
+  /** Inserts the dragged phase immediately above or below this phase. */
+  onDropGroup: (position: GroupDropPosition) => void;
   /** Board reorder round (7 July 2026) — HTML5 DnD, same dragTaskId-in-parent-state approach as the Kanban side's onDragStart above (see ProjectBoard's own onDragStart). */
   onDragStartTask: (taskId: string) => void;
   /** Drop anywhere in this group (header or row area) — reorders within the group, or moves the dragged task INTO this group (a phase change) if it came from elsewhere. `index` is the row position to insert at, or null to append at the end. */
@@ -2485,6 +2605,7 @@ function GroupTable({
   const [composing, setComposing] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [dragOver, setDragOver] = useState(false);
+  const [groupDropPosition, setGroupDropPosition] = useState<GroupDropPosition | null>(null);
   // Board v3 — Monday parity round: group collapse chevron. Local,
   // per-group, defaults to expanded (false = not collapsed) — same
   // "starts open" default every collapsible section in this codebase
@@ -2584,10 +2705,61 @@ function GroupTable({
             setCollapsed((c) => !c);
           }
         }}
+        onDragOver={(e) => {
+          if (!draggingGroup) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const bounds = e.currentTarget.getBoundingClientRect();
+          setGroupDropPosition(e.clientY < bounds.top + bounds.height / 2 ? "before" : "after");
+        }}
+        onDragLeave={(e) => {
+          const nextTarget = e.relatedTarget;
+          if (!(nextTarget instanceof Node) || !e.currentTarget.contains(nextTarget)) {
+            setGroupDropPosition(null);
+          }
+        }}
+        onDrop={(e) => {
+          if (!draggingGroup) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const position = groupDropPosition ?? "before";
+          setGroupDropPosition(null);
+          onDropGroup(position);
+        }}
         title={collapsed ? "Expand stage" : "Collapse stage"}
-        className="flex flex-wrap items-center justify-between gap-2 border-b border-[#dcd6cc] bg-offwhite py-2 pr-3 cursor-pointer"
+        className="relative flex flex-wrap items-center justify-between gap-2 border-b border-[#dcd6cc] bg-offwhite py-2 pr-9 cursor-pointer md:pr-3"
       >
+        {groupDropPosition && (
+          <span
+            aria-hidden="true"
+            className={clsx(
+              "pointer-events-none absolute inset-x-0 z-10 h-0.5 bg-nearblack",
+              groupDropPosition === "before" ? "top-0" : "bottom-0"
+            )}
+          />
+        )}
         <div className="flex flex-wrap items-center gap-3 pl-3">
+          <button
+            type="button"
+            draggable
+            aria-label={`Drag ${group.name} to reorder phase`}
+            title="Drag to reorder phase"
+            onClick={(e) => e.stopPropagation()}
+            onDragStart={(e) => {
+              e.stopPropagation();
+              e.dataTransfer.effectAllowed = "move";
+              e.dataTransfer.setData("text/plain", group.id);
+              onDragStartGroup();
+            }}
+            onDragEnd={(e) => {
+              e.stopPropagation();
+              setGroupDropPosition(null);
+              onDragEndGroup();
+            }}
+            className="cursor-grab select-none px-1 text-base leading-none text-charcoal/35 hover:text-nearblack active:cursor-grabbing"
+          >
+            ⠿
+          </button>
           {/* Bug fix, 7 July 2026: the whole header box is now the click
               target for collapse/expand (onClick above) — was previously
               only this small chevron. The chevron stays as an explicit
@@ -2622,17 +2794,40 @@ function GroupTable({
               className="flex-1 border border-nearblack bg-nearwhite px-2 py-1 text-subhead text-nearblack focus:outline-none"
             />
           ) : (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                startRename();
-              }}
-              className="label-caps hover:opacity-70"
-              style={{ color: stageColor }}
-            >
-              {group.name}
-            </button>
+            <span className="group/phase inline-flex items-center gap-1">
+              <button
+                type="button"
+                onClick={(event) => event.stopPropagation()}
+                onDoubleClick={(event) => {
+                  event.stopPropagation();
+                  startRename();
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === "F2") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    startRename();
+                  }
+                }}
+                title="Double-click or press Enter to rename phase"
+                className="label-caps hover:opacity-70 focus:outline-none focus-visible:ring-1 focus-visible:ring-sand"
+                style={{ color: stageColor }}
+              >
+                {group.name}
+              </button>
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  startRename();
+                }}
+                aria-label={`Rename ${group.name}`}
+                title="Rename phase"
+                className="px-1 text-caption text-charcoal/35 hover:text-sand sm:opacity-40 sm:group-hover/phase:opacity-100"
+              >
+                ✎
+              </button>
+            </span>
           )}
           <span className="text-caption text-charcoal/40">{summaryLine}</span>
           {/* Round A "Board owns dates, Timeline is the visual" — compact
@@ -2668,6 +2863,7 @@ function GroupTable({
           {group.phase_id && !groupWorksDateRange && (
             <span onClick={(e) => e.stopPropagation()}>
               <GroupPhaseDateInputs
+                key={`${group.phase_start_date ?? ""}:${group.phase_end_date ?? ""}`}
                 startDate={group.phase_start_date}
                 endDate={group.phase_end_date}
                 onPatch={onPatchPhaseDates}
@@ -2697,7 +2893,7 @@ function GroupTable({
             e.stopPropagation();
             onDelete();
           }}
-          className="text-caption text-charcoal/40 hover:text-red-700"
+          className="absolute right-2 top-2 text-caption text-charcoal/40 hover:text-red-700 md:static"
         >
           ✕
         </button>
@@ -2792,25 +2988,30 @@ function GroupPhaseDateInputs({
   const [start, setStart] = useState(startDate ?? "");
   const [end, setEnd] = useState(endDate ?? "");
 
-  useEffect(() => setStart(startDate ?? ""), [startDate]);
-  useEffect(() => setEnd(endDate ?? ""), [endDate]);
-
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex flex-wrap items-center gap-1.5">
       <input
         type="date"
+        aria-label="Phase start date"
+        title="Phase start date"
         value={start}
-        onChange={(e) => setStart(e.target.value)}
+        onChange={(e) => {
+          const next = e.target.value;
+          setStart(next);
+          if (next && end && end < next) setEnd(next);
+        }}
         onBlur={() => start && start !== startDate && onPatch({ start_date: start })}
-        className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-0.5 text-caption focus:border-nearblack focus:outline-none"
+        className="w-[8.5rem] max-w-full border border-[#c9c2b4] bg-nearwhite px-1.5 py-0.5 text-caption focus:border-nearblack focus:outline-none"
       />
       <span className="text-caption text-charcoal/40">→</span>
       <input
         type="date"
+        aria-label="Phase end date"
+        title="Phase end date"
         value={end}
         onChange={(e) => setEnd(e.target.value)}
         onBlur={() => end && end !== endDate && onPatch({ end_date: end })}
-        className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-0.5 text-caption focus:border-nearblack focus:outline-none"
+        className="w-[8.5rem] max-w-full border border-[#c9c2b4] bg-nearwhite px-1.5 py-0.5 text-caption focus:border-nearblack focus:outline-none"
       />
     </div>
   );
@@ -3281,7 +3482,7 @@ function GroupRows({
             // background exists in this table (confirmed: only a
             // hover state and a distinct isSubItem tint, neither of
             // which alternates by row index) — nothing to turn off.
-            "h-8 cursor-move border-b border-charcoal/10 last:border-b-0 hover:bg-nearwhite",
+            "h-8 cursor-pointer border-b border-charcoal/10 last:border-b-0 hover:bg-nearwhite md:cursor-move",
             isSubItem && "bg-nearwhite/60",
             // Board v3.2 — reorder slot animation: neighbouring rows
             // translate apart via a CSS transform (never a layout
@@ -3299,7 +3500,7 @@ function GroupRows({
           )}
           style={{ transform: gapTransform(listKey, siblingIndex) || undefined }}
         >
-          <td className="py-1 pl-3 pr-1" onClick={(e) => e.stopPropagation()}>
+          <td className="w-[8%] py-1 pl-2 pr-1 md:w-[4%] md:pl-3" onClick={(e) => e.stopPropagation()}>
             {/* Booking selection v2 (r24) — item 1: row-edge checkbox,
                 phase-card item rows (both top-level and sub-item rows —
                 each is its own board_task, individually bookable).
@@ -3312,7 +3513,7 @@ function GroupRows({
               className="h-3.5 w-3.5"
             />
           </td>
-          <td className="py-1 pl-1 pr-3 text-body text-nearblack">
+          <td className="w-[40%] py-1 pl-1 pr-1 text-body text-nearblack md:w-[26%] md:pr-3">
             {/* Board v3.1 — display-first cells, item 3: nowrap +
                 min-w-0 (was flex-wrap) so a long title ellipsis-
                 truncates in this ~32px single-line row instead of
@@ -3400,7 +3601,7 @@ function GroupRows({
               )}
             </span>
           </td>
-          <td className="py-1 pr-3" onClick={(e) => e.stopPropagation()}>
+          <td className="hidden py-1 pr-3 md:table-cell" onClick={(e) => e.stopPropagation()}>
             {/* Board v3.1 — display-first cells, item 4: WHO — quiet
                 avatar stack at rest; click opens the SAME checkbox
                 picker the kanban composer/editor already uses
@@ -3434,7 +3635,7 @@ function GroupRows({
               )}
             </PopoverCell>
           </td>
-          <td className="py-1 pr-3" onClick={(e) => e.stopPropagation()}>
+          <td className="w-[18%] py-1 pr-1 md:w-[10%] md:pr-3" onClick={(e) => e.stopPropagation()}>
             {/* Board v3.1 — display-first cells, item 1: STATUS — quiet
                 coloured pill at rest; click opens a popover menu of
                 every valid column, same underlying column_id PATCH the
@@ -3450,7 +3651,7 @@ function GroupRows({
               }}
             />
           </td>
-          <td className="py-1 pr-3 text-caption text-charcoal/60" onClick={(e) => e.stopPropagation()}>
+          <td className="hidden py-1 pr-3 text-caption text-charcoal/60 md:table-cell" onClick={(e) => e.stopPropagation()}>
             {/* Board v3.1 — display-first cells, item 4: CONTACT — quiet
                 company name (or "—") at rest; click opens the shared
                 ContactPicker (embedded mode) to change it.
@@ -3480,7 +3681,7 @@ function GroupRows({
               )}
             </PopoverCell>
           </td>
-          <td className="py-1 pr-3" onClick={(e) => e.stopPropagation()}>
+          <td className="w-[17%] py-1 pr-1 md:w-[13%] md:pr-3" onClick={(e) => e.stopPropagation()}>
             {/* Board v3.3 — WORKS is now a genuine editable start/end
                 popover (booking_date/booking_end_date REJOINED PATCH
                 /api/board-tasks/[id]'s whitelist — see that route's
@@ -3501,7 +3702,7 @@ function GroupRows({
               onCommit={(next) => onPatchTask(task, next, next)}
             />
           </td>
-          <td className="py-1 pr-3" onClick={(e) => e.stopPropagation()}>
+          <td className="w-[17%] py-1 pr-1 md:w-[10%] md:pr-3" onClick={(e) => e.stopPropagation()}>
             {/* Board v3.1 — display-first cells, item 2: DUE — quiet
                 display chip ("14 Jul" / "—") at rest; click swaps to a
                 real date input. Commits via the SAME onPatchTask
@@ -3515,7 +3716,7 @@ function GroupRows({
               onCommit={(next) => onPatchTask(task, next, next)}
             />
           </td>
-          <td className="py-1 pr-3">
+          <td className="hidden py-1 pr-3 md:table-cell">
             {showDependencyChip && <DependencyChip text={showDependencyChip} />}
           </td>
         </tr>
@@ -3692,20 +3893,20 @@ function GroupRows({
           {/* Booking selection v2 (r24) — item 1: row-edge checkbox
               header column — no label, matches the row cell's own
               plain checkbox (no "select all" affordance this round). */}
-          <th className="w-[4%] py-1.5 pl-3 pr-1 font-normal" />
-          <th className="w-[26%] py-1.5 pl-1 pr-3 font-normal">ITEM</th>
-          <th className="w-[7%] py-1.5 pr-3 font-normal">WHO</th>
-          <th className="w-[10%] py-1.5 pr-3 font-normal">STATUS</th>
-          <th className="w-[12%] py-1.5 pr-3 font-normal">CONTACT</th>
-          <th className="w-[13%] py-1.5 pr-3 font-normal">WORKS</th>
+          <th className="w-[8%] py-1.5 pl-2 pr-1 font-normal md:w-[4%] md:pl-3" />
+          <th className="w-[40%] py-1.5 pl-1 pr-1 font-normal md:w-[26%] md:pr-3">ITEM</th>
+          <th className="hidden w-[7%] py-1.5 pr-3 font-normal md:table-cell">WHO</th>
+          <th className="w-[18%] py-1.5 pr-1 font-normal md:w-[10%] md:pr-3">STATUS</th>
+          <th className="hidden w-[12%] py-1.5 pr-3 font-normal md:table-cell">CONTACT</th>
+          <th className="w-[17%] py-1.5 pr-1 font-normal md:w-[13%] md:pr-3">WORKS</th>
           {/* Board v3.1 — display-first cells, item 9: "DUE" keeps its
               exact BUILD-SPEC.md label, with a subtle secondary hint
               ("· book by") in muted/smaller styling right next to it —
               never louder than the column label itself. */}
-          <th className="w-[10%] py-1.5 pr-3 font-normal">
-            DUE <span className="text-charcoal/30">· book by</span>
+          <th className="w-[17%] py-1.5 pr-1 font-normal md:w-[10%] md:pr-3">
+            DUE <span className="hidden text-charcoal/30 lg:inline">· book by</span>
           </th>
-          <th className="w-[18%] py-1.5 pr-3 font-normal">AFTER</th>
+          <th className="hidden w-[18%] py-1.5 pr-3 font-normal md:table-cell">AFTER</th>
         </tr>
       </thead>
       <tbody>{topLevelTasks.map((task, index) => renderRow(task, index, topLevelTasks.length, false))}</tbody>

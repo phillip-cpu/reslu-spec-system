@@ -9,6 +9,7 @@ import { hasFinanceCapability } from "@/lib/finance/permissions";
 import { calculateShadowProjection } from "@/lib/finance/projection";
 import { isIsoDate } from "@/lib/finance/readiness";
 import { buildSectionForecastDates } from "@/lib/finance/schedule-cost-timing";
+import { loadProjectFfeForecastTiming } from "@/lib/finance/ffe-timing-server";
 import { includesConstructionCosts } from "@/lib/finance/construction-cost-eligibility";
 import {
   reconcileSupplierInvoiceActuals,
@@ -103,7 +104,6 @@ export async function POST(
     { data: clientInvoices, error: invoiceError },
     { data: contractVariations, error: contractVariationError },
     { data: supplierInvoices, error: supplierInvoiceError },
-    { data: items, error: itemError },
   ] = await Promise.all([
     supabase.from("projects").select("id,project_stage").eq("id", projectId).maybeSingle(),
     supabase
@@ -150,15 +150,10 @@ export async function POST(
       .select("id,project_id,supplier,invoice_number,invoice_date,due_date,amount_ex_gst,gst,total,status,payment_status,amount_paid,paid_at,proposed_match_type,proposed_match_id,invoice_allocations(id,match_type,match_id,amount_ex_gst)")
       .eq("project_id", projectId)
       .eq("status", "approved"),
-    supabase
-      .from("items")
-      .select("id,category")
-      .eq("project_id", projectId)
-      .is("deleted_at", null),
   ]);
 
   if (projectError || !project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
-  const readError = profileError ?? estimateError ?? billingError ?? scheduleError ?? phaseError ?? costSectionError ?? invoiceError ?? contractVariationError ?? supplierInvoiceError ?? itemError;
+  const readError = profileError ?? estimateError ?? billingError ?? scheduleError ?? phaseError ?? costSectionError ?? invoiceError ?? contractVariationError ?? supplierInvoiceError;
   if (readError) return NextResponse.json({ error: readError.message }, { status: 500 });
   if (!profile) {
     return NextResponse.json(
@@ -179,6 +174,7 @@ export async function POST(
   }
 
   try {
+    const ffeTiming = await loadProjectFfeForecastTiming(supabase, [projectId]);
     const sectionDates = buildSectionForecastDates({
       sections: costSections ?? [],
       phases: schedulePhases ?? [],
@@ -189,6 +185,7 @@ export async function POST(
           estimateVersionId: estimate.id,
           snapshot: estimate.snapshot as FinanceEstimateSnapshot,
           sectionDates,
+          itemTimings: ffeTiming.timings,
           timingOverrides,
         })
       : [];
@@ -203,9 +200,7 @@ export async function POST(
     const supplierReconciliation = reconcileSupplierInvoiceActuals({
       contributions: estimateContributions,
       invoices: (supplierInvoices ?? []) as unknown as SupplierCashInvoice[],
-      itemCategories: Object.fromEntries(
-        (items ?? []).map((item) => [item.id, item.category || "Uncategorised"])
-      ),
+      itemCategories: ffeTiming.itemCategories,
     });
     const contributions = [
       ...supplierReconciliation.contributions,
@@ -227,6 +222,8 @@ export async function POST(
         estimate_label: estimate?.label ?? null,
         timing_override_count: Object.keys(timingOverrides).length,
         schedule_link_count: Object.keys(sectionDates).length,
+        ffe_direct_item_count: ffeTiming.directItemCount,
+        ffe_timing_link_count: ffeTiming.datedItemCount,
         client_claim_count: clientClaimContributions.length,
         construction_costs_included: constructionCostsIncluded,
         reconciled_supplier_invoice_count: supplierReconciliation.includedInvoices,

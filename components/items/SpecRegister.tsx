@@ -21,6 +21,7 @@ import { ItemRoomsEditor } from "./ItemRoomsEditor";
 import { RoomBuilder } from "./RoomBuilder";
 import { isSupportedBrowserImportUrl } from "@/lib/browser-product-import";
 import { ITEM_CODE_PATTERN } from "@/types/phase-small-round";
+import { normalizeFfePriceInput } from "@/lib/ffe-price-input";
 
 interface Props {
   projectId: string;
@@ -1186,6 +1187,8 @@ function AddItemForm({
   const [quantity, setQuantity] = useState("1");
   const [costScope, setCostScope] = useState<Item["cost_scope"]>("direct");
   const [productUrl, setProductUrl] = useState("");
+  const [price, setPrice] = useState("");
+  const [priceIncludesGst, setPriceIncludesGst] = useState(true);
   const requiresBrowserImport = isSupportedBrowserImportUrl(productUrl.trim());
   const [submitting, setSubmitting] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -1221,6 +1224,11 @@ function AddItemForm({
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim() || !category) return;
+    const normalizedPrice = normalizeFfePriceInput(price, priceIncludesGst);
+    if (costScope === "direct" && normalizedPrice.error) {
+      onError(normalizedPrice.error);
+      return;
+    }
     const selectedRoom = rooms.find((room) => room.id === roomId) ?? null;
     setSubmitting(true);
     onError(null);
@@ -1237,6 +1245,10 @@ function AddItemForm({
           location: selectedRoom?.name,
           quantity: Number(quantity) || 1,
           cost_scope: costScope,
+          price_rrp:
+            costScope === "direct"
+              ? normalizedPrice.priceRrpExGst ?? undefined
+              : undefined,
           product_url: productUrl.trim() || undefined,
           library_item_id: libraryItemId ?? undefined,
         }),
@@ -1288,6 +1300,8 @@ function AddItemForm({
       setQuantity("1");
       setCostScope("direct");
       setProductUrl("");
+      setPrice("");
+      setPriceIncludesGst(true);
       setDuplicates([]);
       setLibraryItemId(null);
       if (roomAssignmentError) {
@@ -1432,6 +1446,35 @@ function AddItemForm({
           className="w-20 border border-[#c9c2b4] bg-nearwhite px-3 py-2 text-body focus:border-nearblack focus:outline-none"
         />
       </div>
+      {costScope === "direct" && (
+        <div className="min-w-[180px]">
+          <label className="label-caps mb-1 block" htmlFor="ffe-quick-add-price">
+            Price / RRP
+          </label>
+          <div className="flex items-center border border-[#c9c2b4] bg-nearwhite focus-within:border-nearblack">
+            <span className="pl-3 text-body text-charcoal/50">$</span>
+            <input
+              id="ffe-quick-add-price"
+              type="number"
+              min="0.01"
+              step="0.01"
+              inputMode="decimal"
+              value={price}
+              onChange={(event) => setPrice(event.target.value)}
+              placeholder="0.00"
+              className="w-28 bg-transparent px-2 py-2 text-body focus:outline-none"
+            />
+          </div>
+          <label className="mt-1 flex items-center gap-1.5 text-caption text-charcoal/60">
+            <input
+              type="checkbox"
+              checked={priceIncludesGst}
+              onChange={(event) => setPriceIncludesGst(event.target.checked)}
+            />
+            Entered price includes GST
+          </label>
+        </div>
+      )}
       <button
         type="submit"
         disabled={submitting}
@@ -1442,7 +1485,11 @@ function AddItemForm({
       <p className="w-full text-caption text-charcoal/40">
         {costScope === "trade_package"
           ? "This item will appear in the schedule but will not require a room, separate cost or ordering."
-          : `The item code (e.g. ${category || "TW"}-01) is generated automatically per project.`}
+          : price.trim()
+            ? `Price is stored ex GST for the estimate and forecast. The item code (e.g. ${category || "TW"}-01) is generated automatically.`
+            : libraryItemId
+              ? "The saved library price will be used when available."
+              : "No price entered — the item will be flagged for follow-up. A product-page import may fill it later."}
       </p>
     </form>
   );

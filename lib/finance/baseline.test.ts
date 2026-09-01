@@ -112,3 +112,65 @@ test("legacy preview overrides still take precedence over the construction sched
   assert.equal(overridden?.plannedDate, "2026-09-18");
   assert.equal(overridden?.sourceTrace?.timing_source, "shadow_override");
 });
+
+test("new estimate snapshots forecast FF&E by item using live procurement timing", () => {
+  const result = buildEstimatePlanContributions({
+    projectId: "project-1",
+    estimateVersionId: "estimate-v2",
+    snapshot: {
+      sections: [],
+      ffe: { categories: [{ category: "TW", total: 500 }] },
+      ffe_items: [{
+        id: "item-tap",
+        item_code: "TW-01",
+        name: "Basin mixer",
+        category: "TW",
+        quantity: 2,
+        cost_scope: "direct",
+        unit_price_ex_gst: 250,
+        total_ex_gst: 500,
+        pricing_confidence: "quoted",
+      }],
+    },
+    itemTimings: {
+      "item-tap": {
+        plannedDate: "2026-09-03",
+        timingSource: "trade_order_by",
+        confidence: "medium",
+        orderByStatus: "ok",
+        worksDate: "2026-09-24",
+        tradeName: "Plumber",
+        sourceId: "visit-1",
+        sourceKind: "visit",
+      },
+    },
+  });
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].contributionKey, "project:project-1|ffe_item:item-tap|scope:base");
+  assert.equal(result[0].plannedMinor, 55_000);
+  assert.equal(result[0].plannedDate, "2026-09-03");
+  assert.equal(result[0].sourceTrace?.timing_source, "trade_order_by");
+  assert.equal(result[0].sourceTrace?.trade_name, "Plumber");
+});
+
+test("legacy FF&E category override can transition to item-level snapshots", () => {
+  const categoryKey = "project:project-1|ffe_category:TW|scope:base";
+  const result = buildEstimatePlanContributions({
+    projectId: "project-1",
+    estimateVersionId: "estimate-v2",
+    snapshot: {
+      sections: [],
+      ffe_items: [{
+        id: "item-tap",
+        category: "TW",
+        total_ex_gst: 100,
+        pricing_confidence: "placeholder",
+      }],
+    },
+    timingOverrides: { [categoryKey]: "2026-09-10" },
+  });
+  assert.equal(result[0].plannedDate, "2026-09-10");
+  assert.equal(result[0].confidence, "low");
+  assert.equal(result[0].sourceTrace?.timing_source, "shadow_override");
+});

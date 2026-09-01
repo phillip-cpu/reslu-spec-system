@@ -24,6 +24,14 @@ test("cash view excludes estimate allowances but keeps supplier actuals and over
       sourceTrace: { source_type: "supplier_invoice_allocation" },
     },
     {
+      contributionKey: "ffe-item",
+      direction: "outflow" as const,
+      description: "Uncommitted tapware allowance",
+      plannedMinor: 40_000,
+      plannedDate: "2026-09-01",
+      sourceTrace: { source_type: "estimate_ffe_item" },
+    },
+    {
       contributionKey: "wages",
       direction: "outflow" as const,
       description: "Wages",
@@ -47,13 +55,14 @@ test("allowance summary separates overdue and undated estimate exposure", () => 
     contributions: [
       { contributionKey: "old", direction: "outflow", description: "Old", plannedMinor: 10_000, plannedDate: "2026-08-01", sourceTrace: { source_type: "estimate_cost_line" } },
       { contributionKey: "unknown", direction: "outflow", description: "Unknown", plannedMinor: 20_000, sourceTrace: { source_type: "estimate_ffe_category" } },
+      { contributionKey: "item", direction: "outflow", description: "Tapware", plannedMinor: 40_000, plannedDate: "2026-09-10", sourceTrace: { source_type: "estimate_ffe_item" } },
     ],
   });
   assert.deepEqual(estimateAllowanceSummary(projection), {
-    totalMinor: 30_000,
-    datedMinor: 10_000,
+    totalMinor: 70_000,
+    datedMinor: 50_000,
     undatedMinor: 20_000,
     overdueMinor: 10_000,
-    itemCount: 2,
+    itemCount: 3,
   });
 });

@@ -53,7 +53,6 @@ export function StatusPill({
 
   useEffect(() => {
     if (!open) return;
-    setHighlighted(columnOptions.findIndex((c) => c.id === value));
     function onDocClick(e: MouseEvent) {
       if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
         setOpen(false);
@@ -61,7 +60,6 @@ export function StatusPill({
     }
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   function choose(columnId: string) {
@@ -69,10 +67,15 @@ export function StatusPill({
     if (columnId !== value) onChange(columnId);
   }
 
+  function openMenu() {
+    setHighlighted(columnOptions.findIndex((column) => column.id === value));
+    setOpen(true);
+  }
+
   function onTriggerKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      setOpen(true);
+      openMenu();
     }
   }
 
@@ -95,13 +98,16 @@ export function StatusPill({
   }
 
   return (
-    <div ref={wrapperRef} className="relative inline-block" onKeyDown={open ? onMenuKeyDown : undefined}>
+    <div ref={wrapperRef} className="relative inline-block max-w-full" onKeyDown={open ? onMenuKeyDown : undefined}>
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          if (open) setOpen(false);
+          else openMenu();
+        }}
         onKeyDown={onTriggerKeyDown}
         title="Click to change status"
-        className="border px-1.5 py-0.5 text-caption focus:outline-none"
+        className="max-w-full truncate border px-1.5 py-0.5 text-caption focus:outline-none"
         style={
           tint
             ? { backgroundColor: tint.background, color: tint.text, borderColor: tint.border }
@@ -112,7 +118,7 @@ export function StatusPill({
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full z-30 mt-1 min-w-[9rem] border border-[#dcd6cc] bg-nearwhite p-1.5 shadow-sm">
+        <div className="absolute right-0 top-full z-30 mt-1 min-w-[9rem] border border-[#dcd6cc] bg-nearwhite p-1.5 shadow-sm md:left-0 md:right-auto">
           <div className="flex flex-col gap-1">
             {columnOptions.map((c, i) => (
               <button

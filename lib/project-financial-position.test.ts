@@ -116,3 +116,38 @@ test("approved variations alone do not count as a configured original contract",
   assert.equal(result.status, "needs_setup");
   assert.match(result.story, /contract value/i);
 });
+
+test("does not require a construction cost plan for a design-only engagement", () => {
+  const result = calculateProjectFinancialPosition({
+    supplierInvoices: [],
+    clientInvoices: [],
+    originalContractIncGst: 13540,
+    approvedVariationsExGst: 0,
+    plannedCostExGst: 0,
+    costPlanRequired: false,
+  });
+
+  assert.equal(result.cost_plan_required, false);
+  assert.equal(result.cost_plan_configured, true);
+  assert.equal(result.planned_cost_ex_gst, 0);
+  assert.equal(result.forecast_cost_ex_gst, 0);
+  assert.equal(result.status, "on_track");
+  assert.equal(result.forecast_margin_pct, 100);
+});
+
+test("still counts approved supplier costs when the build estimate is excluded", () => {
+  const result = calculateProjectFinancialPosition({
+    supplierInvoices: [
+      { status: "approved", amount_ex_gst: 2000, total: 2200 },
+    ],
+    clientInvoices: [],
+    originalContractIncGst: 11000,
+    approvedVariationsExGst: 0,
+    plannedCostExGst: 0,
+    costPlanRequired: false,
+  });
+
+  assert.equal(result.forecast_cost_ex_gst, 2000);
+  assert.equal(result.forecast_margin_ex_gst, 8000);
+  assert.equal(result.cost_progress_pct, 100);
+});

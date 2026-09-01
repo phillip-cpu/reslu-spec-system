@@ -76,13 +76,6 @@ export function DueDateCell({
   const dateInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (editing) {
-      setDraftDate(value ?? "");
-      setDraftTime(timeValue ?? "");
-    }
-  }, [editing, value, timeValue]);
-
-  useEffect(() => {
     if (!editing) return;
     function onDocClick(e: MouseEvent) {
       if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
@@ -109,10 +102,16 @@ export function DueDateCell({
     setEditing(false);
   }
 
+  function beginEditing() {
+    setDraftDate(value ?? "");
+    setDraftTime(timeValue ?? "");
+    setEditing(true);
+  }
+
   if (editing) {
     return (
       <div ref={wrapperRef} className="relative inline-block">
-        <div className="absolute left-0 top-full z-30 mt-1 flex items-center gap-1.5 border border-[#dcd6cc] bg-nearwhite p-2 shadow-sm">
+        <div className="fixed left-4 right-4 top-1/2 z-50 flex w-auto -translate-y-1/2 flex-wrap items-center gap-1.5 border border-[#dcd6cc] bg-nearwhite p-2 shadow-sm sm:absolute sm:left-0 sm:right-auto sm:top-full sm:mt-1 sm:w-max sm:max-w-[calc(100vw-2rem)] sm:translate-y-0">
           <input
             ref={dateInputRef}
             autoFocus
@@ -152,11 +151,18 @@ export function DueDateCell({
   return (
     <button
       type="button"
-      onClick={() => setEditing(true)}
+      onClick={beginEditing}
       title="Click to set due date/time"
       className={clsx("px-1 py-0.5 text-caption hover:opacity-70", pastDue ? "text-red-700" : "text-charcoal/60")}
     >
-      {value ? `${formatShort(value)}${timeValue ? ` · ${formatTime12h(timeValue)}` : ""}` : "—"}
+      {value ? (
+        `${formatShort(value)}${timeValue ? ` · ${formatTime12h(timeValue)}` : ""}`
+      ) : (
+        <>
+          <span className="md:hidden">Set</span>
+          <span className="hidden md:inline">—</span>
+        </>
+      )}
     </button>
   );
 }
@@ -246,13 +252,6 @@ export function WorksDateCell({
   const startInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (editing) {
-      setStartDraft(startDate ?? "");
-      setEndDraft(endDate ?? "");
-    }
-  }, [editing, startDate, endDate]);
-
-  useEffect(() => {
     if (!editing) return;
     function onDocClick(e: MouseEvent) {
       if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
@@ -279,11 +278,17 @@ export function WorksDateCell({
     setEditing(false);
   }
 
+  function beginEditing() {
+    setStartDraft(startDate ?? "");
+    setEndDraft(endDate ?? "");
+    setEditing(true);
+  }
+
   if (editing) {
     return (
       <div ref={wrapperRef} className="relative inline-block">
-        <div className="absolute left-0 top-full z-30 mt-1 flex flex-col gap-1.5 border border-[#dcd6cc] bg-nearwhite p-2 shadow-sm">
-          <div className="flex items-center gap-1.5">
+        <div className="fixed left-4 right-4 top-1/2 z-50 flex w-auto -translate-y-1/2 flex-col gap-1.5 border border-[#dcd6cc] bg-nearwhite p-2 shadow-sm sm:absolute sm:left-0 sm:right-auto sm:top-full sm:mt-1 sm:w-max sm:max-w-[calc(100vw-2rem)] sm:translate-y-0">
+          <div className="flex flex-wrap items-center gap-1.5">
             <label className="flex flex-col gap-0.5">
               <span className="label-caps !text-charcoal/40">Start</span>
               <input
@@ -332,11 +337,18 @@ export function WorksDateCell({
   return (
     <button
       type="button"
-      onClick={() => setEditing(true)}
+      onClick={beginEditing}
       title={visitId ? "Booked works window — click to change (also updates the booking)" : "Click to set works dates"}
       className={clsx("px-1 py-0.5 text-caption hover:opacity-70", startDate ? "!text-sand" : "text-charcoal/40")}
     >
-      {startDate ? formatWorksDateRange(startDate, endDate) : "—"}
+      {startDate ? (
+        formatWorksDateRange(startDate, endDate)
+      ) : (
+        <>
+          <span className="md:hidden">Set</span>
+          <span className="hidden md:inline">—</span>
+        </>
+      )}
       {startDate && visitStatusLabel ? ` · ${visitStatusLabel}` : ""}
     </button>
   );

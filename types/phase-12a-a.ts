@@ -74,6 +74,30 @@ export interface PatchMeasurementStatusInput {
 export type EstimateVersionKind = "issue" | "vm";
 
 /**
+ * Frozen, finance-safe FF&E line carried alongside the existing category
+ * rollup. Category totals remain the backwards-compatible estimate surface;
+ * these rows provide stable item identities for procurement timing and invoice
+ * reconciliation without reading today's prices into an old estimate version.
+ */
+export interface EstimateFfeItemSnapshot {
+  id: string;
+  item_code: string;
+  name: string;
+  category: string;
+  quantity: number;
+  cost_scope: "direct" | "trade_package";
+  unit_price_ex_gst: number | null;
+  total_ex_gst: number;
+  /** Deterministically allocated cents; sums exactly to the category total. */
+  cost_net_minor: number;
+  /** GST-inclusive cash cents; sums exactly to the category cash total. */
+  cash_gross_minor: number;
+  pricing_confidence: "quoted" | "placeholder" | "unpriced";
+  lead_time_weeks_at_snapshot: number | null;
+  ordered_at_snapshot: string | null;
+}
+
+/**
  * Full frozen estimate snapshot stored in estimate_versions.snapshot —
  * everything the read-only viewer and VM comparison view need to
  * render a past estimate state without touching any live table.
@@ -97,6 +121,8 @@ export interface EstimateSnapshot {
     actualExGst: number;
   };
   ffe: FfeRollup;
+  /** Added in 2026-09; absent on older saved versions by design. */
+  ffe_items?: EstimateFfeItemSnapshot[];
   wholeJob: {
     trades: EstimateSnapshot["rollup"];
     ffe: FfeRollup;

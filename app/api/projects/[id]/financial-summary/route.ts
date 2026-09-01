@@ -6,6 +6,9 @@ import {
   calculateProjectFinancialPosition,
   type ProjectFinancialPositionInput,
 } from "@/lib/project-financial-position";
+import { includesConstructionCosts } from "@/lib/finance/construction-cost-eligibility";
+import type { ClientContractType } from "@/types/client-invoices";
+import type { ProjectStage } from "@/types/finance";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -52,7 +55,11 @@ export async function GET(
     { data: items, error: itemsError },
     { data: measurements, error: measurementsError },
   ] = await Promise.all([
-    supabase.from("projects").select("id").eq("id", projectId).maybeSingle(),
+    supabase
+      .from("projects")
+      .select("id,project_stage")
+      .eq("id", projectId)
+      .maybeSingle(),
     supabase
       .from("invoices")
       .select("status,amount_ex_gst,total")
@@ -64,7 +71,7 @@ export async function GET(
       .is("deleted_at", null),
     supabase
       .from("client_billing_profiles")
-      .select("contract_amount_inc_gst")
+      .select("contract_amount_inc_gst,contract_type")
       .eq("project_id", projectId)
       .maybeSingle(),
     supabase
@@ -134,6 +141,10 @@ export async function GET(
     (items ?? []) as unknown as FfeItemInput[],
     measurementsById
   ).total;
+  const constructionCostsIncluded = includesConstructionCosts(
+    project.project_stage as ProjectStage,
+    (billingProfile?.contract_type ?? null) as ClientContractType | null
+  );
 
   const input: ProjectFinancialPositionInput = {
     supplierInvoices: (supplierInvoices ?? []).map((invoice) => ({
@@ -150,7 +161,10 @@ export async function GET(
       ? Number(billingProfile.contract_amount_inc_gst)
       : null,
     approvedVariationsExGst,
-    plannedCostExGst: tradeCostPlan + estimateVariationCostExGst + ffeCostPlan,
+    plannedCostExGst: constructionCostsIncluded
+      ? tradeCostPlan + estimateVariationCostExGst + ffeCostPlan
+      : 0,
+    costPlanRequired: constructionCostsIncluded,
   };
 
   return NextResponse.json({

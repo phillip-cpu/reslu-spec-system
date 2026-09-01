@@ -28,7 +28,7 @@ import type { ItemWithLinkedMeasurement } from "@/types/round-b";
  * badge if ever surfaced there; primarily consumed via the nested
  * `measurements(...)` join below for the derived-quantity note.
  */
-const SPEC_VIEW_COLUMNS = [
+const SPEC_VIEW_COLUMN_NAMES = [
   "id",
   "project_id",
   "library_item_id",
@@ -71,7 +71,15 @@ const SPEC_VIEW_COLUMNS = [
   "measurement_id",
   "wastage_pct",
   "coverage_per_unit",
-].join(",");
+] as const;
+
+const SPEC_VIEW_COLUMNS = SPEC_VIEW_COLUMN_NAMES.join(",");
+
+function toSpecViewItem(item: Record<string, unknown>) {
+  return Object.fromEntries(
+    SPEC_VIEW_COLUMN_NAMES.map((column) => [column, item[column]])
+  );
+}
 
 /**
  * Round B additive — nested embed for the linked measurement's
@@ -210,9 +218,10 @@ export async function GET(
  *
  * item_code is deliberately NOT set here — the DB trigger
  * assign_item_code() generates it per project/category with a
- * race-safe counter (BUILD-SPEC.md §3). Pricing and procurement
- * fields are never accepted on this route; they belong to the
- * internal Pricing & Procurement view.
+ * race-safe counter (BUILD-SPEC.md §3). The public/reference RRP may
+ * be captured during quick-add so an item cannot silently lose its
+ * estimate value; negotiated trade price and markup remain confined
+ * to the internal Pricing & Procurement view.
  */
 export async function POST(
   request: NextRequest,
@@ -291,6 +300,16 @@ export async function POST(
       { status: 400 }
     );
   }
+  const requestedRrp = toNum(body.price_rrp);
+  if (
+    body.price_rrp !== undefined &&
+    (requestedRrp === null || !Number.isFinite(requestedRrp) || requestedRrp <= 0)
+  ) {
+    return NextResponse.json(
+      { error: "price_rrp must be a number greater than 0" },
+      { status: 400 }
+    );
+  }
 
   const pick = (bodyVal: string | undefined, libKey: string) =>
     bodyVal?.trim() || (libraryDefaults[libKey] as string | null) || null;
@@ -334,7 +353,14 @@ export async function POST(
         ? "Bunnings product — use the RESLU browser importer"
         : null,
       selected_image_url: (libraryDefaults.selected_image_url as string | null) ?? null,
-      price_rrp: (libraryDefaults.price_rrp as number | null) ?? null,
+      // Quick-add sends the canonical ex-GST RRP. A staff-entered value
+      // wins over a reusable library default and the scraper only fills
+      // price_rrp when it is still null, so this cannot be overwritten by
+      // the later fire-and-forget product scrape.
+      price_rrp:
+        (body.cost_scope ?? "direct") === "trade_package"
+          ? null
+          : requestedRrp ?? (libraryDefaults.price_rrp as number | null) ?? null,
       price_trade: (libraryDefaults.price_trade as number | null) ?? null,
       // Project selling policy, not reusable library data. Existing
       // items are untouched and the P&P markup cell remains editable.
@@ -390,5 +416,8 @@ export async function POST(
     after(() => scrapeProductUrl(item.id, item.product_url));
   }
 
-  return NextResponse.json({ item }, { status: 201 });
+  // Use an explicit allowlist for the response. Library defaults may include
+  // a negotiated trade price, but that internal value must not leak to an
+  // ordinary quick-add caller (or reappear through a future schema column).
+  return NextResponse.json({ item: toSpecViewItem(item) }, { status: 201 });
 }
