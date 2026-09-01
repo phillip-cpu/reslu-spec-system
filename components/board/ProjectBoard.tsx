@@ -55,6 +55,7 @@ import {
   normalizeBoardPhaseName,
   summarizeBoardReadiness,
 } from "@/lib/board-readiness";
+import { summarizeBoardPlanOverview } from "@/lib/board-plan-overview";
 
 interface Props {
   projectId: string;
@@ -279,6 +280,24 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
     () => summarizeBoardReadiness(groups, allTasks),
     [groups, allTasks]
   );
+  const planOverview = useMemo(() => {
+    const doneColumnIds = new Set(
+      columns
+        .filter((column) => isDoneColumnName(column.name))
+        .map((column) => column.id)
+    );
+    const groupedTaskIds = new Set(groups.flatMap((group) => group.tasks.map((task) => task.id)));
+    const tasksInPlanOrder = [
+      ...groups.flatMap((group) => group.tasks),
+      ...allTasks.filter((task) => !groupedTaskIds.has(task.id)),
+    ];
+    return summarizeBoardPlanOverview({
+      tasks: tasksInPlanOrder,
+      doneColumnIds,
+      phaseCount: groups.length,
+      phasesMissingDates: planReadiness.phasesMissingDates,
+    });
+  }, [allTasks, columns, groups, planReadiness.phasesMissingDates]);
 
   // Board v3 — Monday parity round: stage-complete dependency chips —
   // pure derivation (lib/board-constants.ts's computeDependencyChips),
@@ -1078,6 +1097,59 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
 
       <TradeBookingStatusPanel projectId={projectId} refreshKey={bookingRefreshKey} />
 
+      <section className="overflow-hidden border border-nearblack bg-nearblack text-white">
+        <div className="grid gap-5 px-4 py-5 sm:px-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(22rem,1fr)] lg:items-end">
+          <div>
+            <p className="label-caps !text-white/55">Job work plan</p>
+            <h2 className="mt-2 max-w-2xl font-serif text-[clamp(1.75rem,4vw,3.25rem)] leading-[0.98] tracking-tight">
+              Build sequence at a glance.
+            </h2>
+            <p className="mt-3 max-w-xl text-body text-white/65">
+              Plan the phases here. Open an item to assign the trade, set works dates and confirm what happens next.
+            </p>
+          </div>
+          <div>
+            <div className="flex items-end justify-between gap-4">
+              <div>
+                <p className="label-caps !text-white/45">Overall progress</p>
+                <p className="mt-1 text-[2rem] font-semibold leading-none">{planOverview.progressPercent}%</p>
+              </div>
+              <p className="max-w-[16rem] text-right text-caption text-white/55">
+                {planOverview.nextOpenTask
+                  ? `Next open item: ${planOverview.nextOpenTask}`
+                  : "No open items in this plan."}
+              </p>
+            </div>
+            <div className="mt-3 h-1.5 overflow-hidden bg-white/15" aria-label={`${planOverview.progressPercent}% complete`}>
+              <div
+                className="h-full bg-sand transition-[width] duration-300"
+                style={{ width: `${planOverview.progressPercent}%` }}
+              />
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-3 border-t border-white/15">
+          <div className="px-3 py-3 sm:px-5">
+            <p className="label-caps !text-white/40">Complete</p>
+            <p className="mt-1 text-subhead text-white">
+              {planOverview.completedTasks}<span className="text-white/35"> / {planOverview.totalTasks}</span>
+            </p>
+          </div>
+          <div className="border-l border-white/15 px-3 py-3 sm:px-5">
+            <p className="label-caps !text-white/40">Scheduled</p>
+            <p className="mt-1 text-subhead text-white">
+              {planOverview.scheduledTasks}<span className="text-white/35"> items</span>
+            </p>
+          </div>
+          <div className="border-l border-white/15 px-3 py-3 sm:px-5">
+            <p className="label-caps !text-white/40">Phases ready</p>
+            <p className="mt-1 text-subhead text-white">
+              {planOverview.readyPhases}<span className="text-white/35"> / {groups.length}</span>
+            </p>
+          </div>
+        </div>
+      </section>
+
       {/* Booking selection v2 (r24) — board-wide selection action bar.
           Appears whenever at least one row/card-edge checkbox is ticked
           (StackedColumnSection's board rows or GroupRows' phase-card
@@ -1121,13 +1193,13 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
         />
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#dcd6cc] pb-0">
+      <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 border border-[#dcd6cc] bg-nearwhite/95 px-2 shadow-sm backdrop-blur sm:px-3">
         <div className="flex items-center gap-1">
           <button
             type="button"
             onClick={() => setView("kanban")}
             className={clsx(
-              "border-b-2 px-3 py-2 text-subhead transition-colors",
+              "border-b-2 px-3 py-3 text-subhead transition-colors",
               view === "kanban" ? "border-nearblack text-nearblack" : "border-transparent text-charcoal/50 hover:text-nearblack"
             )}
           >
@@ -1137,7 +1209,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
             type="button"
             onClick={switchToGrouped}
             className={clsx(
-              "border-b-2 px-3 py-2 text-subhead transition-colors",
+              "border-b-2 px-3 py-3 text-subhead transition-colors",
               view === "grouped" ? "border-nearblack text-nearblack" : "border-transparent text-charcoal/50 hover:text-nearblack"
             )}
           >
@@ -1151,7 +1223,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
             in localStorage)." Only visibly changes anything when
             view === "kanban" (Grouped list has always been vertical),
             but the preference is shared across both views. */}
-        <div className="mb-1 flex items-center gap-1 self-start">
+        <div className="flex items-center gap-1 self-center">
           <span className={clsx("label-caps !text-charcoal/40", view !== "kanban" && "hidden")}>Layout</span>
           <button
             type="button"
@@ -1357,19 +1429,19 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
         <div className="space-y-6">
           <div
             className={clsx(
-              "border px-4 py-3",
+              "border px-4 py-4 shadow-sm sm:px-5",
               planReadiness.ready
                 ? "border-emerald-700/30 bg-emerald-50/60"
                 : "border-amber-700/35 bg-amber-50/70"
             )}
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="label-caps">Plan readiness</p>
+              <div className="max-w-xl">
+                <p className="label-caps">Before this plan can forecast reliably</p>
                 <p className="mt-1 text-body text-charcoal/70">
                   {planReadiness.ready
-                    ? "Phases, dates and item assignments are ready to feed the Timeline."
-                    : "Resolve these structural gaps before relying on the Timeline or cash forecast."}
+                    ? "The phase structure is ready to feed the Timeline and cash forecast."
+                    : "Resolve the highlighted gaps below; they are the items preventing a trustworthy Timeline and cash forecast."}
                 </p>
               </div>
               {!planReadiness.ready && (
@@ -1424,6 +1496,7 @@ export function ProjectBoard({ projectId, initialColumns, initialGroups, team, c
               key={group.id}
               projectId={projectId}
               group={group}
+              phaseNumber={index + 1}
               columnById={columnById}
               teamById={teamById}
               team={team}
@@ -2508,6 +2581,7 @@ function formatShortDate(dateStr: string): string {
 function GroupTable({
   projectId,
   group,
+  phaseNumber,
   columnById,
   teamById,
   team,
@@ -2541,6 +2615,8 @@ function GroupTable({
   /** Timeline Day-zoom polish round — item 5's reciprocal "View on timeline" link, built here rather than passed as a ready-made href since the group's own phase_id (below) is what the link target actually needs. */
   projectId: string;
   group: BoardGroupV3;
+  /** Visible sequence number so the vertical plan reads as an ordered build, not a stack of unrelated tables. */
+  phaseNumber: number;
   columnById: Map<string, BoardColumnV3>;
   teamById: Map<string, AssigneeSummary>;
   /** Board cockpit round — item 9 parity: threaded through to GroupRows' shared BoardTaskEditorBody. */
@@ -2625,6 +2701,13 @@ function GroupTable({
   const summaryLine = groupSummaryLine(
     topLevelTasks.map((t) => ({ isSubItem: false, columnName: columnById.get(t.column_id)?.name ?? "" }))
   );
+  const completedCount = topLevelTasks.filter((task) =>
+    isDoneColumnName(columnById.get(task.column_id)?.name ?? "")
+  ).length;
+  const completionPercent =
+    topLevelTasks.length > 0
+      ? Math.round((completedCount / topLevelTasks.length) * 100)
+      : 0;
 
   // Board v3.1 — display-first cells, item 8: when ANY task in this
   // group has works dates set, the header shows the COMPUTED range
@@ -2675,7 +2758,10 @@ function GroupTable({
   // down), so the two stay visually paired.
   return (
     <div
-      className={clsx("border", dragOver ? "border-nearblack" : "border-[#dcd6cc]")}
+      className={clsx(
+        "border bg-nearwhite shadow-sm transition-shadow hover:shadow-md",
+        dragOver ? "border-nearblack" : "border-[#dcd6cc]"
+      )}
       style={{ borderLeft: `4px solid ${stageColor}` }}
       onDragOver={(e) => {
         e.preventDefault();
@@ -2727,7 +2813,7 @@ function GroupTable({
           onDropGroup(position);
         }}
         title={collapsed ? "Expand stage" : "Collapse stage"}
-        className="relative flex flex-wrap items-center justify-between gap-2 border-b border-[#dcd6cc] bg-offwhite py-2 pr-9 cursor-pointer md:pr-3"
+        className="relative flex flex-wrap items-center justify-between gap-3 border-b border-[#dcd6cc] bg-offwhite py-3 pr-9 cursor-pointer md:pr-3"
       >
         {groupDropPosition && (
           <span
@@ -2738,7 +2824,14 @@ function GroupTable({
             )}
           />
         )}
-        <div className="flex flex-wrap items-center gap-3 pl-3">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 pl-3 sm:gap-3">
+          <span
+            className="flex h-8 w-8 shrink-0 items-center justify-center border text-caption font-semibold"
+            style={{ borderColor: stageColor, color: stageColor }}
+            aria-label={`Phase ${phaseNumber}`}
+          >
+            {String(phaseNumber).padStart(2, "0")}
+          </span>
           <button
             type="button"
             draggable
@@ -2810,7 +2903,7 @@ function GroupTable({
                   }
                 }}
                 title="Double-click or press Enter to rename phase"
-                className="label-caps hover:opacity-70 focus:outline-none focus-visible:ring-1 focus-visible:ring-sand"
+                className="text-left text-subhead font-semibold uppercase tracking-[0.08em] hover:opacity-70 focus:outline-none focus-visible:ring-1 focus-visible:ring-sand"
                 style={{ color: stageColor }}
               >
                 {group.name}
@@ -2829,7 +2922,20 @@ function GroupTable({
               </button>
             </span>
           )}
-          <span className="text-caption text-charcoal/40">{summaryLine}</span>
+          <span className="flex items-center gap-2 text-caption text-charcoal/50">
+            {summaryLine}
+            {topLevelTasks.length > 0 && (
+              <span className="hidden items-center gap-1.5 sm:inline-flex">
+                <span className="h-1 w-16 overflow-hidden bg-charcoal/10">
+                  <span
+                    className="block h-full transition-[width] duration-300"
+                    style={{ width: `${completionPercent}%`, backgroundColor: stageColor }}
+                  />
+                </span>
+                <span>{completionPercent}%</span>
+              </span>
+            )}
+          </span>
           {/* Round A "Board owns dates, Timeline is the visual" — compact
               start/end inputs, ONLY for groups linked to a phase
               (phase_id present); unlinked/legacy groups render nothing
@@ -2934,7 +3040,7 @@ function GroupTable({
               composer — already a quiet single-line input + Add/Cancel
               on one row; padding tightened slightly (py-1.5 -> py-1) to
               match this round's ~32px row rhythm. */}
-          <div className="border-t border-[#e5e0d6] px-3 py-1">
+          <div className="border-t border-[#e5e0d6] bg-white px-3 py-2">
             {composing ? (
               <form onSubmit={submitNewTask} className="flex gap-2">
                 <input
@@ -2953,8 +3059,8 @@ function GroupTable({
                 </button>
               </form>
             ) : (
-              <button type="button" onClick={() => setComposing(true)} className="w-full px-1 py-1 text-left text-caption text-charcoal/50 hover:text-nearblack">
-                + Add item
+              <button type="button" onClick={() => setComposing(true)} className="w-full border border-dashed border-[#c9c2b4] px-3 py-2 text-left text-caption font-medium text-charcoal/65 hover:border-nearblack hover:text-nearblack sm:border-transparent sm:px-1 sm:py-1">
+                + Add item to {group.name}
               </button>
             )}
           </div>
@@ -3482,8 +3588,8 @@ function GroupRows({
             // background exists in this table (confirmed: only a
             // hover state and a distinct isSubItem tint, neither of
             // which alternates by row index) — nothing to turn off.
-            "h-8 cursor-pointer border-b border-charcoal/10 last:border-b-0 hover:bg-nearwhite md:cursor-move",
-            isSubItem && "bg-nearwhite/60",
+            "mb-2 grid min-h-16 cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-2 border border-charcoal/10 bg-white px-2 py-2 shadow-sm last:mb-0 hover:border-charcoal/25 md:mb-0 md:table-row md:h-8 md:min-h-0 md:border-x-0 md:border-t-0 md:bg-transparent md:px-0 md:py-0 md:shadow-none md:hover:bg-nearwhite md:cursor-move",
+            isSubItem && "ml-5 bg-nearwhite/70 md:ml-0 md:bg-nearwhite/60",
             // Board v3.2 — reorder slot animation: neighbouring rows
             // translate apart via a CSS transform (never a layout
             // property — see gapTransform's own doc comment for the
@@ -3500,7 +3606,7 @@ function GroupRows({
           )}
           style={{ transform: gapTransform(listKey, siblingIndex) || undefined }}
         >
-          <td className="w-[8%] py-1 pl-2 pr-1 md:w-[4%] md:pl-3" onClick={(e) => e.stopPropagation()}>
+          <td className="flex pt-1 md:table-cell md:w-[4%] md:py-1 md:pl-3 md:pr-1" onClick={(e) => e.stopPropagation()}>
             {/* Booking selection v2 (r24) — item 1: row-edge checkbox,
                 phase-card item rows (both top-level and sub-item rows —
                 each is its own board_task, individually bookable).
@@ -3513,7 +3619,7 @@ function GroupRows({
               className="h-3.5 w-3.5"
             />
           </td>
-          <td className="w-[40%] py-1 pl-1 pr-1 text-body text-nearblack md:w-[26%] md:pr-3">
+          <td className="min-w-0 py-0.5 text-body text-nearblack md:table-cell md:w-[26%] md:py-1 md:pl-1 md:pr-3">
             {/* Board v3.1 — display-first cells, item 3: nowrap +
                 min-w-0 (was flex-wrap) so a long title ellipsis-
                 truncates in this ~32px single-line row instead of
@@ -3600,6 +3706,30 @@ function GroupRows({
                 </span>
               )}
             </span>
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-caption text-charcoal/55 md:hidden" onClick={(event) => event.stopPropagation()}>
+              <span className="inline-flex items-center gap-1">
+                <span className="label-caps !text-charcoal/35">Works</span>
+                <WorksDateCell
+                  startDate={task.booking_date}
+                  endDate={task.booking_end_date}
+                  visitId={task.visit_id}
+                  visitStatusLabel={task.visit ? BOOKING_STATUS_LABEL[task.visit.status] : null}
+                  onCommit={(next) => onPatchTask(task, next, next)}
+                />
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="label-caps !text-charcoal/35">Due</span>
+                <DueDateCell
+                  value={isDone ? null : task.due_date}
+                  timeValue={isDone ? null : task.due_time}
+                  pastDue={pastDue}
+                  onCommit={(next) => onPatchTask(task, next, next)}
+                />
+              </span>
+              {task.assignees.length > 0 && (
+                <span className="truncate">{task.assignees.map((assignee) => assignee.full_name).join(", ")}</span>
+              )}
+            </div>
           </td>
           <td className="hidden py-1 pr-3 md:table-cell" onClick={(e) => e.stopPropagation()}>
             {/* Board v3.1 — display-first cells, item 4: WHO — quiet
@@ -3635,7 +3765,7 @@ function GroupRows({
               )}
             </PopoverCell>
           </td>
-          <td className="w-[18%] py-1 pr-1 md:w-[10%] md:pr-3" onClick={(e) => e.stopPropagation()}>
+          <td className="pt-0.5 md:table-cell md:w-[10%] md:py-1 md:pr-3" onClick={(e) => e.stopPropagation()}>
             {/* Board v3.1 — display-first cells, item 1: STATUS — quiet
                 coloured pill at rest; click opens a popover menu of
                 every valid column, same underlying column_id PATCH the
@@ -3681,7 +3811,7 @@ function GroupRows({
               )}
             </PopoverCell>
           </td>
-          <td className="w-[17%] py-1 pr-1 md:w-[13%] md:pr-3" onClick={(e) => e.stopPropagation()}>
+          <td className="hidden py-1 pr-3 md:table-cell md:w-[13%]" onClick={(e) => e.stopPropagation()}>
             {/* Board v3.3 — WORKS is now a genuine editable start/end
                 popover (booking_date/booking_end_date REJOINED PATCH
                 /api/board-tasks/[id]'s whitelist — see that route's
@@ -3702,7 +3832,7 @@ function GroupRows({
               onCommit={(next) => onPatchTask(task, next, next)}
             />
           </td>
-          <td className="w-[17%] py-1 pr-1 md:w-[10%] md:pr-3" onClick={(e) => e.stopPropagation()}>
+          <td className="hidden py-1 pr-3 md:table-cell md:w-[10%]" onClick={(e) => e.stopPropagation()}>
             {/* Board v3.1 — display-first cells, item 2: DUE — quiet
                 display chip ("14 Jul" / "—") at rest; click swaps to a
                 real date input. Commits via the SAME onPatchTask
@@ -3728,8 +3858,8 @@ function GroupRows({
             visit sub-bars already use, keyed by visit id (not task id)
             for consistency with that file's own convention. */}
         {task.visit_id && reconfirmPrompts.has(task.visit_id) && (
-          <tr className="border-b border-[#e5e0d6] last:border-b-0">
-            <td colSpan={8} className="px-3 pb-1.5">
+          <tr className="mb-2 block border border-[#e5e0d6] bg-white last:border-b md:mb-0 md:table-row md:border-x-0 md:border-t-0">
+            <td colSpan={8} className="block px-3 py-2 md:table-cell md:pb-1.5 md:pt-0">
               <ReconfirmAffordance
                 onResend={() => onResendConfirmation(task.visit_id as string)}
                 onDismiss={() => onDismissReconfirm(task.visit_id as string)}
@@ -3738,8 +3868,8 @@ function GroupRows({
           </tr>
         )}
         {isExpanded && (
-          <tr className="border-b border-[#e5e0d6] bg-nearwhite last:border-b-0">
-            <td colSpan={8} className="px-3 pb-3">
+          <tr className="mb-2 block border border-[#e5e0d6] bg-nearwhite last:border-b md:mb-0 md:table-row md:border-x-0 md:border-t-0">
+            <td colSpan={8} className="block px-3 pb-3 pt-2 md:table-cell md:pt-0">
               <BoardTaskEditorBody
                 task={task}
                 team={team}
@@ -3859,7 +3989,7 @@ function GroupRows({
 
   return (
     <table
-      className="w-full table-fixed text-left"
+      className="block w-full text-left md:table md:table-fixed"
       // Board v3.2 — fallback for "drag left the table entirely
       // without dropping" (e.g. dragged out to another group/section) —
       // relatedTarget is null/outside the table in that case; a
@@ -3874,7 +4004,7 @@ function GroupRows({
         }
       }}
     >
-      <thead>
+      <thead className="hidden md:table-header-group">
         {/* Board v3 — Monday parity round: exact column-header text per
             BUILD-SPEC.md — "ITEM · WHO · STATUS · CONTACT · WORKS ·
             DUE · AFTER".
@@ -3909,7 +4039,9 @@ function GroupRows({
           <th className="hidden w-[18%] py-1.5 pr-3 font-normal md:table-cell">AFTER</th>
         </tr>
       </thead>
-      <tbody>{topLevelTasks.map((task, index) => renderRow(task, index, topLevelTasks.length, false))}</tbody>
+      <tbody className="block bg-offwhite/50 p-2 md:table-row-group md:bg-transparent md:p-0">
+        {topLevelTasks.map((task, index) => renderRow(task, index, topLevelTasks.length, false))}
+      </tbody>
     </table>
   );
 }
