@@ -2231,15 +2231,6 @@ def agent_worker_loop(
             if job:
                 try:
                     if job_is_processing(rest, job["id"]):
-                        if slug == "marco" and not voice_only:
-                            try:
-                                recover_failed_marco_conversation_job(rest, job, exc)
-                            except Exception as recovery_error:  # noqa: BLE001 - preserve original failure
-                                print(
-                                    f"[conversation-bridge] could not queue Marco recovery: {recovery_error}",
-                                    file=sys.stderr,
-                                    flush=True,
-                                )
                         rest.patch(
                             "agent_conversation_jobs",
                             job["id"],

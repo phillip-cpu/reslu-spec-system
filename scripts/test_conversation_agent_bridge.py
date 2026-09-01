@@ -412,6 +412,35 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             )
             self.assertFalse(call.kwargs["daemon"])
 
+    @mock.patch.object(conversation_agent_bridge, "process_job")
+    @mock.patch.object(conversation_agent_bridge, "job_is_processing", return_value=True)
+    @mock.patch.object(conversation_agent_bridge, "SupabaseRest")
+    def test_failed_chat_turn_is_not_turned_into_a_recovery_assignment(
+        self,
+        rest_class,
+        _job_is_processing,
+        process_job,
+    ):
+        rest = rest_class.return_value
+        job = {"id": "job-1", "agent_id": "marco-1"}
+        rest.claim.side_effect = [job, KeyboardInterrupt()]
+        process_job.side_effect = RuntimeError("provider unavailable")
+
+        with mock.patch.object(
+            conversation_agent_bridge,
+            "recover_failed_marco_conversation_job",
+        ) as recover:
+            with self.assertRaises(KeyboardInterrupt):
+                conversation_agent_bridge.agent_worker_loop(
+                    "https://example.supabase.co",
+                    "secret",
+                    "marco",
+                )
+
+        recover.assert_not_called()
+        rest.patch.assert_called_once()
+        self.assertEqual(rest.patch.call_args.args[2]["status"], "failed")
+
     def test_background_tasks_have_workers_independent_from_conversation_turns(self):
         with mock.patch.object(conversation_agent_bridge.threading, "Thread") as thread:
             workers = conversation_agent_bridge.build_task_workers(
