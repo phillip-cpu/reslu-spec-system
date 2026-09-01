@@ -262,7 +262,8 @@ export async function POST(request: NextRequest) {
           created.id,
           visitDatetime,
           0,
-          DEFAULT_PHILLIP_PHONE
+          DEFAULT_PHILLIP_PHONE,
+          created.site_visit_location || created.location
         );
         // BUILD-SPEC.md r27 item 5 — the brief questionnaire link used
         // to ride ONLY the day-before reminder (app/api/visit-emails/
@@ -284,6 +285,7 @@ export async function POST(request: NextRequest) {
             last_name: leadLastName(created.surname_project),
             visit_date: formatVisitDate(visitDatetime),
             visit_time: formatVisitTime(visitDatetime),
+            visit_location: created.site_visit_location || created.location,
             suburb: suburbFrom(created.site_visit_location || created.location),
             calendar_link: calendarLink,
             brief_link: briefLink,

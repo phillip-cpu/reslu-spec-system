@@ -166,6 +166,7 @@ export async function POST(
             last_name: rest.join(" "),
             visit_date: formatVisitDate(visitDatetime),
             visit_time: formatVisitTime(visitDatetime),
+            visit_location: event.location,
             suburb: suburbFrom(event.location),
           },
           visitDatetime,

@@ -39,6 +39,12 @@ for backward compatibility even though neither current template
 references them — a future template can use either with no code
 change.
 
+The WHERE row now uses `{{visit_location}}`. The confirmation and
+reminder paragraphs use `{{visit_confirmation_body}}` and
+`{{visit_reminder_body}}`, derived at merge time: studio bookings keep
+the studio/arrival wording, while client-address bookings say that
+Phillip will meet the client at home and prepare before arriving.
+
 Both templates carry an `invite.ics` Resend attachment alongside the
 HTML (native Apple Mail/Outlook "add to calendar," distinct from the
 in-body "ADD TO CALENDAR" link) — see `lib/ics.ts`'s

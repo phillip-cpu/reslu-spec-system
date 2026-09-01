@@ -13,6 +13,7 @@ import {
   suburbFrom,
 } from "@/lib/visit-emails";
 import { buildLeadVisitCalendarAssets, ensureBriefToken, briefUrlFor } from "@/lib/lead-brief";
+import { RESLU_STUDIO_ADDRESS } from "@/lib/ics";
 import type { LeadWithBriefFields } from "@/types/round-lead-flow";
 import { isProjectType, normaliseProjectSubtype } from "@/lib/project-templates";
 
@@ -171,17 +172,25 @@ export async function PATCH(
   // just the field the user actually touched), so `"site_visit_date"
   // in update` alone can't tell a real reschedule apart from an
   // unrelated field edit. Read the PRE-update value here (only when
-  // site_visit_date is actually part of this PATCH, to avoid an extra
-  // query on every unrelated save) so the trigger below can compare
-  // before vs. after and fire ONLY on an actual change.
-  let previousSiteVisitDate: string | null = null;
-  if ("site_visit_date" in update) {
+  // any visit-defining field is part of this PATCH, to avoid an extra
+  // query on unrelated saves) so the trigger below can compare the
+  // effective date and address before vs. after.
+  let previousVisit: {
+    site_visit_date: string | null;
+    site_visit_location: string | null;
+    location: string | null;
+  } | null = null;
+  if (
+    "site_visit_date" in update ||
+    "site_visit_location" in update ||
+    "location" in update
+  ) {
     const { data: before } = await supabase
       .from("leads")
-      .select("site_visit_date")
+      .select("site_visit_date,site_visit_location,location")
       .eq("id", id)
       .maybeSingle();
-    previousSiteVisitDate = before?.site_visit_date ?? null;
+    previousVisit = before ?? null;
   }
 
   const { data: lead, error } = await supabase
@@ -200,10 +209,9 @@ export async function PATCH(
   }
 
   // Site-visit lifecycle emails (docs/RESLU-Spec-Visit-Emails-Brief.md):
-  // fire ONLY when site_visit_date actually CHANGED value (see the
-  // previousSiteVisitDate read above — this is what makes "re-send only
-  // if date/time changed" hold even though the UI always resends the
-  // same field on every save). Fire-and-forget via next/server's
+  // fire when the effective date/time OR meeting address changes. The
+  // before/after comparison matters because the UI sends the complete
+  // draft on every save. Fire-and-forget via next/server's
   // after() (same pattern as the Monday sync kickoff in
   // app/api/items/[id]/route.ts) so a slow/failed email send never
   // blocks or fails the lead save; uses its own service-role client
@@ -214,16 +222,26 @@ export async function PATCH(
   // A cleared site_visit_date (null after this PATCH) cancels any
   // still-pending queued sends for this lead (brief: "If a visit is
   // cancelled before the reminder fires, don't send it"). A set/
-  // changed site_visit_date with an email on file first cancels any
-  // STILL-PENDING queued send left over from the PRIOR date/time (a
-  // confirmation queued outside the send window for the old date must
-  // never go out once the visit has been rescheduled to a new one),
+  // changed date or address with an email on file first cancels any
+  // STILL-PENDING queued send left over from the prior visit details,
   // then sends/queues the fresh confirmation — sendOrQueue's own guard
   // (see lib/visit-emails.ts) additionally makes this a silent no-op if
   // a confirmation was already SENT for this exact date/time.
-  if ("site_visit_date" in update) {
+  if (previousVisit) {
     const typedLead = lead as LeadWithBriefFields;
-    if (typedLead.site_visit_date !== previousSiteVisitDate) {
+    const previousLocation =
+      previousVisit.site_visit_location || previousVisit.location || RESLU_STUDIO_ADDRESS;
+    const currentLocation =
+      typedLead.site_visit_location || typedLead.location || RESLU_STUDIO_ADDRESS;
+    const dateChanged = typedLead.site_visit_date !== previousVisit.site_visit_date;
+    const locationChanged = currentLocation !== previousLocation;
+    // An explicit selection can equal the old fallback address. Still
+    // attempt the send so legacy confirmations that used the formerly
+    // hard-coded studio address are corrected; sendOrQueue deduplicates
+    // records already sent with this same resolved address.
+    const explicitLocationSelectionChanged =
+      typedLead.site_visit_location !== previousVisit.site_visit_location;
+    if (dateChanged || locationChanged || explicitLocationSelectionChanged) {
       after(async () => {
         const service = createServiceRoleClient();
         try {
@@ -236,9 +254,8 @@ export async function PATCH(
           const visitDatetime = typedLead.site_visit_date;
 
           // Lead flow round (048) — RFC 5545 SEQUENCE bookkeeping.
-          // `previousSiteVisitDate` non-null means this is a RESCHEDULE
-          // of an already-booked visit (not the first booking, which
-          // has previousSiteVisitDate === null) — increment so the
+          // A prior booking means this is an update to an existing
+          // calendar event (date/time, address, or both) — increment so the
           // invite.ics re-send carries a higher SEQUENCE than the one
           // already sitting in the recipient's calendar app, per
           // leads.visit_ics_sequence's migration 048 comment.
@@ -249,7 +266,7 @@ export async function PATCH(
           // otherwise both read the same starting value and collide on
           // the same SEQUENCE number.
           let sequence = typedLead.visit_ics_sequence ?? 0;
-          if (previousSiteVisitDate) {
+          if (previousVisit.site_visit_date) {
             const { data: incremented, error: incrementError } = await service.rpc(
               "increment_visit_ics_sequence",
               { p_lead_id: typedLead.id }
@@ -266,7 +283,8 @@ export async function PATCH(
             typedLead.id,
             visitDatetime,
             sequence,
-            DEFAULT_PHILLIP_PHONE
+            DEFAULT_PHILLIP_PHONE,
+            typedLead.site_visit_location || typedLead.location
           );
 
           // BUILD-SPEC.md r27 item 5 — see POST /api/leads' own identical
@@ -289,6 +307,7 @@ export async function PATCH(
               last_name: leadLastName(typedLead.surname_project),
               visit_date: formatVisitDate(visitDatetime),
               visit_time: formatVisitTime(visitDatetime),
+              visit_location: typedLead.site_visit_location || typedLead.location,
               suburb: suburbFrom(typedLead.site_visit_location || typedLead.location),
               calendar_link: calendarLink,
               brief_link: briefLink,

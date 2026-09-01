@@ -216,7 +216,8 @@ async function handle(request: NextRequest) {
         lead.id,
         visitDatetime,
         lead.visit_ics_sequence ?? 0,
-        DEFAULT_PHILLIP_PHONE
+        DEFAULT_PHILLIP_PHONE,
+        lead.site_visit_location || lead.location
       );
 
       const result = await sendOrQueue(supabase, {
@@ -233,6 +234,7 @@ async function handle(request: NextRequest) {
           last_name: leadLastName(lead.surname_project),
           visit_date: formatVisitDate(visitDatetime),
           visit_time: formatVisitTime(visitDatetime),
+          visit_location: lead.site_visit_location || lead.location,
           suburb: suburbFrom(lead.site_visit_location || lead.location),
           calendar_link: calendarLink,
           brief_link: briefLink,
@@ -312,6 +314,7 @@ async function handle(request: NextRequest) {
           last_name: rest.join(" "),
           visit_date: formatVisitDate(visitDatetime),
           visit_time: formatVisitTime(visitDatetime),
+          visit_location: event.location,
           suburb: suburbFrom(event.location),
         },
         visitDatetime,

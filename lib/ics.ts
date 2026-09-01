@@ -297,6 +297,7 @@ function toAdelaideLocalIcs(iso: string): string {
 }
 
 const DEFAULT_ICS_PHONE = "+61 439 870 594";
+export const RESLU_STUDIO_ADDRESS = "219 Sturt Street, Adelaide SA 5000";
 
 export interface VisitIcsInput {
   /** Baked into the stable UID `lead-visit-{leadId}@reslu.com.au`. */
@@ -310,18 +311,28 @@ export interface VisitIcsInput {
    * reschedule — see that column's migration 048 comment). */
   sequence: number;
   phone?: string;
+  /** Meeting address selected on the lead. Falls back to the studio
+   * only for legacy records that do not have a location saved. */
+  location?: string | null;
 }
 
 /**
  * Builds the lead-visit invite.ics attached to both visit-confirmation
  * .html and visit-reminder.html (docs/RESLU-lead-flow-brief.md build
  * task 5). METHOD:PUBLISH, TZID Australia/Adelaide (real VTIMEZONE
- * block), SUMMARY "Site Visit · RESLU", LOCATION "219 Sturt Street,
- * Adelaide SA 5000", ORGANIZER aria@reslu.com.au, stable UID
+ * block), SUMMARY "Site Visit · RESLU", the selected meeting location,
+ * ORGANIZER aria@reslu.com.au, stable UID
  * `lead-visit-{leadId}@reslu.com.au`, SEQUENCE per input.
  */
 export function generateVisitIcs(input: VisitIcsInput): string {
-  const { leadId, start, end, sequence, phone = DEFAULT_ICS_PHONE } = input;
+  const {
+    leadId,
+    start,
+    end,
+    sequence,
+    phone = DEFAULT_ICS_PHONE,
+    location = RESLU_STUDIO_ADDRESS,
+  } = input;
 
   const dtStartLocal = toAdelaideLocalIcs(start);
   const dtEndLocal = toAdelaideLocalIcs(
@@ -345,7 +356,7 @@ export function generateVisitIcs(input: VisitIcsInput): string {
     `DTEND;TZID=Australia/Adelaide:${dtEndLocal}`,
     `SEQUENCE:${safeSequence}`,
     foldLine(`SUMMARY:${escapeIcsText("Site Visit · RESLU")}`),
-    foldLine(`LOCATION:${escapeIcsText("219 Sturt Street, Adelaide SA 5000")}`),
+    foldLine(`LOCATION:${escapeIcsText(location?.trim() || RESLU_STUDIO_ADDRESS)}`),
     foldLine(`DESCRIPTION:${escapeIcsText(`With Phillip. Need to move it? Call ${phone}.`)}`),
     foldLine(`ORGANIZER;CN=${escapeIcsText(DEFAULT_ORGANIZER_NAME)}:mailto:${DEFAULT_ORGANIZER_EMAIL}`),
     "STATUS:CONFIRMED",
@@ -417,8 +428,8 @@ function gcalValueEncode(value: string): string {
 /**
  * The `{{calendar_link}}` merge value for the lead-visit emails — the
  * EXACT Google Calendar "render" URL shape docs/RESLU-lead-flow-brief.md
- * build task 5 specifies (fixed text/location/details copy, only the
- * dates vary per visit; default 1-hour duration when `end` is omitted,
+ * build task 5 specifies, with the selected meeting location and a
+ * default 1-hour duration when `end` is omitted,
  * same as generateVisitIcs()). Distinct from the generic
  * googleCalendarUrl() above (used by LeadDetailPanel's own "Add to
  * calendar" button, out of this round's reason to touch) purely
@@ -428,12 +439,13 @@ function gcalValueEncode(value: string): string {
 export function leadVisitGoogleCalendarUrl(
   start: string,
   end?: string | null,
-  phone: string = DEFAULT_ICS_PHONE
+  phone: string = DEFAULT_ICS_PHONE,
+  visitLocation: string = RESLU_STUDIO_ADDRESS
 ): string {
   const dtStart = toIcsUtc(start);
   const dtEnd = toIcsUtc(end ?? new Date(new Date(start).getTime() + 60 * 60 * 1000).toISOString());
   const text = gcalValueEncode("Site Visit · RESLU");
-  const location = gcalValueEncode("219 Sturt Street, Adelaide SA 5000");
+  const location = gcalValueEncode(visitLocation.trim() || RESLU_STUDIO_ADDRESS);
   const details = gcalValueEncode(`With Phillip. Need to move it? Call ${phone}.`);
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&dates=${dtStart}/${dtEnd}&ctz=Australia/Adelaide&location=${location}&details=${details}`;
 }

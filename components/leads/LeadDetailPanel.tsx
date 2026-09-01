@@ -10,7 +10,7 @@ import {
   PROJECT_TYPES,
   SINGLE_ROOM_PROJECT_SUBTYPES,
 } from "@/lib/project-templates";
-import { googleCalendarUrl } from "@/lib/ics";
+import { googleCalendarUrl, RESLU_STUDIO_ADDRESS } from "@/lib/ics";
 import { AddToCalendarMenu } from "@/components/shared/AddToCalendarMenu";
 import type { InviteeOption } from "@/types/phase-small-round";
 import type { StandardItemIdsInput } from "@/types/round-d";
@@ -443,12 +443,30 @@ export function LeadDetailPanel({ lead, onClose, onPatch, onMoveStage, onDelete,
               )}
             </label>
             <label className="block sm:col-span-2">
-              <span className={labelClass}>Site visit location note</span>
+              <span className={labelClass}>Site visit address</span>
               <input
                 value={draft.site_visit_location ?? ""}
                 onChange={(e) => setField("site_visit_location", e.target.value || null)}
+                placeholder={draft.location || "Enter the meeting address"}
                 className={inputClass}
               />
+              <span className="mt-1.5 flex flex-wrap gap-3 text-caption">
+                <button
+                  type="button"
+                  disabled={!draft.location}
+                  onClick={() => setField("site_visit_location", draft.location)}
+                  className="text-nearblack underline underline-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Use client address
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setField("site_visit_location", RESLU_STUDIO_ADDRESS)}
+                  className="text-nearblack underline underline-offset-2"
+                >
+                  Use RESLU Studio
+                </button>
+              </span>
             </label>
             {/* Site-visit lifecycle emails (docs/RESLU-Spec-Visit-Emails-
                 Brief.md) — last-sent status, e.g. "Confirmation sent 8

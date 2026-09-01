@@ -78,6 +78,26 @@ export async function loadTemplate(name: VisitEmailTemplateName): Promise<string
 // ------------------------------------------------------------
 
 export const DEFAULT_PHILLIP_PHONE = "+61 439 870 594";
+export const DEFAULT_VISIT_LOCATION = "RESLU Studio · 219 Sturt Street, Adelaide SA 5000";
+
+function isStudioVisit(location: string | null | undefined): boolean {
+  const normalized = (location?.trim() || DEFAULT_VISIT_LOCATION).toLowerCase();
+  return normalized.includes("219 sturt street") || normalized.includes("reslu studio");
+}
+
+function confirmationBodyFor(location: string | null | undefined): string {
+  if (isStudioVisit(location)) {
+    return "It was good to talk. We have set time aside at the studio to sit down properly and talk through what you are hoping to build. A short questionnaire will reach you a couple of days before your visit; your answers will be printed and on the table when you arrive.";
+  }
+  return "It was good to talk. We have set time aside to meet you at your home and talk through what you are hoping to build. A short questionnaire will reach you a couple of days before our visit; your answers will help us prepare before we arrive.";
+}
+
+function reminderBodyFor(location: string | null | undefined): string {
+  if (isStudioVisit(location)) {
+    return "A short note before your visit. Your project brief takes about ten minutes, and your answers will be printed and on the table when you arrive. Bring anything you have collected too: photos, plans, rough ideas.";
+  }
+  return "A short note before we visit your home. Your project brief takes about ten minutes, and your answers will help us prepare before we arrive. Please have anything you have collected handy too: photos, plans, rough ideas.";
+}
 
 export interface VisitEmailMergeData {
   first_name?: string | null;
@@ -86,6 +106,8 @@ export interface VisitEmailMergeData {
   visit_date?: string | null;
   /** e.g. "10:00am" — see formatVisitTime() below. */
   visit_time?: string | null;
+  /** Full meeting address displayed in the WHERE row. */
+  visit_location?: string | null;
   suburb?: string | null;
   phillip_phone?: string | null;
   /** Lead flow round (048) — the Google Calendar "render" URL merged
@@ -137,6 +159,10 @@ export function merge(html: string, data: VisitEmailMergeData): string {
     last_name: data.last_name ?? "",
     visit_date: data.visit_date ?? "",
     visit_time: data.visit_time ?? "",
+    visit_location:
+      data.visit_location?.trim() || DEFAULT_VISIT_LOCATION,
+    visit_confirmation_body: confirmationBodyFor(data.visit_location),
+    visit_reminder_body: reminderBodyFor(data.visit_location),
     suburb: data.suburb ?? "",
     phillip_phone: data.phillip_phone ?? DEFAULT_PHILLIP_PHONE,
     // Lead flow round (048) — both blank-safe like every field above;
@@ -497,12 +523,10 @@ export interface SendOrQueueResult {
  *
  *   1. GUARD — skip as 'duplicate' if a 'sent' row already exists for
  *      this exact (record_type, record_id, template) whose logged
- *      detail.visit_datetime equals the CURRENT visit datetime (brief:
- *      "Send once ... re-send only if date/time changed, with the same
- *      template"). A 'sent' row logged against a DIFFERENT datetime
- *      (the visit was rescheduled since) does not block a fresh send —
- *      this is what makes editing a visit's date/time correctly
- *      trigger exactly one new confirmation.
+ *      detail.visit_datetime and detail.visit_location equal the
+ *      CURRENT visit. A different date/time or address does not block
+ *      a fresh send, so a reschedule or venue correction produces one
+ *      updated confirmation.
  *   2. TEMPLATE LOAD — a missing/unreadable template file never crashes
  *      the caller's primary action (saving a lead, creating a client
  *      event); it logs a 'skipped' row and returns cleanly (see
@@ -550,12 +574,20 @@ export async function sendOrQueue(
     .maybeSingle();
 
   const existingDetail = (existingSent?.detail ?? null) as VisitEmailDetail | null;
-  if (existingSent && existingDetail?.visit_datetime === visitDatetime) {
-    return { action: "duplicate", reason: "Already sent for this visit date/time" };
+  const isVisitTemplate = template === "visit-confirmation" || template === "visit-reminder";
+  const currentVisitLocation = mergeData.visit_location?.trim() || DEFAULT_VISIT_LOCATION;
+  const existingVisitLocation = existingDetail?.visit_location?.trim() || DEFAULT_VISIT_LOCATION;
+  if (
+    existingSent &&
+    existingDetail?.visit_datetime === visitDatetime &&
+    (!isVisitTemplate || existingVisitLocation === currentVisitLocation)
+  ) {
+    return { action: "duplicate", reason: "Already sent for this visit date/time and location" };
   }
 
   const detail: VisitEmailDetail = {
     ...mergeData,
+    ...(isVisitTemplate ? { visit_location: currentVisitLocation } : {}),
     subject,
     visit_datetime: visitDatetime,
     // Lead flow round (048) — carried inside `detail` (not just passed

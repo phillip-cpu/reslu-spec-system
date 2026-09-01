@@ -42,6 +42,7 @@ export interface VisitEmailDetail {
   last_name?: string | null;
   visit_date?: string | null;
   visit_time?: string | null;
+  visit_location?: string | null;
   suburb?: string | null;
   phillip_phone?: string | null;
   subject?: string | null;

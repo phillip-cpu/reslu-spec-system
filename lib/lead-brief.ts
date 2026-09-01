@@ -95,10 +95,11 @@ export function buildLeadVisitCalendarAssets(
   leadId: string,
   visitDatetime: string,
   sequence: number,
-  phone?: string
+  phone?: string,
+  location?: string | null
 ): LeadVisitCalendarAssets {
-  const calendarLink = leadVisitGoogleCalendarUrl(visitDatetime, null, phone);
-  const ics = generateVisitIcs({ leadId, start: visitDatetime, sequence, phone });
+  const calendarLink = leadVisitGoogleCalendarUrl(visitDatetime, null, phone, location ?? undefined);
+  const ics = generateVisitIcs({ leadId, start: visitDatetime, sequence, phone, location });
   return {
     calendarLink,
     icsAttachment: {
