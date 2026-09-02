@@ -1487,7 +1487,8 @@ function FfeBlock({ ffe }: { ffe: EstimateResponse["ffe"] }) {
           <div className="border-t border-[#dcd6cc] px-4 py-3">
             <p className="text-body text-nearblack">
               FF&amp;E client quote {formatMoney(ffe.client_total)} · product cost {formatMoney(ffe.total)} —{" "}
-              {ffe.quoted_count} quoted · {ffe.placeholder_count} RRP placeholder{ffe.placeholder_count === 1 ? "" : "s"}
+              {ffe.quoted_count} quoted · {ffe.placeholder_count}{" "}
+              {ffe.placeholder_count === 1 ? "RRP placeholder" : "RRP placeholders"}
               {ffe.unpriced_count > 0 && (
                 <span className="text-charcoal/50"> · {ffe.unpriced_count} unpriced</span>
               )}
