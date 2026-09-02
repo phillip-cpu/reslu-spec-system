@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import type { SowDocument, SowLineKind } from "@/types";
-import type { SowLineWithTrade, SowSectionWithTradedLines, SuggestTradeTagsResponse } from "@/types/sow-trade-tags";
+import type {
+  CopySowLinesResponse,
+  SowLineWithTrade,
+  SowSectionWithTradedLines,
+  SuggestTradeTagsResponse,
+} from "@/types/sow-trade-tags";
 import type { ExportPresetRow } from "@/types/round-export-batch";
 import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
 import { distinctTaggedTrades, groupSowLinesByTrade } from "@/lib/sow-trade-tags";
@@ -45,6 +50,11 @@ export function SowBuilder({ projectId }: Props) {
   const [applyingTemplate, setApplyingTemplate] = useState(false);
   const [reorderingRoomSectionId, setReorderingRoomSectionId] = useState<string | null>(null);
   const [reorderingLineSectionId, setReorderingLineSectionId] = useState<string | null>(null);
+  const [selectedLineIds, setSelectedLineIds] = useState<Set<string>>(() => new Set());
+  const [copyDialogOpen, setCopyDialogOpen] = useState(false);
+  const [copyTargetSectionIds, setCopyTargetSectionIds] = useState<Set<string>>(() => new Set());
+  const [copyingLines, setCopyingLines] = useState(false);
+  const [copyMessage, setCopyMessage] = useState<string | null>(null);
   // "Trade-scoped SOW extracts" round — trade preset names (the trade
   // select's option list + the "Suggest trade tags" action's own
   // resolution list) and this action's own busy/result state.
@@ -71,6 +81,9 @@ export function SowBuilder({ projectId }: Props) {
     if (!res.ok) throw new Error(body.error ?? "Could not load this Scope of Works revision.");
     setSow(body.sow as SowDocument);
     setSections(body.sections as SowSectionWithTradedLines[]);
+    setSelectedLineIds(new Set());
+    setCopyTargetSectionIds(new Set());
+    setCopyDialogOpen(false);
   }, [projectId]);
 
   // "Trade-scoped SOW extracts" round — trade preset names, fetched
@@ -111,6 +124,8 @@ export function SowBuilder({ projectId }: Props) {
   }, [loadRevisions, loadSow]);
 
   useEffect(() => {
+    // Initial client-side data hydration is intentionally owned here.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadAll();
   }, [loadAll]);
 
@@ -119,6 +134,8 @@ export function SowBuilder({ projectId }: Props) {
   // sections added/removed) — the observer effect below then takes
   // over as the user scrolls.
   useEffect(() => {
+    // Keep the outline selection valid when revision structure changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setActiveSectionId((cur) => {
       if (cur && sections.some((s) => s.id === cur)) return cur;
       return sections[0]?.id ?? null;
@@ -398,6 +415,69 @@ export function SowBuilder({ projectId }: Props) {
     );
   }
 
+  function toggleLineSelection(lineId: string, checked: boolean) {
+    setSelectedLineIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(lineId);
+      else next.delete(lineId);
+      return next;
+    });
+    setCopyMessage(null);
+  }
+
+  function toggleCopyTarget(sectionId: string, checked: boolean) {
+    setCopyTargetSectionIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(sectionId);
+      else next.delete(sectionId);
+      return next;
+    });
+  }
+
+  async function copySelectedLines() {
+    if (!sow || selectedLineIds.size === 0 || copyTargetSectionIds.size === 0 || copyingLines) return;
+    const sourceCount = selectedLineIds.size;
+    const targetCount = copyTargetSectionIds.size;
+    setCopyingLines(true);
+    setError(null);
+    setCopyMessage(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/sow/${sow.id}/copy-lines`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          line_ids: [...selectedLineIds],
+          target_section_ids: [...copyTargetSectionIds],
+        }),
+      });
+      const body = (await res.json().catch(() => ({}))) as CopySowLinesResponse & { error?: string };
+      if (!res.ok) throw new Error(body.error ?? "Could not copy the selected lines.");
+
+      const copiedBySection = new Map<string, SowLineWithTrade[]>();
+      for (const line of body.lines ?? []) {
+        copiedBySection.set(line.section_id, [...(copiedBySection.get(line.section_id) ?? []), line]);
+      }
+      setSections((current) =>
+        current.map((section) => {
+          const additions = copiedBySection.get(section.id);
+          return additions
+            ? { ...section, lines: [...section.lines, ...additions].sort((a, b) => a.sort - b.sort) }
+            : section;
+        })
+      );
+      setSelectedLineIds(new Set());
+      setCopyTargetSectionIds(new Set());
+      setCopyDialogOpen(false);
+      setCopyMessage(
+        `Copied ${sourceCount} line${sourceCount === 1 ? "" : "s"} to ${targetCount} room${targetCount === 1 ? "" : "s"}.`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not copy the selected lines.");
+    } finally {
+      setCopyingLines(false);
+    }
+  }
+
   async function patchLine(line: SowLineWithTrade, patch: Partial<SowLineWithTrade>): Promise<SowLineWithTrade> {
     const res = await fetch(`/api/sow/lines/${line.id}`, {
       method: "PATCH",
@@ -430,6 +510,11 @@ export function SowBuilder({ projectId }: Props) {
           s.id === line.section_id ? { ...s, lines: s.lines.filter((l) => l.id !== line.id) } : s
         )
       );
+      setSelectedLineIds((current) => {
+        const next = new Set(current);
+        next.delete(line.id);
+        return next;
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not remove line.");
     }
@@ -489,6 +574,22 @@ export function SowBuilder({ projectId }: Props) {
     () => presets.filter((p) => taggedTrades.includes(p.name)),
     [presets, taggedTrades]
   );
+  const roomSections = useMemo(
+    () => sections.filter((section) => section.source_room_id !== null),
+    [sections]
+  );
+  const selectedLines = useMemo(
+    () => sections.flatMap((section) => section.lines).filter((line) => selectedLineIds.has(line.id)),
+    [sections, selectedLineIds]
+  );
+  const selectedSourceSectionIds = useMemo(
+    () => new Set(selectedLines.map((line) => line.section_id)),
+    [selectedLines]
+  );
+  const copyDestinationRooms = useMemo(
+    () => roomSections.filter((section) => !selectedSourceSectionIds.has(section.id)),
+    [roomSections, selectedSourceSectionIds]
+  );
 
   if (loading) {
     return <p className="text-body text-charcoal/50">Loading Scope of Works…</p>;
@@ -516,7 +617,7 @@ export function SowBuilder({ projectId }: Props) {
   }
 
   const isDraft = sow?.status === "draft";
-  const reorderableRoomSections = sections.filter((section) => section.source_room_id !== null);
+  const reorderableRoomSections = roomSections;
 
   return (
     <div className="space-y-6">
@@ -528,6 +629,11 @@ export function SowBuilder({ projectId }: Props) {
       {suggestMessage && (
         <p className="border border-[#dcd6cc] bg-cream px-4 py-2 text-caption text-charcoal/70">
           {suggestMessage}
+        </p>
+      )}
+      {copyMessage && (
+        <p className="border border-[#dcd6cc] bg-cream px-4 py-2 text-caption text-charcoal/70">
+          {copyMessage}
         </p>
       )}
 
@@ -634,8 +740,36 @@ export function SowBuilder({ projectId }: Props) {
         <p className="border border-[#dcd6cc] bg-cream px-4 py-2 text-caption text-charcoal/60">
           {sow.revision_label} was issued
           {sow.issued_at ? ` on ${new Date(sow.issued_at).toLocaleDateString("en-AU")}` : ""} and
-          is now read-only. Use "New revision" above to make further changes.
+          is now read-only. Use &quot;New revision&quot; above to make further changes.
         </p>
+      )}
+
+      {isDraft && selectedLines.length > 0 && (
+        <div className="sticky top-16 z-20 flex flex-wrap items-center justify-between gap-3 border border-nearblack bg-nearblack px-4 py-3 text-white shadow-lg">
+          <p className="text-body font-semibold">
+            {selectedLines.length} line{selectedLines.length === 1 ? "" : "s"} selected
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setCopyTargetSectionIds(new Set());
+                setCopyDialogOpen(true);
+              }}
+              disabled={copyDestinationRooms.length === 0}
+              className="bg-white px-4 py-2 text-subhead text-nearblack hover:bg-cream disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Copy to rooms
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedLineIds(new Set())}
+              className="border border-white/50 px-4 py-2 text-subhead text-white hover:border-white"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
       )}
 
       {sections.length > 0 && (
@@ -676,6 +810,8 @@ export function SowBuilder({ projectId }: Props) {
                         reorderLines(section.id, lineId, destinationIndex)
                       }
                       lineReordering={reorderingLineSectionId === section.id}
+                      selectedLineIds={selectedLineIds}
+                      onToggleLineSelection={toggleLineSelection}
                     />
                   </div>
                 );
@@ -688,6 +824,22 @@ export function SowBuilder({ projectId }: Props) {
       )}
 
       {sections.length === 0 && isDraft && <AddSectionForm onAdd={addSection} />}
+
+      {copyDialogOpen && (
+        <CopyLinesToRoomsDialog
+          selectedLineCount={selectedLines.length}
+          rooms={copyDestinationRooms}
+          selectedRoomIds={copyTargetSectionIds}
+          copying={copyingLines}
+          onToggleRoom={toggleCopyTarget}
+          onSelectAll={() => setCopyTargetSectionIds(new Set(copyDestinationRooms.map((room) => room.id)))}
+          onClearRooms={() => setCopyTargetSectionIds(new Set())}
+          onClose={() => {
+            if (!copyingLines) setCopyDialogOpen(false);
+          }}
+          onCopy={() => void copySelectedLines()}
+        />
+      )}
     </div>
   );
 }
@@ -773,6 +925,114 @@ function SowOutline({
   );
 }
 
+function CopyLinesToRoomsDialog({
+  selectedLineCount,
+  rooms,
+  selectedRoomIds,
+  copying,
+  onToggleRoom,
+  onSelectAll,
+  onClearRooms,
+  onClose,
+  onCopy,
+}: {
+  selectedLineCount: number;
+  rooms: SowSectionWithTradedLines[];
+  selectedRoomIds: ReadonlySet<string>;
+  copying: boolean;
+  onToggleRoom: (sectionId: string, checked: boolean) => void;
+  onSelectAll: () => void;
+  onClearRooms: () => void;
+  onClose: () => void;
+  onCopy: () => void;
+}) {
+  const copyCount = selectedLineCount * selectedRoomIds.size;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-nearblack/55 p-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="copy-sow-lines-title"
+        className="w-full max-w-xl border border-nearblack bg-offwhite shadow-2xl"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-[#dcd6cc] bg-cream px-5 py-4">
+          <div>
+            <h2 id="copy-sow-lines-title" className="text-subhead font-semibold text-nearblack">
+              Copy selected lines to rooms
+            </h2>
+            <p className="mt-1 text-caption text-charcoal/65">
+              Choose one or more destination rooms. Line wording, type, and trade will be preserved.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={copying}
+            aria-label="Close copy dialog"
+            className="text-xl leading-none text-charcoal/50 hover:text-nearblack disabled:opacity-30"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="px-5 py-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <p className="label-caps !text-nearblack">Destination rooms</p>
+            <div className="flex items-center gap-3 text-caption">
+              <button type="button" onClick={onSelectAll} className="text-sand hover:text-nearblack">
+                Select all
+              </button>
+              <button type="button" onClick={onClearRooms} className="text-charcoal/55 hover:text-nearblack">
+                Clear
+              </button>
+            </div>
+          </div>
+          <div className="max-h-[45vh] overflow-y-auto border border-[#dcd6cc] bg-white">
+            {rooms.map((room) => (
+              <label
+                key={room.id}
+                className="flex cursor-pointer items-center gap-3 border-b border-[#e5e0d6] px-4 py-3 last:border-b-0 hover:bg-cream/50"
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedRoomIds.has(room.id)}
+                  onChange={(event) => onToggleRoom(room.id, event.target.checked)}
+                  className="h-4 w-4 accent-nearblack"
+                />
+                <span className="text-body text-nearblack">{room.heading}</span>
+              </label>
+            ))}
+          </div>
+          <p className="mt-3 text-caption text-charcoal/60">
+            {selectedLineCount} selected line{selectedLineCount === 1 ? "" : "s"} × {selectedRoomIds.size} room{selectedRoomIds.size === 1 ? "" : "s"}
+            {copyCount > 0 ? ` = ${copyCount} new line${copyCount === 1 ? "" : "s"}` : ""}
+          </p>
+        </div>
+
+        <div className="flex items-center justify-end gap-3 border-t border-[#dcd6cc] px-5 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={copying}
+            className="border border-[#c9c2b4] px-4 py-2 text-subhead text-charcoal hover:border-nearblack disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onCopy}
+            disabled={copying || selectedRoomIds.size === 0}
+            className="bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {copying ? "Copying…" : `Copy to ${selectedRoomIds.size || 0} room${selectedRoomIds.size === 1 ? "" : "s"}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AddSectionForm({ onAdd }: { onAdd: (heading: string) => Promise<void> }) {
   const [adding, setAdding] = useState(false);
   const [heading, setHeading] = useState("");
@@ -854,6 +1114,8 @@ function SectionBlock({
   onDeleteLine,
   onReorderLine,
   lineReordering,
+  selectedLineIds,
+  onToggleLineSelection,
 }: {
   section: SowSectionWithTradedLines;
   readOnly: boolean;
@@ -871,6 +1133,8 @@ function SectionBlock({
   onDeleteLine: (line: SowLineWithTrade) => void;
   onReorderLine: (lineId: string, destinationIndex: number) => Promise<void>;
   lineReordering: boolean;
+  selectedLineIds: ReadonlySet<string>;
+  onToggleLineSelection: (lineId: string, checked: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [draggedLineId, setDraggedLineId] = useState<string | null>(null);
@@ -1012,6 +1276,8 @@ function SectionBlock({
                         presetNames={presetNames}
                         onPatch={(patch) => onPatchLine(line, patch)}
                         onDelete={() => onDeleteLine(line)}
+                        selected={selectedLineIds.has(line.id)}
+                        onSelect={(checked) => onToggleLineSelection(line.id, checked)}
                         dragging={draggedLineId === line.id}
                         dropTarget={dropTargetId === line.id && draggedLineId !== line.id}
                         reordering={lineReordering}
@@ -1151,6 +1417,8 @@ function LineRow({
   presetNames,
   onPatch,
   onDelete,
+  selected,
+  onSelect,
   dragging,
   dropTarget,
   reordering,
@@ -1169,6 +1437,8 @@ function LineRow({
   presetNames: string[];
   onPatch: (patch: Partial<SowLineWithTrade>) => Promise<SowLineWithTrade>;
   onDelete: () => void;
+  selected: boolean;
+  onSelect: (checked: boolean) => void;
   dragging: boolean;
   dropTarget: boolean;
   reordering: boolean;
@@ -1255,6 +1525,14 @@ function LineRow({
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={(event) => onSelect(event.target.checked)}
+        aria-label={`Select line for copying: ${line.text}`}
+        title="Select this line to copy it to other rooms"
+        className="mt-2 h-4 w-4 shrink-0 accent-nearblack"
+      />
       <button
         type="button"
         draggable={!reordering}

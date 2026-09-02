@@ -65,3 +65,16 @@ export interface SuggestTradeTagsResponse {
   lines: SowLineWithTrade[];
   tagged_count: number;
 }
+
+/** Bulk copy request used by the SOW builder's room-copy action. */
+export interface CopySowLinesInput {
+  line_ids: string[];
+  target_section_ids: string[];
+}
+
+/** Every inserted copy is returned so the builder can merge it locally. */
+export interface CopySowLinesResponse {
+  lines: SowLineWithTrade[];
+  copied_count: number;
+  target_room_count: number;
+}

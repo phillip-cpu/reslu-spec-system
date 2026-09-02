@@ -18,6 +18,7 @@ const createLineRoute = read("app/api/sow/sections/[sectionId]/lines/route.ts");
 const sectionRoute = read("app/api/sow/sections/[sectionId]/route.ts");
 const fromTemplateRoute = read("app/api/projects/[id]/sow/[sowId]/from-template/route.ts");
 const newRevisionRoute = read("app/api/projects/[id]/sow/[sowId]/new-revision/route.ts");
+const copyLinesRoute = read("app/api/projects/[id]/sow/[sowId]/copy-lines/route.ts");
 const builder = read("components/sow/SowBuilder.tsx");
 const pdf = read("components/pdf/SowPdf.tsx");
 
@@ -52,6 +53,16 @@ test("trade groups support tagged creation and within-group ordering", () => {
   assert.match(builder, /tradeKey\(sourceLine\) !== tradeKey\(targetLine\)/);
   assert.match(builder, /reorderSowLines\(displayedLines, lineId, destinationIndex\)/);
   assert.match(builder, /useState<SowLineKind>\("inclusion"\)/);
+});
+
+test("editable SOW lines can be selected and copied to other rooms", () => {
+  assert.match(builder, /type="checkbox"[\s\S]*Select line for copying/);
+  assert.match(builder, /Copy to rooms/);
+  assert.match(builder, /target_section_ids: \[\.\.\.copyTargetSectionIds\]/);
+  assert.match(copyLinesRoute, /Every destination must be a room in this SOW/);
+  assert.match(copyLinesRoute, /Choose other rooms, not a selected line's source room/);
+  assert.match(copyLinesRoute, /buildSowLineCopies\(typedSourceLines, targetSectionIds, maxSortBySection\)/);
+  assert.match(copyLinesRoute, /\.insert\(copies\)[\s\S]*\.select\(\)/);
 });
 
 test("the full PDF mirrors the editor's trade grouping", () => {
