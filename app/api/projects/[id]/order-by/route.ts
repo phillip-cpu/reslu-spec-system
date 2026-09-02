@@ -4,6 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import { resolveExportPresets } from "@/lib/export-presets";
 import { deriveOrderBy, missingLeadTimes, type OrderByContactInput, type OrderByItemInput, type WorksDateSource } from "@/lib/order-by";
 import type { OrderByResponse, OrderByRow } from "@/types/order-by";
+import { loadItemScheduleRequirementData } from "@/lib/item-schedule-requirements-server";
 
 export const runtime = "nodejs";
 
@@ -95,7 +96,7 @@ export async function GET(
     return NextResponse.json(body);
   }
 
-  const [{ data: visitRows }, { data: taskRows }] = await Promise.all([
+  const [{ data: visitRows }, { data: taskRows }, requirementData] = await Promise.all([
     supabase
       .from("trade_visits")
       .select("id,project_id,contact_id,start_date,status")
@@ -108,6 +109,7 @@ export async function GET(
       .eq("project_id", projectId)
       .is("deleted_at", null)
       .not("booking_date", "is", null),
+    loadItemScheduleRequirementData(supabase, [projectId]),
   ]);
 
   const sources: WorksDateSource[] = [
@@ -151,7 +153,14 @@ export async function GET(
     (contactRows ?? []).map((c) => [c.id, { id: c.id, company: c.company, contact_name: c.contact_name }])
   );
 
-  const results = deriveOrderBy(items, presets, contacts, sources);
+  const results = deriveOrderBy(
+    items,
+    presets,
+    contacts,
+    sources,
+    new Date(),
+    requirementData.orderByInputs
+  );
   const missing = missingLeadTimes(items);
 
   const rows: OrderByRow[] = results.map((r) => ({
@@ -160,6 +169,11 @@ export async function GET(
     order_by: r.order_by,
     works_date: r.works_date,
     matched_preset_name: r.matched_preset?.name ?? null,
+    timing_basis: r.timing_basis ?? "category_contact_fallback",
+    required_activity_id: r.required_activity_id ?? null,
+    required_activity_title: r.required_activity_title ?? null,
+    matched_trade_name: r.required_trade_role ?? r.matched_preset?.name ?? null,
+    buffer_days: r.buffer_days ?? 0,
     matched_contact: r.source?.contact_id ? contactSummaryById.get(r.source.contact_id) ?? null : null,
   }));
 

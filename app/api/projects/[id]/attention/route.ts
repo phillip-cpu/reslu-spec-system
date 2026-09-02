@@ -4,6 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import { resolveExportPresets } from "@/lib/export-presets";
 import { deriveOrderBy, missingLeadTimes, type OrderByContactInput, type OrderByItemInput, type WorksDateSource } from "@/lib/order-by";
 import type { OrderingDueAttentionItem, ProjectAttentionResponse } from "@/types/order-by";
+import { loadItemScheduleRequirementData } from "@/lib/item-schedule-requirements-server";
 
 export const runtime = "nodejs";
 
@@ -78,7 +79,7 @@ export async function GET(
     return NextResponse.json(body);
   }
 
-  const [{ data: visitRows }, { data: taskRows }] = await Promise.all([
+  const [{ data: visitRows }, { data: taskRows }, requirementData] = await Promise.all([
     supabase
       .from("trade_visits")
       .select("id,project_id,contact_id,start_date,status")
@@ -91,6 +92,7 @@ export async function GET(
       .eq("project_id", projectId)
       .is("deleted_at", null)
       .not("booking_date", "is", null),
+    loadItemScheduleRequirementData(supabase, [projectId]),
   ]);
 
   const sources: WorksDateSource[] = [
@@ -120,7 +122,14 @@ export async function GET(
     : { data: [] as { id: string; category: string | null }[] };
   const contacts: OrderByContactInput[] = (contactRows ?? []).map((c) => ({ id: c.id, category: c.category }));
 
-  const results = deriveOrderBy(itemRowsTyped, presets, contacts, sources);
+  const results = deriveOrderBy(
+    itemRowsTyped,
+    presets,
+    contacts,
+    sources,
+    new Date(),
+    requirementData.orderByInputs
+  );
   const missing = missingLeadTimes(itemRowsTyped);
   const itemById = new Map(itemRowsTyped.map((i) => [i.id, i]));
 
@@ -141,7 +150,7 @@ export async function GET(
         status: r.status,
         order_by: r.order_by,
         works_date: r.works_date,
-        matched_preset_name: r.matched_preset?.name ?? null,
+        matched_preset_name: r.required_trade_role ?? r.matched_preset?.name ?? null,
       };
     })
     .sort((a, b) => {

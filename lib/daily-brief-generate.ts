@@ -42,6 +42,7 @@ import {
   type ExistingBriefItemForDedupe,
 } from "@/lib/daily-brief";
 import type { Lead, LeadStageEvent } from "@/types";
+import { loadItemScheduleRequirementData } from "@/lib/item-schedule-requirements-server";
 
 export interface GenerateDailyBriefResult {
   brief_date: string;
@@ -139,7 +140,7 @@ export async function generateDailyBrief(
 
   if (itemRows.length > 0) {
     const projectIds = [...new Set(itemRows.map((i) => i.project_id))];
-    const [{ data: presetSetting }, { data: allVisits }, { data: allBookedTasks }] = await Promise.all([
+    const [{ data: presetSetting }, { data: allVisits }, { data: allBookedTasks }, requirementData] = await Promise.all([
       supabase.from("app_settings").select("value").eq("key", "export_presets").maybeSingle(),
       supabase
         .from("trade_visits")
@@ -153,6 +154,7 @@ export async function generateDailyBrief(
         .in("project_id", projectIds)
         .is("deleted_at", null)
         .not("booking_date", "is", null),
+      loadItemScheduleRequirementData(supabase, projectIds),
     ]);
 
     const presets = resolveExportPresets(presetSetting?.value);
@@ -182,7 +184,14 @@ export async function generateDailyBrief(
       : { data: [] as { id: string; category: string | null }[] };
     const orderingContacts: OrderByContactInput[] = (orderingContactRows ?? []).map((c) => ({ id: c.id, category: c.category }));
 
-    const orderingResults = deriveOrderBy(itemRows, presets, orderingContacts, orderingSources, now);
+    const orderingResults = deriveOrderBy(
+      itemRows,
+      presets,
+      orderingContacts,
+      orderingSources,
+      now,
+      requirementData.orderByInputs
+    );
     const dueOrOverdue = orderingResults.filter((r) => r.status === "due_soon" || r.status === "overdue");
     const itemById = new Map(itemRows.map((i) => [i.id, i]));
 
@@ -193,7 +202,7 @@ export async function generateDailyBrief(
     for (const r of dueOrOverdue) {
       const item = itemById.get(r.item_id);
       if (!item || !r.order_by || !r.works_date) continue;
-      const presetName = r.matched_preset?.name ?? "Unmapped trade";
+      const presetName = r.required_trade_role ?? r.matched_preset?.name ?? "Unmapped trade";
       const key = `${item.project_id}::${presetName}`;
       const existingGroup = rollup.get(key);
       if (!existingGroup) {
