@@ -36,12 +36,30 @@ test("blocks unfinished room scope while keeping FF&E and plan gaps as review wa
   assert.equal(report.ready_to_issue, false);
   assert.deepEqual(
     new Set(report.blockers.map((finding) => finding.code)),
-    new Set(["placeholder_lines", "untagged_inclusions", "empty_room"])
+    new Set(["placeholder_lines", "untagged_inclusions"])
   );
+  assert.ok(report.warnings.some((finding) => finding.code === "awaiting_working_drawings"));
   assert.ok(report.warnings.some((finding) => finding.code === "uncovered_ffe_items"));
   assert.ok(report.warnings.some((finding) => finding.code === "plan_not_analysed"));
   assert.equal(report.summary.assigned_ffe_items, 2);
   assert.equal(report.summary.referenced_ffe_items, 1);
+});
+
+test("restores the empty exterior room blocker after the exterior set is uploaded", () => {
+  const report = assessSowQuality({
+    sections: [{ id: "yard-section", heading: "Backyard", source_room_id: "yard", lines: [] }],
+    rooms: [{ id: "yard", name: "Backyard" }],
+    allocations: [],
+    plan_files: [
+      { id: "interior", filename: "Hone Interior Working Drawings.pdf" },
+      { id: "exterior", filename: "Hone Exterior Working Drawings.pdf" },
+    ],
+    plan_analyses: [],
+  });
+
+  assert.equal(report.ready_to_issue, false);
+  assert.ok(report.blockers.some((finding) => finding.code === "empty_room"));
+  assert.equal(report.warnings.some((finding) => finding.code === "awaiting_working_drawings"), false);
 });
 
 test("allows issue when hard blockers are clear even when human-review warnings remain", () => {

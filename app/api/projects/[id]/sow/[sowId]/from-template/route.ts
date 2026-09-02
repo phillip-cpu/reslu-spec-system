@@ -13,6 +13,10 @@ import {
 } from "@/lib/sow-grounded-template";
 import { resolveExportPresets } from "@/lib/export-presets";
 import { suggestTradeTag } from "@/lib/sow-trade-tags";
+import {
+  planFilenamesForSowRoom,
+  sowRoomAwaitsWorkingDrawings,
+} from "@/lib/sow-plan-scope";
 import type { SowDocument, SowSectionWithLines } from "@/types";
 import type {
   ApplyTemplateInput,
@@ -238,17 +242,22 @@ export async function POST(
       isRoomSection: false,
       sourceRoomId: null,
     })),
-    ...roomSeeds.map((room) => ({
-      ...(room.items.length > 0 || planFilenames.length > 0
-        ? groundedRoomSectionTemplate({
-            roomName: room.heading,
-            items: room.items,
-            planFilenames,
-          })
-        : roomSectionTemplate(room.heading)),
-      isRoomSection: true,
-      sourceRoomId: room.sourceRoomId,
-    })),
+    ...roomSeeds
+      .filter((room) => !sowRoomAwaitsWorkingDrawings(room.heading, planFilenames))
+      .map((room) => {
+        const applicablePlanFilenames = planFilenamesForSowRoom(room.heading, planFilenames);
+        return {
+          ...(room.items.length > 0 || applicablePlanFilenames.length > 0
+            ? groundedRoomSectionTemplate({
+                roomName: room.heading,
+                items: room.items,
+                planFilenames: applicablePlanFilenames,
+              })
+            : roomSectionTemplate(room.heading)),
+          isRoomSection: true,
+          sourceRoomId: room.sourceRoomId,
+        };
+      }),
     ...trailingGroups.map((g) => SOW_TEMPLATE_LIBRARY[g]).filter(Boolean).map((t) => ({
       ...t,
       isRoomSection: false,

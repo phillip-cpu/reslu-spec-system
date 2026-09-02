@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { roomSectionTemplate } from "@/lib/sow-templates";
 import { groundedRoomSectionTemplate } from "@/lib/sow-grounded-template";
+import {
+  planFilenamesForSowRoom,
+  sowRoomAwaitsWorkingDrawings,
+  sowRoomPlanScope,
+} from "@/lib/sow-plan-scope";
 import type { Item } from "@/types";
 import type { PlanAnalysis } from "@/types/phase-12a-a";
 
@@ -101,23 +106,34 @@ export async function GET(
   const currentAnalyses = [...latestAnalysisByFile.values()];
   const planFilenames = (planFiles ?? []).map((file) => String(file.filename));
 
-  const roomsWithItems = (rooms ?? []).map((r) => ({
-    id: r.id,
-    name: r.name,
-    items: itemsByRoom.get(r.id as string) ?? [],
-    clause_pattern: (itemsByRoom.get(r.id as string)?.length ?? 0) > 0 || planFilenames.length > 0
-      ? groundedRoomSectionTemplate({
-          roomName: r.name as string,
-          items: (itemsByRoom.get(r.id as string) ?? []).map((item) => ({
-            ...item,
-            colour: null,
-            material: null,
-            finish: null,
-          })),
-          planFilenames,
-        })
-      : roomSectionTemplate(r.name as string),
-  }));
+  const roomsWithItems = (rooms ?? []).map((r) => {
+    const roomName = r.name as string;
+    const items = itemsByRoom.get(r.id as string) ?? [];
+    const applicablePlanFilenames = planFilenamesForSowRoom(roomName, planFilenames);
+    const awaitsWorkingDrawings = sowRoomAwaitsWorkingDrawings(roomName, planFilenames);
+    return {
+      id: r.id,
+      name: r.name,
+      items,
+      plan_scope: sowRoomPlanScope(roomName),
+      drafting_status: awaitsWorkingDrawings ? "awaiting_working_drawings" : "ready_for_review",
+      applicable_plan_files: applicablePlanFilenames,
+      clause_pattern: awaitsWorkingDrawings
+        ? null
+        : items.length > 0 || applicablePlanFilenames.length > 0
+          ? groundedRoomSectionTemplate({
+              roomName,
+              items: items.map((item) => ({
+                ...item,
+                colour: null,
+                material: null,
+                finish: null,
+              })),
+              planFilenames: applicablePlanFilenames,
+            })
+          : roomSectionTemplate(roomName),
+    };
+  });
 
   return NextResponse.json({
     rooms: roomsWithItems,

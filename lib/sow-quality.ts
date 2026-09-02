@@ -3,6 +3,7 @@ import type {
   SowQualityInput,
   SowQualityReport,
 } from "@/types/sow-quality";
+import { sowRoomAwaitsWorkingDrawings, sowRoomPlanScope } from "./sow-plan-scope.ts";
 
 const PLACEHOLDER_PATTERN = /\{\{[^}]+\}\}/;
 const SCOPE_CHECK_PATTERN = /^SCOPE CHECK\s*(?:—|–|-|:)/i;
@@ -28,8 +29,12 @@ export function assessSowQuality(input: SowQualityInput): SowQualityReport {
   const allLines = input.sections.flatMap((section) =>
     section.lines.map((line) => ({ ...line, section }))
   );
+  const planFilenames = input.plan_files.map((file) => file.filename);
 
   for (const section of input.sections) {
+    const awaitsWorkingDrawings = Boolean(
+      section.source_room_id && sowRoomAwaitsWorkingDrawings(section.heading, planFilenames)
+    );
     const placeholderLines = section.lines.filter((line) => PLACEHOLDER_PATTERN.test(line.text));
     if (placeholderLines.length > 0) {
       blockers.push({
@@ -58,18 +63,31 @@ export function assessSowQuality(input: SowQualityInput): SowQualityReport {
       const allocations = input.allocations.filter(
         (allocation) => allocation.room_id === section.source_room_id
       );
+      if (awaitsWorkingDrawings) {
+        const planScope = sowRoomPlanScope(section.heading);
+        warnings.push({
+          code: "awaiting_working_drawings",
+          severity: "warning",
+          title: `${section.heading}: awaiting ${planScope} working drawings`,
+          detail: `The current uploads are for a separate drawing set. Do not ground this room against them; review it when the ${planScope} working drawing set is uploaded.`,
+          section_id: section.id,
+          item_codes: allocations.map((allocation) => allocation.item_code),
+        });
+      }
       if (section.lines.length === 0) {
         const suffix = allocations.length > 0
           ? ` even though ${plural(allocations.length, "FF&E item")} ${allocations.length === 1 ? "is" : "are"} assigned to it`
           : "";
-        blockers.push({
-          code: "empty_room",
-          severity: "blocker",
-          title: `${section.heading}: room scope is empty`,
-          detail: `Add the room's scope or confirm that no work is required${suffix}.`,
-          section_id: section.id,
-          item_codes: allocations.map((allocation) => allocation.item_code),
-        });
+        if (!awaitsWorkingDrawings) {
+          blockers.push({
+            code: "empty_room",
+            severity: "blocker",
+            title: `${section.heading}: room scope is empty`,
+            detail: `Add the room's scope or confirm that no work is required${suffix}.`,
+            section_id: section.id,
+            item_codes: allocations.map((allocation) => allocation.item_code),
+          });
+        }
       }
 
       const untaggedInclusions = section.lines.filter(

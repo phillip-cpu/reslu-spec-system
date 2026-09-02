@@ -12,6 +12,7 @@ export interface SowQualityFinding {
     | "unresolved_scope_check"
     | "unresolved_tbc"
     | "missing_room_reference"
+    | "awaiting_working_drawings"
     | "uncovered_ffe_items"
     | "plan_discrepancy"
     | "plan_not_analysed";
