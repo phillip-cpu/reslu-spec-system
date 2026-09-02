@@ -52,5 +52,6 @@ test("procurement detail panels have one clear open state and an explicit close 
   );
   assert.match(requirementsPanel, />\s*Close\s*<\/button>/);
   assert.doesNotMatch(requirementsPanel, /text-subhead text-nearblack sm:hidden/);
+  assert.match(requirementsPanel, /sm:w-\[calc\(100vw-12rem\)\] sm:max-w-3xl/);
   assert.match(requirementsPanel, /No Work activities yet/);
 });
