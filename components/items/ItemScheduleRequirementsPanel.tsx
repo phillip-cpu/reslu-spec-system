@@ -58,7 +58,7 @@ export function ItemScheduleRequirementsPanel({
   }
 
   return (
-    <div className="fixed inset-0 z-50 space-y-4 overflow-y-auto bg-offwhite p-4 sm:static sm:z-auto sm:border sm:border-[#dcd6cc]">
+    <div className="fixed inset-0 z-50 space-y-4 overflow-y-auto bg-offwhite p-4 sm:sticky sm:left-0 sm:z-auto sm:w-[calc(100vw-12rem)] sm:max-w-3xl sm:border sm:border-[#dcd6cc]">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="label-caps !text-nearblack">Required on site</p>
