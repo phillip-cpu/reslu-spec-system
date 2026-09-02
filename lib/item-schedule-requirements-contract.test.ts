@@ -6,6 +6,14 @@ const migration = readFileSync(
   new URL("../supabase/migrations/20260902133534_item_schedule_requirements.sql", import.meta.url),
   "utf8"
 );
+const procurementView = readFileSync(
+  new URL("../components/items/ProcurementView.tsx", import.meta.url),
+  "utf8"
+);
+const requirementsPanel = readFileSync(
+  new URL("../components/items/ItemScheduleRequirementsPanel.tsx", import.meta.url),
+  "utf8"
+);
 
 test("required-on-site links are constrained at the database boundary", () => {
   assert.match(migration, /unique \(item_id, board_task_id\)/i);
@@ -31,4 +39,18 @@ test("every foreign key used for lookup or cascade is indexed", () => {
   assert.match(migration, /idx_item_schedule_requirements_task[\s\S]*\(board_task_id\)/i);
   assert.match(migration, /idx_item_schedule_requirements_project[\s\S]*\(project_id, item_id\)/i);
   assert.match(migration, /idx_item_schedule_requirements_created_by[\s\S]*\(created_by\)/i);
+});
+
+test("procurement detail panels have one clear open state and an explicit close action", () => {
+  assert.match(
+    procurementView,
+    /setScheduleOpenFor\(null\);[\s\S]*setComponentsOpenFor\(\(current\)/
+  );
+  assert.match(
+    procurementView,
+    /setComponentsOpenFor\(null\);[\s\S]*setScheduleOpenFor\(\(current\)/
+  );
+  assert.match(requirementsPanel, />\s*Close\s*<\/button>/);
+  assert.doesNotMatch(requirementsPanel, /text-subhead text-nearblack sm:hidden/);
+  assert.match(requirementsPanel, /No Work activities yet/);
 });
