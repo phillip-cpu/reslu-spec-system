@@ -10,6 +10,7 @@ const EDITABLE_FIELDS = new Set([
   "title",
   "description",
   "contact_id",
+  "trade_role",
   "due_date",
   // migration 041 ("Small pair" item 2) — optional wall-clock reminder
   // time alongside due_date. Plain PATCHable field, same "trim to
@@ -111,7 +112,7 @@ export async function PATCH(
 
   const { data: existing } = await supabase
     .from("board_tasks")
-    .select("id,title,project_id,column_id,phase_group_id,visit_id,contact_id,booking_date,booking_end_date,updated_at")
+    .select("id,title,project_id,column_id,phase_group_id,visit_id,contact_id,trade_role,trade_contact_inherited,booking_date,booking_end_date,updated_at")
     .eq("id", id)
     .is("deleted_at", null)
     .single();
@@ -211,6 +212,7 @@ export async function PATCH(
   const update: Record<string, unknown> = {};
   for (const [key, raw] of Object.entries(body)) {
     if (!EDITABLE_FIELDS.has(key)) continue;
+    if (key === "trade_role") continue;
     if (key === "sort") {
       const n = Number(raw);
       if (!Number.isFinite(n)) {
@@ -232,6 +234,32 @@ export async function PATCH(
       update[key] = raw.trim() || null;
     } else {
       update[key] = raw;
+    }
+  }
+
+  const hasExplicitContact = Object.prototype.hasOwnProperty.call(body, "contact_id");
+  if (hasExplicitContact) {
+    update.trade_contact_inherited = false;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, "trade_role")) {
+    const tradeRole = typeof body.trade_role === "string" ? body.trade_role.trim() : null;
+    if (tradeRole && tradeRole.length > 120) {
+      return NextResponse.json({ error: "trade_role must be 120 characters or fewer" }, { status: 400 });
+    }
+    update.trade_role = tradeRole || null;
+
+    if (!tradeRole || existing.visit_id || hasExplicitContact) {
+      update.trade_contact_inherited = false;
+    } else {
+      const { data: assignment } = await supabase
+        .from("project_trade_assignments")
+        .select("contact_id")
+        .eq("project_id", existing.project_id)
+        .eq("role_key", tradeRole.toLowerCase())
+        .maybeSingle();
+      update.contact_id = assignment?.contact_id ?? null;
+      update.trade_contact_inherited = true;
     }
   }
 

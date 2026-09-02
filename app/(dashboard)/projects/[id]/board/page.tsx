@@ -198,7 +198,7 @@ export default async function ProjectBoardPage({
     <>
       <Header title={project.name} subtitle={`${project.client_name} · Board`} titleHref={`/projects/${id}`} />
       <ProjectTabs projectId={id} active="board" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
-      <main className="flex-1 px-8 py-8">
+      <main className="flex-1 px-4 py-6 md:px-8 md:py-8">
         <ProjectBoard
           projectId={id}
           initialColumns={initialColumns}

@@ -213,7 +213,25 @@ function nameHeuristicMatch(contactCategory: string, presetName: string): boolea
   const category = contactCategory.trim().toLowerCase();
   const name = presetName.trim().toLowerCase();
   if (!category || !name) return false;
-  return TRADE_KEYWORDS.some((kw) => category.includes(kw) && name.includes(kw));
+  const compactCategory = category.replace(/[^a-z0-9]/g, "");
+  const compactName = name.replace(/[^a-z0-9]/g, "");
+  return TRADE_KEYWORDS.some(
+    (kw) => compactCategory.includes(kw) && compactName.includes(kw)
+  );
+}
+
+/** Whether an Address Book category belongs to one canonical trade role. */
+export function contactMatchesPreset(
+  preset: ExportPresetRow,
+  contactCategory: string | null | undefined
+): boolean {
+  const category = contactCategory?.trim();
+  if (!category) return false;
+  return (
+    (!!preset.contact_categories?.length &&
+      categoryContainsMatch(category, preset.contact_categories)) ||
+    nameHeuristicMatch(category, preset.name)
+  );
 }
 
 /**

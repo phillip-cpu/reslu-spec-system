@@ -10,7 +10,10 @@ type CreateBoardTaskInputCockpit = CreateBoardTaskInputV2 & { kind?: BoardTaskKi
 import type { LinkedVisitSummary } from "@/types/board-cockpit";
 import type { BoardColumnV3, BoardGroupV3, BoardTaskV3, BoardV3Response } from "@/types/board-v3";
 /** Board v3 — Monday parity round: this route's POST body ALSO accepts an optional `parent_task_id` (sub-items, migration 031) — see this file's POST handler doc comment for validation + inheritance rules, and types/board-v3.ts's CreateSubTaskInputV3 for the documented shape. Layered as a second intersection rather than editing CreateBoardTaskInputV2 directly, same edit-boundary discipline as the `kind` addition above. */
-type CreateBoardTaskInputV3 = CreateBoardTaskInputCockpit & { parent_task_id?: string | null };
+type CreateBoardTaskInputV3 = CreateBoardTaskInputCockpit & {
+  parent_task_id?: string | null;
+  trade_role?: string | null;
+};
 
 /**
  * Board v2 (BUILD-SPEC.md §"Board v2"). This route supersedes the
@@ -314,6 +317,10 @@ export async function POST(
   if (body.kind && body.kind !== "task" && body.kind !== "milestone") {
     return NextResponse.json({ error: "kind must be 'task' or 'milestone'" }, { status: 400 });
   }
+  const tradeRole = body.trade_role?.trim() || null;
+  if (tradeRole && tradeRole.length > 120) {
+    return NextResponse.json({ error: "trade_role must be 120 characters or fewer" }, { status: 400 });
+  }
 
   const { data: column } = await supabase
     .from("board_columns")
@@ -410,6 +417,20 @@ export async function POST(
   // Auto-assign on create — omitted assignee_ids means "just me".
   const assigneeIds = body.assignee_ids === undefined ? [user.id] : body.assignee_ids;
 
+  const hasExplicitContact = Object.prototype.hasOwnProperty.call(body, "contact_id");
+  let effectiveContactId = body.contact_id || null;
+  let tradeContactInherited = false;
+  if (tradeRole && !hasExplicitContact) {
+    const { data: assignment } = await supabase
+      .from("project_trade_assignments")
+      .select("contact_id")
+      .eq("project_id", projectId)
+      .eq("role_key", tradeRole.toLowerCase())
+      .maybeSingle();
+    effectiveContactId = assignment?.contact_id ?? null;
+    tradeContactInherited = true;
+  }
+
   const { data: task, error } = await supabase
     .from("board_tasks")
     .insert({
@@ -418,7 +439,9 @@ export async function POST(
       title: body.title.trim(),
       description: body.description?.trim() || null,
       assignee_id: assigneeIds[0] ?? null,
-      contact_id: body.contact_id || null,
+      contact_id: effectiveContactId,
+      trade_role: tradeRole,
+      trade_contact_inherited: tradeContactInherited,
       due_date: body.due_date || null,
       // migration 041 — optional wall-clock reminder time alongside
       // due_date at creation time (CreateBoardTaskInputV2's own

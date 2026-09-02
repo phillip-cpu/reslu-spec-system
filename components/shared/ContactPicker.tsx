@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { ContactPickerOption, ContactPickerProps } from "@/types/board-cockpit";
 
 /**
@@ -69,6 +69,8 @@ export function ContactPicker({
   const [open, setOpen] = useState(false);
   const isOpen = embedded || open;
   function closePanel() {
+    setQ("");
+    setHighlighted(-1);
     if (embedded) {
       onClose?.();
     } else {
@@ -87,14 +89,6 @@ export function ContactPicker({
   const [highlighted, setHighlighted] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (!isOpen) setQ("");
-  }, [isOpen]);
-
-  useEffect(() => {
-    setHighlighted(-1);
-  }, [q, isOpen]);
-
   const selected = contacts.find((c) => c.id === selectedId) ?? null;
 
   const filtered = q.trim()
@@ -103,7 +97,8 @@ export function ContactPicker({
         return (
           c.company.toLowerCase().includes(needle) ||
           (c.contact_name ?? "").toLowerCase().includes(needle) ||
-          (c.trade_type ?? "").toLowerCase().includes(needle)
+          (c.trade_type ?? "").toLowerCase().includes(needle) ||
+          (c.category ?? "").toLowerCase().includes(needle)
         );
       })
     : contacts;
@@ -153,7 +148,10 @@ export function ContactPicker({
         ref={inputRef}
         autoFocus
         value={q}
-        onChange={(e) => setQ(e.target.value)}
+        onChange={(e) => {
+          setQ(e.target.value);
+          setHighlighted(-1);
+        }}
         onKeyDown={handleKeyDown}
         placeholder="Search company, name, trade…"
         className="w-full border border-[#c9c2b4] bg-cream px-2 py-1.5 text-body focus:border-nearblack focus:outline-none"
@@ -183,6 +181,9 @@ export function ContactPicker({
                 <>
                   {c.company}
                   {c.contact_name ? ` — ${c.contact_name}` : ""}
+                  {c.category ? (
+                    <span className="block text-caption text-charcoal/45">{c.category}</span>
+                  ) : null}
                 </>
               ) : (
                 "No link"
@@ -212,7 +213,14 @@ export function ContactPicker({
     <div className="relative">
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          if (open) closePanel();
+          else {
+            setQ("");
+            setHighlighted(-1);
+            setOpen(true);
+          }
+        }}
         className="border border-[#c9c2b4] px-1.5 py-1 text-caption text-charcoal hover:border-nearblack"
       >
         {selected ? selected.company : placeholder}
