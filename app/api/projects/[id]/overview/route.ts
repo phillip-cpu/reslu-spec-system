@@ -53,7 +53,7 @@ export async function GET(
   ] = await Promise.all([
     supabase
       .from("items")
-      .select("id, status, client_approved, client_flagged, category, quantity, price_trade, price_rrp, markup_pct, cost_scope")
+      .select("id, status, client_approved, client_flagged, category, quantity, price_trade, price_rrp, markup_pct, cost_scope, measurement_id, wastage_pct, coverage_per_unit")
       .eq("project_id", projectId)
       .is("deleted_at", null),
     supabase
@@ -124,6 +124,7 @@ export async function GET(
     const [
       { data: sections, error: sectionsError },
       { data: variations, error: variationsError },
+      { data: measurements, error: measurementsError },
     ] = await Promise.all([
       supabase
         .from("cost_sections")
@@ -134,6 +135,10 @@ export async function GET(
         .select("status, cost_ex_gst")
         .eq("project_id", projectId)
         .is("deleted_at", null),
+      supabase
+        .from("measurements")
+        .select("id, value")
+        .eq("project_id", projectId),
     ]);
     if (sectionsError) {
       return NextResponse.json({ error: sectionsError.message }, { status: 500 });
@@ -141,6 +146,16 @@ export async function GET(
     if (variationsError) {
       return NextResponse.json({ error: variationsError.message }, { status: 500 });
     }
+    if (measurementsError) {
+      return NextResponse.json({ error: measurementsError.message }, { status: 500 });
+    }
+
+    const measurementsById = new Map(
+      (measurements ?? []).map((measurement) => [
+        measurement.id,
+        { value: Number(measurement.value) },
+      ])
+    );
 
     const sectionsWithLines: CostSectionWithLines[] = (sections ?? []).map((section) => {
       const lines = (
@@ -151,7 +166,7 @@ export async function GET(
         lines,
         rollup: sectionRollup(
           lines,
-          undefined,
+          measurementsById,
           typedProject.estimate_markup_pct ?? 0
         ),
       };
@@ -161,6 +176,7 @@ export async function GET(
       lines: allLines,
       variations: variations ?? [],
       markupPct: typedProject.estimate_markup_pct ?? 0,
+      measurementsById,
     });
     const ffeForEstimate = ffeRollup(
       (items ?? []).map((it) => ({
@@ -171,7 +187,11 @@ export async function GET(
         price_rrp: it.price_rrp,
         markup_pct: it.markup_pct,
         cost_scope: it.cost_scope,
-      }))
+        measurement_id: it.measurement_id,
+        wastage_pct: it.wastage_pct,
+        coverage_per_unit: it.coverage_per_unit,
+      })),
+      measurementsById
     );
     const wholeJob = wholeJobSummary(rollup, ffeForEstimate);
 

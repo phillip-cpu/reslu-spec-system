@@ -10,6 +10,10 @@ import type { ItemComponent } from "@/types/item-components";
 import { assemblyProcurementLabel } from "@/lib/item-components";
 import { ItemComponentsPanel } from "./ItemComponentsPanel";
 import { ItemScheduleRequirementsPanel } from "./ItemScheduleRequirementsPanel";
+import {
+  ffeClientQuoteUnitPrice,
+  ffeProductCostUnitPrice,
+} from "@/lib/ffe-pricing";
 import type {
   ItemScheduleRequirement,
   ItemScheduleRequirementsResponse,
@@ -79,11 +83,9 @@ interface Props {
 
 // ── computations ────────────────────────────────────────────
 
-/** Client sell price = trade × (1 + markup%). Null if no trade price. */
+/** Shared quote cascade: marked-up trade price, then unmarked-up RRP placeholder. */
 function clientPrice(item: Item): number | null {
-  if (item.cost_scope === "trade_package") return null;
-  if (item.price_trade === null || item.price_trade === undefined) return null;
-  return item.price_trade * (1 + (item.markup_pct ?? 0) / 100);
+  return ffeClientQuoteUnitPrice(item);
 }
 
 /**
@@ -99,10 +101,9 @@ function lineTotal(item: Item, qtyOverride?: number): number | null {
   return cp === null ? null : cp * (qtyOverride ?? item.quantity);
 }
 
-function tradeTotal(item: Item, qtyOverride?: number): number | null {
-  if (item.cost_scope === "trade_package") return null;
-  if (item.price_trade === null || item.price_trade === undefined) return null;
-  return item.price_trade * (qtyOverride ?? item.quantity);
+function productCostTotal(item: Item, qtyOverride?: number): number | null {
+  const productCost = ffeProductCostUnitPrice(item);
+  return productCost === null ? null : productCost * (qtyOverride ?? item.quantity);
 }
 
 /**
@@ -573,7 +574,7 @@ export function ProcurementView({
       0
     );
     const cost = items.reduce(
-      (s, it) => s + (tradeTotal(it, resolvedQuantity(it as ItemWithQtyLink, measurementsById)) ?? 0),
+      (s, it) => s + (productCostTotal(it, resolvedQuantity(it as ItemWithQtyLink, measurementsById)) ?? 0),
       0
     );
     return {
@@ -582,7 +583,10 @@ export function ProcurementView({
       margin: sell - cost,
       gst: sell * GST_RATE,
       incGst: sell * (1 + GST_RATE),
-      priced: directItems.filter((it) => it.price_trade !== null).length,
+      priced: directItems.filter((it) => ffeProductCostUnitPrice(it) !== null).length,
+      placeholders: directItems.filter(
+        (it) => it.price_trade === null && it.price_rrp !== null
+      ).length,
       directCount: directItems.length,
     };
   }, [items, measurementsById]);
@@ -607,7 +611,7 @@ export function ProcurementView({
         <Stat label="GST (10%)" value={money(totals.gst)} />
         <Stat label="Quote total (inc GST)" value={money(totals.incGst)} strong />
         <Stat
-          label="Trade cost / margin"
+          label="Product cost / margin"
           value={`${money(totals.cost)} · ${money(totals.margin)}`}
         />
         <Stat
@@ -620,8 +624,8 @@ export function ProcurementView({
           tone={variance !== null && variance < 0 ? "over" : "under"}
         />
         <Stat
-          label="Items priced"
-          value={`${totals.priced} / ${totals.directCount}`}
+          label="Pricing coverage"
+          value={`${totals.priced} / ${totals.directCount}${totals.placeholders > 0 ? ` · ${totals.placeholders} RRP` : ""}`}
         />
         <Stat label="Line items" value={String(items.length)} />
       </div>
@@ -773,7 +777,18 @@ export function ProcurementView({
                         )}
                       </td>
                       <td className="px-2 py-1.5 text-right text-body text-charcoal/70">
-                        {packageIncluded ? "—" : money(clientPrice(item))}
+                        {packageIncluded ? (
+                          "—"
+                        ) : (
+                          <>
+                            {money(clientPrice(item))}
+                            {item.price_trade === null && item.price_rrp !== null && (
+                              <span className="block text-caption uppercase tracking-wide text-sand">
+                                RRP placeholder
+                              </span>
+                            )}
+                          </>
+                        )}
                       </td>
                       <td className="px-2 py-1.5 text-right text-body text-nearblack">
                         {packageIncluded

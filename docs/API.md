@@ -2282,7 +2282,7 @@ full frozen estimate.
 Auth: admin. Body: `{ label, kind?, note? }` (`kind ∈ issue | vm`,
 defaults `'issue'`). Response: `{ version }` (201). "Save version" —
 freezes the project's CURRENT live estimate state (sections/lines, FF&E
-rollup, whole-job totals, markup %, every measurement, and the latest
+category rollup and item identities, whole-job totals, markup %, every measurement, and the latest
 SOW revision label) into a new `estimate_versions` row. `label` must be
 unique per project — 409 on collision with a clear message.
 
@@ -2304,7 +2304,7 @@ Auth: admin. Body: none. Query: `a`, `b` — each either an
 `estimate_versions.id` or the literal string `"current"` (the live,
 unfrozen estimate, built on the fly, never persisted). Response:
 `VersionCompareResponse` — `{ a: {label, created_at}, b: {...},
-sections: SectionDiffEntry[], ffeSubstitutions: FfeSubstitution[],
+sections: SectionDiffEntry[], ffeSubstitutions: FfeSubstitution[], ffeComparisonAvailable,
 totalSavingExGst, totalA, totalB }`. Diff direction is always A → B
 ("was" = A, "now" = B — the UI picks which side is which). Per-section
 deltas + changed/removed/added lines from `lib/estimate-versions.ts
@@ -2312,11 +2312,13 @@ diffSections()` (matched by line id, falling back to description-match
 within the same section; sections matched by name — a rename between
 two versions shows as one section removed + a different one added,
 since a frozen snapshot has no stable cross-version section id).
-`ffeSubstitutions` (matched by `item_code`) is **only populated when at
-least one side is `"current"`** — a frozen version's snapshot stores
-only the aggregated FF&E rollup, not per-item detail, so a
-both-frozen-versions comparison still gets the section/line diff and
-headline saving but an empty substitutions list. `totalSavingExGst =
+`ffeSubstitutions` (matched by `item_code`) uses the frozen per-item
+detail stored by current snapshots, so current-to-version and
+version-to-version comparisons do not read today's prices into an old
+estimate. Legacy versions created before item snapshots report
+`ffeComparisonAvailable: false`; their frozen category totals still feed the
+headline, but the UI explains why it cannot claim an item-level diff.
+`totalSavingExGst =
 a.wholeJob.combinedExGst - b.wholeJob.combinedExGst` (positive = B is
 cheaper, a real saving — the "Total saving: $N ex GST" headline).
 

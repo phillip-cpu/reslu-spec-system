@@ -13,7 +13,10 @@
 // ============================================================
 
 import type { CostLine, Measurement, Variation } from "@/types";
-import { ffeClientQuoteUnitPrice } from "./ffe-pricing.ts";
+import {
+  ffeClientQuoteUnitPrice,
+  ffeProductCostUnitPrice,
+} from "./ffe-pricing.ts";
 
 /** GST rate, fixed at 10% per BUILD-SPEC.md ("GST 10%" everywhere it's mentioned). */
 export const GST_RATE = 0.1;
@@ -469,13 +472,14 @@ export function ffeBestPrice(item: FfeItemInput): {
   bestPrice: number | null;
   confidence: FfeConfidence;
 } {
+  const bestPrice = ffeProductCostUnitPrice(item);
+  if (bestPrice === null) {
+    return { bestPrice: null, confidence: "unpriced" };
+  }
   if (item.price_trade !== null && item.price_trade !== undefined) {
-    return { bestPrice: item.price_trade, confidence: "quoted" };
+    return { bestPrice, confidence: "quoted" };
   }
-  if (item.price_rrp !== null && item.price_rrp !== undefined) {
-    return { bestPrice: item.price_rrp, confidence: "placeholder" };
-  }
-  return { bestPrice: null, confidence: "unpriced" };
+  return { bestPrice, confidence: "placeholder" };
 }
 
 /**
@@ -491,7 +495,10 @@ export function ffeBestPrice(item: FfeItemInput): {
  * resolvable, so an item with no link behaves exactly as before this
  * round.
  */
-function ffeDerivedQuantity(item: FfeItemInput, measurement: FfeMeasurementInput | null): number {
+export function ffeDerivedQuantity(
+  item: FfeItemInput,
+  measurement: FfeMeasurementInput | null
+): number {
   if (item.measurement_id && measurement) {
     const wastage = item.wastage_pct ?? 0;
     const adjusted = measurement.value * (1 + wastage / 100);

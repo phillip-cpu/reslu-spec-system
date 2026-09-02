@@ -348,6 +348,52 @@ function VersionSnapshotView({ version }: { version: EstimateVersion }) {
           </div>
         </div>
       ))}
+      <div className="border border-[#dcd6cc]">
+        <div className="flex flex-wrap items-end justify-between gap-3 bg-cream px-4 py-3">
+          <div>
+            <p className="label-caps !text-nearblack">Frozen FF&amp;E</p>
+            <p className="mt-1 text-caption text-charcoal/50">
+              {snapshot.ffe_items
+                ? `${snapshot.ffe_items.length} item identities retained for Finance timing`
+                : "Legacy version · category totals retained, item identities unavailable"}
+            </p>
+          </div>
+          <p className="text-caption text-charcoal/60">
+            Product cost {formatMoney(snapshot.ffe.total)} · client quote {formatMoney(snapshot.ffe.client_total)}
+          </p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[560px] text-left">
+            <thead className="border-t border-[#dcd6cc] bg-nearblack text-white">
+              <tr>
+                <th className="label-caps px-4 py-2 !text-white">Category</th>
+                <th className="label-caps px-4 py-2 text-right !text-white">Items</th>
+                <th className="label-caps px-4 py-2 text-right !text-white">Product cost</th>
+                <th className="label-caps px-4 py-2 text-right !text-white">Client quote</th>
+                <th className="label-caps px-4 py-2 text-right !text-white">Confidence</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#e5e0d6]">
+              {snapshot.ffe.categories.map((category) => (
+                <tr key={category.category}>
+                  <td className="px-4 py-2 text-body text-nearblack">{category.category}</td>
+                  <td className="px-4 py-2 text-right text-body text-charcoal/70">{category.item_count}</td>
+                  <td className="px-4 py-2 text-right text-body text-charcoal/70">{formatMoney(category.total)}</td>
+                  <td className="px-4 py-2 text-right text-body text-charcoal/70">{formatMoney(category.client_total)}</td>
+                  <td className="px-4 py-2 text-right text-caption text-charcoal/50">
+                    {category.quoted_count} quoted · {category.placeholder_count} RRP · {category.unpriced_count} unpriced
+                  </td>
+                </tr>
+              ))}
+              {snapshot.ffe.categories.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="px-4 py-3 text-caption text-charcoal/40">No FF&amp;E in this saved version.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
