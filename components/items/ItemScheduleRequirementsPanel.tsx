@@ -76,7 +76,7 @@ export function ItemScheduleRequirementsPanel({
           <button
             type="button"
             onClick={onClose}
-            className="min-h-11 border border-[#c9c2b4] px-3 text-subhead text-nearblack sm:hidden"
+            className="min-h-11 border border-[#c9c2b4] px-3 text-subhead text-nearblack hover:border-nearblack"
           >
             Close
           </button>
@@ -144,7 +144,13 @@ export function ItemScheduleRequirementsPanel({
           className="min-h-11 min-w-0 flex-1 border border-[#c9c2b4] bg-white px-3 text-body focus:border-sand focus:outline-none disabled:opacity-50"
           aria-label="Required Work activity"
         >
-          <option value="">{available.length > 0 ? "Choose a Work activity…" : "Every Work activity is already linked"}</option>
+          <option value="">
+            {activities.length === 0
+              ? "No Work activities yet"
+              : available.length > 0
+                ? "Choose a Work activity…"
+                : "Every Work activity is already linked"}
+          </option>
           {phaseGroups.map(([phaseName, phaseActivities]) => (
             <optgroup key={phaseName} label={phaseName}>
               {phaseActivities.map((activity) => (

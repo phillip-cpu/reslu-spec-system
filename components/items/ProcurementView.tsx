@@ -693,11 +693,13 @@ export function ProcurementView({
                         {isAdmin && (
                           <button
                             type="button"
-                            onClick={() =>
+                            onClick={() => {
+                              setScheduleOpenFor(null);
                               setComponentsOpenFor((current) =>
                                 current === item.id ? null : item.id
-                              )
-                            }
+                              );
+                            }}
+                            aria-expanded={componentsOpenFor === item.id}
                             className={clsx(
                               "mt-0.5 text-caption underline underline-offset-2",
                               isAssembly ? "text-sand" : "text-charcoal/45 hover:text-nearblack"
@@ -713,9 +715,11 @@ export function ProcurementView({
                         {!packageIncluded && (
                           <button
                             type="button"
-                            onClick={() =>
-                              setScheduleOpenFor((current) => current === item.id ? null : item.id)
-                            }
+                            onClick={() => {
+                              setComponentsOpenFor(null);
+                              setScheduleOpenFor((current) => current === item.id ? null : item.id);
+                            }}
+                            aria-expanded={scheduleOpenFor === item.id}
                             className={clsx(
                               "mt-0.5 block max-w-full truncate text-left text-caption underline underline-offset-2",
                               itemRequirements.length > 0 ? "text-sand" : "text-charcoal/45 hover:text-nearblack"
