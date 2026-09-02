@@ -10,7 +10,11 @@ import {
 import { resolveExportPresets } from "@/lib/export-presets";
 import { suggestTradeTag } from "@/lib/sow-trade-tags";
 import type { SowDocument, SowSectionWithLines } from "@/types";
-import type { ApplyTemplateInput, ApplyTemplateResponse } from "@/types/phase-12a-a";
+import type {
+  ApplyTemplateInput,
+  ApplyTemplateResponse,
+  SowTemplateSection,
+} from "@/types/phase-12a-a";
 
 /**
  * POST /api/projects/[id]/sow/[sowId]/from-template
@@ -20,10 +24,10 @@ import type { ApplyTemplateInput, ApplyTemplateResponse } from "@/types/phase-12
  * (read rooms from the CURRENT rooms schema). Keep everything editable
  * via the existing builder."
  *
- * Appends sections (never replaces existing ones — safe to run on a
- * SOW that already has content from the plain POST /api/projects/[id]/sow
- * seed, e.g. to backfill General Notes/Exclusions onto an older SOW
- * that predates this feature). Only valid on a DRAFT SOW — an issued
+ * Appends template groups without replacing authored content. Linked
+ * room seed sections are populated in place, so applying the template
+ * to a newly-created SOW does not create a second copy of every FF&E
+ * room. Only valid on a DRAFT SOW — an issued
  * revision is immutable, same rule the builder already enforces for
  * every other section/line mutation on this resource.
  *
@@ -116,15 +120,26 @@ export async function POST(
   // above already cover 100% of SOW_TEMPLATE_LIBRARY's keys.
   void SOW_TEMPLATE_LIBRARY;
 
-  let roomNames: string[] = [];
+  let roomSeeds: { heading: string; sourceRoomId: string | null }[] = [];
   if (includeRooms) {
-    const { data: rooms } = await supabase
+    const { data: rooms, error: roomsError } = await supabase
       .from("rooms")
-      .select("name")
+      .select("id, name")
       .eq("project_id", projectId)
       .is("deleted_at", null)
       .order("sort", { ascending: true });
-    roomNames = roomSectionHeadings((rooms ?? []).map((r) => r.name as string));
+    if (roomsError) {
+      return NextResponse.json({ error: roomsError.message }, { status: 500 });
+    }
+    const activeRooms = (rooms ?? [])
+      .map((room) => ({
+        heading: String(room.name ?? "").trim(),
+        sourceRoomId: room.id as string,
+      }))
+      .filter((room) => room.heading.length > 0);
+    roomSeeds = activeRooms.length > 0
+      ? activeRooms
+      : roomSectionHeadings([]).map((heading) => ({ heading, sourceRoomId: null }));
   }
 
   // "Trade-scoped SOW extracts" round — current preset names, fetched
@@ -143,23 +158,48 @@ export async function POST(
     .maybeSingle();
   const presetNames = resolveExportPresets(presetsRow?.value).map((p) => p.name);
 
-  // Existing sections' max sort, so appended template sections land
-  // after anything already there rather than colliding sort values.
-  const { data: maxSortRow } = await supabase
+  // Load existing sections once. Linked seed sections are populated in
+  // place instead of creating a second copy of each FF&E room.
+  const { data: existingSections, error: existingSectionsError } = await supabase
     .from("sow_sections")
-    .select("sort")
+    .select("*, sow_lines(id)")
     .eq("sow_id", sowId)
-    .order("sort", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  let nextSort = (maxSortRow?.sort ?? 0) + 1;
+    .order("sort", { ascending: true });
+  if (existingSectionsError) {
+    return NextResponse.json({ error: existingSectionsError.message }, { status: 500 });
+  }
+  const existingByRoomId = new Map(
+    (existingSections ?? [])
+      .filter((section) => Boolean(section.source_room_id))
+      .map((section) => [section.source_room_id as string, section])
+  );
+  let nextSort =
+    (existingSections ?? []).reduce(
+      (highest, section) => Math.max(highest, Number(section.sort) || 0),
+      0
+    ) + 1;
 
   // `isRoomSection` drives the auto-tag step below — see this route's
   // own doc comment for why only room sections are auto-tagged.
-  const templateSections = [
-    ...leadGroups.map((g) => SOW_TEMPLATE_LIBRARY[g]).filter(Boolean).map((t) => ({ ...t, isRoomSection: false })),
-    ...roomNames.map((name) => ({ ...roomSectionTemplate(name), isRoomSection: true })),
-    ...trailingGroups.map((g) => SOW_TEMPLATE_LIBRARY[g]).filter(Boolean).map((t) => ({ ...t, isRoomSection: false })),
+  const templateSections: (SowTemplateSection & {
+    isRoomSection: boolean;
+    sourceRoomId: string | null;
+  })[] = [
+    ...leadGroups.map((g) => SOW_TEMPLATE_LIBRARY[g]).filter(Boolean).map((t) => ({
+      ...t,
+      isRoomSection: false,
+      sourceRoomId: null,
+    })),
+    ...roomSeeds.map((room) => ({
+      ...roomSectionTemplate(room.heading),
+      isRoomSection: true,
+      sourceRoomId: room.sourceRoomId,
+    })),
+    ...trailingGroups.map((g) => SOW_TEMPLATE_LIBRARY[g]).filter(Boolean).map((t) => ({
+      ...t,
+      isRoomSection: false,
+      sourceRoomId: null,
+    })),
   ];
 
   if (templateSections.length === 0) {
@@ -169,18 +209,33 @@ export async function POST(
   const createdSections: SowSectionWithLines[] = [];
 
   for (const template of templateSections) {
-    const { data: section, error: sectionError } = await supabase
-      .from("sow_sections")
-      .insert({ sow_id: sowId, heading: template.heading, sort: nextSort })
-      .select()
-      .single();
-    if (sectionError || !section) {
-      return NextResponse.json(
-        { error: sectionError?.message ?? "Could not create a template section" },
-        { status: 500 }
-      );
+    const sourceRoomId = template.sourceRoomId;
+    const existingRoomSection = sourceRoomId ? existingByRoomId.get(sourceRoomId) : null;
+    if (existingRoomSection && (existingRoomSection.sow_lines?.length ?? 0) > 0) {
+      continue;
     }
-    nextSort += 1;
+
+    let section = existingRoomSection ?? null;
+    if (!section) {
+      const { data: insertedSection, error: sectionError } = await supabase
+        .from("sow_sections")
+        .insert({
+          sow_id: sowId,
+          heading: template.heading,
+          sort: nextSort,
+          source_room_id: sourceRoomId,
+        })
+        .select()
+        .single();
+      if (sectionError || !insertedSection) {
+        return NextResponse.json(
+          { error: sectionError?.message ?? "Could not create a template section" },
+          { status: 500 }
+        );
+      }
+      section = insertedSection;
+      nextSort += 1;
+    }
 
     const lineRows = template.lines.map((line, i) => ({
       section_id: section.id,

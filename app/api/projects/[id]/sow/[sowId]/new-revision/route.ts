@@ -60,6 +60,25 @@ export async function POST(
   if (sectionsError) {
     return NextResponse.json({ error: sectionsError.message }, { status: 500 });
   }
+  const typedSourceSections = (sourceSections ?? []) as (SowSection & {
+    source_room_id: string | null;
+    sow_lines: SowLineWithTrade[];
+  })[];
+
+  // A new draft must reflect the current room register. Preserve links
+  // for still-active rooms, turn retired-room sections into ordinary
+  // authored sections, and add rooms created since the issued source.
+  const { data: activeRooms, error: activeRoomsError } = await supabase
+    .from("rooms")
+    .select("id, name, sort")
+    .eq("project_id", projectId)
+    .is("deleted_at", null)
+    .order("sort", { ascending: true });
+  if (activeRoomsError) {
+    return NextResponse.json({ error: activeRoomsError.message }, { status: 500 });
+  }
+  const activeRoomIds = new Set((activeRooms ?? []).map((room) => room.id as string));
+  const clonedRoomIds = new Set<string>();
 
   // Compute the next free T-number against every existing (incl.
   // soft-deleted) revision label for this project, not just
@@ -93,10 +112,20 @@ export async function POST(
     );
   }
 
-  for (const section of (sourceSections ?? []) as (SowSection & { sow_lines: SowLineWithTrade[] })[]) {
+  for (const section of typedSourceSections) {
+    const sourceRoomId =
+      section.source_room_id && activeRoomIds.has(section.source_room_id)
+        ? section.source_room_id
+        : null;
+    if (sourceRoomId) clonedRoomIds.add(sourceRoomId);
     const { data: newSection, error: newSectionError } = await supabase
       .from("sow_sections")
-      .insert({ sow_id: newSow.id, heading: section.heading, sort: section.sort })
+      .insert({
+        sow_id: newSow.id,
+        heading: section.heading,
+        sort: section.sort,
+        source_room_id: sourceRoomId,
+      })
       .select()
       .single();
     if (newSectionError || !newSection) {
@@ -130,6 +159,28 @@ export async function POST(
         await supabase.from("sow_documents").delete().eq("id", newSow.id);
         return NextResponse.json({ error: linesError.message }, { status: 500 });
       }
+    }
+  }
+
+  const missingRooms = (activeRooms ?? []).filter(
+    (room) => !clonedRoomIds.has(room.id as string) && String(room.name ?? "").trim()
+  );
+  if (missingRooms.length > 0) {
+    const maxSort = typedSourceSections.reduce(
+      (highest, section) => Math.max(highest, section.sort),
+      0
+    );
+    const { error: missingRoomsError } = await supabase.from("sow_sections").insert(
+      missingRooms.map((room, index) => ({
+        sow_id: newSow.id,
+        heading: String(room.name).trim(),
+        sort: maxSort + index + 1,
+        source_room_id: room.id as string,
+      }))
+    );
+    if (missingRoomsError) {
+      await supabase.from("sow_documents").delete().eq("id", newSow.id);
+      return NextResponse.json({ error: missingRoomsError.message }, { status: 500 });
     }
   }
 

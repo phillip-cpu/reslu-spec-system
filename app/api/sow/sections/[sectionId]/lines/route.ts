@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import type { CreateSowLineInput, SowDocument, SowLineKind } from "@/types";
+import type { SowDocument, SowLineKind } from "@/types";
+import type { CreateSowLineWithTradeInput } from "@/types/sow-trade-tags";
 
 const VALID_KIND = new Set<SowLineKind>(["inclusion", "exclusion", "note"]);
 
@@ -43,7 +44,7 @@ export async function POST(
     );
   }
 
-  let body: CreateSowLineInput;
+  let body: CreateSowLineWithTradeInput;
   try {
     body = await request.json();
   } catch {
@@ -57,6 +58,9 @@ export async function POST(
       { error: "kind must be one of inclusion, exclusion, note" },
       { status: 400 }
     );
+  }
+  if (body.trade !== undefined && body.trade !== null && typeof body.trade !== "string") {
+    return NextResponse.json({ error: "trade must be a string or null" }, { status: 400 });
   }
 
   const { data: existing } = await supabase
@@ -73,6 +77,7 @@ export async function POST(
       section_id: sectionId,
       text: body.text.trim(),
       kind: body.kind ?? "inclusion",
+      trade: typeof body.trade === "string" ? body.trade.trim() || null : null,
       sort: nextSort,
     })
     .select()

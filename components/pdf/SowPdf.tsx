@@ -245,10 +245,9 @@ interface Props {
    * trade-filtered extract, not the full SOW. `sections` is already
    * filtered by the caller (lib/sow-trade-tags.ts's
    * filterSectionsForTrade()) before it ever reaches this component —
-   * this prop ONLY drives the cover subtitle text below, nothing about
-   * body rendering/pagination changes based on it. Omitted/null for
-   * the ordinary full-SOW render (behaviour identical to before this
-   * round).
+   * this prop drives the cover subtitle and suppresses redundant trade
+   * subheadings in a PDF whose lines are already filtered to one trade.
+   * Omitted/null for the full SOW, where trade groups are shown.
    */
   extractTrade?: string | null;
 }

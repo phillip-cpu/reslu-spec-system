@@ -32,7 +32,7 @@ test("groups full-scope lines beneath trades in first-appearance order", () => {
   );
 });
 
-test("keeps untagged lines visible in a separate group", () => {
+test("keeps blank and untagged lines visible in one separate group", () => {
   const groups = groupSowLinesByTrade([
     line("1", null),
     line("2", ""),

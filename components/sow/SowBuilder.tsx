@@ -43,6 +43,8 @@ export function SowBuilder({ projectId }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [applyingTemplate, setApplyingTemplate] = useState(false);
+  const [reorderingRoomSectionId, setReorderingRoomSectionId] = useState<string | null>(null);
+  const [reorderingLineSectionId, setReorderingLineSectionId] = useState<string | null>(null);
   // "Trade-scoped SOW extracts" round — trade preset names (the trade
   // select's option list + the "Suggest trade tags" action's own
   // resolution list) and this action's own busy/result state.
@@ -53,7 +55,6 @@ export function SowBuilder({ projectId }: Props) {
   // backlog): sticky section outline sidebar, current section
   // highlighted via IntersectionObserver.
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
-  const [reorderingSectionId, setReorderingSectionId] = useState<string | null>(null);
 
   const loadRevisions = useCallback(async () => {
     const res = await fetch(`/api/projects/${projectId}/sow`);
@@ -315,6 +316,54 @@ export function SowBuilder({ projectId }: Props) {
     );
   }
 
+  async function moveRoomSection(sectionId: string, direction: -1 | 1) {
+    const roomSections = sections.filter((section) => section.source_room_id !== null);
+    const roomIndex = roomSections.findIndex((section) => section.id === sectionId);
+    const targetRoom = roomSections[roomIndex + direction];
+    const sourceRoom = roomSections[roomIndex];
+    if (!sourceRoom || !targetRoom || reorderingRoomSectionId) return;
+
+    setReorderingRoomSectionId(sectionId);
+    setError(null);
+    try {
+      const updates = [
+        { section: sourceRoom, sort: targetRoom.sort },
+        { section: targetRoom, sort: sourceRoom.sort },
+      ];
+      const responses = await Promise.all(
+        updates.map(({ section, sort }) =>
+          fetch(`/api/sow/sections/${section.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sort }),
+          })
+        )
+      );
+      const failed = responses.find((response) => !response.ok);
+      if (failed) {
+        const body = await failed.json().catch(() => ({}));
+        throw new Error(body.error ?? "Could not reorder rooms.");
+      }
+
+      setSections((current) => {
+        const next = [...current];
+        const sourceIndex = next.findIndex((section) => section.id === sourceRoom.id);
+        const targetIndex = next.findIndex((section) => section.id === targetRoom.id);
+        if (sourceIndex < 0 || targetIndex < 0) return current;
+        next[sourceIndex] = { ...targetRoom, sort: sourceRoom.sort };
+        next[targetIndex] = { ...sourceRoom, sort: targetRoom.sort };
+        return next;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not reorder rooms.");
+      // One PATCH may have succeeded before the other failed. Reload
+      // the revision so the UI always reflects the persisted order.
+      if (sow) await loadSow(sow.id).catch(() => {});
+    } finally {
+      setReorderingRoomSectionId(null);
+    }
+  }
+
   async function deleteSection(sectionId: string, heading: string) {
     if (!confirm(`Delete section "${heading}" and all its lines? This can't be undone.`)) return;
     setError(null);
@@ -330,11 +379,16 @@ export function SowBuilder({ projectId }: Props) {
     }
   }
 
-  async function addLine(sectionId: string, text: string, kind: SowLineKind) {
+  async function addLine(
+    sectionId: string,
+    text: string,
+    kind: SowLineKind,
+    trade: string | null
+  ) {
     const res = await fetch(`/api/sow/sections/${sectionId}/lines`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, kind }),
+      body: JSON.stringify({ text, kind, trade }),
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error ?? "Could not add line.");
@@ -382,22 +436,18 @@ export function SowBuilder({ projectId }: Props) {
   }
 
   /**
-   * Reorders lines within a section. The UI moves immediately, then each
-   * changed sort value is persisted through the existing immutable-aware
-   * line PATCH route. A failed request reloads the revision so a partial
-   * network failure can never leave the screen out of sync with storage.
+   * Reorders lines within one visible trade group. The UI updates
+   * immediately; failures reload the revision so partial PATCH
+   * success can never leave the screen out of sync with storage.
    */
   async function reorderLines(sectionId: string, lineId: string, destinationIndex: number) {
-    if (!sow || reorderingSectionId) return;
+    if (!sow || reorderingLineSectionId) return;
     const section = sections.find((candidate) => candidate.id === sectionId);
     if (!section) return;
 
-    // Reordering operates on the same grouped order the builder shows.
-    // This also normalises any legacy interleaved lines into one
-    // contiguous block per trade when an order change is saved.
     const displayedLines = groupSowLinesByTrade(section.lines).flatMap((group) => group.lines);
     const reordered = reorderSowLines(displayedLines, lineId, destinationIndex);
-    if (reordered === section.lines) return;
+    if (reordered === displayedLines) return;
 
     const originalSort = new Map(section.lines.map((line) => [line.id, line.sort]));
     const changed = reordered.filter((line) => originalSort.get(line.id) !== line.sort);
@@ -406,7 +456,7 @@ export function SowBuilder({ projectId }: Props) {
         candidate.id === sectionId ? { ...candidate, lines: reordered } : candidate
       )
     );
-    setReorderingSectionId(sectionId);
+    setReorderingLineSectionId(sectionId);
     setError(null);
 
     try {
@@ -425,7 +475,7 @@ export function SowBuilder({ projectId }: Props) {
       setError(err instanceof Error ? err.message : "Could not save the new line order.");
       await loadSow(sow.id).catch(() => {});
     } finally {
-      setReorderingSectionId(null);
+      setReorderingLineSectionId(null);
     }
   }
 
@@ -466,6 +516,7 @@ export function SowBuilder({ projectId }: Props) {
   }
 
   const isDraft = sow?.status === "draft";
+  const reorderableRoomSections = sections.filter((section) => section.source_room_id !== null);
 
   return (
     <div className="space-y-6">
@@ -597,24 +648,38 @@ export function SowBuilder({ projectId }: Props) {
 
           <div className="min-w-0 space-y-4">
             <div className="space-y-4">
-              {sections.map((section) => (
-                <div key={section.id} id={sectionAnchorId(section.id)} className="scroll-mt-24">
-                  <SectionBlock
-                    section={section}
-                    readOnly={!isDraft}
-                    presetNames={presets.map((p) => p.name)}
-                    onRename={(heading) => renameSection(section.id, heading)}
-                    onDelete={() => deleteSection(section.id, section.heading)}
-                    onAddLine={(text, kind) => addLine(section.id, text, kind)}
-                    onPatchLine={patchLine}
-                    onDeleteLine={deleteLine}
-                    onReorderLine={(lineId, destinationIndex) =>
-                      reorderLines(section.id, lineId, destinationIndex)
-                    }
-                    reordering={reorderingSectionId === section.id}
-                  />
-                </div>
-              ))}
+              {sections.map((section) => {
+                const roomIndex = reorderableRoomSections.findIndex(
+                  (candidate) => candidate.id === section.id
+                );
+                return (
+                  <div key={section.id} id={sectionAnchorId(section.id)} className="scroll-mt-24">
+                    <SectionBlock
+                      section={section}
+                      readOnly={!isDraft}
+                      presetNames={presets.map((p) => p.name)}
+                      onRename={(heading) => renameSection(section.id, heading)}
+                      onDelete={() => deleteSection(section.id, section.heading)}
+                      canMoveUp={roomIndex > 0}
+                      canMoveDown={
+                        roomIndex >= 0 && roomIndex < reorderableRoomSections.length - 1
+                      }
+                      roomReordering={reorderingRoomSectionId !== null}
+                      onMoveUp={() => moveRoomSection(section.id, -1)}
+                      onMoveDown={() => moveRoomSection(section.id, 1)}
+                      onAddLine={(text, kind, trade) =>
+                        addLine(section.id, text, kind, trade)
+                      }
+                      onPatchLine={patchLine}
+                      onDeleteLine={deleteLine}
+                      onReorderLine={(lineId, destinationIndex) =>
+                        reorderLines(section.id, lineId, destinationIndex)
+                      }
+                      lineReordering={reorderingLineSectionId === section.id}
+                    />
+                  </div>
+                );
+              })}
             </div>
 
             {isDraft && <AddSectionForm onAdd={addSection} />}
@@ -779,11 +844,16 @@ function SectionBlock({
   presetNames,
   onRename,
   onDelete,
+  canMoveUp,
+  canMoveDown,
+  roomReordering,
+  onMoveUp,
+  onMoveDown,
   onAddLine,
   onPatchLine,
   onDeleteLine,
   onReorderLine,
-  reordering,
+  lineReordering,
 }: {
   section: SowSectionWithTradedLines;
   readOnly: boolean;
@@ -791,11 +861,16 @@ function SectionBlock({
   presetNames: string[];
   onRename: (heading: string) => Promise<void>;
   onDelete: () => void;
-  onAddLine: (text: string, kind: SowLineKind) => Promise<void>;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  roomReordering: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onAddLine: (text: string, kind: SowLineKind, trade: string | null) => Promise<void>;
   onPatchLine: (line: SowLineWithTrade, patch: Partial<SowLineWithTrade>) => Promise<SowLineWithTrade>;
   onDeleteLine: (line: SowLineWithTrade) => void;
   onReorderLine: (lineId: string, destinationIndex: number) => Promise<void>;
-  reordering: boolean;
+  lineReordering: boolean;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [draggedLineId, setDraggedLineId] = useState<string | null>(null);
@@ -803,6 +878,11 @@ function SectionBlock({
   const lineGroups = groupSowLinesByTrade(section.lines);
   const displayedLines = lineGroups.flatMap((group) => group.lines);
   const hasTradeHeadings = lineGroups.some((group) => group.trade !== null);
+  const hasUnassignedGroup = lineGroups.some((group) => group.trade === null);
+  const sectionTrade =
+    presetNames.find(
+      (name) => name.trim().toLowerCase() === section.heading.trim().toLowerCase()
+    ) ?? null;
 
   function tradeKey(line: SowLineWithTrade): string | null {
     return line.trade?.trim() || null;
@@ -814,7 +894,7 @@ function SectionBlock({
   }
 
   function dropBefore(targetLineId: string) {
-    if (!draggedLineId || draggedLineId === targetLineId || reordering) {
+    if (!draggedLineId || draggedLineId === targetLineId || lineReordering) {
       clearDragState();
       return;
     }
@@ -850,17 +930,42 @@ function SectionBlock({
           >
             {expanded ? "−" : "+"}
           </button>
-          {readOnly ? (
+          {readOnly || section.source_room_id !== null ? (
             <p className="label-caps !text-nearblack">{section.heading}</p>
           ) : (
             <SectionHeadingEditor heading={section.heading} onRename={onRename} />
           )}
         </div>
         <div className="flex items-center gap-4">
+          {!readOnly && (canMoveUp || canMoveDown) && (
+            <div className="flex items-center gap-1" aria-label={`Reorder ${section.heading}`}>
+              <span className="mr-1 text-caption text-charcoal/45">Room order</span>
+              <button
+                type="button"
+                onClick={onMoveUp}
+                disabled={!canMoveUp || roomReordering}
+                className="border border-[#c9c2b4] px-2 py-0.5 text-caption text-charcoal transition-colors hover:border-nearblack hover:text-nearblack disabled:cursor-not-allowed disabled:opacity-30"
+                title={`Move ${section.heading} up`}
+                aria-label={`Move ${section.heading} up`}
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                onClick={onMoveDown}
+                disabled={!canMoveDown || roomReordering}
+                className="border border-[#c9c2b4] px-2 py-0.5 text-caption text-charcoal transition-colors hover:border-nearblack hover:text-nearblack disabled:cursor-not-allowed disabled:opacity-30"
+                title={`Move ${section.heading} down`}
+                aria-label={`Move ${section.heading} down`}
+              >
+                ↓
+              </button>
+            </div>
+          )}
           <span className="text-caption text-charcoal/50">
             {section.lines.length} {section.lines.length === 1 ? "line" : "lines"}
           </span>
-          {!readOnly && (
+          {!readOnly && section.source_room_id === null && (
             <button
               type="button"
               onClick={onDelete}
@@ -883,14 +988,17 @@ function SectionBlock({
 
             return (
               <div
-                key={group.trade ?? "general"}
+                key={group.trade === null ? "unassigned" : `trade:${group.trade}`}
                 className={groupIndex > 0 ? "border-t border-[#dcd6cc]" : undefined}
               >
                 {hasTradeHeadings && (
-                  <div className="border-b border-[#dcd6cc] bg-offwhite px-4 py-2">
+                  <div className="flex items-center justify-between border-b border-[#dcd6cc] bg-offwhite px-4 py-2">
                     <p className="label-caps font-semibold !text-nearblack">
                       {group.trade ?? "General"}
                     </p>
+                    <span className="text-caption text-charcoal/45">
+                      {group.lines.length} {group.lines.length === 1 ? "line" : "lines"}
+                    </span>
                   </div>
                 )}
                 <div className="divide-y divide-[#e5e0d6]">
@@ -906,7 +1014,7 @@ function SectionBlock({
                         onDelete={() => onDeleteLine(line)}
                         dragging={draggedLineId === line.id}
                         dropTarget={dropTargetId === line.id && draggedLineId !== line.id}
-                        reordering={reordering}
+                        reordering={lineReordering}
                         canMoveUp={lineIndex > 0}
                         canMoveDown={lineIndex < group.lines.length - 1}
                         onMoveUp={() => void onReorderLine(line.id, displayIndex - 1)}
@@ -918,7 +1026,7 @@ function SectionBlock({
                         }}
                         onDragEnd={clearDragState}
                         onDragOver={(event) => {
-                          if (!draggedLine || reordering || tradeKey(draggedLine) !== group.trade) return;
+                          if (!draggedLine || lineReordering || tradeKey(draggedLine) !== group.trade) return;
                           event.preventDefault();
                           event.dataTransfer.dropEffect = "move";
                           setDropTargetId(line.id);
@@ -949,10 +1057,31 @@ function SectionBlock({
                     Drop at end of {group.trade ?? "General"}
                   </div>
                 )}
+                {!readOnly && (
+                  <DraftLineRow
+                    presetNames={presetNames}
+                    sectionTrade={group.trade}
+                    lockTrade={group.trade !== null}
+                    onAdd={onAddLine}
+                  />
+                )}
               </div>
             );
           })}
-          {!readOnly && <DraftLineRow onAdd={onAddLine} />}
+          {!readOnly && lineGroups.length === 0 && (
+            <DraftLineRow
+              presetNames={presetNames}
+              sectionTrade={sectionTrade}
+              onAdd={onAddLine}
+            />
+          )}
+          {!readOnly && lineGroups.length > 0 && !hasUnassignedGroup && (
+            <DraftLineRow
+              presetNames={presetNames}
+              sectionTrade={sectionTrade}
+              onAdd={onAddLine}
+            />
+          )}
           {section.lines.length === 0 && readOnly && (
             <p className="px-4 py-3 text-caption text-charcoal/40">No lines in this section.</p>
           )}
@@ -1257,22 +1386,35 @@ function LineRow({
  * and refocuses for rapid entry.
  */
 function DraftLineRow({
+  presetNames,
+  sectionTrade,
+  lockTrade = false,
   onAdd,
 }: {
-  onAdd: (text: string, kind: SowLineKind) => Promise<void>;
+  presetNames: string[];
+  /** Exact preset-name match for the enclosing section heading. */
+  sectionTrade: string | null;
+  /** A trade-group row always creates a line for that group. */
+  lockTrade?: boolean;
+  onAdd: (text: string, kind: SowLineKind, trade: string | null) => Promise<void>;
 }) {
   const [text, setText] = useState("");
   const [kind, setKind] = useState<SowLineKind>("inclusion");
+  // null means "use the enclosing section's automatic trade"; a
+  // string (including "") is an explicit choice by the user.
+  const [tradeChoice, setTradeChoice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const trade = tradeChoice ?? sectionTrade ?? "";
 
   async function submit() {
     if (!text.trim() || submitting) return;
     setSubmitting(true);
     setError(null);
     try {
-      await onAdd(text.trim(), kind);
+      await onAdd(text.trim(), kind, trade || null);
       setText("");
+      setTradeChoice(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not add line.");
     } finally {
@@ -1291,6 +1433,35 @@ function DraftLineRow({
         <option value="exclusion">Exclusion</option>
         <option value="note">Note</option>
       </select>
+      {lockTrade ? (
+        <span className="label-caps mt-1 w-28 shrink-0 border border-sand bg-sand px-1.5 py-0.5 text-caption text-white">
+          {trade}
+        </span>
+      ) : (
+        <select
+          value={trade}
+          onChange={(e) => setTradeChoice(e.target.value)}
+          title={
+            sectionTrade
+              ? `New lines in this section are automatically tagged ${sectionTrade}`
+              : "Trade tag for the new line"
+          }
+          aria-label="Trade for new line"
+          className={clsx(
+            "label-caps mt-1 w-28 shrink-0 border px-1.5 py-0.5 text-caption focus:outline-none",
+            trade
+              ? "border-sand bg-sand text-white"
+              : "border-[#c9c2b4] bg-transparent text-charcoal/40"
+          )}
+        >
+          <option value="">— trade —</option>
+          {presetNames.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+      )}
       <div className="flex-1">
         <input
           value={text}
@@ -1301,7 +1472,7 @@ function DraftLineRow({
               submit();
             }
           }}
-          placeholder="+ Add line…"
+          placeholder={trade ? `+ Add line to ${trade}…` : "+ Add line…"}
           className="w-full border-none bg-transparent px-1 py-1 text-body text-charcoal placeholder:text-charcoal/35 focus:bg-nearwhite focus:outline-none"
         />
         {error && <p className="px-1 pt-1 text-caption text-red-700">⚠ {error}</p>}

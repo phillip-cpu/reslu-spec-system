@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { seedSowSections } from "@/lib/sow";
+import { seedSowSections, SOW_LEAD_SECTION, SOW_TRAILING_SECTIONS } from "@/lib/sow";
 import type { CreateSowInput, SowDocument, SowSection } from "@/types";
 
 /**
@@ -47,8 +47,8 @@ export async function GET(
  * SOW with no lineage to the first — the UI only offers this route from
  * the empty state). Seeds the standard section structure per
  * BUILD-SPEC.md "Scope of Works builder": General/Preliminaries, then
- * one section per the project's distinct item locations (else a
- * fallback room list for a project with no items specced yet),
+ * one section per room in the project's FF&E room register (falling
+ * back to legacy item locations, then the standard fallback rooms),
  * then Exclusions, Assumptions — see lib/sow.ts seedSowSections().
  *
  * Team access (not admin-gated). Aria-relevant: this is how Aria drafts
@@ -80,23 +80,41 @@ export async function POST(
   const body: CreateSowInput = await request.json().catch(() => ({}));
   const revisionLabel = body.revision_label?.trim() || "T1";
 
-  // Distinct, non-empty item locations, alphabetical — see lib/sow.ts
-  // seedSowSections()'s doc comment for why the API sorts before
-  // calling it (predictable section order rather than insertion order,
-  // which would depend on item creation order).
-  const { data: itemRows } = await supabase
+  // The current FF&E room register is authoritative for room-by-room SOW
+  // structure. Keep legacy item.location values only as a fallback for older
+  // projects that have not yet populated the rooms table.
+  const { data: roomRows, error: roomRowsError } = await supabase
+    .from("rooms")
+    .select("id, name, sort")
+    .eq("project_id", projectId)
+    .is("deleted_at", null)
+    .order("sort", { ascending: true });
+  if (roomRowsError) {
+    return NextResponse.json({ error: roomRowsError.message }, { status: 500 });
+  }
+
+  const { data: itemRows, error: itemRowsError } = await supabase
     .from("items")
     .select("location")
     .eq("project_id", projectId)
     .is("deleted_at", null)
     .not("location", "is", null);
-  const locations = [
+  if (itemRowsError) {
+    return NextResponse.json({ error: itemRowsError.message }, { status: 500 });
+  }
+  const legacyLocations = [
     ...new Set(
       (itemRows ?? [])
         .map((r) => (r as { location: string | null }).location?.trim())
         .filter((v): v is string => !!v)
     ),
   ].sort((a, b) => a.localeCompare(b));
+  const currentRooms = (roomRows ?? [])
+    .map((r) => ({
+      id: (r as { id: string }).id,
+      name: (r as { name: string | null }).name?.trim() ?? "",
+    }))
+    .filter((room) => room.name.length > 0);
 
   const { data: sow, error: sowError } = await supabase
     .from("sow_documents")
@@ -118,14 +136,21 @@ export async function POST(
     return NextResponse.json({ error: message }, { status });
   }
 
-  const headings = seedSowSections(locations);
+  const sectionSeeds = currentRooms.length > 0
+    ? [
+        { heading: SOW_LEAD_SECTION, source_room_id: null },
+        ...currentRooms.map((room) => ({ heading: room.name, source_room_id: room.id })),
+        ...SOW_TRAILING_SECTIONS.map((heading) => ({ heading, source_room_id: null })),
+      ]
+    : seedSowSections(legacyLocations).map((heading) => ({ heading, source_room_id: null }));
   const { data: sections, error: sectionsError } = await supabase
     .from("sow_sections")
     .insert(
-      headings.map((heading, i) => ({
+      sectionSeeds.map((section, i) => ({
         sow_id: sow.id,
-        heading,
+        heading: section.heading,
         sort: i + 1,
+        source_room_id: section.source_room_id,
       }))
     )
     .select();

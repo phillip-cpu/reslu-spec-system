@@ -13,13 +13,17 @@ async function loadParentSow(
 ) {
   const { data: section } = await supabase
     .from("sow_sections")
-    .select("id, sow_id, sow_documents(status)")
+    .select("id, sow_id, source_room_id, sow_documents(status)")
     .eq("id", sectionId)
     .single();
   if (!section) return null;
   const sow = (section as unknown as { sow_documents: Pick<SowDocument, "status"> | null })
     .sow_documents;
-  return { section, status: sow?.status ?? null };
+  return {
+    section,
+    status: sow?.status ?? null,
+    linkedRoom: Boolean(section.source_room_id),
+  };
 }
 
 /**
@@ -57,6 +61,12 @@ export async function PATCH(
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  if (parent.linkedRoom && typeof body.heading === "string") {
+    return NextResponse.json(
+      { error: "Linked room headings are managed from the FF&E room register." },
+      { status: 409 }
+    );
   }
 
   const update: Record<string, unknown> = {};
@@ -106,6 +116,12 @@ export async function DELETE(
   if (parent.status === "issued") {
     return NextResponse.json(
       { error: "This SOW has been issued and is immutable — use 'New revision' to edit it." },
+      { status: 409 }
+    );
+  }
+  if (parent.linkedRoom) {
+    return NextResponse.json(
+      { error: "Linked room sections are managed from the FF&E room register." },
       { status: 409 }
     );
   }

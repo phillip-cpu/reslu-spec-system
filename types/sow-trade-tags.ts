@@ -34,6 +34,8 @@ export type SowLineWithTrade = SowLine & { trade: string | null };
 
 /** A sow_sections row with `trade`-bearing lines nested. */
 export interface SowSectionWithTradedLines extends Omit<SowSectionWithLines, "lines"> {
+  /** FF&E room mirrored into this section; null for standard and custom sections. */
+  source_room_id: string | null;
   lines: SowLineWithTrade[];
 }
 
@@ -43,6 +45,17 @@ export interface PatchSowLineTradeInput {
   kind?: SowLineKind;
   sort?: number;
   /** Explicit `null` clears the tag; `undefined`/absent leaves it unchanged — same "only touch what's present" convention as the route's existing text/kind/sort handling. */
+  trade?: string | null;
+}
+
+/** Body accepted by POST /api/sow/sections/[sectionId]/lines when the
+ * builder creates a line directly beneath a trade section. Keeping
+ * this beside the other trade-aware SOW types avoids widening the
+ * older shared CreateSowLineInput shape for one additive field. */
+export interface CreateSowLineWithTradeInput {
+  text: string;
+  kind?: SowLineKind;
+  /** The section's trade preset name; null/absent creates an untagged line. */
   trade?: string | null;
 }
 

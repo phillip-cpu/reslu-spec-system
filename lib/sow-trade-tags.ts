@@ -258,7 +258,11 @@ export function distinctTaggedTrades(sections: { lines: { trade: string | null }
   return [...set];
 }
 
-/** Groups a section's lines by selected trade for the full SOW PDF. */
+/**
+ * Groups lines in first-seen trade order for the builder and full SOW PDF.
+ * Persisted sort values are left untouched; new append-sorted lines still
+ * render beneath their selected trade and its add-line row.
+ */
 export interface SowTradeLineGroup {
   trade: string | null;
   lines: SowLineWithTrade[];
