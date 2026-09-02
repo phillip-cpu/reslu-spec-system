@@ -14,12 +14,14 @@
 // project attention feed, and My Work.
 //
 // ------------------------------------------------------------
-// THE MAPPING (BUILD-SPEC item 1 — "no new mapping table"):
+// THE LEGACY FALLBACK MAPPING (BUILD-SPEC item 1):
 // export presets (lib/export-presets.ts's ExportPresetRow) ALREADY
 // carry both `prefixes[]` (item category prefixes, e.g. "TW"/"SW") and
 // `contact_categories[]` (trade contact categories, e.g. "Plumber") —
 // this one row IS the categories<->trade<->contacts mapping. Nothing
-// new is modelled here; this file only derives dates from it.
+// new is modelled for unlinked items. A staff-selected required Work
+// activity now takes precedence when present; this older mapping remains a
+// continuity fallback for items that have not been explicitly linked yet.
 //
 // DERIVATION (BUILD-SPEC item 2), restated precisely:
 //   1. For each unordered item (ordered_at is null), find its item
@@ -57,6 +59,7 @@
 // ------------------------------------------------------------
 
 import type { ExportPresetRow } from "@/types/round-export-batch";
+import type { OrderByRequirementInput } from "@/types/item-schedule-requirements";
 import { pickPresetForContactCategory } from "./export-presets.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -102,7 +105,7 @@ export interface OrderByContactInput {
 export interface WorksDateSource {
   /** Stable id of the underlying row (visit id or board_task id) — carried through to a matched item's diagnostic breadcrumb only, not used in date math. */
   source_id: string;
-  source_kind: "visit" | "board_task_booking";
+  source_kind: "visit" | "board_task_booking" | "board_task_requirement";
   project_id: string;
   contact_id: string | null;
   /** The works date itself — trade_visits.start_date, or board_tasks.booking_date. Date-only yyyy-mm-dd. */
@@ -122,6 +125,12 @@ export interface OrderByResult {
   source: WorksDateSource | null;
   /** The preset whose contact_categories/name-heuristic matched the winning source's contact, and whose prefixes covered the item's category — null when status is 'no_booking'. Surfaced for a "works — <preset name>" style label (My Work's "Order N items for {trade/preset name}"). */
   matched_preset: ExportPresetRow | null;
+  /** Present when a staff-selected Work activity replaced category inference. */
+  timing_basis?: "required_activity";
+  required_activity_id?: string;
+  required_activity_title?: string | null;
+  required_trade_role?: string | null;
+  buffer_days?: number;
 }
 
 // ------------------------------------------------------------
@@ -177,6 +186,10 @@ function formatDateOnly(ms: number): string {
 function subtractWeeks(worksDateStr: string, leadTimeWeeks: number): string {
   const ms = parseDateOnly(worksDateStr) - leadTimeWeeks * 7 * DAY_MS;
   return formatDateOnly(ms);
+}
+
+function subtractDays(dateStr: string, days: number): string {
+  return formatDateOnly(parseDateOnly(dateStr) - days * DAY_MS);
 }
 
 const DUE_SOON_WINDOW_DAYS = 7;
@@ -354,9 +367,17 @@ export function deriveOrderBy(
   presets: ExportPresetRow[],
   contacts: OrderByContactInput[],
   sources: WorksDateSource[],
-  now: Date = new Date()
+  now: Date = new Date(),
+  requirements: OrderByRequirementInput[] = []
 ): OrderByResult[] {
   const contactsById = new Map(contacts.map((c) => [c.id, c]));
+  const requirementsByItem = new Map<string, OrderByRequirementInput[]>();
+  for (const requirement of requirements) {
+    const key = `${requirement.project_id}:${requirement.item_id}`;
+    const current = requirementsByItem.get(key) ?? [];
+    current.push(requirement);
+    requirementsByItem.set(key, current);
+  }
   // Cache presets-covering-category per category prefix — a project's
   // item list commonly has many rows sharing the same handful of
   // category prefixes (e.g. dozens of TW items), so this avoids
@@ -376,6 +397,80 @@ export function deriveOrderBy(
   for (const item of items) {
     if (item.cost_scope === "trade_package") continue;
     if (item.ordered_at) continue; // already ordered — out of scope entirely, per spec.
+
+    // An explicit required-on-site activity is authoritative. It avoids a
+    // category-level guess and keeps moving when the linked Work/Timeline
+    // date moves. A linked-but-unscheduled activity intentionally remains
+    // undated instead of silently falling back to a different trade booking.
+    const itemRequirements = requirementsByItem.get(`${item.project_id}:${item.id}`) ?? [];
+    if (itemRequirements.length > 0) {
+      const dated = itemRequirements.filter(
+        (requirement): requirement is OrderByRequirementInput & { required_on_site_date: string } =>
+          !!requirement.required_on_site_date
+      );
+      const winner = dated.length > 0
+        ? dated.reduce((earliest, current) => {
+            const earliestConstraint = subtractDays(earliest.required_on_site_date, earliest.buffer_days);
+            const currentConstraint = subtractDays(current.required_on_site_date, current.buffer_days);
+            return parseDateOnly(currentConstraint) < parseDateOnly(earliestConstraint) ? current : earliest;
+          })
+        : itemRequirements[0];
+      const source = winner.required_on_site_date
+        ? {
+            source_id: winner.board_task_id,
+            source_kind: "board_task_requirement" as const,
+            project_id: winner.project_id,
+            contact_id: null,
+            start_date: winner.required_on_site_date,
+          }
+        : null;
+      const diagnostic = {
+        timing_basis: "required_activity" as const,
+        required_activity_id: winner.board_task_id,
+        required_activity_title: winner.activity_title,
+        required_trade_role: winner.trade_role,
+        buffer_days: winner.buffer_days,
+      };
+
+      if (!winner.required_on_site_date) {
+        results.push({
+          item_id: item.id,
+          status: "no_booking",
+          order_by: null,
+          works_date: null,
+          source: null,
+          matched_preset: null,
+          ...diagnostic,
+        });
+        continue;
+      }
+
+      if (item.lead_time_weeks === null || item.lead_time_weeks === undefined) {
+        results.push({
+          item_id: item.id,
+          status: "no_lead_time",
+          order_by: null,
+          works_date: winner.required_on_site_date,
+          source,
+          matched_preset: null,
+          ...diagnostic,
+        });
+        continue;
+      }
+
+      const onSiteWithBuffer = subtractDays(winner.required_on_site_date, winner.buffer_days);
+      const orderBy = subtractWeeks(onSiteWithBuffer, item.lead_time_weeks);
+      results.push({
+        item_id: item.id,
+        status: classifyOrderByDate(orderBy, now),
+        order_by: orderBy,
+        works_date: winner.required_on_site_date,
+        source,
+        matched_preset: null,
+        ...diagnostic,
+      });
+      continue;
+    }
 
     const coveringPresets = coveringPresetsFor(item.category);
     const projectSources = sources.filter((s) => s.project_id === item.project_id);

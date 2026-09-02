@@ -14,6 +14,7 @@ import type {
   DataQualityVisitInput,
   ProjectDataQualityResponse,
 } from "@/types/data-quality";
+import { loadItemScheduleRequirementData } from "@/lib/item-schedule-requirements-server";
 
 export function adelaideDateKey(now = new Date()): string {
   const parts = new Intl.DateTimeFormat("en-AU", {
@@ -38,7 +39,7 @@ export async function loadProjectDataQuality(
   projectId: string,
   now = new Date()
 ): Promise<ProjectDataQualityResponse> {
-  const [itemsResult, columnsResult, tasksResult, visitsResult, presetResult] =
+  const [itemsResult, columnsResult, tasksResult, visitsResult, presetResult, requirementData] =
     await Promise.all([
       supabase
         .from("items")
@@ -61,6 +62,7 @@ export async function loadProjectDataQuality(
         .eq("project_id", projectId)
         .is("deleted_at", null),
       supabase.from("app_settings").select("value").eq("key", "export_presets").maybeSingle(),
+      loadItemScheduleRequirementData(supabase, [projectId]),
     ]);
 
   const queryError =
@@ -133,7 +135,8 @@ export async function loadProjectDataQuality(
     presets,
     (contactRows ?? []) as OrderByContactInput[],
     sources,
-    new Date(`${today}T12:00:00Z`)
+    new Date(`${today}T12:00:00Z`),
+    requirementData.orderByInputs
   ).map((row) => ({
     item_id: row.item_id,
     status: row.status,

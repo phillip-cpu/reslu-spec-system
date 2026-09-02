@@ -170,6 +170,13 @@ export function ProjectWorkspace({
       }
       const { item } = await res.json();
       setItems((cur) => cur.map((it) => (it.id === id ? item : it)));
+      if (
+        isAdmin &&
+        ("lead_time_weeks" in patch || "ordered_at" in patch || "cost_scope" in patch)
+      ) {
+        setOrderBy(null);
+        setOrderByLoaded(false);
+      }
     } catch (err) {
       setItems(prev);
       setError(err instanceof Error ? err.message : "Update failed.");
@@ -288,6 +295,11 @@ export function ProjectWorkspace({
           isAdmin={isAdmin}
           orderBy={isAdmin ? orderBy : null}
           onError={setError}
+          onProcurementTimingChange={() => {
+            if (!isAdmin) return;
+            setOrderBy(null);
+            setOrderByLoaded(false);
+          }}
           onAssemblyPriceChange={(itemId, priceTrade) =>
             setItems((current) =>
               current.map((item) =>
