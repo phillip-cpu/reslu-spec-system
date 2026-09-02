@@ -1381,7 +1381,7 @@ function LineRow({
 /**
  * New-line draft row — same single-save-on-submit pattern as
  * components/estimate/EstimateView.tsx's DraftLineRow: fill text (kind
- * defaults to note, changeable before or after add), Enter or the
+ * defaults to inclusion, changeable before or after add), Enter or the
  * Add button posts the whole line in one request, then the row clears
  * and refocuses for rapid entry.
  */
@@ -1399,7 +1399,7 @@ function DraftLineRow({
   onAdd: (text: string, kind: SowLineKind, trade: string | null) => Promise<void>;
 }) {
   const [text, setText] = useState("");
-  const [kind, setKind] = useState<SowLineKind>("note");
+  const [kind, setKind] = useState<SowLineKind>("inclusion");
   // null means "use the enclosing section's automatic trade"; a
   // string (including "") is an explicit choice by the user.
   const [tradeChoice, setTradeChoice] = useState<string | null>(null);

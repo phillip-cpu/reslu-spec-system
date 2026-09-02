@@ -51,7 +51,7 @@ test("trade groups support tagged creation and within-group ordering", () => {
   assert.match(builder, /lockTrade=\{group\.trade !== null\}/);
   assert.match(builder, /tradeKey\(sourceLine\) !== tradeKey\(targetLine\)/);
   assert.match(builder, /reorderSowLines\(displayedLines, lineId, destinationIndex\)/);
-  assert.match(builder, /useState<SowLineKind>\("note"\)/);
+  assert.match(builder, /useState<SowLineKind>\("inclusion"\)/);
 });
 
 test("the full PDF mirrors the editor's trade grouping", () => {
