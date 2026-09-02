@@ -44,7 +44,7 @@ export async function buildLiveSnapshot(
       .is("deleted_at", null),
     supabase
       .from("items")
-      .select("id,item_code,name,category,quantity,price_trade,price_rrp,markup_pct,cost_scope,lead_time_weeks,ordered_at")
+      .select("id,item_code,name,category,quantity,price_trade,price_rrp,markup_pct,cost_scope,lead_time_weeks,ordered_at,measurement_id,wastage_pct,coverage_per_unit")
       .eq("project_id", projectId)
       .is("deleted_at", null),
     supabase
@@ -94,8 +94,8 @@ export async function buildLiveSnapshot(
     markupPct: project.estimate_markup_pct ?? 0,
     measurementsById,
   });
-  const ffe = ffeRollup(items ?? []);
-  const ffeItems = buildEstimateFfeItemSnapshots(items ?? [], ffe);
+  const ffe = ffeRollup(items ?? [], measurementsById);
+  const ffeItems = buildEstimateFfeItemSnapshots(items ?? [], ffe, measurementsById);
 
   return {
     sections: sectionsWithLines,

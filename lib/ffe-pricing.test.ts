@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   DEFAULT_FFE_MARKUP_PERCENT,
   ffeClientQuoteUnitPrice,
+  ffeProductCostUnitPrice,
 } from "./ffe-pricing.ts";
 
 test("new FF&E pricing defaults to a 30 percent markup", () => {
@@ -33,6 +34,30 @@ test("RRP placeholders, trade packages and reusable costs are not marked up", ()
     ffeClientQuoteUnitPrice({
       price_trade: 100,
       price_rrp: null,
+      markup_pct: 30,
+      cost_scope: "trade_package",
+    }),
+    null
+  );
+});
+
+test("product cost follows the same trade then RRP placeholder cascade", () => {
+  assert.equal(
+    ffeProductCostUnitPrice({ price_trade: 100, price_rrp: 180, markup_pct: 30 }),
+    100
+  );
+  assert.equal(
+    ffeProductCostUnitPrice({ price_trade: null, price_rrp: 180, markup_pct: 30 }),
+    180
+  );
+  assert.equal(
+    ffeProductCostUnitPrice({ price_trade: null, price_rrp: null, markup_pct: 30 }),
+    null
+  );
+  assert.equal(
+    ffeProductCostUnitPrice({
+      price_trade: 100,
+      price_rrp: 180,
       markup_pct: 30,
       cost_scope: "trade_package",
     }),

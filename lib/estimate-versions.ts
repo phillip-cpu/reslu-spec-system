@@ -169,11 +169,35 @@ export interface FfeSubstitutionItemInput {
   quantity: number;
   price_trade: number | null;
   price_rrp: number | null;
+  /** Frozen snapshots retain a cent-exact line total; prefer it when present. */
+  total_ex_gst?: number;
 }
 
 function bestFfeTotal(item: FfeSubstitutionItemInput): number {
+  if (item.total_ex_gst !== undefined) return roundMoney(item.total_ex_gst);
   const price = item.price_trade ?? item.price_rrp;
   return price !== null && price !== undefined ? roundMoney(item.quantity * price) : 0;
+}
+
+/**
+ * Reads item identities from a frozen estimate snapshot. `null` means this is
+ * a legacy version that only retained category rollups, so an item comparison
+ * would be misleading rather than merely empty.
+ */
+export function ffeSubstitutionItemsFromSnapshot(
+  snapshot: Pick<EstimateSnapshot, "ffe_items">
+): FfeSubstitutionItemInput[] | null {
+  if (!snapshot.ffe_items) return null;
+  return snapshot.ffe_items
+    .filter((item) => item.cost_scope !== "trade_package")
+    .map((item) => ({
+      item_code: item.item_code,
+      name: item.name,
+      quantity: item.quantity,
+      price_trade: item.unit_price_ex_gst,
+      price_rrp: null,
+      total_ex_gst: item.total_ex_gst,
+    }));
 }
 
 /**
