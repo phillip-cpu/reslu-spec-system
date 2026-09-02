@@ -50,6 +50,8 @@ test("trade groups support tagged creation and within-group ordering", () => {
   assert.match(createLineRoute, /trade: typeof body\.trade === "string"/);
   assert.match(builder, /groupSowLinesByTrade\(section\.lines\)/);
   assert.match(builder, /lockTrade=\{group\.trade !== null\}/);
+  assert.match(builder, /\{!lockTrade && \([\s\S]*Trade for new line/);
+  assert.match(builder, /\{section\.heading\} — \{group\.trade \?\? "General"\}/);
   assert.match(builder, /tradeKey\(sourceLine\) !== tradeKey\(targetLine\)/);
   assert.match(builder, /reorderSowLines\(displayedLines, lineId, destinationIndex\)/);
   assert.match(builder, /useState<SowLineKind>\("inclusion"\)/);

@@ -1258,7 +1258,7 @@ function SectionBlock({
                 {hasTradeHeadings && (
                   <div className="flex items-center justify-between border-b border-[#dcd6cc] bg-offwhite px-4 py-2">
                     <p className="label-caps font-semibold !text-nearblack">
-                      {group.trade ?? "General"}
+                      {section.heading} — {group.trade ?? "General"}
                     </p>
                     <span className="text-caption text-charcoal/45">
                       {group.lines.length} {group.lines.length === 1 ? "line" : "lines"}
@@ -1711,11 +1711,7 @@ function DraftLineRow({
         <option value="exclusion">Exclusion</option>
         <option value="note">Note</option>
       </select>
-      {lockTrade ? (
-        <span className="label-caps mt-1 w-28 shrink-0 border border-sand bg-sand px-1.5 py-0.5 text-caption text-white">
-          {trade}
-        </span>
-      ) : (
+      {!lockTrade && (
         <select
           value={trade}
           onChange={(e) => setTradeChoice(e.target.value)}
@@ -1728,7 +1724,7 @@ function DraftLineRow({
           className={clsx(
             "label-caps mt-1 w-28 shrink-0 border px-1.5 py-0.5 text-caption focus:outline-none",
             trade
-              ? "border-sand bg-sand text-white"
+              ? "border-nearblack bg-nearblack text-white"
               : "border-[#c9c2b4] bg-transparent text-charcoal/40"
           )}
         >
