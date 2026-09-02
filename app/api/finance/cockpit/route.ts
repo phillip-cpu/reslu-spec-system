@@ -377,6 +377,7 @@ export async function GET(request: NextRequest) {
   let itemCategories: Record<string, string> = {};
   let ffeForecastTiming: ProjectFfeForecastTiming = {
     itemCategories: {},
+    componentParentItemIds: {},
     timings: {},
     directItemCount: 0,
     datedItemCount: 0,
@@ -559,6 +560,7 @@ export async function GET(request: NextRequest) {
       contributions: plannedProjectContributions,
       invoices: supplierInvoices,
       itemCategories,
+      componentParentItemIds: ffeForecastTiming.componentParentItemIds,
     });
     const recurringCommitments = ((rawRecurring ?? []) as Record<string, unknown>[]).map(
       (row) => ({ ...row, amount_minor: safeMinor(row.amount_minor as number | string, `${String(row.id)}.amount`) }) as unknown as FinanceRecurringCommitment

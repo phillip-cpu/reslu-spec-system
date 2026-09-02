@@ -136,6 +136,37 @@ test("a saved item identity still reconciles after the live item is removed", ()
   assert.equal(result.matchedAllocations, 1);
 });
 
+test("component allocations reduce their parent FF&E item plan", () => {
+  const result = reconcileSupplierInvoiceActuals({
+    contributions: [{
+      contributionKey: "project:p1|ffe_item:tap-parent|scope:base",
+      direction: "outflow",
+      description: "Wall mixer assembly",
+      plannedMinor: 55_000,
+    }],
+    itemCategories: { "tap-parent": "Tapware" },
+    componentParentItemIds: { cartridge: "tap-parent" },
+    invoices: [{
+      id: "i-component", project_id: "p1", supplier: "Supplier", invoice_number: "COMP-1",
+      invoice_date: "2026-08-01", due_date: "2026-08-10", amount_ex_gst: 146.36,
+      gst: 14.64, total: 161, status: "approved", payment_status: "unpaid",
+      amount_paid: 0, paid_at: null,
+      invoice_allocations: [{
+        id: "a-component",
+        match_type: "item_component",
+        match_id: "cartridge",
+        amount_ex_gst: 146.36,
+      }],
+    }],
+  });
+
+  assert.equal(result.matchedAllocations, 1);
+  assert.equal(result.unmatchedAllocations, 0);
+  assert.equal(result.contributions[0].plannedMinor, 38_900);
+  assert.equal(result.contributions[1].sourceTrace?.parent_item_id, "tap-parent");
+  assert.equal(result.contributions[1].sourceTrace?.category, "Tapware");
+});
+
 test("historical paid supplier cash is not forecast again in the current week", () => {
   const result = reconcileSupplierInvoiceActuals({
     contributions: [{

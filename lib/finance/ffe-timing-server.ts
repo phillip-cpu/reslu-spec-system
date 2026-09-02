@@ -17,6 +17,7 @@ import { loadItemScheduleRequirementData } from "../item-schedule-requirements-s
 
 export interface ProjectFfeForecastTiming {
   itemCategories: Record<string, string>;
+  componentParentItemIds: Record<string, string>;
   timings: Record<string, FfeForecastTiming>;
   directItemCount: number;
   datedItemCount: number;
@@ -35,6 +36,7 @@ export async function loadProjectFfeForecastTiming(
   if (ids.length === 0) {
     return {
       itemCategories: {},
+      componentParentItemIds: {},
       timings: {},
       directItemCount: 0,
       datedItemCount: 0,
@@ -44,12 +46,17 @@ export async function loadProjectFfeForecastTiming(
     };
   }
 
-  const [itemsResult, visitsResult, tasksResult, presetResult, requirementData] = await Promise.all([
+  const [itemsResult, componentsResult, visitsResult, tasksResult, presetResult, requirementData] = await Promise.all([
     supabase
       .from("items")
       .select("id,project_id,category,lead_time_weeks,ordered_at,cost_scope,price_trade,price_rrp")
       .in("project_id", ids)
       .is("deleted_at", null),
+    supabase
+      .from("item_components")
+      .select("id,item_id,items!inner(project_id,cost_scope,deleted_at)")
+      .in("items.project_id", ids)
+      .neq("items.cost_scope", "trade_package"),
     supabase
       .from("trade_visits")
       .select("id,project_id,contact_id,start_date,status")
@@ -66,7 +73,7 @@ export async function loadProjectFfeForecastTiming(
     loadItemScheduleRequirementData(supabase, ids),
   ]);
   const readError =
-    itemsResult.error ?? visitsResult.error ?? tasksResult.error ?? presetResult.error;
+    itemsResult.error ?? componentsResult.error ?? visitsResult.error ?? tasksResult.error ?? presetResult.error;
   if (readError) throw new Error(readError.message);
 
   const items = (itemsResult.data ?? []) as Array<OrderByItemInput & {
@@ -133,6 +140,9 @@ export async function loadProjectFfeForecastTiming(
     // actual instead of reducing another direct item's category allowance.
     itemCategories: Object.fromEntries(
       directItems.map((item) => [item.id, item.category || "Uncategorised"])
+    ),
+    componentParentItemIds: Object.fromEntries(
+      (componentsResult.data ?? []).map((component) => [component.id, component.item_id])
     ),
     timings,
     directItemCount: pricing.directItemCount,

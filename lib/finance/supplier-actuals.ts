@@ -61,14 +61,20 @@ function apportionMinor(total: number, weights: number[]): number[] {
 function planKeys(
   projectId: string,
   allocation: SupplierCashAllocation,
-  itemCategories: Record<string, string>
+  itemCategories: Record<string, string>,
+  componentParentItemIds: Record<string, string>
 ): string[] {
   if (allocation.match_type === "cost_line") {
     return [`project:${projectId}|cost_line:${allocation.match_id}|scope:base`];
   }
-  if (allocation.match_type !== "item") return [];
-  const keys = [`project:${projectId}|ffe_item:${allocation.match_id}|scope:base`];
-  const category = itemCategories[allocation.match_id];
+  const itemId = allocation.match_type === "item"
+    ? allocation.match_id
+    : allocation.match_type === "item_component"
+      ? componentParentItemIds[allocation.match_id] ?? null
+      : null;
+  if (!itemId) return [];
+  const keys = [`project:${projectId}|ffe_item:${itemId}|scope:base`];
+  const category = itemCategories[itemId];
   if (category) keys.push(`project:${projectId}|ffe_category:${category}|scope:base`);
   return keys;
 }
@@ -82,6 +88,7 @@ export function reconcileSupplierInvoiceActuals(input: {
   contributions: FinanceContributionInput[];
   invoices: SupplierCashInvoice[];
   itemCategories?: Record<string, string>;
+  componentParentItemIds?: Record<string, string>;
 }): SupplierActualReconciliationResult {
   const contributions = input.contributions.map((item) => ({
     ...item,
@@ -123,7 +130,8 @@ export function reconcileSupplierInvoiceActuals(input: {
       const matchedPlanKey = planKeys(
         invoice.project_id,
         allocation,
-        input.itemCategories ?? {}
+        input.itemCategories ?? {},
+        input.componentParentItemIds ?? {}
       ).find((key) => planIndex.has(key)) ?? null;
       const matched = matchedPlanKey !== null;
       const matchedPlanIndex = matchedPlanKey ? planIndex.get(matchedPlanKey) : undefined;
@@ -160,7 +168,12 @@ export function reconcileSupplierInvoiceActuals(input: {
           category: matchedPlan?.sourceTrace?.category ??
             (allocation.match_type === "item"
               ? input.itemCategories?.[allocation.match_id] ?? null
-              : null),
+              : allocation.match_type === "item_component"
+                ? input.itemCategories?.[input.componentParentItemIds?.[allocation.match_id] ?? ""] ?? null
+                : null),
+          parent_item_id: allocation.match_type === "item_component"
+            ? input.componentParentItemIds?.[allocation.match_id] ?? null
+            : null,
           section_id: matchedPlan?.sourceTrace?.section_id ?? null,
           section_name: matchedPlan?.sourceTrace?.section_name ?? null,
           reconciliation: matched ? "estimate_replaced" : "unmatched_actual",
