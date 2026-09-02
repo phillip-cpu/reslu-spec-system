@@ -52,7 +52,7 @@ export function Header({
   jobNumber,
 }: HeaderProps) {
   const titleEl = (
-    <h1 className="text-section font-display text-nearblack">
+    <h1 className="break-words text-section font-display text-nearblack">
       {title}
       {jobNumber && <span className="ml-2 text-body font-sans text-charcoal/40">#{jobNumber}</span>}
       {titleSuffix && <span className="ml-2 text-body font-sans text-charcoal/40">{titleSuffix}</span>}
@@ -60,14 +60,14 @@ export function Header({
   );
 
   return (
-    <header className="flex items-center justify-between border-b border-[#dcd6cc] px-8 py-6 bg-cream">
-      <div className="flex items-center gap-4">
+    <header className="flex min-w-0 flex-wrap items-center justify-between gap-3 border-b border-[#dcd6cc] bg-cream py-4 pl-20 pr-4 md:px-8 md:py-6">
+      <div className="flex min-w-0 items-center gap-3 md:gap-4">
         {titleThumbnailUrl && (
           <div className="relative h-12 w-16 shrink-0 overflow-hidden border border-[#dcd6cc] bg-cream">
             <Image src={titleThumbnailUrl} alt="" fill sizes="64px" className="object-cover" />
           </div>
         )}
-        <div>
+        <div className="min-w-0">
           {titleHref ? (
             <a href={titleHref} className="inline-block transition-colors hover:text-sand">
               {titleEl}
@@ -88,7 +88,7 @@ export function Header({
             ))}
         </div>
       </div>
-      {actions && <div className="flex items-center gap-3">{actions}</div>}
+      {actions && <div className="flex shrink-0 items-center gap-3">{actions}</div>}
     </header>
   );
 }
