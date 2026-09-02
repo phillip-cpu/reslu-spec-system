@@ -56,6 +56,8 @@ import type { AssigneeSummary } from "@/types/phase-12a-b";
 /** A BoardTaskCockpit (types/board-cockpit.ts, Board cockpit round) extended with this round's parent_task_id. Layered as an intersection rather than editing that type directly, per this file's own edit-boundary discipline. */
 export type BoardTaskV3 = BoardTaskCockpit & {
   parent_task_id: string | null;
+  trade_role: string | null;
+  trade_contact_inherited: boolean;
 };
 
 /** body accepted by POST /api/projects/[id]/board (Board v3 addition) — parent_task_id, optional. When present: (1) the referenced task must belong to this project, (2) the referenced task must ITSELF have parent_task_id = null (one level of nesting only — a depth-2 attempt is rejected with HTTP 400), (3) phase_group_id is NOT required in the body — if omitted, the API inherits the PARENT's phase_group_id automatically (BUILD-SPEC.md "Sub-items inherit phase_group from parent"). An explicit phase_group_id in the body is still honoured if the caller passes one (e.g. a future UI that lets a sub-item live in a different group than its parent) — inheritance is only the DEFAULT when the field is omitted. */
@@ -65,6 +67,7 @@ export interface CreateSubTaskInputV3 {
   description?: string | null;
   assignee_ids?: string[];
   contact_id?: string | null;
+  trade_role?: string | null;
   due_date?: string | null;
   /** Overrides the parent's phase_group_id if explicitly supplied; inherited from the parent when omitted — see this interface's own doc comment. */
   phase_group_id?: string | null;

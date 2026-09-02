@@ -10,12 +10,8 @@ import { portalUrlFor } from "@/lib/portal-link";
  * /projects/[id]/sow — the Scope of Works builder (BUILD-SPEC.md
  * "Scope of Works builder"). Team-visible — NOT admin-gated, a SOW
  * isn't financial data, same trust tier as /projects/[id]/documents.
- * Linked from the Documents tab's Scope of Works section. The tab bar
- * highlights "Documents" here (there is no separate top-level SOW tab
- * in BUILD-SPEC.md's "Project overview hub" list — Overview | FF&E |
- * Documents | Estimate | Invoices | Settings — this page is reached
- * as a drill-down from Documents, same relationship as
- * /projects/[id]/import has to FF&E).
+ * Scope is part of the Work planning flow: it defines the trade package
+ * before tasks are booked, so the Work sub-navigation remains visible here.
  */
 export default async function SowPage({
   params,
@@ -41,8 +37,8 @@ export default async function SowPage({
   return (
     <>
       <Header title={project.name} subtitle={`${project.client_name} · Scope of Works`} titleHref={`/projects/${id}`} />
-      <ProjectTabs projectId={id} active="documents" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
-      <main className="flex-1 px-8 py-8">
+      <ProjectTabs projectId={id} active="sow" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
+      <main className="flex-1 px-4 py-6 md:px-8 md:py-8">
         <SowBuilder projectId={id} />
       </main>
     </>

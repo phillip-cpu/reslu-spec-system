@@ -9,6 +9,7 @@ export type ProjectTabKey =
   | "overview"
   | "messages"
   | "design"
+  | "sow"
   | "ffe"
   | "board"
   | "timeline"
@@ -31,6 +32,7 @@ type ProjectNavGroup = "work" | "site" | "finance";
 
 const GROUP_FOR_TAB: Partial<Record<ProjectTabKey, ProjectNavGroup>> = {
   design: "work",
+  sow: "work",
   ffe: "work",
   board: "work",
   timeline: "work",
@@ -64,6 +66,7 @@ export function ProjectTabs({ projectId, active, isAdmin, portalUrl }: Props) {
   const childGroups: Record<ProjectNavGroup, { key: ProjectTabKey; label: string; href: string }[]> = {
     work: [
       { key: "design", label: "Design", href: `/projects/${projectId}/design` },
+      { key: "sow", label: "Scope", href: `/projects/${projectId}/sow` },
       { key: "ffe", label: "FF&E", href: `/projects/${projectId}?tab=ffe` },
       { key: "board", label: "Board", href: `/projects/${projectId}/board` },
       { key: "timeline", label: "Timeline", href: `/projects/${projectId}/timeline` },
