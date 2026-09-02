@@ -639,6 +639,16 @@ Auth: admin. Body: none. Query: `?status=` (`unmatched|proposed|approved|rejecte
 Response: `{ invoices: InvoiceWithAllocations[] }`, newest first. Each
 invoice includes `invoice_allocations[]` in display order. **Aria-relevant.**
 
+### GET /api/projects/[id]/invoices/ffe-context
+Auth: admin. Body: none. Returns the direct-purchase FF&E costing read model
+used while matching supplier invoice lines: current item/component quantities
+and prices, the active Finance baseline (or latest saved Estimate), approved
+invoice actuals, remaining allowance and variance. Item-level saved snapshots
+are the frozen benchmark; legacy versions report `item_level_saved: false` and
+fall back visibly to the live schedule. Trade-package reference items are
+excluded. Assembly component actuals also roll up to their parent FF&E item so
+Finance does not count them as unmatched spend on top of the parent allowance.
+
 ### POST /api/projects/[id]/invoices
 Auth: admin. Body: JSON `{ supplier, invoice_number, invoice_date?,
 amount_ex_gst, gst?, total?, proposed_match_type? ('cost_line'|'item'),
@@ -7724,9 +7734,10 @@ assigned a fabricated date or silently converted to zero.
 
 Supplier cost outflows are reconciled before projection. Saved estimates are
 converted from ex-GST costing to gross inc-GST cash. Approved supplier invoice
-allocations replace the corresponding estimate cost-line or FF&E-category slice,
+allocations replace the corresponding estimate cost-line or FF&E-item slice,
 while preserving the invoice due date and paid date as separate cash states.
-Unmatched allocations remain explicit actual outflows.
+Assembly-component allocations resolve to their parent FF&E item before that
+replacement. Unmatched allocations remain explicit actual outflows.
 
 ### Supplier invoice cash state (migration `20260824084559`)
 

@@ -18,6 +18,10 @@ import {
   deliveryAllowanceLineInput,
   isDeliveryDescription,
 } from "@/lib/delivery-costs";
+import {
+  invoiceSupplierMatches,
+  type InvoiceFfeCostingRow,
+} from "@/lib/invoice-ffe-costing";
 
 const STATUS_TABS: { value: InvoiceStatus | "all"; label: string }[] = [
   { value: "unmatched", label: "Unmatched" },
@@ -645,6 +649,8 @@ function InvoiceRow({
                   .map((line) => line.updated_at)
                   .join(",")}`}
                 projectId={projectId}
+                invoiceSupplier={invoice.supplier}
+                invoiceStatus={invoice.status}
                 invoiceAmountExGst={invoice.amount_ex_gst}
                 savedAllocations={savedAllocations}
                 sourceLines={invoice.supplier_invoice_lines ?? []}
@@ -748,10 +754,149 @@ function allocationDrafts(
   }));
 }
 
+function invoiceFfeOptionLabel(row: InvoiceFfeCostingRow): string {
+  const kind = row.match_type === "item_component" ? "component" : "FF&E";
+  const quantity = `${row.quantity} ${row.unit}`.trim();
+  const forecast = row.forecast_ex_gst === null
+    ? "unpriced"
+    : `${formatMoney(row.forecast_ex_gst)} forecast`;
+  const actual = row.approved_actual_ex_gst > 0
+    ? ` · ${formatMoney(row.approved_actual_ex_gst)} approved`
+    : "";
+  return `${row.item_code} — ${row.name} · ${kind} · ${quantity} · ${forecast}${actual}`;
+}
+
+function InvoiceFfeCostContext({
+  row,
+  pendingAmountExGst,
+  benchmarkLabel,
+  lineAccounting,
+}: {
+  row: InvoiceFfeCostingRow;
+  pendingAmountExGst: number;
+  benchmarkLabel: string;
+  lineAccounting: "pending" | "included" | "excluded";
+}) {
+  const afterMatch = Math.round(
+    (row.approved_actual_ex_gst + pendingAmountExGst + Number.EPSILON) * 100
+  ) / 100;
+  const afterVariance = row.forecast_ex_gst === null
+    ? null
+    : Math.round((afterMatch - row.forecast_ex_gst + Number.EPSILON) * 100) / 100;
+  const remaining = afterVariance === null ? null : Math.max(-afterVariance, 0);
+  const over = afterVariance === null ? null : Math.max(afterVariance, 0);
+  const isFallback = row.forecast_source !== "saved_estimate";
+
+  return (
+    <div
+      className={clsx(
+        "border p-2.5",
+        afterVariance !== null && afterVariance > 0
+          ? "border-red-700/35 bg-red-50"
+          : isFallback
+            ? "border-amber-700/30 bg-amber-50"
+            : "border-green-700/25 bg-green-50"
+      )}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="label-caps !text-charcoal/55">
+            {row.match_type === "item_component" ? "Assembly component" : "FF&E product"}
+          </p>
+          <p className="text-body font-medium text-nearblack">
+            {row.item_code} — {row.name}
+          </p>
+          <p className="text-caption text-charcoal/55">
+            {row.supplier ? `${row.supplier} · ` : ""}
+            {row.quantity} {row.unit} expected · {row.status}
+          </p>
+        </div>
+        <span className={clsx(
+          "label-caps border px-2 py-1",
+          row.pricing_confidence === "quoted"
+            ? "border-green-700/25 bg-white/70 !text-green-800"
+            : "border-amber-700/30 bg-white/70 !text-amber-800"
+        )}>
+          {row.pricing_confidence === "quoted"
+            ? "Trade price"
+            : row.pricing_confidence === "placeholder"
+              ? "RRP placeholder"
+              : "Price missing"}
+        </span>
+      </div>
+
+      <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4">
+        <div>
+          <p className="label-caps !text-charcoal/45">Cost benchmark</p>
+          <p className="text-body font-medium text-nearblack">
+            {row.forecast_ex_gst === null ? "Not priced" : formatMoney(row.forecast_ex_gst)}
+          </p>
+          <p className="text-caption text-charcoal/45">{benchmarkLabel}</p>
+        </div>
+        <div>
+          <p className="label-caps !text-charcoal/45">Approved actual</p>
+          <p className="text-body font-medium text-nearblack">
+            {formatMoney(row.approved_actual_ex_gst)}
+          </p>
+          <p className="text-caption text-charcoal/45">
+            {row.approved_invoice_count} invoice{row.approved_invoice_count === 1 ? "" : "s"}
+          </p>
+        </div>
+        <div>
+          <p className="label-caps !text-charcoal/45">This invoice line</p>
+          <p className="text-body font-medium text-nearblack">
+            {lineAccounting === "pending"
+              ? formatMoney(pendingAmountExGst)
+              : lineAccounting === "included"
+                ? "Included above"
+                : "Not counted"}
+          </p>
+          <p className="text-caption text-charcoal/45">
+            {lineAccounting === "excluded" ? "rejected / voided" : "ex GST"}
+          </p>
+        </div>
+        <div>
+          <p className="label-caps !text-charcoal/45">After this match</p>
+          <p className={clsx(
+            "text-body font-medium",
+            over !== null && over > 0 ? "text-red-700" : "text-nearblack"
+          )}>
+            {row.forecast_ex_gst === null
+              ? `${formatMoney(afterMatch)} actual`
+              : over !== null && over > 0
+                ? `${formatMoney(over)} over`
+                : `${formatMoney(remaining ?? 0)} left`}
+          </p>
+          <p className="text-caption text-charcoal/45">
+            {row.expected_unit_ex_gst === null
+              ? "Unit cost missing"
+              : `${formatMoney(row.expected_unit_ex_gst)} per ${row.unit}`}
+          </p>
+        </div>
+      </div>
+
+      {row.forecast_source === "live_schedule" && (
+        <p className="mt-2 border-t border-amber-700/15 pt-2 text-caption text-amber-900">
+          This is the current schedule price, not a frozen item-level estimate. Save a new Estimate
+          version to lock the costing benchmark before further invoices are approved.
+        </p>
+      )}
+      {row.forecast_source === "unpriced" && (
+        <p className="mt-2 border-t border-amber-700/15 pt-2 text-caption text-amber-900">
+          No cost benchmark exists for this item. Add its trade price before approval so Finance can
+          report the variance accurately.
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** Exact-cent, multi-line allocation editor. A draft cannot be saved
  * until every ex-GST cent has a real project target. */
 function AllocationEditor({
   projectId,
+  invoiceSupplier,
+  invoiceStatus,
   invoiceAmountExGst,
   savedAllocations,
   sourceLines,
@@ -762,6 +907,8 @@ function AllocationEditor({
   approving,
 }: {
   projectId: string;
+  invoiceSupplier: string;
+  invoiceStatus: InvoiceStatus;
   invoiceAmountExGst: number;
   savedAllocations: InvoiceAllocation[];
   sourceLines: SupplierInvoiceLine[];
@@ -777,6 +924,14 @@ function AllocationEditor({
   const [sections, setSections] = useState<CostSectionWithLines[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [components, setComponents] = useState<ItemComponent[]>([]);
+  const [costingRows, setCostingRows] = useState<InvoiceFfeCostingRow[]>([]);
+  const [costingBenchmark, setCostingBenchmark] = useState<{
+    estimate_version_id: string | null;
+    estimate_label: string | null;
+    source: "active_finance_baseline" | "latest_estimate" | "live_schedule";
+    item_level_saved: boolean;
+  } | null>(null);
+  const [costingError, setCostingError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [creatingLineKey, setCreatingLineKey] = useState<string | null>(null);
   const [createLineErrors, setCreateLineErrors] = useState<Record<string, string>>({});
@@ -791,8 +946,14 @@ function AllocationEditor({
       fetch(`/api/projects/${projectId}/item-components`).then((r) =>
         r.ok ? r.json() : { components: [] }
       ),
+      fetch(`/api/projects/${projectId}/invoices/ffe-context`).then(async (r) => {
+        const body = await r.json().catch(() => ({}));
+        return r.ok
+          ? body
+          : { rows: [], benchmark: null, error: body.error ?? "FF&E cost context is unavailable." };
+      }),
     ])
-      .then(([estimateBody, itemsBody, componentsBody]) => {
+      .then(([estimateBody, itemsBody, componentsBody, costingBody]) => {
         if (cancelled) return;
         const allItems = (itemsBody.items ?? []) as Item[];
         const directItems = allItems.filter(
@@ -806,6 +967,9 @@ function AllocationEditor({
             directItemIds.has(component.item_id)
           )
         );
+        setCostingRows(costingBody.rows ?? []);
+        setCostingBenchmark(costingBody.benchmark ?? null);
+        setCostingError(costingBody.error ?? null);
       })
       .catch(() => {})
       .finally(() => !cancelled && setLoading(false));
@@ -833,6 +997,60 @@ function AllocationEditor({
       );
     }) &&
     balance === 0;
+  const directItems = items.filter((item) => item.cost_scope !== "trade_package");
+  const costingRowsByTarget = new Map(
+    costingRows.map((row) => [`${row.match_type}:${row.match_id}`, row])
+  );
+  const preferredItems = directItems.filter((item) =>
+    invoiceSupplierMatches(
+      invoiceSupplier,
+      costingRowsByTarget.get(`item:${item.id}`)?.supplier ?? item.supplier
+    )
+  );
+  const preferredItemIds = new Set(preferredItems.map((item) => item.id));
+  const otherItems = directItems.filter((item) => !preferredItemIds.has(item.id));
+  const preferredComponents = components.filter((component) =>
+    invoiceSupplierMatches(
+      invoiceSupplier,
+      costingRowsByTarget.get(`item_component:${component.id}`)?.supplier ?? component.supplier
+    )
+  );
+  const preferredComponentIds = new Set(preferredComponents.map((component) => component.id));
+  const otherComponents = components.filter((component) => !preferredComponentIds.has(component.id));
+
+  function benchmarkLabel(row: InvoiceFfeCostingRow): string {
+    if (row.forecast_source === "saved_estimate") {
+      const prefix = costingBenchmark?.source === "active_finance_baseline"
+        ? "Finance baseline"
+        : "Saved Estimate";
+      return `${prefix}${costingBenchmark?.estimate_label ? ` · ${costingBenchmark.estimate_label}` : ""}`;
+    }
+    if (row.forecast_source === "live_schedule") return "Current FF&E schedule";
+    return "No saved or live cost";
+  }
+
+  function optionForItem(item: Item) {
+    const row = costingRowsByTarget.get(`item:${item.id}`);
+    return (
+      <option key={item.id} value={`item:${item.id}`}>
+        {row ? invoiceFfeOptionLabel(row) : `${item.item_code} — ${item.name}`}
+      </option>
+    );
+  }
+
+  function optionForComponent(component: ItemComponent) {
+    const row = costingRowsByTarget.get(`item_component:${component.id}`);
+    const parent = items.find((item) => item.id === component.item_id);
+    return (
+      <option key={component.id} value={`item_component:${component.id}`}>
+        {row
+          ? invoiceFfeOptionLabel(row)
+          : `${parent ? `${parent.item_code} — ` : ""}${component.name}${
+            component.supplier_item_code ? ` · ${component.supplier_item_code}` : ""
+          }`}
+      </option>
+    );
+  }
 
   function linkedLibraryItem(
     matchType: InvoiceMatchType,
@@ -1008,6 +1226,47 @@ function AllocationEditor({
         </span>
       </div>
 
+      <div className="border border-[#dcd6cc] bg-cream p-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="label-caps">FF&amp;E cost control</p>
+          <span className={clsx(
+            "label-caps border px-2 py-1",
+            loading
+              ? "border-[#c9c2b4] bg-nearwhite !text-charcoal/50"
+              : costingBenchmark?.item_level_saved
+              ? "border-green-700/25 bg-green-50 !text-green-800"
+              : "border-amber-700/30 bg-amber-50 !text-amber-800"
+          )}>
+            {loading
+              ? "Loading costing…"
+              : costingBenchmark?.item_level_saved
+              ? `${costingBenchmark.source === "active_finance_baseline" ? "Finance baseline" : "Saved estimate"}${
+                costingBenchmark.estimate_label ? ` · ${costingBenchmark.estimate_label}` : ""
+              }`
+              : "Live schedule fallback"}
+          </span>
+        </div>
+        <p className="mt-1 text-caption text-charcoal/60">
+          Direct-purchase FF&amp;E and assembly components can be matched here. Approved invoices become
+          actual cost in Finance; components reduce their parent FF&amp;E allowance. Trade-package reference
+          items stay excluded to avoid counting the same cost twice.
+        </p>
+        {!loading && costingBenchmark && !costingBenchmark.item_level_saved && (
+          <p className="mt-1 text-caption text-amber-900">
+            {costingBenchmark.estimate_label
+              ? `${costingBenchmark.estimate_label} predates item-level FF&E costing. `
+              : "No item-level Estimate benchmark exists. "}
+            Current schedule prices are shown until a new Estimate version is saved.
+          </p>
+        )}
+        {costingError && (
+          <p className="mt-1 text-caption text-red-700">
+            Cost context could not be loaded: {costingError} Matching is still available, but verify the
+            variance in Finance before approval.
+          </p>
+        )}
+      </div>
+
       {loading ? (
         <p className="text-caption text-charcoal/50">Loading project costs…</p>
       ) : drafts.length === 0 ? (
@@ -1026,7 +1285,19 @@ function AllocationEditor({
               .find((line) => draft.match_type === "cost_line" && line.id === draft.match_id);
             const deliveryMode =
               draft.is_delivery || matchedCostLine?.line_kind === "delivery_allowance";
-            const directItems = items.filter((item) => item.cost_scope !== "trade_package");
+            const selectedCostingRow = draft.match_type === "cost_line"
+              ? matchedCostLine?.item_id
+                ? costingRowsByTarget.get(`item:${matchedCostLine.item_id}`) ?? null
+                : null
+              : costingRowsByTarget.get(`${draft.match_type}:${draft.match_id}`) ?? null;
+            const lineAccounting = invoiceStatus === "approved"
+              ? "included"
+              : invoiceStatus === "rejected" || invoiceStatus === "voided"
+                ? "excluded"
+                : "pending";
+            const pendingAmountExGst = lineAccounting === "pending"
+              ? Number(draft.amount) || 0
+              : 0;
 
             return (
               <div
@@ -1211,6 +1482,12 @@ function AllocationEditor({
                       className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
                     >
                       <option value="">Choose a cost line, item or component…</option>
+                      {(preferredItems.length > 0 || preferredComponents.length > 0) && (
+                        <optgroup label={`Likely for ${invoiceSupplier}`}>
+                          {preferredItems.map(optionForItem)}
+                          {preferredComponents.map(optionForComponent)}
+                        </optgroup>
+                      )}
                       {sections.map((section) => (
                         <optgroup key={section.id} label={`Estimate · ${section.name}`}>
                           {section.lines.filter((line) => line.line_kind !== "delivery_allowance").map((line) => (
@@ -1220,32 +1497,14 @@ function AllocationEditor({
                           ))}
                         </optgroup>
                       ))}
-                      {directItems.length > 0 && (
-                        <optgroup label="Specification items">
-                          {directItems.map((item) => (
-                            <option key={item.id} value={`item:${item.id}`}>
-                              {item.item_code} — {item.name}
-                            </option>
-                          ))}
+                      {otherItems.length > 0 && (
+                        <optgroup label="Other specification items">
+                          {otherItems.map(optionForItem)}
                         </optgroup>
                       )}
-                      {components.length > 0 && (
-                        <optgroup label="Assembly components">
-                          {components.map((component) => {
-                            const parent = items.find((item) => item.id === component.item_id);
-                            return (
-                              <option
-                                key={component.id}
-                                value={`item_component:${component.id}`}
-                              >
-                                {parent ? `${parent.item_code} — ` : ""}
-                                {component.name}
-                                {component.supplier_item_code
-                                  ? ` · ${component.supplier_item_code}`
-                                  : ""}
-                              </option>
-                            );
-                          })}
+                      {otherComponents.length > 0 && (
+                        <optgroup label="Other assembly components">
+                          {otherComponents.map(optionForComponent)}
                         </optgroup>
                       )}
                     </select>
@@ -1376,6 +1635,17 @@ function AllocationEditor({
                   >
                     Remove
                   </button>
+                )}
+
+                {selectedCostingRow && !deliveryMode && (
+                  <div className={sourceBacked ? "lg:col-span-3" : "md:col-span-4"}>
+                    <InvoiceFfeCostContext
+                      row={selectedCostingRow}
+                      pendingAmountExGst={pendingAmountExGst}
+                      benchmarkLabel={benchmarkLabel(selectedCostingRow)}
+                      lineAccounting={lineAccounting}
+                    />
+                  </div>
                 )}
               </div>
             );

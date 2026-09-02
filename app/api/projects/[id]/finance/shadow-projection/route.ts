@@ -201,6 +201,7 @@ export async function POST(
       contributions: estimateContributions,
       invoices: (supplierInvoices ?? []) as unknown as SupplierCashInvoice[],
       itemCategories: ffeTiming.itemCategories,
+      componentParentItemIds: ffeTiming.componentParentItemIds,
     });
     const contributions = [
       ...supplierReconciliation.contributions,
