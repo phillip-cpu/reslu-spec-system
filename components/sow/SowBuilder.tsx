@@ -10,6 +10,7 @@ import type {
   SuggestTradeTagsResponse,
 } from "@/types/sow-trade-tags";
 import type { ExportPresetRow } from "@/types/round-export-batch";
+import type { SowQualityReport } from "@/types/sow-quality";
 import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
 import { distinctTaggedTrades, groupSowLinesByTrade } from "@/lib/sow-trade-tags";
 import { reorderSowLines } from "@/lib/sow-reorder";
@@ -61,6 +62,8 @@ export function SowBuilder({ projectId }: Props) {
   const [presets, setPresets] = useState<ExportPresetRow[]>([]);
   const [suggestingTags, setSuggestingTags] = useState(false);
   const [suggestMessage, setSuggestMessage] = useState<string | null>(null);
+  const [quality, setQuality] = useState<SowQualityReport | null>(null);
+  const [qualityLoading, setQualityLoading] = useState(false);
   // Fix round B — BUILD-SPEC.md §"SOW sticky outline" (improvements
   // backlog): sticky section outline sidebar, current section
   // highlighted via IntersectionObserver.
@@ -84,6 +87,20 @@ export function SowBuilder({ projectId }: Props) {
     setSelectedLineIds(new Set());
     setCopyTargetSectionIds(new Set());
     setCopyDialogOpen(false);
+  }, [projectId]);
+
+  const loadQuality = useCallback(async (sowId: string) => {
+    setQualityLoading(true);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/sow/${sowId}/quality`);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Could not run the pre-issue review.");
+      const report = body.quality as SowQualityReport;
+      setQuality(report);
+      return report;
+    } finally {
+      setQualityLoading(false);
+    }
   }, [projectId]);
 
   // "Trade-scoped SOW extracts" round — trade preset names, fetched
@@ -115,6 +132,7 @@ export function SowBuilder({ projectId }: Props) {
         setActiveSowId(null);
         setSow(null);
         setSections([]);
+        setQuality(null);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load Scope of Works.");
@@ -128,6 +146,17 @@ export function SowBuilder({ projectId }: Props) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     loadAll();
   }, [loadAll]);
+
+  // Line edits save on blur. Reassess shortly after the persisted
+  // section state changes so the review stays current without firing
+  // on every keystroke.
+  useEffect(() => {
+    if (!sow) return;
+    const timer = window.setTimeout(() => {
+      loadQuality(sow.id).catch(() => {});
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [loadQuality, sections, sow]);
 
   // Default the active outline entry to the first section whenever the
   // section list changes shape (new SOW loaded, revision switched, or
@@ -207,14 +236,28 @@ export function SowBuilder({ projectId }: Props) {
 
   async function issueSow() {
     if (!sow) return;
-    if (!confirm(`Issue ${sow.revision_label}? It will become read-only — further edits require a new revision.`)) {
-      return;
-    }
     setError(null);
     try {
+      const currentQuality = await loadQuality(sow.id);
+      if (!currentQuality.ready_to_issue) {
+        setError(
+          `Resolve ${currentQuality.blockers.length} pre-issue blocker${currentQuality.blockers.length === 1 ? "" : "s"} before issuing this Scope of Works.`
+        );
+        document.getElementById("sow-quality-review")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      const warningText = currentQuality.warnings.length > 0
+        ? `\n\n${currentQuality.warnings.length} review warning${currentQuality.warnings.length === 1 ? " remains" : "s remain"}. Confirm you have checked them before continuing.`
+        : "";
+      if (!confirm(`Issue ${sow.revision_label}? It will become read-only — further edits require a new revision.${warningText}`)) {
+        return;
+      }
       const res = await fetch(`/api/projects/${projectId}/sow/${sow.id}/issue`, { method: "POST" });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error ?? "Could not issue this Scope of Works.");
+      if (!res.ok) {
+        if (body.quality) setQuality(body.quality as SowQualityReport);
+        throw new Error(body.error ?? "Could not issue this Scope of Works.");
+      }
       await loadAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not issue this Scope of Works.");
@@ -244,9 +287,9 @@ export function SowBuilder({ projectId }: Props) {
    * appends the standard clause library (Project Overview / General
    * Notes / Site Management & Handover / Exclusions) plus one section
    * per current project room (from the `rooms` table) onto the active
-   * draft revision. See app/api/projects/[id]/sow/[sowId]/from-template
-   * and lib/sow-templates.ts. Additive only — never replaces existing
-   * sections, so it's safe to click on a SOW that already has content.
+   * draft revision. See app/api/projects/[id]/sow/[sowId]/from-template.
+   * Missing-content only — never replaces existing sections or authored
+   * room lines, so completed rooms remain untouched.
    */
   async function applyTemplate() {
     if (!sow) return;
@@ -258,7 +301,9 @@ export function SowBuilder({ projectId }: Props) {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Could not apply the template.");
-      setSections((cur) => [...cur, ...((body.sections ?? []) as SowSectionWithTradedLines[])]);
+      // Existing empty room sections are populated in place. Reloading
+      // avoids representing the same persisted section twice locally.
+      await loadSow(sow.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not apply the template.");
     } finally {
@@ -670,7 +715,7 @@ export function SowBuilder({ projectId }: Props) {
               onClick={applyTemplate}
               disabled={applyingTemplate}
               className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white disabled:opacity-60"
-              title="Append the standard clause library + one section per project room"
+              title="Fill only missing standard sections and empty rooms from current plans and FF&E"
             >
               {applyingTemplate ? "Applying…" : "Start from template"}
             </button>
@@ -735,6 +780,18 @@ export function SowBuilder({ projectId }: Props) {
           )}
         </div>
       </div>
+
+      {sow && (
+        <SowQualityReview
+          report={quality}
+          loading={qualityLoading}
+          isDraft={isDraft}
+          onRefresh={() => void loadQuality(sow.id).catch((err) => {
+            setError(err instanceof Error ? err.message : "Could not run the pre-issue review.");
+          })}
+          onSelectSection={scrollToSection}
+        />
+      )}
 
       {!isDraft && sow && (
         <p className="border border-[#dcd6cc] bg-cream px-4 py-2 text-caption text-charcoal/60">
@@ -841,6 +898,121 @@ export function SowBuilder({ projectId }: Props) {
         />
       )}
     </div>
+  );
+}
+
+function SowQualityReview({
+  report,
+  loading,
+  isDraft,
+  onRefresh,
+  onSelectSection,
+}: {
+  report: SowQualityReport | null;
+  loading: boolean;
+  isDraft: boolean;
+  onRefresh: () => void;
+  onSelectSection: (sectionId: string) => void;
+}) {
+  const findings = report ? [...report.blockers, ...report.warnings] : [];
+  return (
+    <section
+      id="sow-quality-review"
+      className="scroll-mt-24 border border-[#c9c2b4] bg-nearwhite px-5 py-4"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="label-caps !text-sand">{isDraft ? "Pre-issue review" : "Document review"}</p>
+          <p className="mt-1 text-body text-charcoal/70">
+            {!report
+              ? "Checking the room scope against FF&E and all current plan analyses…"
+              : report.ready_to_issue
+                ? `No issue blockers. ${report.warnings.length} review warning${report.warnings.length === 1 ? " remains" : "s remain"}.`
+                : `${report.blockers.length} issue blocker${report.blockers.length === 1 ? "" : "s"} and ${report.warnings.length} review warning${report.warnings.length === 1 ? "" : "s"}.`}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {report && (
+            <span
+              className={clsx(
+                "label-caps px-2 py-1",
+                report.ready_to_issue ? "bg-[#edf5e8] !text-[#3B6D11]" : "bg-[#fff1e5] !text-[#9a4f0b]"
+              )}
+            >
+              {report.ready_to_issue ? "Ready for final review" : "Not ready to issue"}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={loading}
+            className="border border-[#c9c2b4] px-3 py-1.5 text-caption text-charcoal hover:border-nearblack disabled:opacity-50"
+          >
+            {loading ? "Checking…" : "Recheck"}
+          </button>
+        </div>
+      </div>
+
+      {report && (
+        <>
+          <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 border-t border-[#e1ddd5] pt-3 text-caption text-charcoal/60">
+            <span>{report.summary.lines} lines</span>
+            <span>{report.summary.active_rooms} rooms</span>
+            <span>
+              {report.summary.referenced_ffe_items} of {report.summary.assigned_ffe_items} assigned FF&amp;E items referenced
+            </span>
+            <span>{report.summary.analysed_plan_files} plan files analysed</span>
+          </div>
+
+          {findings.length > 0 && (
+            <details className="mt-3" open={!report.ready_to_issue}>
+              <summary className="cursor-pointer text-subhead text-nearblack">
+                Review {findings.length} finding{findings.length === 1 ? "" : "s"}
+              </summary>
+              <ul className="mt-3 space-y-2">
+                {findings.map((finding, index) => (
+                  <li
+                    key={`${finding.code}-${finding.section_id ?? finding.plan_filename ?? index}-${index}`}
+                    className={clsx(
+                      "border-l-2 px-3 py-2",
+                      finding.severity === "blocker"
+                        ? "border-[#9a4f0b] bg-[#fff8f1]"
+                        : "border-sand bg-offwhite"
+                    )}
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-body font-semibold text-nearblack">
+                          {finding.severity === "blocker" ? "Blocker — " : "Check — "}{finding.title}
+                        </p>
+                        <p className="mt-0.5 text-caption text-charcoal/65">
+                          {finding.detail.length > 360 ? `${finding.detail.slice(0, 357)}…` : finding.detail}
+                        </p>
+                        {finding.item_codes && finding.item_codes.length > 0 && (
+                          <p className="mt-1 break-words text-caption text-charcoal/50">
+                            {finding.item_codes.slice(0, 16).join(", ")}
+                            {finding.item_codes.length > 16 ? ` +${finding.item_codes.length - 16} more` : ""}
+                          </p>
+                        )}
+                      </div>
+                      {finding.section_id && (
+                        <button
+                          type="button"
+                          onClick={() => onSelectSection(finding.section_id!)}
+                          className="shrink-0 border border-[#c9c2b4] px-2 py-1 text-caption text-charcoal hover:border-nearblack"
+                        >
+                          Go to room
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 

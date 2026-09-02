@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { roomSectionTemplate } from "@/lib/sow-templates";
+import { groundedRoomSectionTemplate } from "@/lib/sow-grounded-template";
 import type { Item } from "@/types";
+import type { PlanAnalysis } from "@/types/phase-12a-a";
 
 /**
  * GET /api/projects/[id]/sow/draft-context
@@ -40,7 +42,7 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const [{ data: rooms }, { data: latestAnalysis }] = await Promise.all([
+  const [{ data: rooms }, { data: analyses }, { data: planFiles }] = await Promise.all([
     supabase
       .from("rooms")
       .select("id, name")
@@ -49,11 +51,17 @@ export async function GET(
       .order("sort", { ascending: true }),
     supabase
       .from("plan_analyses")
-      .select("discrepancies, rooms, item_codes, analysed_at")
+      .select("*")
       .eq("project_id", projectId)
       .order("analysed_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
+      .limit(50),
+    supabase
+      .from("project_files")
+      .select("id, filename")
+      .eq("project_id", projectId)
+      .eq("kind", "plans")
+      .is("deleted_at", null)
+      .order("uploaded_at", { ascending: false }),
   ]);
 
   const roomIds = (rooms ?? []).map((r) => r.id as string);
@@ -81,15 +89,40 @@ export async function GET(
     itemsByRoom.set(row.room_id, list);
   }
 
+  // A project can have separate interior, joinery and external plan
+  // sets. Return the newest analysis for each current file rather than
+  // letting the last upload silently replace all earlier context.
+  const currentPlanIds = new Set((planFiles ?? []).map((file) => String(file.id)));
+  const latestAnalysisByFile = new Map<string, PlanAnalysis>();
+  for (const analysis of (analyses ?? []) as unknown as PlanAnalysis[]) {
+    if (!currentPlanIds.has(analysis.file_id) || latestAnalysisByFile.has(analysis.file_id)) continue;
+    latestAnalysisByFile.set(analysis.file_id, analysis);
+  }
+  const currentAnalyses = [...latestAnalysisByFile.values()];
+  const planFilenames = (planFiles ?? []).map((file) => String(file.filename));
+
   const roomsWithItems = (rooms ?? []).map((r) => ({
     id: r.id,
     name: r.name,
     items: itemsByRoom.get(r.id as string) ?? [],
-    clause_pattern: roomSectionTemplate(r.name as string),
+    clause_pattern: (itemsByRoom.get(r.id as string)?.length ?? 0) > 0 || planFilenames.length > 0
+      ? groundedRoomSectionTemplate({
+          roomName: r.name as string,
+          items: (itemsByRoom.get(r.id as string) ?? []).map((item) => ({
+            ...item,
+            colour: null,
+            material: null,
+            finish: null,
+          })),
+          planFilenames,
+        })
+      : roomSectionTemplate(r.name as string),
   }));
 
   return NextResponse.json({
     rooms: roomsWithItems,
-    latest_plan_analysis: latestAnalysis ?? null,
+    latest_plan_analysis: currentAnalyses[0] ?? null,
+    plan_analyses: currentAnalyses,
+    plan_files: planFiles ?? [],
   });
 }

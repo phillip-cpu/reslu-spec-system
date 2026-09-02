@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { SowLineWithTrade } from "../types/sow-trade-tags.ts";
-import { groupSowLinesByTrade } from "./sow-trade-tags.ts";
+import { groupSowLinesByTrade, suggestTradeTag } from "./sow-trade-tags.ts";
 
 function line(id: string, trade: string | null): SowLineWithTrade {
   return {
@@ -42,4 +42,15 @@ test("keeps blank and untagged lines visible in one separate group", () => {
   assert.equal(groups[0]?.trade, null);
   assert.deepEqual(groups[0]?.lines.map((item) => item.id), ["1", "2"]);
   assert.equal(groups[1]?.trade, "Painter");
+});
+
+test("matches grounded clause labels to the studio's descriptive preset names", () => {
+  const presets = ["Joiner", "Carpenter", "Plaster, Flushing & Cornice", "Site & Earthworks"];
+  assert.equal(suggestTradeTag("JOINERY — Install J07", presets), "Joiner");
+  assert.equal(suggestTradeTag("CARPENTRY — Install DR-02", presets), "Carpenter");
+  assert.equal(
+    suggestTradeTag("PARTITIONS & PLASTERING — Install Aquacheck", presets),
+    "Plaster, Flushing & Cornice"
+  );
+  assert.equal(suggestTradeTag("EXTERNAL WORKS — Install paving", presets), "Site & Earthworks");
 });

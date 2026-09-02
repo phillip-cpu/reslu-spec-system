@@ -1168,7 +1168,7 @@ const TOOLS = [
   {
     name: "draft_sow_section",
     description:
-      "Two modes, same tool. FETCH mode (omit `lines`): returns the project's current rooms, each room's assigned FF&E items, the latest plan analysis's discrepancies (if any), and the room-section clause pattern skeleton to follow — everything needed to draft a grounded room-by-room SOW section. SUBMIT mode (pass `section_id` + `lines`): writes each line onto that EXISTING draft sow_sections row (create the section itself first via the normal SOW builder API/UI, then call this to populate it) — every line lands with the SAME draft status as any hand-typed line; nothing is issued or published by this tool. Only works while the parent SOW is still a draft.",
+      "Two modes, same tool. FETCH mode (omit `lines`): returns the project's current rooms, each room's assigned FF&E items, the newest analysis for every current plan file (interior, joinery, external, etc.), and a grounded room-section starter — everything needed to draft a room-by-room SOW without letting one plan upload hide another. SUBMIT mode (pass `section_id` + `lines`): writes each line onto that EXISTING draft sow_sections row (create the section itself first via the normal SOW builder API/UI, then call this to populate it) — every line lands with the SAME draft status as any hand-typed line; nothing is issued or published by this tool. Only works while the parent SOW is still a draft.",
     inputSchema: {
       type: "object",
       properties: {

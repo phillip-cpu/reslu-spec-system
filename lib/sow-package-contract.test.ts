@@ -19,6 +19,8 @@ const sectionRoute = read("app/api/sow/sections/[sectionId]/route.ts");
 const fromTemplateRoute = read("app/api/projects/[id]/sow/[sowId]/from-template/route.ts");
 const newRevisionRoute = read("app/api/projects/[id]/sow/[sowId]/new-revision/route.ts");
 const copyLinesRoute = read("app/api/projects/[id]/sow/[sowId]/copy-lines/route.ts");
+const qualityRoute = read("app/api/projects/[id]/sow/[sowId]/quality/route.ts");
+const issueRoute = read("app/api/projects/[id]/sow/[sowId]/issue/route.ts");
 const builder = read("components/sow/SowBuilder.tsx");
 const pdf = read("components/pdf/SowPdf.tsx");
 
@@ -65,6 +67,14 @@ test("editable SOW lines can be selected and copied to other rooms", () => {
   assert.match(copyLinesRoute, /Choose other rooms, not a selected line's source room/);
   assert.match(copyLinesRoute, /buildSowLineCopies\(typedSourceLines, targetSectionIds, maxSortBySection\)/);
   assert.match(copyLinesRoute, /\.insert\(copies\)[\s\S]*\.select\(\)/);
+});
+
+test("pre-issue review is visible and enforced by the issuing route", () => {
+  assert.match(builder, /SowQualityReview/);
+  assert.match(builder, /Pre-issue review/);
+  assert.match(qualityRoute, /loadSowQualityReport/);
+  assert.match(issueRoute, /loadSowQualityReport[\s\S]*ready_to_issue/);
+  assert.match(fromTemplateRoute, /existingHeadings[\s\S]*groundedRoomSectionTemplate/);
 });
 
 test("the full PDF mirrors the editor's trade grouping", () => {

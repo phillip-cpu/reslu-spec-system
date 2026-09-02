@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { loadSowQualityReport } from "@/lib/sow-quality-server";
 import type { SowDocument } from "@/types";
 
 /**
@@ -45,6 +46,33 @@ export async function POST(
   }
   if ((sow as SowDocument).status === "issued") {
     return NextResponse.json({ error: "This SOW has already been issued." }, { status: 400 });
+  }
+
+  // Re-run the assessment server-side immediately before issue. The
+  // builder also shows this report, but the route is the authority so
+  // stale browser state or a direct API call cannot issue unfinished
+  // placeholders, empty room scopes, duplicate sections, or room
+  // inclusions missing from every trade extract.
+  try {
+    const quality = await loadSowQualityReport(supabase, projectId, sowId);
+    if (!quality.ready_to_issue) {
+      return NextResponse.json(
+        {
+          error: `Resolve ${quality.blockers.length} pre-issue blocker${quality.blockers.length === 1 ? "" : "s"} before issuing this Scope of Works.`,
+          quality,
+        },
+        { status: 409 }
+      );
+    }
+  } catch (qualityError) {
+    return NextResponse.json(
+      {
+        error: qualityError instanceof Error
+          ? `Could not complete the pre-issue review: ${qualityError.message}`
+          : "Could not complete the pre-issue review.",
+      },
+      { status: 500 }
+    );
   }
 
   const { data: updated, error } = await supabase

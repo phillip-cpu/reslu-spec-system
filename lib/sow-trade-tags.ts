@@ -42,7 +42,7 @@ import type { SowLineWithTrade, SowSectionWithTradedLines } from "@/types/sow-tr
  *
  * Table content is the exact mapping given for this round: WALL
  * TILING / FLOOR FINISHES / WATERPROOFING -> Tiler; JOINERY ->
- * Carpenter; SANITARYWARE / TAPWARE -> Plumber; ELECTRICAL / LIGHTING
+ * Joiner; CARPENTRY -> Carpenter; SANITARYWARE / TAPWARE -> Plumber; ELECTRICAL / LIGHTING
  * -> Electrician; PAINTING -> Painter; PARTITIONS / PLASTER ->
  * Plasterer; DEMOLISH -> Demolition; SHOWER SCREEN -> Glazier; STONE
  * -> Stonemason. Order matters only in the sense that the FIRST
@@ -58,7 +58,8 @@ export interface TradeKeywordRule {
 
 export const TRADE_KEYWORD_TABLE: TradeKeywordRule[] = [
   { keywords: ["WALL TILING", "FLOOR FINISHES", "WATERPROOFING"], trade: "Tiler" },
-  { keywords: ["JOINERY"], trade: "Carpenter" },
+  { keywords: ["JOINERY"], trade: "Joiner" },
+  { keywords: ["CARPENTRY"], trade: "Carpenter" },
   { keywords: ["SANITARYWARE", "TAPWARE"], trade: "Plumber" },
   { keywords: ["ELECTRICAL", "LIGHTING"], trade: "Electrician" },
   { keywords: ["PAINTING"], trade: "Painter" },
@@ -66,6 +67,9 @@ export const TRADE_KEYWORD_TABLE: TradeKeywordRule[] = [
   { keywords: ["DEMOLISH"], trade: "Demolition" },
   { keywords: ["SHOWER SCREEN"], trade: "Glazier" },
   { keywords: ["STONE"], trade: "Stonemason" },
+  { keywords: ["CAULKING", "SEALING"], trade: "Caulking & Sealing" },
+  { keywords: ["EXTERNAL WORKS", "EARTHWORKS"], trade: "Site & Earthworks" },
+  { keywords: ["CONCRETE", "FOUNDATIONS"], trade: "Concrete & Foundations" },
 ];
 
 /**
@@ -137,7 +141,23 @@ export function resolveAgainstPresets(
   const match = presetNames.find(
     (name) => name.trim().toLowerCase() === canonicalTrade.trim().toLowerCase()
   );
-  return match ?? null;
+  if (match) return match;
+
+  // The canonical clause vocabulary is intentionally stable while
+  // preset names are studio-editable. Resolve the common descriptive
+  // variants used by RESLU (notably "Plaster, Flushing & Cornice")
+  // without creating a stale tag that is not a current preset.
+  const aliases: Record<string, string[]> = {
+    plasterer: ["plaster", "flushing", "cornice"],
+    joiner: ["joiner", "joinery", "cabinet"],
+    carpenter: ["carpenter", "carpentry"],
+    glazier: ["glazier", "glazing", "glass"],
+  };
+  const keywords = aliases[canonicalTrade.trim().toLowerCase()] ?? [];
+  return presetNames.find((name) => {
+    const normalised = name.trim().toLowerCase();
+    return keywords.some((keyword) => normalised.includes(keyword));
+  }) ?? null;
 }
 
 /**

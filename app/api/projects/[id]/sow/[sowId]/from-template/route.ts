@@ -7,6 +7,10 @@ import {
   TRAILING_TEMPLATE_GROUPS,
   roomSectionTemplate,
 } from "@/lib/sow-templates";
+import {
+  groundedRoomSectionTemplate,
+  type GroundedSowItem,
+} from "@/lib/sow-grounded-template";
 import { resolveExportPresets } from "@/lib/export-presets";
 import { suggestTradeTag } from "@/lib/sow-trade-tags";
 import type { SowDocument, SowSectionWithLines } from "@/types";
@@ -24,7 +28,7 @@ import type {
  * (read rooms from the CURRENT rooms schema). Keep everything editable
  * via the existing builder."
  *
- * Appends template groups without replacing authored content. Linked
+ * Appends missing template groups without replacing authored content. Linked
  * room seed sections are populated in place, so applying the template
  * to a newly-created SOW does not create a second copy of every FF&E
  * room. Only valid on a DRAFT SOW — an issued
@@ -120,7 +124,8 @@ export async function POST(
   // above already cover 100% of SOW_TEMPLATE_LIBRARY's keys.
   void SOW_TEMPLATE_LIBRARY;
 
-  let roomSeeds: { heading: string; sourceRoomId: string | null }[] = [];
+  let roomSeeds: { heading: string; sourceRoomId: string | null; items: GroundedSowItem[] }[] = [];
+  let planFilenames: string[] = [];
   if (includeRooms) {
     const { data: rooms, error: roomsError } = await supabase
       .from("rooms")
@@ -137,9 +142,49 @@ export async function POST(
         sourceRoomId: room.id as string,
       }))
       .filter((room) => room.heading.length > 0);
+    const roomIds = activeRooms.map((room) => room.sourceRoomId);
+    const [{ data: allocations, error: allocationError }, { data: planFiles, error: planFileError }] =
+      await Promise.all([
+        roomIds.length
+          ? supabase
+              .from("item_rooms")
+              .select("room_id, quantity, items(item_code, name, category, colour, material, finish, deleted_at)")
+              .in("room_id", roomIds)
+          : Promise.resolve({ data: [] as unknown[], error: null }),
+        supabase
+          .from("project_files")
+          .select("filename")
+          .eq("project_id", projectId)
+          .eq("kind", "plans")
+          .is("deleted_at", null)
+          .order("uploaded_at", { ascending: false }),
+      ]);
+    if (allocationError || planFileError) {
+      return NextResponse.json(
+        { error: allocationError?.message ?? planFileError?.message ?? "Could not load room drafting context" },
+        { status: 500 }
+      );
+    }
+
+    type Allocation = {
+      room_id: string;
+      quantity: number;
+      items: (Omit<GroundedSowItem, "quantity"> & { deleted_at: string | null }) | null;
+    };
+    const itemsByRoom = new Map<string, GroundedSowItem[]>();
+    for (const allocation of (allocations ?? []) as unknown as Allocation[]) {
+      if (!allocation.items || allocation.items.deleted_at) continue;
+      const { deleted_at: _deletedAt, ...item } = allocation.items;
+      void _deletedAt;
+      itemsByRoom.set(allocation.room_id, [
+        ...(itemsByRoom.get(allocation.room_id) ?? []),
+        { ...item, quantity: Number(allocation.quantity) || 1 },
+      ]);
+    }
+    planFilenames = (planFiles ?? []).map((file) => String(file.filename));
     roomSeeds = activeRooms.length > 0
-      ? activeRooms
-      : roomSectionHeadings([]).map((heading) => ({ heading, sourceRoomId: null }));
+      ? activeRooms.map((room) => ({ ...room, items: itemsByRoom.get(room.sourceRoomId) ?? [] }))
+      : roomSectionHeadings([]).map((heading) => ({ heading, sourceRoomId: null, items: [] }));
   }
 
   // "Trade-scoped SOW extracts" round — current preset names, fetched
@@ -173,6 +218,9 @@ export async function POST(
       .filter((section) => Boolean(section.source_room_id))
       .map((section) => [section.source_room_id as string, section])
   );
+  const existingHeadings = new Set(
+    (existingSections ?? []).map((section) => String(section.heading).trim().toLowerCase())
+  );
   let nextSort =
     (existingSections ?? []).reduce(
       (highest, section) => Math.max(highest, Number(section.sort) || 0),
@@ -191,7 +239,13 @@ export async function POST(
       sourceRoomId: null,
     })),
     ...roomSeeds.map((room) => ({
-      ...roomSectionTemplate(room.heading),
+      ...(room.items.length > 0 || planFilenames.length > 0
+        ? groundedRoomSectionTemplate({
+            roomName: room.heading,
+            items: room.items,
+            planFilenames,
+          })
+        : roomSectionTemplate(room.heading)),
       isRoomSection: true,
       sourceRoomId: room.sourceRoomId,
     })),
@@ -214,6 +268,13 @@ export async function POST(
     if (existingRoomSection && (existingRoomSection.sow_lines?.length ?? 0) > 0) {
       continue;
     }
+    // Standard/non-room groups are idempotent by heading. Re-running
+    // Start from template must never duplicate Project Overview,
+    // General Notes, Site Management or Exclusions. Existing authored
+    // wording is preserved rather than compared to the source template.
+    if (!sourceRoomId && existingHeadings.has(template.heading.trim().toLowerCase())) {
+      continue;
+    }
 
     let section = existingRoomSection ?? null;
     if (!section) {
@@ -234,6 +295,7 @@ export async function POST(
         );
       }
       section = insertedSection;
+      existingHeadings.add(template.heading.trim().toLowerCase());
       nextSort += 1;
     }
 
