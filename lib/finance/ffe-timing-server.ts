@@ -10,6 +10,7 @@ import {
 } from "../order-by.ts";
 import {
   buildFfeForecastTimings,
+  summarizeFfePricing,
   type FfeForecastTiming,
 } from "./ffe-timing.ts";
 
@@ -18,6 +19,9 @@ export interface ProjectFfeForecastTiming {
   timings: Record<string, FfeForecastTiming>;
   directItemCount: number;
   datedItemCount: number;
+  quotedItemCount: number;
+  placeholderItemCount: number;
+  unpricedItemCount: number;
 }
 
 /** Loads the same category→trade→booking timing used by Procurement. */
@@ -33,13 +37,16 @@ export async function loadProjectFfeForecastTiming(
       timings: {},
       directItemCount: 0,
       datedItemCount: 0,
+      quotedItemCount: 0,
+      placeholderItemCount: 0,
+      unpricedItemCount: 0,
     };
   }
 
   const [itemsResult, visitsResult, tasksResult, presetResult] = await Promise.all([
     supabase
       .from("items")
-      .select("id,project_id,category,lead_time_weeks,ordered_at,cost_scope")
+      .select("id,project_id,category,lead_time_weeks,ordered_at,cost_scope,price_trade,price_rrp")
       .in("project_id", ids)
       .is("deleted_at", null),
     supabase
@@ -60,7 +67,10 @@ export async function loadProjectFfeForecastTiming(
     itemsResult.error ?? visitsResult.error ?? tasksResult.error ?? presetResult.error;
   if (readError) throw new Error(readError.message);
 
-  const items = (itemsResult.data ?? []) as OrderByItemInput[];
+  const items = (itemsResult.data ?? []) as Array<OrderByItemInput & {
+    price_trade: number | null;
+    price_rrp: number | null;
+  }>;
   const sources: WorksDateSource[] = [
     ...((visitsResult.data ?? []) as Array<{
       id: string;
@@ -112,6 +122,7 @@ export async function loadProjectFfeForecastTiming(
   ));
   const timings = buildFfeForecastTimings(items, orderBy);
   const directItems = items.filter((item) => item.cost_scope !== "trade_package");
+  const pricing = summarizeFfePricing(items);
 
   return {
     // Reference-only trade-package items have no standalone estimate plan.
@@ -121,7 +132,10 @@ export async function loadProjectFfeForecastTiming(
       directItems.map((item) => [item.id, item.category || "Uncategorised"])
     ),
     timings,
-    directItemCount: directItems.length,
+    directItemCount: pricing.directItemCount,
     datedItemCount: directItems.filter((item) => timings[item.id]?.plannedDate).length,
+    quotedItemCount: pricing.quotedItemCount,
+    placeholderItemCount: pricing.placeholderItemCount,
+    unpricedItemCount: pricing.unpricedItemCount,
   };
 }

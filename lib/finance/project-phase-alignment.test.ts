@@ -45,3 +45,34 @@ test("automatic alignment preserves manual links and leaves ambiguous sections a
     [{ id: "electrical", forecast_phase_id: "rough-in" }]
   );
 });
+
+test("current Work board phase names align without forcing ambiguous trades", () => {
+  const currentBoardPhases = [
+    { id: "site", name: "Site Setup", sort: 0 },
+    { id: "demo", name: "Demolition-External", sort: 1 },
+    { id: "rough", name: "Rough-in-External", sort: 2 },
+    { id: "wet", name: "Waterproofing & Tiling", sort: 3 },
+    { id: "fitoff", name: "Fit-off", sort: 4 },
+    { id: "handover", name: "Handover", sort: 5 },
+    { id: "plaster", name: "Plasterboard, Flushing & Cornice", sort: 6 },
+    { id: "slab", name: "Slab & Footings", sort: 7 },
+  ];
+
+  assert.equal(suggestForecastPhaseId("Preliminaries & Site", currentBoardPhases), "site");
+  assert.equal(suggestForecastPhaseId("Demolition", currentBoardPhases), "demo");
+  assert.equal(suggestForecastPhaseId("Earthworks / Footings", currentBoardPhases), "slab");
+  assert.equal(suggestForecastPhaseId("Plasterboard", currentBoardPhases), "plaster");
+  assert.equal(suggestForecastPhaseId("Waterproofing", currentBoardPhases), "wet");
+  assert.equal(suggestForecastPhaseId("Tiling", currentBoardPhases), "wet");
+  assert.equal(suggestForecastPhaseId("Electrical", currentBoardPhases), "rough");
+  assert.equal(suggestForecastPhaseId("Glazing", currentBoardPhases), "fitoff");
+  assert.equal(suggestForecastPhaseId("Floor Coverings", currentBoardPhases), "fitoff");
+  assert.equal(suggestForecastPhaseId("Joinery", currentBoardPhases), "fitoff");
+  assert.equal(suggestForecastPhaseId("Stone", currentBoardPhases), "fitoff");
+  assert.equal(suggestForecastPhaseId("Painting", currentBoardPhases), "fitoff");
+  assert.equal(suggestForecastPhaseId("Handover & Completion", currentBoardPhases), "handover");
+
+  // The word "External" in a demolition phase is not an external-works phase.
+  assert.equal(suggestForecastPhaseId("External / Landscaping", currentBoardPhases), null);
+  assert.equal(suggestForecastPhaseId("Framing / Carpentry", currentBoardPhases), null);
+});

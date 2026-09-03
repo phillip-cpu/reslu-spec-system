@@ -31,10 +31,10 @@ export default async function ProjectPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ tab?: string; focus?: string }>;
+  searchParams: Promise<{ tab?: string; focus?: string; view?: string }>;
 }) {
   const { id } = await params;
-  const { tab, focus } = await searchParams;
+  const { tab, focus, view } = await searchParams;
   const showFfe = tab === "ffe";
   // My Work focus deep-link ("Three from Phillip — 6 July 2026
   // evening" item 1): decision_overdue items only have a row id inside
@@ -48,7 +48,11 @@ export default async function ProjectPage({
   // identical startsWith() branch pattern rather than a new condition
   // shape.
   const initialFfeView =
-    focus?.startsWith("decision_overdue-") || focus?.startsWith("ordering_due-") ? "procurement" : undefined;
+    view === "procurement" ||
+    focus?.startsWith("decision_overdue-") ||
+    focus?.startsWith("ordering_due-")
+      ? "procurement"
+      : undefined;
   const supabase = await createClient();
 
   const [{ data: project }, info] = await Promise.all([

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildFfeForecastTimings } from "./ffe-timing.ts";
+import { buildFfeForecastTimings, summarizeFfePricing } from "./ffe-timing.ts";
 
 test("ordered items use the recorded order date as the strongest timing signal", () => {
   const timings = buildFfeForecastTimings([
@@ -69,4 +69,18 @@ test("missing lead times and bookings remain explicitly undated", () => {
   assert.equal(timings.lead.plannedDate, null);
   assert.equal(timings.booking.timingSource, "no_booking");
   assert.equal(timings.package, undefined);
+});
+
+test("FF&E pricing summary separates quotes, placeholders and missing prices", () => {
+  assert.deepEqual(summarizeFfePricing([
+    { cost_scope: "direct", price_trade: 120, price_rrp: 150 },
+    { cost_scope: "direct", price_trade: null, price_rrp: 80 },
+    { cost_scope: "direct", price_trade: null, price_rrp: null },
+    { cost_scope: "trade_package", price_trade: null, price_rrp: null },
+  ]), {
+    directItemCount: 3,
+    quotedItemCount: 1,
+    placeholderItemCount: 1,
+    unpricedItemCount: 1,
+  });
 });

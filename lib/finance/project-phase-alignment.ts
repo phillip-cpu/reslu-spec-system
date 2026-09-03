@@ -27,22 +27,24 @@ type AlignmentRule = {
 // matches wins, allowing an extension/new-build Earthworks phase to win while
 // renovations fall back to Structural Alterations for the same cost section.
 const ALIGNMENT_RULES: AlignmentRule[] = [
-  { section: /prelim|site establishment/i, phases: [/site establishment/i] },
+  { section: /prelim|site establishment/i, phases: [/site (?:establishment|setup)/i] },
   { section: /demolition|strip out/i, phases: [/demolition|strip out/i] },
-  { section: /earthwork|footing|slab|base/i, phases: [/earthworks|footings|base/i, /structural/i] },
+  { section: /earthwork|footing|slab|base/i, phases: [/earthworks|footings|slab|base/i, /structural/i] },
   { section: /framing|carpentry|structural|steel/i, phases: [/structural.*framing|structural alterations/i] },
-  { section: /roof|brick|masonry|cladding/i, phases: [/external envelope/i] },
-  { section: /glazing|shower screen|mirror/i, phases: [/fit off/i, /internal finishes/i, /external envelope/i] },
-  { section: /plaster|render|lining|insulation|waterproof/i, phases: [/internal linings.*waterproof/i] },
-  { section: /stone|benchtop/i, phases: [/joinery.*fixed/i, /internal finishes/i] },
-  { section: /tiling|floor covering/i, phases: [/internal finishes/i] },
-  { section: /window furnishing/i, phases: [/fit off/i, /internal finishes/i] },
-  { section: /plumbing|electrical|hvac|data|services/i, phases: [/services rough in/i] },
-  { section: /joinery|cabinet/i, phases: [/joinery.*fixed/i, /fit off/i] },
-  { section: /paint|decorative/i, phases: [/painting.*final/i] },
-  { section: /appliance|hardware|fit off/i, phases: [/fit off/i] },
+  { section: /\broof(?:ing)?\b|brick|masonry|cladding/i, phases: [/external envelope/i] },
+  { section: /glazing|shower screen|mirror/i, phases: [/fit[-\s]?off/i, /internal finishes/i, /external envelope/i] },
+  { section: /waterproof/i, phases: [/waterproof(?:ing)?.*til(?:e|ing)/i, /internal linings.*waterproof/i] },
+  { section: /plaster|render|lining|insulation/i, phases: [/plasterboard|flushing|cornice/i, /internal linings/i] },
+  { section: /stone|benchtop/i, phases: [/joinery.*fixed/i, /fit[-\s]?off/i, /internal finishes/i] },
+  { section: /tiling/i, phases: [/waterproof(?:ing)?.*til(?:e|ing)/i, /internal finishes/i] },
+  { section: /floor covering/i, phases: [/fit[-\s]?off/i, /internal finishes/i] },
+  { section: /window furnishing/i, phases: [/fit[-\s]?off/i, /internal finishes/i] },
+  { section: /plumbing|electrical|hvac|data|services/i, phases: [/(?:services )?rough[-\s]?in/i] },
+  { section: /joinery|cabinet/i, phases: [/joinery.*fixed/i, /fit[-\s]?off/i] },
+  { section: /paint|decorative/i, phases: [/painting.*final/i, /fit[-\s]?off/i] },
+  { section: /appliance|hardware|fit[-\s]?off/i, phases: [/fit[-\s]?off/i] },
   { section: /external|landscap|paving|fencing|drainage/i, phases: [/external works/i] },
-  { section: /handover|completion/i, phases: [/handover.*close out/i, /practical completion/i] },
+  { section: /handover|completion/i, phases: [/^handover$/i, /handover.*close out/i, /practical completion/i] },
 ];
 
 export function suggestForecastPhaseId(
