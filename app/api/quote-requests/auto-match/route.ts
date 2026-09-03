@@ -36,7 +36,7 @@ export async function GET(request: NextRequest) {
   const { data: emailRows, error: emailError } = await supabase
     .from("emails")
     .select("id,subject,clean_text,from_addr,to_addrs,cc_addrs,direction,triage_label,received_at,gmail_thread_refs")
-    .not("gmail_thread_refs", "eq", {})
+    .not("gmail_thread_refs", "is", null)
     .order("received_at", { ascending: false })
     .limit(EMAIL_SCAN_LIMIT);
   if (emailError) return NextResponse.json({ error: emailError.message }, { status: 500 });
