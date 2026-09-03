@@ -103,6 +103,14 @@ test("an exact FF&E item code selects only the referenced item", () => {
   assert.deepEqual(result.filter((item) => item.selected).map((item) => item.id), ["oven"]);
 });
 
+test("does not confuse an address abbreviation with an uppercase FF&E category code", () => {
+  const result = matchQuoteItems([email({
+    subject: "Fwd: 4 Belinda St, Evandale Quote",
+    clean_text: "Attached is quote 236 v9 for the job at 4 Belinda Street, Evandale.",
+  })], [{ id: "stone", project_id: "hone", item_code: "ST-01", name: "KIREC", category: "ST", category_name: "Stone", cost_scope: "direct" }]);
+  assert.deepEqual(result, []);
+});
+
 test("only auto-links when project, contact, intent and line evidence are all unambiguous", () => {
   const cautious = buildQuoteThreadMatch({ emails: [email()], projects: [hone, otherProject], contacts: [poolContact], lines: poolLines });
   assert.equal(cautious.canAutoLink, true, "temporary fencing is not a candidate for a permanent glass-fence request");

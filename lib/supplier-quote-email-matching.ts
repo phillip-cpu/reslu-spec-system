@@ -340,7 +340,7 @@ export function matchQuoteLines(emails: QuoteEmail[], lines: QuoteCostLine[], co
 }
 
 export function matchQuoteItems(emails: QuoteEmail[], items: QuoteItem[], contactId?: string | null): QuoteItemMatch[] {
-  const subject = normalizeMatchText(emails.map((email) => email.subject ?? "").join(" "));
+  const rawSubject = emails.map((email) => email.subject ?? "").join(" ");
   const content = normalizeMatchText(emails.map((email) => `${email.subject ?? ""} ${email.clean_text ?? ""}`).join(" "));
   const categoryContext = /\b(?:schedule|specification|specifications|pricing|quote|quotation)\b/.test(content);
   const directItems = items.filter((item) => item.cost_scope !== "trade_package");
@@ -359,6 +359,7 @@ export function matchQuoteItems(emails: QuoteEmail[], items: QuoteItem[], contac
     const itemCode = normalizeMatchText(item.item_code);
     const name = normalizeMatchText(item.name);
     const categoryCode = normalizeMatchText(item.category);
+    const rawCategoryCode = item.category.trim();
     const categoryName = normalizeMatchText(item.category_name);
     const tokens = coreTokens(`${item.name} ${item.brand ?? ""}`);
     const matched = tokens.filter((token) => containsPhrase(content, token));
@@ -372,7 +373,10 @@ export function matchQuoteItems(emails: QuoteEmail[], items: QuoteItem[], contac
     } else if (name.length >= 5 && containsPhrase(content, name)) {
       confidence = 1;
       reason = "Exact FF&E item name in email";
-    } else if (!hasSpecificItemCode && categoryContext && categoryCode && new RegExp(`(?:^| )${categoryCode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: |$)`).test(subject)) {
+    } else if (
+      !hasSpecificItemCode && categoryContext && categoryCode && rawCategoryCode.length >= 2 &&
+      new RegExp(`(?:^|[^A-Za-z0-9])${rawCategoryCode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:[^A-Za-z0-9]|$)`).test(rawSubject)
+    ) {
       confidence = 0.99;
       reason = `FF&E category schedule matched: ${item.category}`;
     } else if (categoryContext && categoryName && containsPhrase(content, categoryName)) {
