@@ -57,7 +57,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       .eq("project_id", projectId).eq("status", "review").order("created_at", { ascending: false }),
     supabase.from("emails")
       .select("id,gmail_thread_refs,to_addrs,cc_addrs,from_addr,subject,received_at,direction,triage_label,clean_text")
-      .not("gmail_thread_refs", "eq", {}).order("received_at", { ascending: false }).limit(500),
+      .not("gmail_thread_refs", "is", null).order("received_at", { ascending: false }).limit(500),
   ]);
   if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
   if (suggestionError || emailError) return NextResponse.json({ error: suggestionError?.message ?? emailError?.message }, { status: 500 });
