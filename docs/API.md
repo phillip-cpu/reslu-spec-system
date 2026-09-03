@@ -88,11 +88,10 @@ DB error both surface as 404 `"Project not found"` (no 500 case is
 distinguished here). **Aria-relevant.**
 
 ### PUT /api/projects/[id]
-Auth: session. Body: `Partial<Project>` — only `id`, `client_token`,
-`created_at`, `updated_at` are stripped; every other field (including
-`status`) is accepted. Response: `{ project }`. Note: this means
-`status: "archived"` can be set via PUT as an alternate path to the
-dedicated DELETE below — both work, DELETE is the documented way.
+Auth: session. Body: `Partial<Project>` — `id`, `client_token`,
+`created_at`, `updated_at`, `project_stage` and `status` are stripped.
+Lifecycle changes must use the guarded admin-only `PATCH .../stage` route;
+archival must use the dedicated DELETE below. Response: `{ project }`.
 
 **Phase 11 extension (5 July 2026):** `components/settings/
 ProjectSettingsForm.tsx` gains a "Client contacts" group writing
@@ -123,6 +122,30 @@ next to Alias.
 ### DELETE /api/projects/[id]
 Auth: session. Body: none. Response: `{ ok: true }`. Soft-delete: sets
 `status = "archived"` (not a hard delete).
+
+### PATCH /api/projects/[id]/stage
+Auth: **admin**. Body:
+`{ stage, expected_updated_at?, closeout_acknowledged? }`. Response:
+`{ project }`. This is the guarded lifecycle transition used by the
+project header. `expected_updated_at` provides optimistic concurrency
+protection.
+
+Finalisation has two additional guards: the current stage must be
+`handover` (409 `closeout_handover_required` otherwise), and the live
+closeout summary is recalculated before the update. If any closeout area
+still needs attention, the caller must send
+`closeout_acknowledged: true` after showing those discrepancies to the
+admin (409 `closeout_review_required` otherwise). Finalising sets the
+project status to `completed`; it does not archive the record or mutate
+invoices, Work tasks, FF&E, signatures or handover selections.
+
+### GET /api/projects/[id]/closeout
+Auth: **admin**. Body: none. Response: `ProjectCloseoutReadiness`.
+Read-only derived cockpit across five canonical source areas:
+Work/defects, direct FF&E installation, supplier costs, client account,
+and the curated client handover pack. The response contains counts,
+clear/attention state, explanatory text and deep links back to each
+source area. It stores no duplicate checklist or readiness flag.
 
 ### POST /api/projects/[id]/regenerate-token
 Auth: **admin**. Body: none. Response: `{ token }` (200) or

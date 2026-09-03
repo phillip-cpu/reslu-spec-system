@@ -54,12 +54,13 @@ export async function PUT(
     return NextResponse.json({ error: "Add the agreement reference for a signed contract" }, { status: 400 });
   }
 
+  // Commercial setup reads the shared stage but never writes it. All stage
+  // changes go through PATCH /api/projects/[id]/stage and its closeout gates.
   const { data: project, error: projectError } = await supabase
     .from("projects")
-    .update({ project_stage: body.project_stage })
+    .select("id")
     .eq("id", projectId)
     .is("deleted_at", null)
-    .select("id")
     .maybeSingle();
   if (projectError) return NextResponse.json({ error: projectError.message }, { status: 500 });
   if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });

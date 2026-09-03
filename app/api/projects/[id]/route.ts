@@ -59,6 +59,11 @@ export async function PUT(
   delete body.client_token;
   delete body.created_at;
   delete body.updated_at;
+  // Lifecycle state has its own admin-only, concurrency-guarded route.
+  // Silently strip these fields so the generic settings endpoint cannot
+  // bypass Handover review or desynchronise project_stage and status.
+  delete body.project_stage;
+  delete body.status;
   const expectedUpdatedAt = typeof body.expected_updated_at === "string"
     ? body.expected_updated_at.trim()
     : null;

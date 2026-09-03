@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getUserRole } from "@/lib/auth";
+import { loadProjectCloseoutReadiness } from "@/lib/project-closeout-server";
 import { projectStatusForStage } from "@/lib/project-lifecycle";
 import { createClient } from "@/lib/supabase/server";
 import { PROJECT_STAGES, type ProjectStage } from "@/types/finance";
@@ -10,6 +11,7 @@ export const runtime = "nodejs";
 type StageRequest = {
   stage?: ProjectStage;
   expected_updated_at?: string;
+  closeout_acknowledged?: boolean;
 };
 
 /** PATCH /api/projects/[id]/stage — the single guarded job-lifecycle transition. */
@@ -51,6 +53,42 @@ export async function PATCH(
       { error: "The project changed since this stage was loaded. Refresh and try again." },
       { status: 409 }
     );
+  }
+
+  if (body.stage === "complete") {
+    if (current.project_stage !== "handover") {
+      return NextResponse.json(
+        {
+          code: "closeout_handover_required",
+          error: "Move the job to Handover and review closeout before finalising it.",
+        },
+        { status: 409 }
+      );
+    }
+
+    try {
+      const readiness = await loadProjectCloseoutReadiness(supabase, id);
+      if (!readiness.ready && body.closeout_acknowledged !== true) {
+        return NextResponse.json(
+          {
+            code: "closeout_review_required",
+            error: "Review and acknowledge the outstanding closeout areas before finalising.",
+            readiness,
+          },
+          { status: 409 }
+        );
+      }
+    } catch (error) {
+      return NextResponse.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Could not verify closeout readiness",
+        },
+        { status: 500 }
+      );
+    }
   }
 
   const status = projectStatusForStage(body.stage, current.status as ProjectStatus);
