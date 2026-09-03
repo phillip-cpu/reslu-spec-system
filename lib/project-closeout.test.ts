@@ -75,6 +75,33 @@ test("maps live discrepancies to their source areas without double-counting hand
     readiness.areas.find((area) => area.key === "client_account")?.outstanding_items,
     4
   );
+  assert.equal(
+    readiness.areas.find((area) => area.key === "supplier_finance")?.summary,
+    "3 supplier invoices need attention."
+  );
+  assert.equal(
+    readiness.areas.find((area) => area.key === "client_account")?.summary,
+    "4 client or contract items need attention."
+  );
+});
+
+test("uses singular grammar for one supplier or client discrepancy", () => {
+  const readiness = buildProjectCloseoutReadiness({
+    projectId: "project-grammar",
+    counts: counts({
+      supplier_needs_matching: 1,
+      client_invoice_drafts: 1,
+    }),
+  });
+
+  assert.equal(
+    readiness.areas.find((area) => area.key === "supplier_finance")?.summary,
+    "1 supplier invoice needs attention."
+  );
+  assert.equal(
+    readiness.areas.find((area) => area.key === "client_account")?.summary,
+    "1 client or contract item needs attention."
+  );
 });
 
 test("flags a missing handover task set even when every existing Work item is done", () => {
