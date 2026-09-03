@@ -31,7 +31,7 @@ interface Props {
   approvedVariationsTotal: number;
   /** Week 7 — Estimate ↔ Schedule integration: every project measurement, for the link picker + resolving a linked line's display. */
   measurements: MeasurementWithGroup[];
-  onOpenQuoteRequests: () => void;
+  onOpenQuoteRequests: (lineIds?: string[]) => void;
 }
 
 const QUOTE_STATUSES: { value: QuoteStatus; label: string }[] = [
@@ -437,6 +437,7 @@ export function EstimateView({
                   P/L {formatMoney(section.rollup.variance)}
                 </span>
               )}
+              {section.lines.length > 0 && <button type="button" onClick={() => onOpenQuoteRequests(section.lines.map((line) => line.id))} className="border border-sand px-2 py-1 text-caption text-sand hover:bg-white">Request pricing</button>}
               <button
                 type="button"
                 onClick={() => void addDeliveryAllowance(section.id)}
@@ -729,7 +730,7 @@ function LineRow({
   onDragOver: (event: React.DragEvent<HTMLTableRowElement>) => void;
   onDrop: (event: React.DragEvent<HTMLTableRowElement>) => void;
   quoteSummaries: EstimateResponse["quote_summaries"][string];
-  onOpenQuoteRequests: () => void;
+  onOpenQuoteRequests: (lineIds?: string[]) => void;
 }) {
   const [linkOpen, setLinkOpen] = useState(false);
   const [measurementLinkOpen, setMeasurementLinkOpen] = useState(false);
@@ -984,8 +985,9 @@ function LineRow({
               </span>
             </p>
           )}
+          <button type="button" onClick={() => onOpenQuoteRequests([line.id])} className="mx-2 mb-1 inline-block border border-[#c9c2b4] px-1.5 py-0.5 text-caption text-charcoal/60 hover:border-sand hover:text-sand">Request quote</button>
           {quoteSummaries.map((summary) => (
-            <button key={summary.package_id} type="button" onClick={onOpenQuoteRequests} className="mx-2 mb-1 block border border-sand px-1.5 py-0.5 text-left text-caption text-sand hover:bg-cream">
+            <button key={summary.package_id} type="button" onClick={() => onOpenQuoteRequests([line.id])} className="mx-2 mb-1 block border border-sand px-1.5 py-0.5 text-left text-caption text-sand hover:bg-cream">
               Quotes {summary.received_count}/{summary.request_count} · {summary.package_title}{summary.next_due ? ` · due ${summary.next_due}` : ""}
             </button>
           ))}

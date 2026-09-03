@@ -18,6 +18,17 @@ export interface SupplierQuoteLine {
   sort: number;
 }
 
+export interface SupplierQuoteItem {
+  id: string;
+  package_id: string;
+  item_id: string;
+  item_code_snapshot: string | null;
+  description_snapshot: string;
+  qty_snapshot: number | null;
+  unit_snapshot: string | null;
+  sort: number;
+}
+
 export interface SupplierQuoteAttachment {
   id: string;
   package_id: string;
@@ -63,6 +74,7 @@ export interface SupplierQuoteRequest {
   contact: { id: string; company: string; contact_name: string | null; email: string | null } | null;
   emails: SupplierQuoteEmail[];
   response_lines: { package_line_id: string; amount_ex_gst: number | null; note: string | null }[];
+  response_items: { package_item_id: string; amount_ex_gst: number | null; note: string | null }[];
 }
 
 export interface SupplierQuotePackage {
@@ -75,6 +87,7 @@ export interface SupplierQuotePackage {
   sent_at: string | null;
   created_at: string;
   lines: SupplierQuoteLine[];
+  items: SupplierQuoteItem[];
   requests: SupplierQuoteRequest[];
   attachments: SupplierQuoteAttachment[];
 }

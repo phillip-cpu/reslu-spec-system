@@ -59,12 +59,19 @@ const WHITE = "#FFFFFF";
 const LOGO_BLACK = path.join(process.cwd(), "public/reslu-logo.png");
 const LOGO_WHITE = path.join(process.cwd(), "public/reslu-logo-white.png");
 
-// A4 portrait = 210 x 297mm. react-pdf's mm unit is supported directly
-// in style values, so image/box sizes are specced in "mm" per the
-// layout mock (BUILD-SPEC.md §10: "~62mm tall" images).
-const IMAGE_HEIGHT = "62mm";
+// Compact row-layout budgeting. These values are deliberately slightly
+// conservative so long names still fit without react-pdf creating an
+// unplanned continuation page beneath the running header.
+const ITEM_ROW_BUDGET = 58;
+const SECTION_LABEL_BUDGET = 24;
+const PAGE_CONTENT_BUDGET = 600;
 const PAGE_MARGIN_H = 40; // pt
 const HEADER_BAND_HEIGHT = 92; // pt, cream band at top of every page
+
+// Fold this into the route's storage-cache key whenever the PDF layout
+// changes. Otherwise an unchanged item set can keep serving an older
+// cached render after a deployment.
+export const SCHEDULE_PDF_LAYOUT_VERSION = "compact-rows-v6";
 
 const styles = StyleSheet.create({
   // ── Cover page ──────────────────────────────────────────
@@ -93,6 +100,7 @@ const styles = StyleSheet.create({
   // ── Schedule pages ──────────────────────────────────────
   page: {
     backgroundColor: WHITE,
+    paddingTop: HEADER_BAND_HEIGHT + 24,
     paddingBottom: 48,
     paddingHorizontal: PAGE_MARGIN_H,
     fontSize: 9,
@@ -134,7 +142,9 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  contentTop: { marginTop: HEADER_BAND_HEIGHT + 24 },
+  pageContent: { flexShrink: 0 },
+  categorySection: { flexShrink: 0 },
+  itemRows: { flexShrink: 0 },
 
   // Category section
   sectionLabel: {
@@ -145,74 +155,100 @@ const styles = StyleSheet.create({
     color: SAND,
     borderBottomWidth: 1,
     borderBottomColor: NEARBLACK,
-    paddingBottom: 4,
-    marginTop: 18,
-    marginBottom: 12,
+    paddingBottom: 3,
+    marginTop: 8,
+    marginBottom: 2,
   },
 
-  // 2x2 item grid
-  grid: {
+  // Compact horizontal schedule row
+  itemRow: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-between",
-  },
-  card: {
-    width: "48%",
-    marginBottom: 22,
+    alignItems: "center",
+    height: ITEM_ROW_BUDGET,
+    flexShrink: 0,
+    paddingVertical: 5,
+    borderBottomWidth: 1,
+    borderBottomColor: LINE,
   },
   imageBox: {
-    width: "100%",
-    height: IMAGE_HEIGHT,
+    width: 48,
+    height: 48,
     backgroundColor: CREAM,
+    borderWidth: 1,
+    borderColor: LINE,
+    padding: 4,
+    overflow: "hidden",
+    flexShrink: 0,
     alignItems: "center",
     justifyContent: "center",
   },
-  image: { width: "100%", height: IMAGE_HEIGHT, objectFit: "cover" },
+  image: { width: "100%", height: "100%", objectFit: "contain" },
   noImageBox: {
-    width: "100%",
-    height: IMAGE_HEIGHT,
+    width: 48,
+    height: 48,
     backgroundColor: CREAM,
+    borderWidth: 1,
+    borderColor: LINE,
+    flexShrink: 0,
     alignItems: "center",
     justifyContent: "center",
   },
   noImage: {
-    fontSize: 7,
+    fontSize: 5.5,
     color: SAND,
     textTransform: "uppercase",
-    letterSpacing: 1,
+    letterSpacing: 0.6,
   },
-
+  itemDetails: {
+    flexGrow: 1,
+    flexBasis: 0,
+    marginLeft: 10,
+    paddingRight: 6,
+  },
   codeLocationLine: {
-    fontSize: 8,
+    fontSize: 6.5,
     fontFamily: "Helvetica-Bold",
-    letterSpacing: 1.5,
+    letterSpacing: 1.1,
     textTransform: "uppercase",
     color: SAND,
-    marginTop: 10,
-    marginBottom: 4,
+    marginBottom: 2,
   },
   itemName: {
-    fontSize: 13,
+    fontSize: 10,
     color: NEARBLACK,
-    marginBottom: 3,
+    lineHeight: 1.05,
+    marginBottom: 2,
   },
   specLine: {
-    fontSize: 9,
+    fontSize: 7.5,
     color: CHARCOAL,
-    lineHeight: 1.4,
+    lineHeight: 1.2,
+  },
+  itemMeta: {
+    width: 112,
+    marginLeft: 8,
+    alignItems: "flex-end",
+    justifyContent: "center",
+  },
+  dimensionsLine: {
+    fontSize: 7,
+    color: CHARCOAL,
+    textAlign: "right",
+    marginBottom: 2,
   },
   qtyLine: {
-    fontSize: 8,
+    fontSize: 6.5,
     fontFamily: "Helvetica-Bold",
     color: CHARCOAL,
-    marginTop: 3,
-    letterSpacing: 0.5,
+    letterSpacing: 0.4,
+    textAlign: "right",
   },
   docsLine: {
-    fontSize: 7,
+    fontSize: 6,
     color: SAND,
-    marginTop: 3,
+    marginTop: 2,
     fontStyle: "italic",
+    textAlign: "right",
   },
 
   // Footer
@@ -288,6 +324,61 @@ interface Props {
   scheduleSubtitle?: string; // e.g. "Wet Area Works" — optional phase label
 }
 
+interface PdfPageSection {
+  category: string;
+  items: PdfItem[];
+  continued: boolean;
+}
+
+/**
+ * Keep PDF pagination deterministic. Letting react-pdf split a long list can
+ * place a continued row at y=0, over the fixed header. A height budget lets us
+ * fill each page with roughly nine compact rows while accounting for category
+ * labels, so a short continuation section uses the space above the footer.
+ */
+function paginateGroups(groups: [string, PdfItem[]][]): PdfPageSection[][] {
+  const pages: PdfPageSection[][] = [];
+  let page: PdfPageSection[] = [];
+  let remainingHeight = PAGE_CONTENT_BUDGET;
+
+  for (const [category, categoryItems] of groups) {
+    let itemIndex = 0;
+    while (itemIndex < categoryItems.length) {
+      const minimumSectionHeight = SECTION_LABEL_BUDGET + ITEM_ROW_BUDGET;
+      if (page.length > 0 && remainingHeight < minimumSectionHeight) {
+        pages.push(page);
+        page = [];
+        remainingHeight = PAGE_CONTENT_BUDGET;
+      }
+
+      const availableRows = Math.max(
+        1,
+        Math.floor(
+          (remainingHeight - SECTION_LABEL_BUDGET) / ITEM_ROW_BUDGET
+        )
+      );
+      const take = Math.min(availableRows, categoryItems.length - itemIndex);
+      page.push({
+        category,
+        items: categoryItems.slice(itemIndex, itemIndex + take),
+        continued: itemIndex > 0,
+      });
+      itemIndex += take;
+      remainingHeight -=
+        SECTION_LABEL_BUDGET + take * ITEM_ROW_BUDGET;
+
+      if (itemIndex < categoryItems.length) {
+        pages.push(page);
+        page = [];
+        remainingHeight = PAGE_CONTENT_BUDGET;
+      }
+    }
+  }
+
+  if (page.length > 0) pages.push(page);
+  return pages.length > 0 ? pages : [[]];
+}
+
 export function SchedulePdf({
   project,
   items,
@@ -316,6 +407,7 @@ export function SchedulePdf({
     if (sa !== sb) return sa - sb;
     return a[0].localeCompare(b[0]);
   });
+  const schedulePages = paginateGroups(groups);
 
   const headerSub = scheduleSubtitle
     ? `FF&E Schedule  ·  ${scheduleSubtitle}`
@@ -345,104 +437,127 @@ export function SchedulePdf({
         </View>
       </Page>
 
-      {/* Schedule pages */}
-      <Page size="A4" style={styles.page}>
-        <View style={styles.headerBand} fixed>
-          <View>
-            <Text
-              style={{ ...styles.headerProjectName, fontFamily: displayFontFamily }}
-            >
-              {project.name}
-            </Text>
-            <Text style={styles.headerSub}>{headerSub}</Text>
-          </View>
-          <View style={styles.headerRightBlock}>
-            <Text style={styles.headerRightLine}>RESLU</Text>
-            <Text style={styles.headerRightLine}>{generatedAt}</Text>
-            {revisionLabel ? (
-              <Text style={styles.headerRightLine}>{revisionLabel}</Text>
-            ) : null}
-          </View>
-        </View>
-
-        <View style={styles.contentTop}>
-          {groups.map(([category, categoryItems]) => (
-            <View key={category}>
-              <Text style={styles.sectionLabel}>
-                {categoryName.get(category) ?? category}
+      {/* Schedule pages — explicitly paginated to keep continuation rows
+          clear of the running header and footer. */}
+      {schedulePages.map((pageSections, pageIndex) => (
+        <Page
+          key={`schedule-page-${pageIndex}`}
+          size="A4"
+          style={styles.page}
+        >
+          <View style={styles.headerBand} fixed>
+            <View>
+              <Text
+                style={{ ...styles.headerProjectName, fontFamily: displayFontFamily }}
+              >
+                {project.name}
               </Text>
-              <View style={styles.grid}>
-                {categoryItems.map((item) => {
-                  const codeLocation = joinPresent([
-                    item.item_code,
-                    item.location,
-                  ]);
-                  const specLine = joinPresent([
-                    item.brand,
-                    joinPresent([item.colour, item.material, item.finish], " · "),
-                  ]);
-                  const dims = dimensionsLine(item);
-                  const imgSrc = item.resolvedImageUrl;
-
-                  return (
-                    // wrap=false keeps a card's image+text together across a
-                    // page break; ~4/page (2x2) falls out of the width/height
-                    // budget naturally rather than being hard-paginated.
-                    <View key={item.id} style={styles.card} wrap={false}>
-                      {imgSrc ? (
-                        <View style={styles.imageBox}>
-                          {/* eslint-disable-next-line jsx-a11y/alt-text */}
-                          <Image src={imgSrc} style={styles.image} />
-                        </View>
-                      ) : (
-                        <View style={styles.noImageBox}>
-                          <Text style={styles.noImage}>No image</Text>
-                        </View>
-                      )}
-
-                      {codeLocation ? (
-                        <Text style={styles.codeLocationLine}>{codeLocation}</Text>
-                      ) : null}
-                      <Text
-                        style={{ ...styles.itemName, fontFamily: displayFontFamily }}
-                      >
-                        {item.name}
-                      </Text>
-                      {specLine ? (
-                        <Text style={styles.specLine}>{specLine}</Text>
-                      ) : null}
-                      {dims ? <Text style={styles.specLine}>{dims}</Text> : null}
-                      <Text style={styles.qtyLine}>
-                        {item.cost_scope === "trade_package"
-                          ? "INCLUDED IN TRADE PACKAGE"
-                          : `QTY ${trimNum(item.quantity)}`}
-                      </Text>
-                      {item.hasDocs ? (
-                        <Text style={styles.docsLine}>
-                          Docs: spec sheet available in portal
-                        </Text>
-                      ) : null}
-                    </View>
-                  );
-                })}
-              </View>
+              <Text style={styles.headerSub}>{headerSub}</Text>
             </View>
-          ))}
-        </View>
+            <View style={styles.headerRightBlock}>
+              <Text style={styles.headerRightLine}>RESLU</Text>
+              <Text style={styles.headerRightLine}>{generatedAt}</Text>
+              {revisionLabel ? (
+                <Text style={styles.headerRightLine}>{revisionLabel}</Text>
+              ) : null}
+            </View>
+          </View>
 
-        <View style={styles.footer} fixed>
-          <Text style={styles.footerLeft}>
-            {project.name}  /  FF&amp;E  /  {generatedAt}
-            {project.job_number ? `  /  Project No. ${project.job_number}` : ""}
-          </Text>
-          <Text
-            style={styles.footerRight}
-            render={({ pageNumber, totalPages }) =>
-              `RESLU  ·  Page ${pageNumber} of ${totalPages}`
-            }
-          />
-        </View>
-      </Page>
+          <View style={styles.pageContent}>
+            {pageSections.map(({ category, items: sectionItems, continued }) => (
+              <View
+                key={`${category}-${continued ? "continued" : "start"}`}
+                style={styles.categorySection}
+              >
+                <Text style={styles.sectionLabel}>
+                  {categoryName.get(category) ?? category}
+                  {continued ? "  ·  Continued" : ""}
+                </Text>
+                <View style={styles.itemRows}>
+                  {sectionItems.map((item) => {
+                    const codeLocation = joinPresent([
+                      item.item_code,
+                      item.location,
+                    ]);
+                    const specLine = joinPresent([
+                      item.brand,
+                      joinPresent(
+                        [item.colour, item.material, item.finish],
+                        " · "
+                      ),
+                    ]);
+                    const dims = dimensionsLine(item);
+                    const imgSrc = item.resolvedImageUrl;
+
+                    return (
+                      <View key={item.id} style={styles.itemRow} wrap={false}>
+                        {imgSrc ? (
+                          <View style={styles.imageBox}>
+                            {/* eslint-disable-next-line jsx-a11y/alt-text */}
+                            <Image src={imgSrc} style={styles.image} />
+                          </View>
+                        ) : (
+                          <View style={styles.noImageBox}>
+                            <Text style={styles.noImage}>No image</Text>
+                          </View>
+                        )}
+
+                        <View style={styles.itemDetails}>
+                          {codeLocation ? (
+                            <Text style={styles.codeLocationLine}>
+                              {codeLocation}
+                            </Text>
+                          ) : null}
+                          <Text
+                            style={{
+                              ...styles.itemName,
+                              fontFamily: displayFontFamily,
+                            }}
+                          >
+                            {item.name}
+                          </Text>
+                          {specLine ? (
+                            <Text style={styles.specLine}>{specLine}</Text>
+                          ) : null}
+                        </View>
+
+                        <View style={styles.itemMeta}>
+                          {dims ? (
+                            <Text style={styles.dimensionsLine}>{dims}</Text>
+                          ) : null}
+                          <Text style={styles.qtyLine}>
+                            {item.cost_scope === "trade_package"
+                              ? "INCLUDED IN TRADE PACKAGE"
+                              : `QTY ${trimNum(item.quantity)}`}
+                          </Text>
+                          {item.hasDocs ? (
+                            <Text style={styles.docsLine}>
+                              Docs available in portal
+                            </Text>
+                          ) : null}
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+              </View>
+            ))}
+          </View>
+
+          <View style={styles.footer} fixed>
+            <Text style={styles.footerLeft}>
+              {project.name}  /  FF&amp;E  /  {generatedAt}
+              {project.job_number ? `  /  Project No. ${project.job_number}` : ""}
+            </Text>
+            <Text
+              style={styles.footerRight}
+              render={({ pageNumber, totalPages }) =>
+                `RESLU  ·  Page ${pageNumber} of ${totalPages}`
+              }
+            />
+          </View>
+        </Page>
+      ))}
     </Document>
   );
 }

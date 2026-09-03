@@ -5,6 +5,7 @@ import { FinanceCashCurve } from "./FinanceCashCurve";
 import {
   adelaideToday,
   dollarsInputToMinor,
+  formatFinanceDate,
   formatMinorCurrency,
 } from "@/lib/finance/presentation";
 import type {
@@ -258,6 +259,107 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
     .filter((contribution) => contribution.state !== "actual_paid")
     .reduce((sum, contribution) => sum + contribution.amountMinor, 0);
   const constructionCostsIncluded = shadow?.source.construction_costs_included !== false;
+  const readinessItems = useMemo(() => {
+    const source = shadow?.source;
+    if (!source) return [];
+
+    const costSectionCount = source.cost_section_count ?? 0;
+    const scheduleLinkCount = source.schedule_link_count ?? 0;
+    const directItemCount = source.ffe_direct_item_count ?? 0;
+    const timedItemCount = source.ffe_timing_link_count ?? 0;
+    const quotedItemCount = source.ffe_quoted_item_count ?? 0;
+    const placeholderItemCount = source.ffe_placeholder_item_count ?? 0;
+    const unpricedItemCount = source.ffe_unpriced_item_count ?? 0;
+    const snapshotItemCount = source.estimate_ffe_direct_item_count ?? 0;
+    const phaseCount = source.schedule_phase_count ?? 0;
+    const datedPhaseCount = source.schedule_dated_phase_count ?? 0;
+    const latestScheduleDate = source.latest_schedule_date ?? null;
+    const scheduleIsCurrent = Boolean(
+      latestScheduleDate && latestScheduleDate >= asOfDate
+    );
+    const estimateReady = Boolean(source.estimate_version_id);
+    const ffeSnapshotReady =
+      directItemCount === 0 ||
+      (source.estimate_has_item_level_ffe === true && snapshotItemCount === directItemCount);
+
+    return [
+      {
+        key: "estimate",
+        label: "Saved estimate",
+        ready: estimateReady && ffeSnapshotReady,
+        detail: !estimateReady
+          ? "Save an estimate version so Finance has a frozen cost source."
+          : directItemCount === 0
+            ? `${source.estimate_label ?? "Saved version"} is available; there are no direct FF&E items to freeze.`
+            : ffeSnapshotReady
+              ? `${source.estimate_label ?? "Saved version"} includes all ${directItemCount} directly purchased FF&E items.`
+              : `${source.estimate_label ?? "Saved version"} contains ${snapshotItemCount} of ${directItemCount} current direct FF&E items. Save a fresh version after pricing is reviewed.`,
+        href: `/projects/${projectId}/estimate?view=versions`,
+        action: estimateReady && ffeSnapshotReady ? "View version" : "Open versions",
+      },
+      {
+        key: "pricing",
+        label: "FF&E pricing",
+        ready: unpricedItemCount === 0,
+        detail: directItemCount === 0
+          ? "There are no directly purchased FF&E items waiting for pricing."
+          : unpricedItemCount === 0
+            ? `${quotedItemCount} items use supplier/trade pricing${placeholderItemCount > 0 ? ` and ${placeholderItemCount} still use provisional retail pricing` : ""}.`
+            : `${unpricedItemCount} of ${directItemCount} directly purchased items have no price. ${quotedItemCount} use supplier/trade pricing and ${placeholderItemCount} use provisional retail pricing.`,
+        href: `/projects/${projectId}?tab=ffe&view=procurement`,
+        action: "Review pricing",
+      },
+      {
+        key: "sections",
+        label: "Trade cost timing",
+        ready: costSectionCount > 0 && scheduleLinkCount === costSectionCount,
+        detail: costSectionCount > 0
+          ? `${scheduleLinkCount} of ${costSectionCount} estimate sections have usable timing from a dated Timeline phase.`
+          : "No estimate cost sections are available to schedule yet.",
+        href: `/projects/${projectId}/timeline`,
+        action: "Open Timeline",
+      },
+      {
+        key: "ffe",
+        label: "FF&E order timing",
+        ready: directItemCount === 0 || timedItemCount === directItemCount,
+        detail: directItemCount > 0
+          ? `${timedItemCount} of ${directItemCount} directly purchased items have a forecast order date from lead time and trade context.`
+          : "There are no directly purchased FF&E items waiting for order timing.",
+        href: `/projects/${projectId}?tab=ffe&view=procurement`,
+        action: "Open FF&E",
+      },
+      {
+        key: "timeline",
+        label: "Timeline dates",
+        ready:
+          phaseCount > 0 &&
+          datedPhaseCount === phaseCount &&
+          scheduleIsCurrent,
+        detail: phaseCount === 0
+          ? "Create the build phases before relying on forecast dates."
+          : datedPhaseCount !== phaseCount
+            ? `${datedPhaseCount} of ${phaseCount} phases have both a start and finish date.`
+            : scheduleIsCurrent
+              ? `All ${phaseCount} phases are dated through ${formatFinanceDate(latestScheduleDate)}.`
+              : `All ${phaseCount} phases are dated, but the Timeline ends ${formatFinanceDate(latestScheduleDate)}—before this forecast's ${formatFinanceDate(asOfDate)} position.`,
+        href: `/projects/${projectId}/timeline`,
+        action: "Review dates",
+      },
+      {
+        key: "gate",
+        label: "Construction forecast",
+        ready: constructionCostsIncluded,
+        waiting: !constructionCostsIncluded,
+        detail: constructionCostsIncluded
+          ? "The job stage and construction contract setup allow build costs into cash flow."
+          : "Build costs stay safely excluded while this is a Design/Quote job without active construction contract setup.",
+        href: `/projects/${projectId}/finance`,
+        action: constructionCostsIncluded ? "View setup" : "Review when signed",
+      },
+    ];
+  }, [asOfDate, constructionCostsIncluded, projectId, shadow]);
+  const readyCount = readinessItems.filter((item) => item.ready).length;
 
   async function recalculate() {
     setPreviewing(true);
@@ -377,12 +479,57 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
                 </p>
               )}
             </div>
-            {constructionCostsIncluded && (
-              <a href={`/projects/${projectId}/timeline`} className="shrink-0 border border-nearblack px-4 py-2 text-center text-subhead text-nearblack hover:bg-nearblack hover:text-white">
-                Open Timeline
-              </a>
-            )}
+            <a href={`/projects/${projectId}/timeline`} className="shrink-0 border border-nearblack px-4 py-2 text-center text-subhead text-nearblack hover:bg-nearblack hover:text-white">
+              Open Timeline
+            </a>
           </section>
+          {readinessItems.length > 0 && (
+            <section className="border border-charcoal/20 bg-offwhite" aria-labelledby="forecast-readiness-heading">
+              <div className="flex flex-col gap-3 border-b border-charcoal/20 p-5 sm:flex-row sm:items-end sm:justify-between md:p-7">
+                <div>
+                  <p className="label-caps">Forecast readiness</p>
+                  <h2 id="forecast-readiness-heading" className="mt-2 font-display text-section text-nearblack">
+                    Make the future build forecast reliable
+                  </h2>
+                  <p className="mt-2 max-w-3xl text-body text-charcoal/55">
+                    These checks prepare Estimate, FF&amp;E and Timeline to feed the same cash forecast. They do not add build costs while the job remains in Design.
+                  </p>
+                </div>
+                <p className="shrink-0 text-subhead text-charcoal/60">
+                  {readyCount} of {readinessItems.length} ready
+                </p>
+              </div>
+              <ol className="divide-y divide-charcoal/10">
+                {readinessItems.map((item) => (
+                  <li key={item.key} className="grid gap-3 p-5 md:grid-cols-[10rem_minmax(0,1fr)_auto] md:items-center md:px-7">
+                    <div>
+                      <span className={`inline-block border px-2 py-1 text-[8px] font-semibold uppercase tracking-[0.13em] ${item.ready ? "border-[#4c6b4f]/45 bg-[#4c6b4f]/10 text-[#304b33]" : item.waiting ? "border-charcoal/20 bg-cream text-charcoal/55" : "border-sand/60 bg-sand/10 text-[#76570a]"}`}>
+                        {item.ready ? "Ready" : item.waiting ? "Waiting" : "Needs setup"}
+                      </span>
+                      <p className="mt-2 text-subhead text-nearblack">{item.label}</p>
+                    </div>
+                    <p className="text-body text-charcoal/60">{item.detail}</p>
+                    {item.key === "gate" ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab("setup");
+                          window.scrollTo({ top: 0, behavior: "smooth" });
+                        }}
+                        className="min-h-11 shrink-0 border border-charcoal/25 px-4 py-3 text-center text-caption text-nearblack hover:border-nearblack hover:bg-nearblack hover:text-white"
+                      >
+                        {item.action}
+                      </button>
+                    ) : (
+                      <a href={item.href} className="min-h-11 shrink-0 border border-charcoal/25 px-4 py-3 text-center text-caption text-nearblack hover:border-nearblack hover:bg-nearblack hover:text-white">
+                        {item.action}
+                      </a>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {[
               [constructionCostsIncluded ? "Cost exposure" : "Build costs", constructionCostsIncluded ? formatMinorCurrency(totalExposure) : "Excluded", constructionCostsIncluded ? `${formatMinorCurrency(unknownOutflow)} cost timing unknown` : "Not charged against the design fee"],

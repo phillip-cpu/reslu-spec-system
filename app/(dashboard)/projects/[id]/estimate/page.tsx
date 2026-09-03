@@ -26,7 +26,7 @@ export default async function EstimatePage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ quote?: string }>;
+  searchParams: Promise<{ quote?: string; view?: string }>;
 }) {
   const { id } = await params;
   const query = await searchParams;
@@ -71,7 +71,10 @@ export default async function EstimatePage({
       <Header title={project.name} subtitle={`${project.client_name} · Estimate`} titleHref={`/projects/${id}`} />
       <ProjectTabs projectId={id} active="estimate" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
       <main className="flex-1 px-8 py-8">
-        <EstimateWorkspace projectId={id} initialView={query.quote ? "quotes" : "estimate"} />
+        <EstimateWorkspace
+          projectId={id}
+          initialView={query.view === "versions" ? "versions" : query.quote ? "quotes" : "estimate"}
+        />
       </main>
     </>
   );

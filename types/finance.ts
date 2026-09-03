@@ -364,8 +364,17 @@ export interface FinanceShadowProjectionResponse {
     estimate_label: string | null;
     timing_override_count: number;
     schedule_link_count?: number;
+    cost_section_count?: number;
+    schedule_phase_count?: number;
+    schedule_dated_phase_count?: number;
+    latest_schedule_date?: string | null;
     ffe_direct_item_count?: number;
     ffe_timing_link_count?: number;
+    ffe_quoted_item_count?: number;
+    ffe_placeholder_item_count?: number;
+    ffe_unpriced_item_count?: number;
+    estimate_has_item_level_ffe?: boolean;
+    estimate_ffe_direct_item_count?: number;
     client_claim_count: number;
     construction_costs_included?: boolean;
     opening_cash_source: "not_configured" | "request_preview" | "xero_bank_summary";

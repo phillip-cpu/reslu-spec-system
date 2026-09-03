@@ -77,7 +77,6 @@ export async function GET(
     componentsResult,
     measurementsResult,
     invoicesResult,
-    costLinesResult,
     estimateResult,
   ] = await Promise.all([
     supabase
@@ -100,16 +99,11 @@ export async function GET(
       .select("id,invoice_allocations(match_type,match_id,amount_ex_gst)")
       .eq("project_id", projectId)
       .eq("status", "approved"),
-    supabase
-      .from("cost_lines")
-      .select("id,item_id")
-      .eq("project_id", projectId)
-      .not("item_id", "is", null),
     estimateQuery,
   ]);
 
   const readError = itemsResult.error ?? componentsResult.error ??
-    measurementsResult.error ?? invoicesResult.error ?? costLinesResult.error ?? estimateResult.error;
+    measurementsResult.error ?? invoicesResult.error ?? estimateResult.error;
   if (readError) return NextResponse.json({ error: readError.message }, { status: 500 });
 
   const estimate = ((estimateResult.data ?? [])[0] ?? null) as EstimateVersionRow | null;
@@ -135,9 +129,6 @@ export async function GET(
       (measurementsResult.data ?? []).map((measurement) => [measurement.id, measurement.value])
     ),
     approvedAllocations,
-    costLineItemIds: Object.fromEntries(
-      (costLinesResult.data ?? []).map((line) => [line.id, line.item_id])
-    ),
     snapshotItems,
   });
 

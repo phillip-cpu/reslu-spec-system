@@ -11,6 +11,7 @@ import { isIsoDate } from "@/lib/finance/readiness";
 import { buildSectionForecastDates } from "@/lib/finance/schedule-cost-timing";
 import { loadProjectFfeForecastTiming } from "@/lib/finance/ffe-timing-server";
 import { includesConstructionCosts } from "@/lib/finance/construction-cost-eligibility";
+import { summarizeForecastSchedule } from "@/lib/finance/forecast-readiness";
 import {
   reconcileSupplierInvoiceActuals,
   type SupplierCashInvoice,
@@ -175,6 +176,11 @@ export async function POST(
 
   try {
     const ffeTiming = await loadProjectFfeForecastTiming(supabase, [projectId]);
+    const estimateSnapshot = (estimate?.snapshot ?? null) as FinanceEstimateSnapshot | null;
+    const estimateFfeItems = Array.isArray(estimateSnapshot?.ffe_items)
+      ? estimateSnapshot.ffe_items
+      : null;
+    const scheduleSummary = summarizeForecastSchedule(schedulePhases ?? []);
     const sectionDates = buildSectionForecastDates({
       sections: costSections ?? [],
       phases: schedulePhases ?? [],
@@ -183,7 +189,7 @@ export async function POST(
       ? buildEstimatePlanContributions({
           projectId,
           estimateVersionId: estimate.id,
-          snapshot: estimate.snapshot as FinanceEstimateSnapshot,
+          snapshot: estimateSnapshot as FinanceEstimateSnapshot,
           sectionDates,
           itemTimings: ffeTiming.timings,
           timingOverrides,
@@ -223,8 +229,18 @@ export async function POST(
         estimate_label: estimate?.label ?? null,
         timing_override_count: Object.keys(timingOverrides).length,
         schedule_link_count: Object.keys(sectionDates).length,
+        cost_section_count: costSections?.length ?? 0,
+        schedule_phase_count: scheduleSummary.phaseCount,
+        schedule_dated_phase_count: scheduleSummary.datedPhaseCount,
+        latest_schedule_date: scheduleSummary.latestScheduleDate,
         ffe_direct_item_count: ffeTiming.directItemCount,
         ffe_timing_link_count: ffeTiming.datedItemCount,
+        ffe_quoted_item_count: ffeTiming.quotedItemCount,
+        ffe_placeholder_item_count: ffeTiming.placeholderItemCount,
+        ffe_unpriced_item_count: ffeTiming.unpricedItemCount,
+        estimate_has_item_level_ffe: estimateFfeItems !== null,
+        estimate_ffe_direct_item_count:
+          estimateFfeItems?.filter((item) => item.cost_scope !== "trade_package").length ?? 0,
         client_claim_count: clientClaimContributions.length,
         construction_costs_included: constructionCostsIncluded,
         reconciled_supplier_invoice_count: supplierReconciliation.includedInvoices,

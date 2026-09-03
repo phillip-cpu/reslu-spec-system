@@ -5,7 +5,10 @@ import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { ensureStoredImagesForItems } from "@/lib/images";
 import { ASSET_BUCKET } from "@/lib/storage";
 import { reportError } from "@/lib/report-error";
-import { SchedulePdf } from "@/components/pdf/SchedulePdf";
+import {
+  SchedulePdf,
+  SCHEDULE_PDF_LAYOUT_VERSION,
+} from "@/components/pdf/SchedulePdf";
 import { parseCategoriesParam } from "@/lib/export-presets";
 import { buildDocBundle, type BundleItemDoc } from "@/lib/pdf-bundle";
 import type { Category, Item, ItemFile } from "@/types";
@@ -211,7 +214,7 @@ export async function GET(
     }
   }
 
-  const cacheKeyInput = `${id}|${maxUpdatedAt}|${itemCount ?? 0}|${revisionLabel ?? ""}|${scheduleSubtitle ?? ""}|${keyProject?.job_number ?? ""}|cats:${uniqueSelectedCategories.sort().join(",")}|docs:${includeDocs ? "1" : "0"}|${docsDigest}`;
+  const cacheKeyInput = `${id}|layout:${SCHEDULE_PDF_LAYOUT_VERSION}|${maxUpdatedAt}|${itemCount ?? 0}|${revisionLabel ?? ""}|${scheduleSubtitle ?? ""}|${keyProject?.job_number ?? ""}|cats:${uniqueSelectedCategories.sort().join(",")}|docs:${includeDocs ? "1" : "0"}|${docsDigest}`;
   const contentHash = createHash("sha256").update(cacheKeyInput).digest("hex").slice(0, 32);
   const cachePath = `${PDF_CACHE_PREFIX}/${id}/${contentHash}.pdf`;
 

@@ -14,7 +14,8 @@
  * and *what* to send (the portal-action digest).
  */
 
-const SENDER = "RESLU <aria@reslu.com.au>";
+export const TEAM_MAILBOX = "aria@reslu.com.au";
+const SENDER = `RESLU <${TEAM_MAILBOX}>`;
 
 export interface SendResult {
   skipped: boolean;
@@ -73,18 +74,35 @@ function encodeHeader(value: string): string {
   return `=?UTF-8?B?${Buffer.from(value, "utf8").toString("base64")}?=`;
 }
 
-function buildRawMessage(input: {
+export interface EmailThreadTarget {
+  threadId: string;
+  replyToProviderMessageId: string;
+}
+
+interface ReplyHeaders {
+  inReplyTo: string;
+  references: string;
+}
+
+export function buildRawMessage(input: {
   to: string[];
   cc: string[];
   subject: string;
   body: string;
   attachments: EmailAttachment[];
+  replyHeaders?: ReplyHeaders;
 }): string {
   const headers = [
     `From: ${SENDER}`,
     `To: ${input.to.join(", ")}`,
     ...(input.cc.length ? [`Cc: ${input.cc.join(", ")}`] : []),
     `Subject: ${encodeHeader(input.subject)}`,
+    ...(input.replyHeaders
+      ? [
+          `In-Reply-To: ${input.replyHeaders.inReplyTo.replace(/[\r\n]/g, "")}`,
+          `References: ${input.replyHeaders.references.replace(/[\r\n]/g, " ")}`,
+        ]
+      : []),
     "MIME-Version: 1.0",
   ];
   if (input.attachments.length === 0) {
@@ -116,6 +134,47 @@ function buildRawMessage(input: {
   return parts.join("\r\n");
 }
 
+export function buildGmailMessageResource(input: {
+  rawMessage: string;
+  threadId?: string;
+}): { raw: string; threadId?: string } {
+  return {
+    raw: toBase64Url(input.rawMessage),
+    ...(input.threadId ? { threadId: input.threadId } : {}),
+  };
+}
+
+async function loadReplyMetadata(
+  accessToken: string,
+  providerMessageId: string
+): Promise<{ subject: string | null; replyHeaders: ReplyHeaders }> {
+  const url = new URL(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(providerMessageId)}`
+  );
+  url.searchParams.set("format", "metadata");
+  for (const header of ["Message-ID", "References", "Subject"]) {
+    url.searchParams.append("metadataHeaders", header);
+  }
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error(`Could not load Gmail thread metadata (${response.status})`);
+  const payload = await response.json() as { payload?: { headers?: { name?: string; value?: string }[] } };
+  const headers = payload.payload?.headers ?? [];
+  const value = (name: string) => headers.find((header) => header.name?.toLowerCase() === name.toLowerCase())?.value?.trim() || null;
+  const messageId = value("Message-ID");
+  if (!messageId) throw new Error("The original Gmail message has no RFC Message-ID header");
+  const priorReferences = value("References");
+  return {
+    subject: value("Subject"),
+    replyHeaders: {
+      inReplyTo: messageId,
+      references: [priorReferences, messageId].filter(Boolean).join(" "),
+    },
+  };
+}
+
 /**
  * Sends a plain-text email from the shared RESLU/Aria mailbox. Never
  * throws for the "not configured" case — returns { skipped: true }
@@ -131,12 +190,14 @@ export async function sendTeamEmail({
   subject,
   body,
   attachments = [],
+  thread,
 }: {
   to: string[];
   cc?: string[];
   subject: string;
   body: string;
   attachments?: EmailAttachment[];
+  thread?: EmailThreadTarget;
 }): Promise<SendResult> {
   const c = creds();
   if (!c) return { skipped: true, reason: "Gmail credentials not configured" };
@@ -148,7 +209,20 @@ export async function sendTeamEmail({
   if (totalBytes > 20 * 1024 * 1024) {
     throw new Error("Email attachments exceed the 20 MB request limit");
   }
-  const raw = toBase64Url(buildRawMessage({ to, cc, subject, body, attachments }));
+  const reply = thread
+    ? await loadReplyMetadata(accessToken, thread.replyToProviderMessageId)
+    : null;
+  const resource = buildGmailMessageResource({
+    rawMessage: buildRawMessage({
+      to,
+      cc,
+      subject: reply?.subject ?? subject,
+      body,
+      attachments,
+      ...(reply ? { replyHeaders: reply.replyHeaders } : {}),
+    }),
+    threadId: thread?.threadId,
+  });
 
   const res = await fetch(
     "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
@@ -158,7 +232,7 @@ export async function sendTeamEmail({
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ raw }),
+      body: JSON.stringify(resource),
       signal: AbortSignal.timeout(10_000),
     }
   );

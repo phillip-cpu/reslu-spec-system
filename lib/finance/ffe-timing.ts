@@ -22,6 +22,34 @@ export interface FfeForecastTiming {
   sourceKind: "visit" | "board_task_booking" | "board_task_requirement" | null;
 }
 
+export interface FfePricingInput {
+  cost_scope?: "direct" | "trade_package";
+  price_trade?: number | null;
+  price_rrp?: number | null;
+}
+
+export interface FfePricingSummary {
+  directItemCount: number;
+  quotedItemCount: number;
+  placeholderItemCount: number;
+  unpricedItemCount: number;
+}
+
+/** Mirrors the Estimate price cascade while keeping each confidence band visible. */
+export function summarizeFfePricing(items: FfePricingInput[]): FfePricingSummary {
+  const directItems = items.filter((item) => item.cost_scope !== "trade_package");
+  return {
+    directItemCount: directItems.length,
+    quotedItemCount: directItems.filter((item) => item.price_trade != null).length,
+    placeholderItemCount: directItems.filter(
+      (item) => item.price_trade == null && item.price_rrp != null
+    ).length,
+    unpricedItemCount: directItems.filter(
+      (item) => item.price_trade == null && item.price_rrp == null
+    ).length,
+  };
+}
+
 /**
  * Turns the shared procurement engine into Finance timing. Amounts never come
  * from these live rows: they remain frozen in the selected estimate version.

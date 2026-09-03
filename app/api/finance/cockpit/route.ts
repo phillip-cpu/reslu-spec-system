@@ -381,6 +381,9 @@ export async function GET(request: NextRequest) {
     timings: {},
     directItemCount: 0,
     datedItemCount: 0,
+    quotedItemCount: 0,
+    placeholderItemCount: 0,
+    unpricedItemCount: 0,
   };
   if (companyProjectIds.length > 0) {
     try {

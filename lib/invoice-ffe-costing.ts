@@ -123,7 +123,6 @@ export function buildInvoiceFfeCostingRows(input: {
   components: InvoiceFfeCostingComponentInput[];
   measurements?: Record<string, number | string>;
   approvedAllocations?: InvoiceFfeCostingAllocationInput[];
-  costLineItemIds?: Record<string, string | null>;
   snapshotItems?: InvoiceFfeCostingSnapshotItemInput[];
 }): InvoiceFfeCostingRow[] {
   const directItems = input.items.filter((item) => item.cost_scope !== "trade_package");
@@ -188,14 +187,11 @@ export function buildInvoiceFfeCostingRows(input: {
       addInvoice(invoiceIdsByItem, allocation.match_id, allocation.invoice_id);
       continue;
     }
-    if (allocation.match_type === "cost_line") {
-      const itemId = input.costLineItemIds?.[allocation.match_id] ?? null;
-      if (itemId && directItemIds.has(itemId)) {
-        addAmount(directActualByItem, itemId, amount);
-        addInvoice(invoiceIdsByItem, itemId, allocation.invoice_id);
-      }
-      continue;
-    }
+    // Estimate lines linked to an item are explicitly labour/install only;
+    // their product cost is already carried by the FF&E schedule. A bill
+    // posted to that estimate line therefore belongs to the trade-cost lane
+    // and must not also reduce the FF&E product allowance.
+    if (allocation.match_type === "cost_line") continue;
     if (allocation.match_type === "item_component") {
       // A previously invoiced component may later be archived. It no longer
       // appears as a selectable row, but its actual must still reduce the

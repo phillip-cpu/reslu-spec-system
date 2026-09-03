@@ -21,15 +21,16 @@ export async function loadSupplierQuotePackages(
   const packageIds = (packageRows ?? []).map((row) => row.id);
   if (packageIds.length === 0) return [];
 
-  const [{ data: lineRows }, { data: requestRows }, { data: attachmentRows }] = await Promise.all([
+  const [{ data: lineRows }, { data: itemRows }, { data: requestRows }, { data: attachmentRows }] = await Promise.all([
     supabase.from("supplier_quote_package_lines").select("*").in("package_id", packageIds).order("sort"),
+    supabase.from("supplier_quote_package_items").select("*").in("package_id", packageIds).order("sort"),
     supabase.from("supplier_quote_requests").select("*").in("package_id", packageIds).order("created_at"),
     supabase.from("supplier_quote_attachments").select("*").in("package_id", packageIds).order("sort"),
   ]);
 
   const contactIds = [...new Set((requestRows ?? []).map((row) => row.contact_id).filter(Boolean))] as string[];
   const requestIds = (requestRows ?? []).map((row) => row.id);
-  const [{ data: contacts }, { data: emailLinks }, { data: responseLines }] = await Promise.all([
+  const [{ data: contacts }, { data: emailLinks }, { data: responseLines }, { data: responseItems }] = await Promise.all([
     contactIds.length
       ? supabase.from("contacts").select("id,company,contact_name,email").in("id", contactIds)
       : Promise.resolve({ data: [] as { id: string; company: string; contact_name: string | null; email: string | null }[] }),
@@ -39,6 +40,9 @@ export async function loadSupplierQuotePackages(
     requestIds.length
       ? supabase.from("supplier_quote_response_lines").select("request_id,package_line_id,amount_ex_gst,note").in("request_id", requestIds)
       : Promise.resolve({ data: [] as { request_id: string; package_line_id: string; amount_ex_gst: number | null; note: string | null }[] }),
+    requestIds.length
+      ? supabase.from("supplier_quote_response_items").select("request_id,package_item_id,amount_ex_gst,note").in("request_id", requestIds)
+      : Promise.resolve({ data: [] as { request_id: string; package_item_id: string; amount_ex_gst: number | null; note: string | null }[] }),
   ]);
 
   const emailIds = [...new Set((emailLinks ?? []).map((row) => row.email_id))];
@@ -75,6 +79,12 @@ export async function loadSupplierQuotePackages(
     list.push({ package_line_id: row.package_line_id, amount_ex_gst: row.amount_ex_gst, note: row.note });
     responseLinesByRequest.set(row.request_id, list);
   }
+  const responseItemsByRequest = new Map<string, { package_item_id: string; amount_ex_gst: number | null; note: string | null }[]>();
+  for (const row of responseItems ?? []) {
+    const list = responseItemsByRequest.get(row.request_id) ?? [];
+    list.push({ package_item_id: row.package_item_id, amount_ex_gst: row.amount_ex_gst, note: row.note });
+    responseItemsByRequest.set(row.request_id, list);
+  }
   const requestByPackage = new Map<string, SupplierQuoteRequest[]>();
   for (const row of requestRows ?? []) {
     const request = {
@@ -82,6 +92,7 @@ export async function loadSupplierQuotePackages(
       contact: row.contact_id ? contactById.get(row.contact_id) ?? null : null,
       emails: (emailIdsByRequest.get(row.id) ?? []).map((id) => emailById.get(id)).filter(Boolean),
       response_lines: responseLinesByRequest.get(row.id) ?? [],
+      response_items: responseItemsByRequest.get(row.id) ?? [],
     } as SupplierQuoteRequest;
     const list = requestByPackage.get(row.package_id) ?? [];
     list.push(request);
@@ -93,6 +104,12 @@ export async function loadSupplierQuotePackages(
     const list = linesByPackage.get(row.package_id) ?? [];
     list.push(row);
     linesByPackage.set(row.package_id, list);
+  }
+  const itemsByPackage = new Map<string, typeof itemRows>();
+  for (const row of itemRows ?? []) {
+    const list = itemsByPackage.get(row.package_id) ?? [];
+    list.push(row);
+    itemsByPackage.set(row.package_id, list);
   }
 
   const attachmentsByPackage = new Map<string, SupplierQuoteAttachment[]>();
@@ -107,6 +124,7 @@ export async function loadSupplierQuotePackages(
   return (packageRows ?? []).map((row) => ({
     ...row,
     lines: linesByPackage.get(row.id) ?? [],
+    items: itemsByPackage.get(row.id) ?? [],
     requests: requestByPackage.get(row.id) ?? [],
     attachments: attachmentsByPackage.get(row.id) ?? [],
   })) as SupplierQuotePackage[];

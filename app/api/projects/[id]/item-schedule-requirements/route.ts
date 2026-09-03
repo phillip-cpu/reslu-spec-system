@@ -188,4 +188,3 @@ export async function DELETE(
   if (!data) return NextResponse.json({ error: "Requirement not found" }, { status: 404 });
   return responseForProject(supabase, projectId);
 }
-
