@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { computeInsuranceStatus } from "@/lib/insurance";
+import { isValidStoredBirthday } from "@/lib/birthdays";
 import type { PatchContactInput } from "@/types";
 
 const EDITABLE_FIELDS = new Set([
@@ -12,6 +13,7 @@ const EDITABLE_FIELDS = new Set([
   "specialty",
   "category",
   "notes",
+  "birthday",
   // Quick items round (6 July 2026), item 1 — "Certificate needed"
   // checkbox, components/contacts/ContactsBrowser.tsx. Boolean, so the
   // generic trim-empty-string-to-null loop below is harmless for it
@@ -110,6 +112,9 @@ export async function PATCH(
 
   if ("company" in update && !update.company) {
     return NextResponse.json({ error: "company cannot be empty" }, { status: 400 });
+  }
+  if ("birthday" in update && !isValidStoredBirthday(update.birthday as string | null)) {
+    return NextResponse.json({ error: "birthday must be a real month/day in MM-DD format" }, { status: 400 });
   }
   if (Object.keys(update).length === 0) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });

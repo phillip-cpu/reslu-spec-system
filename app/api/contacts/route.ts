@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { computeInsuranceStatus } from "@/lib/insurance";
+import { isValidStoredBirthday } from "@/lib/birthdays";
 import type { CreateContactInput } from "@/types";
 
 /**
@@ -149,6 +150,9 @@ export async function POST(request: NextRequest) {
   if (!body.company?.trim()) {
     return NextResponse.json({ error: "company is required" }, { status: 400 });
   }
+  if (!isValidStoredBirthday(body.birthday)) {
+    return NextResponse.json({ error: "birthday must be a real month/day in MM-DD format" }, { status: 400 });
+  }
 
   const insert = {
     company: body.company.trim(),
@@ -159,6 +163,7 @@ export async function POST(request: NextRequest) {
     specialty: body.specialty?.trim() || null,
     category: body.category?.trim() || null,
     notes: body.notes?.trim() || null,
+    birthday: body.birthday || null,
     created_by: user.id,
   };
 

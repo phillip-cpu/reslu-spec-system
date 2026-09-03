@@ -13,6 +13,7 @@
 // ============================================================
 
 import type { DailyBriefSource } from "@/lib/daily-brief";
+import type { MorningBriefDeliveryResult } from "@/lib/morning-brief-notify";
 
 export type { DailyBriefSource };
 
@@ -57,6 +58,13 @@ export interface DailyBriefItemWithMeta extends DailyBriefItem {
   project: { id: string; name: string; alias: string | null } | null;
   carried_over_label: string | null;
   converted_label: string | null;
+  /** One-based action order shared by the in-app list, email and morning push. */
+  morning_rank: number;
+  /** Specific verb shown on the deep-link action, e.g. "Book trade". */
+  action_label: string;
+  /** The focused top-three list shown before the remaining items. */
+  is_first_up: boolean;
+  carried_over_days: number;
 }
 
 /** GET /api/brief response — active open items only; completed rows stay stored but are hidden from My Work. */
@@ -102,6 +110,7 @@ export interface GenerateBriefResponse {
     skipped?: string;
     item_count?: number;
   };
+  notification?: MorningBriefDeliveryResult;
 }
 
 /** Minimal project-picker option for the "Add to project ->" popover — same lean shape as every other project picker in this codebase (e.g. components/estimate/ContactLinkPicker.tsx's own option shape). */

@@ -4,6 +4,9 @@ import { getUserRole } from "@/lib/auth";
 import { generateDailyBrief } from "@/lib/daily-brief-generate";
 import { buildBriefEmailContent, type BriefEmailItem } from "@/lib/daily-brief";
 import { sendTeamEmail, isGmailConfigured } from "@/lib/gmail/send";
+import { adelaideHour, isMorningBriefDeliveryHour, rankMorningBriefItems } from "@/lib/morning-brief";
+import { notifyMorningBrief } from "@/lib/morning-brief-notify";
+import { recordJobRun } from "@/lib/job-runs";
 import type { GenerateBriefResponse } from "@/types/round-daily-brief";
 
 export const runtime = "nodejs";
@@ -32,18 +35,14 @@ function appUrl(): string {
  * BUILD-SPEC.md "Daily Brief": "Generation: morning cron (route w/
  * CRON_SECRET pattern; CC adds the vercel.json cron line — documented,
  * file protected) aggregates the existing attention feeds ... into
- * brief items." + "Email: 7am cron (same or second schedule) sends the
- * glance email."
+ * brief items." The production cron also requests one morning push per
+ * admin; the optional glance email remains available separately.
  *
- * ONE route serves both jobs via a query flag rather than two separate
- * files, since "generate, then optionally email what's now open" is a
- * single linear sequence with no reason to split into two HTTP round-
- * trips — `?send=1` runs the email step immediately after generating
- * (see this task's final report for the exact vercel.json cron line,
- * e.g. `{"path": "/api/brief/generate?send=1", "schedule": "30 21 * * *"}`
- * — 7:00am ACST during winter; see that report's own DST caveat).
- * Calling this route with NO `send` param (e.g. a manual "regenerate"
- * trigger from the panel, or testing) generates without emailing.
+ * Query flags keep the side effects explicit: `?notify=1` creates the
+ * private per-admin push and `?send=1` sends the email. Vercel calls the
+ * notification path at both UTC offsets that can be 7am in Adelaide; the
+ * local-hour gate below accepts exactly one, so DST cannot shift delivery.
+ * Calling the route with neither flag only regenerates the list.
  *
  * Auth: dual-path, mirroring app/api/client-events/remind's/
  * app/api/digest/flush's exact CRON_SECRET-or-session shape — but
@@ -56,6 +55,7 @@ function appUrl(): string {
  * naturally as a POST.
  */
 async function handle(request: NextRequest) {
+  const startedAt = new Date();
   const cronSecret = process.env.CRON_SECRET;
   const authHeader = request.headers.get("authorization");
   const isCronCall = !!cronSecret && authHeader === `Bearer ${cronSecret}`;
@@ -75,12 +75,31 @@ async function handle(request: NextRequest) {
   }
 
   const supabase = createServiceRoleClient();
-  const sendEmail = new URL(request.url).searchParams.get("send") === "1";
+  const searchParams = new URL(request.url).searchParams;
+  const sendEmail = searchParams.get("send") === "1";
+  const sendNotification = searchParams.get("notify") === "1";
+
+  // Vercel schedules both UTC offsets that can map to 7am in Adelaide.
+  // Only one is the real delivery slot on a given date; this gate makes the
+  // schedule daylight-saving-safe without seasonal config changes.
+  if (isCronCall && !isMorningBriefDeliveryHour(startedAt)) {
+    return NextResponse.json({
+      skipped: `Adelaide ${adelaideHour(startedAt)}:00 — not the 7am Morning Brief slot`,
+    });
+  }
 
   let result;
   try {
-    result = await generateDailyBrief(supabase);
+    result = await generateDailyBrief(supabase, startedAt);
   } catch (err) {
+    if (isCronCall) {
+      await recordJobRun(supabase, {
+        jobKey: "brief_generate",
+        status: "failed",
+        startedAt,
+        error: err instanceof Error ? err.message : "Daily Brief generation failed",
+      });
+    }
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Daily Brief generation failed" },
       { status: 500 }
@@ -91,6 +110,38 @@ async function handle(request: NextRequest) {
 
   if (sendEmail) {
     body.email = await sendBriefEmailIfNeeded(supabase, result.brief_date);
+  }
+
+  let deliveryDegraded = false;
+  if (sendNotification) {
+    try {
+      body.notification = await notifyMorningBrief(supabase, result.brief_date, startedAt);
+      deliveryDegraded =
+        body.notification.recipient_failures > 0 ||
+        body.notification.push.failed > 0 ||
+        (body.notification.notifications_created > 0 &&
+          (!body.notification.push.configured || body.notification.push.attempted === 0));
+    } catch (err) {
+      deliveryDegraded = true;
+      body.notification = {
+        notifications_created: 0,
+        recipients_deduped: 0,
+        recipient_failures: 1,
+        item_count: 0,
+        push: { configured: false, attempted: 0, delivered: 0, stale: 0, failed: 0 },
+        skipped: err instanceof Error ? err.message : "Morning Brief notification failed",
+      };
+    }
+  }
+
+  if (isCronCall) {
+    await recordJobRun(supabase, {
+      jobKey: "brief_generate",
+      status: deliveryDegraded ? "degraded" : "succeeded",
+      startedAt,
+      summary: { ...body },
+      error: deliveryDegraded ? body.notification?.skipped ?? "Morning Brief push delivery was incomplete" : null,
+    });
   }
 
   return NextResponse.json(body);
@@ -121,11 +172,12 @@ async function sendBriefEmailIfNeeded(
 
   const { data: openRows } = await supabase
     .from("daily_brief_items")
-    .select("source,title,brief_date")
+    .select("id,source,title,brief_date,created_at")
     .eq("status", "open")
-    .order("brief_date", { ascending: true })
     .order("created_at", { ascending: true });
-  const openItems = (openRows ?? []) as BriefEmailItem[];
+  const openItems = rankMorningBriefItems(
+    (openRows ?? []) as Array<BriefEmailItem & { id: string; brief_date: string; created_at: string }>
+  );
 
   if (openItems.length === 0) {
     return { sent: false, skipped: "No open brief items", item_count: 0 };

@@ -54,6 +54,8 @@ const SOURCE_LABEL: Record<DailyBriefSource, string> = {
   // — see that file's own comment on the same gap, fixed alongside
   // this one).
   proposal: "Proposal",
+  calendar: "Calendar",
+  birthday: "Birthday",
 };
 
 interface ProjectOption {
@@ -144,8 +146,17 @@ export function DailyBrief() {
       setData({
         ...data,
         items: [
-          { ...item, project, carried_over_label: null, converted_label: null },
           ...data.items,
+          {
+            ...item,
+            project,
+            carried_over_label: null,
+            converted_label: null,
+            morning_rank: data.items.length + 1,
+            action_label: "Action",
+            is_first_up: false,
+            carried_over_days: 0,
+          },
         ],
         total_count: data.total_count + 1,
       });
@@ -182,9 +193,14 @@ export function DailyBrief() {
   // producing a hydration warning even though the underlying data was fine.
   const briefDate = data ? new Date(data.refreshed_at) : null;
   const activeItems = data?.items.filter((item) => item.status === "open") ?? [];
+  const agendaItems = activeItems.filter((item) => item.source === "calendar" || item.source === "birthday");
+  const actionItems = activeItems.filter((item) => item.source !== "calendar" && item.source !== "birthday");
+  const firstUpItems = actionItems.filter((item) => item.is_first_up);
+  const remainingItems = actionItems.filter((item) => !item.is_first_up);
+  const carriedCount = activeItems.filter((item) => item.carried_over_days > 0).length;
 
   return (
-    <section className="border border-[#dcd6cc] bg-offwhite">
+    <section id="daily-brief" className="scroll-mt-4 border border-[#dcd6cc] bg-offwhite">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#dcd6cc] px-4 py-3">
         <div>
           <p className="text-body font-medium text-nearblack">
@@ -192,7 +208,10 @@ export function DailyBrief() {
           </p>
           {data && (
             <p className="mt-0.5 text-caption text-charcoal/45">
-              {activeItems.length} to review
+              {agendaItems.length > 0 ? `${agendaItems.length} today · ` : ""}
+              {firstUpItems.length} first up
+              {remainingItems.length > 0 ? ` · ${remainingItems.length} next` : ""}
+              {carriedCount > 0 ? ` · ${carriedCount} carried over` : ""}
               {" · "}refreshed {formatRefreshedAt(data.refreshed_at)}
             </p>
           )}
@@ -207,18 +226,39 @@ export function DailyBrief() {
         ) : activeItems.length === 0 ? (
           <p className="px-1 py-2 text-caption text-charcoal/40">Nothing in the brief right now.</p>
         ) : (
-          <ul className="space-y-1.5">
-            {activeItems.map((item) => (
-              <BriefRow
-                key={item.id}
-                item={item}
+          <div className="space-y-4">
+            {agendaItems.length > 0 && (
+              <BriefGroup
+                label="Today"
+                description="Appointments, site activity and occasions"
+                items={agendaItems}
                 projects={projects}
                 onEnsureProjects={ensureProjectsLoaded}
-                onToggle={() => toggleStatus(item)}
-                onConvert={(projectId) => convert(item, projectId)}
+                onToggle={toggleStatus}
+                onConvert={convert}
               />
-            ))}
-          </ul>
+            )}
+            <BriefGroup
+              label="First up"
+              description="The three actions most likely to unblock today"
+              items={firstUpItems}
+              projects={projects}
+              onEnsureProjects={ensureProjectsLoaded}
+              onToggle={toggleStatus}
+              onConvert={convert}
+            />
+            {remainingItems.length > 0 && (
+              <BriefGroup
+                label="Then"
+                description="Everything else worth keeping on today’s radar"
+                items={remainingItems}
+                projects={projects}
+                onEnsureProjects={ensureProjectsLoaded}
+                onToggle={toggleStatus}
+                onConvert={convert}
+              />
+            )}
+          </div>
         )}
 
         <ManualAddForm
@@ -228,6 +268,45 @@ export function DailyBrief() {
         />
       </div>
     </section>
+  );
+}
+
+function BriefGroup({
+  label,
+  description,
+  items,
+  projects,
+  onEnsureProjects,
+  onToggle,
+  onConvert,
+}: {
+  label: string;
+  description: string;
+  items: DailyBriefItemWithMeta[];
+  projects: ProjectOption[] | null;
+  onEnsureProjects: () => void;
+  onToggle: (item: DailyBriefItemWithMeta) => void;
+  onConvert: (item: DailyBriefItemWithMeta, projectId: string | null) => void;
+}) {
+  return (
+    <div>
+      <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-1 px-1">
+        <p className="label-caps !text-charcoal/65">{label}</p>
+        <p className="text-caption text-charcoal/40">{description}</p>
+      </div>
+      <ul className="space-y-1.5">
+        {items.map((item) => (
+          <BriefRow
+            key={item.id}
+            item={item}
+            projects={projects}
+            onEnsureProjects={onEnsureProjects}
+            onToggle={() => onToggle(item)}
+            onConvert={(projectId) => onConvert(item, projectId)}
+          />
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -258,6 +337,9 @@ function BriefRow({
 
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5">
+          <span className="label-caps shrink-0 bg-nearblack px-1.5 py-0.5 !text-white">
+            {item.morning_rank > 0 ? `${item.morning_rank}. ` : ""}{item.action_label}
+          </span>
           <span className="label-caps shrink-0 border border-[#c9c2b4] px-1.5 py-0.5 !text-charcoal/50">
             {SOURCE_LABEL[item.source]}
           </span>
@@ -279,7 +361,7 @@ function BriefRow({
       <div className="flex shrink-0 items-center gap-2">
         {item.link_href && (
           <a href={item.link_href} className="text-caption text-charcoal/60 hover:text-nearblack hover:underline">
-            open →
+            {item.action_label} →
           </a>
         )}
         {!alreadyConverted && (
