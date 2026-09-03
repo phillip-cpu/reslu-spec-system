@@ -30,7 +30,7 @@ export async function GET(_request: Request, context: Context) {
   const response: LatestUnreadNotificationResponse = {
     notification: {
       id: row.id,
-      tag: row.kind.startsWith("conversation_message:") ? row.kind : row.id,
+      tag: row.kind.startsWith("conversation_message:") || row.kind.startsWith("morning_brief:") ? row.kind : row.id,
       title: row.title,
       body: row.body,
       link_href: row.link_href,

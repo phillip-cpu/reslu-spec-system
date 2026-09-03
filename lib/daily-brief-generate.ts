@@ -32,6 +32,8 @@ import { computeInsuranceStatus } from "@/lib/insurance";
 import { resolveExportPresets } from "@/lib/export-presets";
 import {
   buildBookingCandidates,
+  buildBirthdayCandidates,
+  buildCalendarCandidates,
   buildInsuranceCandidates,
   buildLeadCandidates,
   buildOrderingCandidates,
@@ -41,6 +43,7 @@ import {
   type DailyBriefSource,
   type ExistingBriefItemForDedupe,
 } from "@/lib/daily-brief";
+import { birthdayMatchesDate } from "@/lib/birthdays";
 import type { Lead, LeadStageEvent } from "@/types";
 
 export interface GenerateDailyBriefResult {
@@ -52,6 +55,33 @@ export interface GenerateDailyBriefResult {
 /** Adelaide-local "today", as a sortable yyyy-mm-dd string — same technique as app/api/digest/flush's own DST-safe cron slot check and this codebase's other isPastDue()-style fixes (see lib/time-format.ts's adelaideNowParts doc comment for the fullest write-up of why this beats a plain `Date` truncation for a server-cron caller). */
 function adelaideToday(now: Date): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Australia/Adelaide" }).format(now);
+}
+
+function isOnAdelaideDate(value: string, dateOnly: string): boolean {
+  return adelaideToday(new Date(value)) === dateOnly;
+}
+
+function formatAdelaideEventTime(value: string): string {
+  return new Intl.DateTimeFormat("en-AU", {
+    timeZone: "Australia/Adelaide",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(new Date(value)).replace(" ", "").toLowerCase();
+}
+
+function tradeArrivalLabel(arrivalTime: string | null, arrivalSlot: string | null): string {
+  if (arrivalTime) {
+    const [hourText, minuteText] = arrivalTime.split(":");
+    const hour = Number(hourText);
+    const period = hour < 12 ? "am" : "pm";
+    const hour12 = hour % 12 || 12;
+    return `${hour12}:${minuteText ?? "00"}${period}`;
+  }
+  if (arrivalSlot === "first_thing") return "First thing";
+  if (arrivalSlot === "midday") return "Midday";
+  if (arrivalSlot === "afternoon") return "Afternoon";
+  return "Today";
 }
 
 /**
@@ -74,6 +104,16 @@ export async function generateDailyBrief(
 ): Promise<GenerateDailyBriefResult> {
   const briefDate = adelaideToday(now);
   const candidates: DailyBriefCandidate[] = [];
+
+  // Schedule/occasion rows describe a specific day. If somebody did not tick
+  // yesterday's event, it must not carry over as if it were still upcoming.
+  const { error: staleAgendaError } = await supabase
+    .from("daily_brief_items")
+    .update({ status: "done", acknowledged_at: now.toISOString() })
+    .in("source", ["calendar", "birthday"])
+    .eq("status", "open")
+    .lt("brief_date", briefDate);
+  if (staleAgendaError) throw new Error(`Morning agenda cleanup failed: ${staleAgendaError.message}`);
 
   // ---- Existing OPEN items, fetched once up front (dedupe lookback
   // window is 7 days — pad one extra day for safety around the
@@ -290,6 +330,107 @@ export async function generateDailyBrief(
     }
     candidates.push(...buildInsuranceCandidates(insuranceRows));
   }
+
+  // ---- 6. Today's RESLU-native calendar: project client events, lead
+  // site visits, and confirmed/tentative trade visits. Appointment rows are
+  // orientation, not tasks; stale rows are auto-closed above. ----
+  const broadStart = new Date(now.getTime() - 18 * 60 * 60 * 1000).toISOString();
+  const broadEnd = new Date(now.getTime() + 36 * 60 * 60 * 1000).toISOString();
+  const [{ data: clientEvents }, { data: leadVisits }, { data: tradeVisits }] = await Promise.all([
+    supabase
+      .from("client_events")
+      .select("id,project_id,title,starts_at")
+      .is("deleted_at", null)
+      .gte("starts_at", broadStart)
+      .lt("starts_at", broadEnd),
+    supabase
+      .from("leads")
+      .select("id,surname_project,site_visit_date")
+      .is("deleted_at", null)
+      .gte("site_visit_date", broadStart)
+      .lt("site_visit_date", broadEnd),
+    supabase
+      .from("trade_visits")
+      .select("id,project_id,contact_id,start_date,end_date,arrival_slot,arrival_time,status")
+      .is("deleted_at", null)
+      .in("status", ["confirmed", "tentative"])
+      .lte("start_date", briefDate)
+      .gte("end_date", briefDate),
+  ]);
+
+  const calendarProjectIds = [...new Set([
+    ...(clientEvents ?? []).map((event) => event.project_id),
+    ...(tradeVisits ?? []).map((visit) => visit.project_id),
+  ])];
+  const tradeVisitIds = (tradeVisits ?? []).map((visit) => visit.id);
+  const tradeContactIds = [...new Set((tradeVisits ?? []).map((visit) => visit.contact_id).filter(Boolean))] as string[];
+  const [{ data: calendarProjects }, { data: visitTasks }, { data: tradeContacts }] = await Promise.all([
+    calendarProjectIds.length
+      ? supabase.from("projects").select("id,name").in("id", calendarProjectIds)
+      : Promise.resolve({ data: [] as { id: string; name: string }[] }),
+    tradeVisitIds.length
+      ? supabase.from("board_tasks").select("visit_id,title").in("visit_id", tradeVisitIds).is("deleted_at", null)
+      : Promise.resolve({ data: [] as { visit_id: string; title: string }[] }),
+    tradeContactIds.length
+      ? supabase.from("contacts").select("id,company").in("id", tradeContactIds).is("deleted_at", null)
+      : Promise.resolve({ data: [] as { id: string; company: string }[] }),
+  ]);
+  const calendarProjectById = new Map((calendarProjects ?? []).map((project) => [project.id, project.name]));
+  const taskByVisitId = new Map((visitTasks ?? []).map((task) => [task.visit_id, task.title]));
+  const tradeCompanyById = new Map((tradeContacts ?? []).map((contact) => [contact.id, contact.company]));
+
+  candidates.push(...buildCalendarCandidates([
+    ...(clientEvents ?? [])
+      .filter((event) => isOnAdelaideDate(event.starts_at, briefDate))
+      .map((event) => ({
+        id: `client-event-${event.id}`,
+        title: `${formatAdelaideEventTime(event.starts_at)} · ${event.title}`,
+        link_href: `/projects/${event.project_id}/client?tab=meetings&event=${event.id}`,
+        project_id: event.project_id,
+      })),
+    ...(leadVisits ?? [])
+      .filter((lead) => lead.site_visit_date && isOnAdelaideDate(lead.site_visit_date, briefDate))
+      .map((lead) => ({
+        id: `lead-visit-${lead.id}`,
+        title: `${formatAdelaideEventTime(lead.site_visit_date as string)} · Site visit — ${lead.surname_project}`,
+        link_href: `/leads?lead=${lead.id}`,
+        project_id: null,
+      })),
+    ...(tradeVisits ?? []).map((visit) => {
+      const company = visit.contact_id ? tradeCompanyById.get(visit.contact_id) : null;
+      const task = taskByVisitId.get(visit.id);
+      const subject = [company, task].filter(Boolean).join(" — ") || calendarProjectById.get(visit.project_id) || "Trade visit";
+      return {
+        id: `trade-visit-${visit.id}`,
+        title: `${tradeArrivalLabel(visit.arrival_time, visit.arrival_slot)} · ${subject}${visit.status === "tentative" ? " (tentative)" : ""}`,
+        link_href: `/projects/${visit.project_id}/timeline?visit=${visit.id}`,
+        project_id: visit.project_id,
+      };
+    }),
+  ]));
+
+  // ---- 7. Birthdays. Only MM-DD is stored, so the brief can celebrate
+  // people without collecting or exposing ages/years of birth. ----
+  const [{ data: birthdayProfiles }, { data: birthdayContacts }] = await Promise.all([
+    supabase.from("profiles").select("id,full_name,birthday").not("birthday", "is", null),
+    supabase.from("contacts").select("id,company,contact_name,birthday").is("deleted_at", null).not("birthday", "is", null),
+  ]);
+  candidates.push(...buildBirthdayCandidates([
+    ...(birthdayProfiles ?? [])
+      .filter((profile) => birthdayMatchesDate(profile.birthday, briefDate))
+      .map((profile) => ({
+        id: `profile-${profile.id}`,
+        name: profile.full_name,
+        href: `/settings?birthday=profile-${profile.id}#team`,
+      })),
+    ...(birthdayContacts ?? [])
+      .filter((contact) => birthdayMatchesDate(contact.birthday, briefDate))
+      .map((contact) => ({
+        id: `contact-${contact.id}`,
+        name: contact.contact_name || contact.company,
+        href: `/contacts?contact=${contact.id}`,
+      })),
+  ]));
 
   // ---- Dedupe against existing open items, then insert whatever's
   // left. A defensive in-run de-dupe (same source+link_href appearing

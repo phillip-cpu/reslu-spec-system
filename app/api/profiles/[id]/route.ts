@@ -2,13 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { isAdmin } from "@/lib/auth";
 import { invalidateProfilesCache } from "@/lib/reference-data";
+import { isValidStoredBirthday } from "@/lib/birthdays";
 import type { ProfileRole } from "@/types";
 
 const VALID_ROLES = new Set<ProfileRole>(["admin", "designer", "viewer"]);
 
 /**
  * PATCH /api/profiles/[id]
- * body: { role: 'admin' | 'designer' | 'viewer' }
+ * body: { role?: 'admin' | 'designer' | 'viewer', birthday?: 'MM-DD' | null }
  *
  * Admin-only (BUILD-SPEC.md §Settings: "Role assignment lives in
  * Settings, admin-only"). Refuses to demote the caller if they are the
@@ -38,16 +39,22 @@ export async function PATCH(
 
   const body = await request.json().catch(() => ({}));
   const role = body?.role as ProfileRole | undefined;
-  if (!role || !VALID_ROLES.has(role)) {
+  if (role !== undefined && !VALID_ROLES.has(role)) {
     return NextResponse.json(
       { error: "role must be one of: admin, designer, viewer" },
       { status: 400 }
     );
   }
+  if (body?.birthday !== undefined && !isValidStoredBirthday(body.birthday)) {
+    return NextResponse.json({ error: "birthday must be a real month/day in MM-DD format" }, { status: 400 });
+  }
+  if (role === undefined && body?.birthday === undefined) {
+    return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
+  }
 
   // Last-admin protection: only relevant when the target IS the caller
   // and the caller IS currently an admin being demoted away from it.
-  if (id === user.id && role !== "admin") {
+  if (role !== undefined && id === user.id && role !== "admin") {
     const { count } = await supabase
       .from("profiles")
       .select("*", { count: "exact", head: true })
@@ -60,9 +67,13 @@ export async function PATCH(
     }
   }
 
+  const update: { role?: ProfileRole; birthday?: string | null } = {};
+  if (role !== undefined) update.role = role;
+  if (body?.birthday !== undefined) update.birthday = body.birthday || null;
+
   const { data: profile, error } = await supabase
     .from("profiles")
-    .update({ role })
+    .update(update)
     .eq("id", id)
     .select()
     .single();

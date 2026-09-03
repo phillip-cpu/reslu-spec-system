@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { Profile, ProfileRole } from "@/types";
+import { birthdayFromInput, birthdayInputValue, birthdayLabel } from "@/lib/birthdays";
 
 interface Props {
   initialTeam: Profile[];
@@ -27,6 +28,9 @@ export function TeamSettings({ initialTeam, canEdit, currentUserId }: Props) {
   const [team, setTeam] = useState<Profile[]>(initialTeam);
   const [error, setError] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [birthdayDrafts, setBirthdayDrafts] = useState<Record<string, string>>(() =>
+    Object.fromEntries(initialTeam.map((profile) => [profile.id, birthdayInputValue(profile.birthday)]))
+  );
 
   async function changeRole(profileId: string, role: ProfileRole) {
     const prev = team;
@@ -51,6 +55,35 @@ export function TeamSettings({ initialTeam, canEdit, currentUserId }: Props) {
     }
   }
 
+  async function saveBirthday(profileId: string) {
+    const parsed = birthdayFromInput(birthdayDrafts[profileId] ?? "");
+    if (parsed === undefined) {
+      setError("Birthday must be a real date in DD/MM format.");
+      return;
+    }
+    const previous = team.find((profile) => profile.id === profileId)?.birthday ?? null;
+    if (parsed === previous) return;
+    setSavingId(profileId);
+    setError(null);
+    try {
+      const res = await fetch(`/api/profiles/${profileId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ birthday: parsed }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? "Could not update birthday");
+      }
+      setTeam((current) => current.map((profile) => profile.id === profileId ? { ...profile, birthday: parsed } : profile));
+    } catch (err) {
+      setBirthdayDrafts((current) => ({ ...current, [profileId]: birthdayInputValue(previous) }));
+      setError(err instanceof Error ? err.message : "Could not update birthday");
+    } finally {
+      setSavingId(null);
+    }
+  }
+
   return (
     <div className="max-w-lg space-y-3">
       {error && (
@@ -64,16 +97,33 @@ export function TeamSettings({ initialTeam, canEdit, currentUserId }: Props) {
           const isLastAdmin =
             p.role === "admin" && team.filter((t) => t.role === "admin").length <= 1;
           return (
-            <li key={p.id} className="flex items-center justify-between px-4 py-3 gap-4">
+            <li key={p.id} className="flex flex-wrap items-center justify-between px-4 py-3 gap-4">
               <div>
                 <p className="text-body text-nearblack">
                   {p.full_name}
                   {isSelf && <span className="text-charcoal/40"> (you)</span>}
                 </p>
                 <p className="text-caption text-charcoal/50">{p.email}</p>
+                {!canEdit && p.birthday && (
+                  <p className="text-caption text-charcoal/50">Birthday · {birthdayLabel(p.birthday)}</p>
+                )}
               </div>
               {canEdit ? (
-                <select
+                <div className="flex items-center gap-2">
+                  <input
+                    aria-label={`${p.full_name} birthday`}
+                    inputMode="numeric"
+                    placeholder="Birthday DD/MM"
+                    value={birthdayDrafts[p.id] ?? ""}
+                    disabled={savingId === p.id}
+                    onChange={(event) => setBirthdayDrafts((current) => ({ ...current, [p.id]: event.target.value }))}
+                    onBlur={() => void saveBirthday(p.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                    }}
+                    className="w-32 border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
+                  />
+                  <select
                   value={p.role}
                   disabled={savingId === p.id || (isSelf && isLastAdmin)}
                   title={
@@ -83,13 +133,14 @@ export function TeamSettings({ initialTeam, canEdit, currentUserId }: Props) {
                   }
                   onChange={(e) => changeRole(p.id, e.target.value as ProfileRole)}
                   className="border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-body focus:border-nearblack focus:outline-none disabled:opacity-60"
-                >
-                  {ROLES.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
+                  >
+                    {ROLES.map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               ) : (
                 <span className="label-caps">{p.role}</span>
               )}

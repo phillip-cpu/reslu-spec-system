@@ -12,6 +12,8 @@ export interface Profile {
   email: string;
   role: ProfileRole;
   avatar_url: string | null;
+  /** Recurring birthday as MM-DD; year intentionally not collected. */
+  birthday: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1039,6 +1041,8 @@ export interface Contact {
   specialty: string | null;
   category: string | null;
   notes: string | null;
+  /** Recurring birthday as MM-DD; year intentionally not collected. */
+  birthday: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -1055,6 +1059,7 @@ export interface CreateContactInput {
   specialty?: string | null;
   category?: string | null;
   notes?: string | null;
+  birthday?: string | null;
 }
 
 /** body accepted by PATCH /api/contacts/[id] — all fields optional, partial update. */
@@ -1067,6 +1072,7 @@ export interface PatchContactInput {
   specialty?: string | null;
   category?: string | null;
   notes?: string | null;
+  birthday?: string | null;
 }
 
 export interface ContactsListResponse {

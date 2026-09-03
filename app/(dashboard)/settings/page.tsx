@@ -350,7 +350,7 @@ export default async function SettingsPage({
           </section>
         )}
 
-        <section>
+        <section id="team" className="scroll-mt-4">
           <h2 className="mb-1 text-subhead text-nearblack">Team</h2>
           <p className="mb-4 text-body text-charcoal/60">
             Financial data (trade price, markup, client price) is admin-only,
@@ -404,7 +404,7 @@ export default async function SettingsPage({
         <section>
           <h2 className="mb-1 text-subhead text-nearblack">Push notifications</h2>
           <p className="mb-4 text-body text-charcoal/60">
-            Get a browser notification on this device for trade responses, signed proposals, and
+            Get the 7am Morning Brief on this device, plus trade responses, signed proposals, and
             system health alerts. Currently only admins receive pushes; anyone can enable it here.
           </p>
           <PushSettings />

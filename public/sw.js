@@ -95,6 +95,8 @@ self.addEventListener("push", (event) => {
         if (!notification) return;
         return self.registration.showNotification(notification.title || "RESLU", {
           body: notification.body || "",
+          icon: "/icon-192.png",
+          badge: "/icon-192.png",
           data: { link: notification.link_href || "/" },
           tag: notification.tag || notification.id,
         });

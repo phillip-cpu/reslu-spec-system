@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { carriedOverLabel } from "@/lib/daily-brief";
+import { rankMorningBriefItems } from "@/lib/morning-brief";
 import type { BriefResponse, DailyBriefItem, DailyBriefItemWithMeta } from "@/types/round-daily-brief";
 
 export const runtime = "nodejs";
@@ -51,14 +52,16 @@ export async function GET() {
     return NextResponse.json({ error: openError.message }, { status: 500 });
   }
   const rows = (openRows ?? []) as DailyBriefItem[];
+  const refreshedAt = new Date();
+  const rankedRows = rankMorningBriefItems(rows, refreshedAt);
 
-  const projectIds = [...new Set(rows.map((r) => r.project_id).filter((id): id is string => !!id))];
+  const projectIds = [...new Set(rankedRows.map((r) => r.project_id).filter((id): id is string => !!id))];
   const { data: projects } = projectIds.length
     ? await supabase.from("projects").select("id,name,alias").in("id", projectIds)
     : { data: [] as { id: string; name: string; alias: string | null }[] };
   const projectById = new Map((projects ?? []).map((p) => [p.id, p]));
 
-  const items: DailyBriefItemWithMeta[] = rows.map((r) => {
+  const items: DailyBriefItemWithMeta[] = rankedRows.map((r) => {
     const project = r.project_id ? projectById.get(r.project_id) ?? null : null;
     // "added to {project}" (board-task conversion) / "added to Office"
     // (office-task conversion, converted_office_task_id) — see
@@ -73,14 +76,14 @@ export async function GET() {
     return {
       ...r,
       project,
-      carried_over_label: carriedOverLabel(r.brief_date),
+      carried_over_label: carriedOverLabel(r.brief_date, refreshedAt),
       converted_label: convertedLabel,
     };
   });
 
   const body: BriefResponse = {
     items,
-    refreshed_at: new Date().toISOString(),
+    refreshed_at: refreshedAt.toISOString(),
     done_count: 0,
     total_count: items.length,
   };
