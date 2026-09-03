@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getUserRole } from "@/lib/auth";
-import { matchQuoteProject, quoteIntent, type QuoteEmail, type QuoteProject } from "@/lib/supplier-quote-email-matching";
+import { matchQuoteContact, matchQuoteProject, quoteIntent, type QuoteContact, type QuoteEmail, type QuoteProject } from "@/lib/supplier-quote-email-matching";
 import { loadSupplierQuotePackages } from "@/lib/supplier-quote-server";
 import { createClient } from "@/lib/supabase/server";
 
@@ -102,16 +102,15 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   const linked = new Set((existingLinks ?? []).map((row) => row.email_id));
   const available = groupedEmails.filter((group) => !group.rows.some((email) => linked.has(email.id)));
 
-  const addresses = new Set(available.flatMap((group) => group.rows.flatMap((email) => [email.from_addr, ...(email.to_addrs ?? []), ...(email.cc_addrs ?? [])])).map((address) => address.toLowerCase()));
   const contactIds = typedSuggestions.map((suggestion) => suggestion.contact_id).filter((id): id is string => Boolean(id));
   const { data: contacts } = await supabase.from("contacts").select("id,company,email").is("deleted_at", null).limit(5000);
-  const contactByEmail = new Map((contacts ?? []).filter((contact) => contact.email && addresses.has(contact.email.toLowerCase())).map((contact) => [contact.email!.toLowerCase(), contact]));
   const contactById = new Map((contacts ?? []).filter((contact) => contactIds.includes(contact.id)).map((contact) => [contact.id, contact]));
+  const candidateContacts = (contacts ?? []) as QuoteContact[];
 
   return NextResponse.json({
     emails: available.map(({ seed, rows, suggestion }) => {
-      const matchingContact = (suggestion?.contact_id ? contactById.get(suggestion.contact_id) : null) ?? [seed.from_addr, ...(seed.to_addrs ?? []), ...(seed.cc_addrs ?? [])]
-        .map((address) => contactByEmail.get(address.toLowerCase())).find(Boolean) ?? null;
+      const matchingContact = (suggestion?.contact_id ? contactById.get(suggestion.contact_id) : null) ??
+        matchQuoteContact(rows, candidateContacts).match?.value ?? null;
       const lineCandidates = (suggestion?.supplier_quote_email_match_lines ?? []).map((line) => ({
         id: line.cost_line_id,
         description: line.cost_lines?.description ?? "Estimate line",

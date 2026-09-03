@@ -44,7 +44,10 @@ function email(overrides: Partial<QuoteEmail> = {}): QuoteEmail {
 }
 
 test("matches an outside-system sent email to the exact Address Book recipient", () => {
-  const result = matchQuoteContact([email()], [poolContact]);
+  const result = matchQuoteContact([email()], [
+    { id: "reslu", company: "TEST RESLU", email: "phillip@reslu.com.au" },
+    poolContact,
+  ]);
   assert.equal(result.externalEmail, poolContact.email);
   assert.equal(result.match?.value.id, poolContact.id);
   assert.equal(result.match?.confidence, 1);
