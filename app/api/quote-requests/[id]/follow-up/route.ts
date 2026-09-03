@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getUserRole } from "@/lib/auth";
-import { sendTeamEmail } from "@/lib/gmail/send";
+import { sendTeamEmail, TEAM_MAILBOX } from "@/lib/gmail/send";
 import { createClient } from "@/lib/supabase/server";
 
 export async function POST(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -25,10 +25,23 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
   const reference = `RFQ-${quoteRequest.id.slice(0, 8).toUpperCase()}`;
   const result = await sendTeamEmail({
     to: [to],
-    subject: `[${reference}] Follow-up — ${project?.name ?? "Project"} — ${quotePackage.title}`,
+    subject: `[${reference}] Quote request — ${project?.name ?? "Project"} — ${quotePackage.title}`,
     body: `Hello,\n\nJust following up on our quote request for ${quotePackage.title}. Please confirm when you expect to return the quotation.\n\nView or respond here: ${appUrl}/quote-request/${quoteRequest.token}\n\nRegards,\nRESLU`,
+    ...(quoteRequest.provider_thread_id && quoteRequest.provider_message_id
+      ? {
+          thread: {
+            threadId: quoteRequest.provider_thread_id,
+            replyToProviderMessageId: quoteRequest.provider_message_id,
+          },
+        }
+      : {}),
   });
-  if (result.skipped) return NextResponse.json({ error: result.reason ?? "Email transport unavailable" }, { status: 503 });
-  await supabase.from("supplier_quote_requests").update({ last_followup_at: new Date().toISOString() }).eq("id", id);
+  if (result.skipped || !result.provider_message_id) return NextResponse.json({ error: result.reason ?? "Email transport unavailable" }, { status: 503 });
+  await supabase.from("supplier_quote_requests").update({
+    last_followup_at: new Date().toISOString(),
+    provider_message_id: quoteRequest.provider_message_id ?? result.provider_message_id,
+    provider_thread_id: quoteRequest.provider_thread_id ?? result.provider_thread_id ?? null,
+    provider_mailbox: quoteRequest.provider_mailbox ?? TEAM_MAILBOX,
+  }).eq("id", id);
   return NextResponse.json({ ok: true });
 }

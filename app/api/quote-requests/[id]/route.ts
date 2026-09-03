@@ -26,21 +26,58 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (typeof body.status === "string" && STATUSES.includes(body.status as SupplierQuoteRequestStatus)) patch.status = body.status;
   if (patch.status === "quote_received" && !current.quote_received_at) patch.quote_received_at = new Date().toISOString();
 
-  if (patch.status === "selected") {
-    if (!["quote_received", "selected"].includes(current.status)) return NextResponse.json({ error: "Only a received quote can be selected" }, { status: 409 });
-    const [{ data: responseLines }, { data: packageLines }] = await Promise.all([
-      supabase.from("supplier_quote_response_lines").select("package_line_id,amount_ex_gst").eq("request_id", id),
-      supabase.from("supplier_quote_package_lines").select("id,cost_line_id").eq("package_id", current.package_id),
-    ]);
-    const amountByPackageLine = new Map((responseLines ?? []).map((line) => [line.package_line_id, line.amount_ex_gst]));
-    for (const line of packageLines ?? []) {
-      const amount = amountByPackageLine.get(line.id);
-      const linePatch: Record<string, unknown> = { quote_status: "Q", contact_id: current.contact_id };
-      if (typeof amount === "number") linePatch.cost_ex_gst = amount;
-      await supabase.from("cost_lines").update(linePatch).eq("id", line.cost_line_id);
+  if (body.response_lines !== undefined) {
+    if (!Array.isArray(body.response_lines)) {
+      return NextResponse.json({ error: "response_lines must be an array" }, { status: 400 });
     }
-    await supabase.from("supplier_quote_requests").update({ status: "closed" }).eq("package_id", current.package_id).neq("id", id).not("status", "in", "(declined,closed)");
-    await supabase.from("supplier_quote_packages").update({ status: "complete" }).eq("id", current.package_id);
+    const { data: packageLines, error: packageLineError } = await supabase
+      .from("supplier_quote_package_lines")
+      .select("id")
+      .eq("package_id", current.package_id);
+    if (packageLineError) return NextResponse.json({ error: packageLineError.message }, { status: 500 });
+    const allowedIds = new Set((packageLines ?? []).map((line) => line.id));
+    const seenIds = new Set<string>();
+    const responseLines: { request_id: string; package_line_id: string; amount_ex_gst: number | null; note: string | null }[] = [];
+    for (const candidate of body.response_lines) {
+      if (!candidate || typeof candidate !== "object") {
+        return NextResponse.json({ error: "Every response line must be an object" }, { status: 400 });
+      }
+      const line = candidate as Record<string, unknown>;
+      const packageLineId = typeof line.package_line_id === "string" ? line.package_line_id : "";
+      const amount = line.amount_ex_gst;
+      if (!allowedIds.has(packageLineId) || seenIds.has(packageLineId)) {
+        return NextResponse.json({ error: "One or more quote lines are invalid or duplicated" }, { status: 400 });
+      }
+      if (amount !== null && (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0)) {
+        return NextResponse.json({ error: "Quote line amounts must be non-negative numbers" }, { status: 400 });
+      }
+      seenIds.add(packageLineId);
+      responseLines.push({
+        request_id: id,
+        package_line_id: packageLineId,
+        amount_ex_gst: amount as number | null,
+        note: typeof line.note === "string" ? line.note.trim() || null : null,
+      });
+    }
+    if (responseLines.length > 0) {
+      const { error: responseLineError } = await supabase
+        .from("supplier_quote_response_lines")
+        .upsert(responseLines, { onConflict: "request_id,package_line_id" });
+      if (responseLineError) return NextResponse.json({ error: responseLineError.message }, { status: 500 });
+    }
+    const { data: allResponseLines, error: responseReadError } = await supabase
+      .from("supplier_quote_response_lines")
+      .select("amount_ex_gst")
+      .eq("request_id", id);
+    if (responseReadError) return NextResponse.json({ error: responseReadError.message }, { status: 500 });
+    const amounts = (allResponseLines ?? []).map((line) => line.amount_ex_gst).filter((amount): amount is number => typeof amount === "number");
+    patch.quote_amount_ex_gst = amounts.length > 0 ? amounts.reduce((sum, amount) => sum + amount, 0) : null;
+  }
+
+  if (patch.status === "selected") {
+    const { data: selected, error: selectError } = await supabase.rpc("select_supplier_quote", { p_request_id: id });
+    if (selectError) return NextResponse.json({ error: selectError.message }, { status: 409 });
+    return NextResponse.json({ request: selected });
   }
 
   const { data: updated, error } = await supabase.from("supplier_quote_requests").update(patch).eq("id", id).select().single();

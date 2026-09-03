@@ -50,6 +50,7 @@ export function EstimateWorkspace({ projectId, initialView = "estimate" }: Props
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notInitialised, setNotInitialised] = useState(false);
+  const [quoteSeedLineIds, setQuoteSeedLineIds] = useState<string[]>([]);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -86,7 +87,8 @@ export function EstimateWorkspace({ projectId, initialView = "estimate" }: Props
   }, [projectId]);
 
   useEffect(() => {
-    loadAll();
+    const timer = window.setTimeout(() => void loadAll(), 0);
+    return () => window.clearTimeout(timer);
   }, [loadAll]);
 
   // ── local, in-place mutation helpers (Week 7 line-entry UX fix) ──
@@ -360,7 +362,10 @@ export function EstimateWorkspace({ projectId, initialView = "estimate" }: Props
           <button
             key={t.key}
             type="button"
-            onClick={() => setView(t.key)}
+            onClick={() => {
+              if (t.key === "quotes") setQuoteSeedLineIds([]);
+              setView(t.key);
+            }}
             className={clsx(
               "px-4 py-2 text-subhead transition-colors",
               view === t.key
@@ -386,7 +391,11 @@ export function EstimateWorkspace({ projectId, initialView = "estimate" }: Props
           onLinesReordered={reorderLinesLocal}
           approvedVariationsTotal={approvedVariations}
           measurements={estimate?.measurements ?? []}
-          onOpenQuoteRequests={() => setView("quotes")}
+          onOpenQuoteRequests={(lineIds = []) => {
+            setQuoteSeedLineIds(lineIds);
+            setView("quotes");
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }}
         />
       )}
 
@@ -402,7 +411,7 @@ export function EstimateWorkspace({ projectId, initialView = "estimate" }: Props
       )}
 
       {view === "quotes" && (
-        <QuoteRequestsPanel projectId={projectId} estimate={estimate} onEstimateReload={loadAll} />
+        <QuoteRequestsPanel projectId={projectId} estimate={estimate} onEstimateReload={loadAll} initialLineIds={quoteSeedLineIds} />
       )}
 
       {view === "measurements" && (

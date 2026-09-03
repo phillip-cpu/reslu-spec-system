@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getUserRole } from "@/lib/auth";
-import { sendTeamEmail, type EmailAttachment } from "@/lib/gmail/send";
+import { sendTeamEmail, TEAM_MAILBOX, type EmailAttachment } from "@/lib/gmail/send";
 import { ASSET_BUCKET } from "@/lib/storage";
 import { buildSupplierQuoteEmail } from "@/lib/supplier-quotes";
 import { createClient } from "@/lib/supabase/server";
@@ -72,6 +72,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
         sent_to_email: to,
         provider_message_id: result.provider_message_id,
         provider_thread_id: result.provider_thread_id ?? null,
+        provider_mailbox: TEAM_MAILBOX,
       }).eq("id", supplierRequest.id).eq("status", "draft").select().single();
       if (updateError || !updated) throw new Error(updateError?.message ?? "Could not record sent request");
       sent.push(updated);

@@ -148,9 +148,12 @@ class MailboxConfig:
 class GmailMessage:
     mailbox: str
     gmail_id: str
+    gmail_thread_id: str
     raw: bytes
     message_id: str
     direction: str
+    to_addrs: tuple[str, ...]
+    cc_addrs: tuple[str, ...]
 
 
 def openclaw_workspace() -> Path:
@@ -630,7 +633,7 @@ def gmail_list_message_ids(token: str, query: str, limit: int) -> list[str]:
     return ids[:limit]
 
 
-def gmail_fetch_raw(token: str, gmail_id: str) -> tuple[bytes, set[str]]:
+def gmail_fetch_raw(token: str, gmail_id: str) -> tuple[bytes, set[str], str]:
     r = requests.get(
         f"{GMAIL_API}/messages/{gmail_id}",
         headers={"Authorization": f"Bearer {token}"},
@@ -641,6 +644,7 @@ def gmail_fetch_raw(token: str, gmail_id: str) -> tuple[bytes, set[str]]:
     return (
         base64.urlsafe_b64decode(payload["raw"]),
         {str(label).upper() for label in payload.get("labelIds", [])},
+        str(payload.get("threadId") or "").strip(),
     )
 
 
@@ -651,20 +655,20 @@ def gmail_fetch_raw_with_refresh(
     credentials_file: Path,
     fetch_fn=None,
     refresh_fn=None,
-) -> tuple[bytes, set[str], str, bool]:
+) -> tuple[bytes, set[str], str, str, bool]:
     """Fetch one message, refreshing the mailbox token once after a 401."""
     fetch = fetch_fn or gmail_fetch_raw
     refresh = refresh_fn or gmail_access_token
     try:
-        raw, labels = fetch(token, gmail_id)
-        return raw, labels, token, False
+        raw, labels, thread_id = fetch(token, gmail_id)
+        return raw, labels, thread_id, token, False
     except requests.HTTPError as exc:
         if exc.response is None or exc.response.status_code != 401:
             raise
 
     refreshed_token = refresh(mailbox, credentials_file)
-    raw, labels = fetch(refreshed_token, gmail_id)
-    return raw, labels, refreshed_token, True
+    raw, labels, thread_id = fetch(refreshed_token, gmail_id)
+    return raw, labels, thread_id, refreshed_token, True
 
 
 def gmail_direction(labels: set[str]) -> str:
@@ -695,7 +699,7 @@ class Supabase:
                 f"{self.url}/rest/v1/emails",
                 headers=self.h,
                 params={
-                    "select": "id,message_id,direction,ingested_mailboxes,gmail_refs",
+                    "select": "id,message_id,thread_id,direction,ingested_mailboxes,gmail_refs,gmail_thread_refs,to_addrs,cc_addrs",
                     "message_id": f"in.({quoted})",
                 },
                 timeout=HTTP_TIMEOUT,
@@ -706,7 +710,14 @@ class Supabase:
         return found
 
     def merge_email_source(
-        self, existing: dict, mailbox: str, gmail_id: str, direction: str
+        self,
+        existing: dict,
+        mailbox: str,
+        gmail_id: str,
+        gmail_thread_id: str,
+        direction: str,
+        to_addrs: tuple[str, ...],
+        cc_addrs: tuple[str, ...],
     ) -> dict:
         mailboxes = {
             str(value).strip().lower()
@@ -716,21 +727,34 @@ class Supabase:
         mailboxes.add(mailbox.lower())
         refs = dict(existing.get("gmail_refs") or {})
         refs[mailbox.lower()] = gmail_id
+        thread_refs = dict(existing.get("gmail_thread_refs") or {})
+        if gmail_thread_id:
+            thread_refs[mailbox.lower()] = gmail_thread_id
+        merged_to = sorted({
+            str(value).strip().lower()
+            for value in [*(existing.get("to_addrs") or []), *to_addrs]
+            if value
+        })
+        merged_cc = sorted({
+            str(value).strip().lower()
+            for value in [*(existing.get("cc_addrs") or []), *cc_addrs]
+            if value
+        })
         merged_direction = (
             "inbound"
             if "inbound" in (existing.get("direction"), direction)
             else "sent"
         )
         patch = {
+            "thread_id": existing.get("thread_id") or gmail_thread_id or None,
             "ingested_mailboxes": sorted(mailboxes),
             "gmail_refs": refs,
+            "gmail_thread_refs": thread_refs,
+            "to_addrs": merged_to,
+            "cc_addrs": merged_cc,
             "direction": merged_direction,
         }
-        if (
-            patch["ingested_mailboxes"] != existing.get("ingested_mailboxes")
-            or patch["gmail_refs"] != existing.get("gmail_refs")
-            or patch["direction"] != existing.get("direction")
-        ):
+        if any(patch[key] != existing.get(key) for key in patch):
             self.update_email(existing["id"], patch)
         return {**existing, **patch}
 
@@ -823,6 +847,14 @@ def parse_from(msg: Message) -> str:
     return (addrs[0][1] if addrs else msg.get("From", "")).strip()
 
 
+def parse_addresses(msg: Message, header: str) -> tuple[str, ...]:
+    return tuple(sorted({
+        address.strip().lower()
+        for _, address in getaddresses(msg.get_all(header, []))
+        if address and address.strip()
+    }))
+
+
 def received_at(msg: Message) -> str:
     for h in ("Date",):
         raw = msg.get(h)
@@ -858,6 +890,7 @@ def process_message(
     sb: Supabase | None,
     known_items: set[str],
     gmail_id: str,
+    gmail_thread_id: str,
     mailbox: str,
     direction: str,
     dry_run: bool,
@@ -877,15 +910,18 @@ def process_message(
 
     row = {
         "message_id": message_id,
-        "thread_id": (msg.get("Thread-Index") or msg.get("References") or "").strip()[:255] or None,
+        "thread_id": gmail_thread_id or None,
         "from_addr": from_addr or "unknown@unknown",
         "subject": subject,
         "received_at": received_at(msg),
         "clean_text": clean_text,
         "token_estimate": tok,
         "direction": direction,
+        "to_addrs": list(parse_addresses(msg, "To")),
+        "cc_addrs": list(parse_addresses(msg, "Cc")),
         "ingested_mailboxes": [mailbox],
         "gmail_refs": {mailbox: gmail_id},
+        "gmail_thread_refs": {mailbox: gmail_thread_id} if gmail_thread_id else {},
         "status": "skipped" if skip_reason else "new",
     }
     if skip_reason:
@@ -998,13 +1034,20 @@ def run_selftest() -> int:
     merged_source = fake_supabase.merge_email_source(
         {
             "id": "email-1",
+            "thread_id": "phillip-thread",
             "direction": "sent",
             "ingested_mailboxes": ["phillip@reslu.com.au"],
             "gmail_refs": {"phillip@reslu.com.au": "sent-1"},
+            "gmail_thread_refs": {"phillip@reslu.com.au": "phillip-thread"},
+            "to_addrs": ["supplier@example.com"],
+            "cc_addrs": [],
         },
         "aria@reslu.com.au",
         "inbound-1",
+        "aria-thread",
         "inbound",
+        ("supplier@example.com", "aria@reslu.com.au"),
+        ("accounts@reslu.com.au",),
     )
     fallback_clean = clean_body(
         "Keep this price $136\n\nCheers,\nSlow parser",
@@ -1018,9 +1061,9 @@ def run_selftest() -> int:
             response = requests.Response()
             response.status_code = 401
             raise requests.HTTPError("expired", response=response)
-        return b"raw-message", {"INBOX"}
+        return b"raw-message", {"INBOX"}, "gmail-thread-1"
 
-    refreshed_raw, refreshed_labels, refreshed_token, did_refresh = (
+    refreshed_raw, refreshed_labels, refreshed_thread, refreshed_token, did_refresh = (
         gmail_fetch_raw_with_refresh(
             "expired-token",
             "message-1",
@@ -1050,12 +1093,28 @@ def run_selftest() -> int:
             == "mailing list",
         "Gmail direction keeps archived mail inbound": gmail_direction(set()) == "inbound",
         "Gmail direction recognises Sent": gmail_direction({"SENT"}) == "sent",
-        "all four RESLU mailboxes are configured":
+        "all five RESLU mailboxes are configured":
             {address for address, _, _ in EXPECTED_MAILBOXES}
-            == {"aria@reslu.com.au", "phillip@reslu.com.au", "tenille@reslu.com.au", "accounts@reslu.com.au"},
+            == {
+                "aria@reslu.com.au",
+                "phillip@reslu.com.au",
+                "tenille@reslu.com.au",
+                "marco@reslu.com.au",
+                "accounts@reslu.com.au",
+            },
         "cross-mailbox duplicate records both sources":
             merged_source["ingested_mailboxes"]
             == ["aria@reslu.com.au", "phillip@reslu.com.au"],
+        "cross-mailbox duplicate keeps mailbox-scoped Gmail threads":
+            merged_source["gmail_thread_refs"]
+            == {
+                "aria@reslu.com.au": "aria-thread",
+                "phillip@reslu.com.au": "phillip-thread",
+            },
+        "email recipients are normalised and merged":
+            merged_source["to_addrs"]
+            == ["aria@reslu.com.au", "supplier@example.com"]
+            and merged_source["cc_addrs"] == ["accounts@reslu.com.au"],
         "an inbound copy upgrades a sent-only canonical row":
             merged_source["direction"] == "inbound",
         "body parser timeout falls back without losing current content":
@@ -1064,6 +1123,7 @@ def run_selftest() -> int:
             did_refresh
             and refreshed_raw == b"raw-message"
             and refreshed_labels == {"INBOX"}
+            and refreshed_thread == "gmail-thread-1"
             and refreshed_token == "fresh-token"
             and fetch_calls == ["expired-token", "fresh-token"],
     }
@@ -1098,7 +1158,10 @@ def process_fetched_messages(
                         current,
                         message.mailbox,
                         message.gmail_id,
+                        message.gmail_thread_id,
                         message.direction,
+                        message.to_addrs,
+                        message.cc_addrs,
                     )
                 except Exception as exc:
                     stats["error"] += 1
@@ -1110,6 +1173,7 @@ def process_fetched_messages(
                 sb,
                 known_items,
                 message.gmail_id,
+                message.gmail_thread_id,
                 message.mailbox,
                 message.direction,
                 dry_run,
@@ -1125,8 +1189,12 @@ def process_fetched_messages(
                 "id": summary["email_id"],
                 "message_id": message.message_id,
                 "direction": message.direction,
+                "thread_id": message.gmail_thread_id or None,
                 "ingested_mailboxes": [message.mailbox],
                 "gmail_refs": {message.mailbox: message.gmail_id},
+                "gmail_thread_refs": {message.mailbox: message.gmail_thread_id} if message.gmail_thread_id else {},
+                "to_addrs": list(message.to_addrs),
+                "cc_addrs": list(message.cc_addrs),
             }
         elif summary.get("status") == "duplicate" and sb:
             # A concurrent run may have inserted between the initial lookup
@@ -1137,7 +1205,10 @@ def process_fetched_messages(
                     raced,
                     message.mailbox,
                     message.gmail_id,
+                    message.gmail_thread_id,
                     message.direction,
+                    message.to_addrs,
+                    message.cc_addrs,
                 )
         key = summary["status"] if summary["status"] in stats else "new"
         stats[key] = stats.get(key, 0) + 1
@@ -1251,7 +1322,7 @@ def main() -> int:
             fetched: list[GmailMessage] = []
             for gid in gmail_ids[offset:offset + fetch_chunk_size]:
                 try:
-                    raw, labels, token, refreshed = gmail_fetch_raw_with_refresh(
+                    raw, labels, gmail_thread_id, token, refreshed = gmail_fetch_raw_with_refresh(
                         token,
                         gid,
                         mailbox,
@@ -1271,9 +1342,12 @@ def main() -> int:
                     GmailMessage(
                         mailbox=mailbox.address,
                         gmail_id=gid,
+                        gmail_thread_id=gmail_thread_id,
                         raw=raw,
                         message_id=mid,
                         direction=gmail_direction(labels),
+                        to_addrs=parse_addresses(msg, "To"),
+                        cc_addrs=parse_addresses(msg, "Cc"),
                     )
                 )
 

@@ -49,6 +49,10 @@
       "schedule": "12-59/15 * * * *"
     },
     {
+      "path": "/api/quote-requests/auto-match",
+      "schedule": "14-59/15 * * * *"
+    },
+    {
       "path": "/api/brief/generate",
       "schedule": "30 21 * * *"
     },
