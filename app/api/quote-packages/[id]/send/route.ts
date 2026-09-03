@@ -20,13 +20,14 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "This quote package can no longer be sent" }, { status: 409 });
   }
 
-  const [{ data: project }, { data: lines }, { data: requests }, { data: attachments }] = await Promise.all([
+  const [{ data: project }, { data: lines }, { data: items }, { data: requests }, { data: attachments }] = await Promise.all([
     supabase.from("projects").select("id,name,address").eq("id", quotePackage.project_id).maybeSingle(),
     supabase.from("supplier_quote_package_lines").select("*").eq("package_id", packageId).order("sort"),
+    supabase.from("supplier_quote_package_items").select("*").eq("package_id", packageId).order("sort"),
     supabase.from("supplier_quote_requests").select("*").eq("package_id", packageId).eq("status", "draft"),
     supabase.from("supplier_quote_attachments").select("*").eq("package_id", packageId).eq("kind", "request").is("request_id", null).order("sort"),
   ]);
-  if (!project || !lines?.length) return NextResponse.json({ error: "Quote package is incomplete" }, { status: 400 });
+  if (!project || (lines?.length ?? 0) + (items?.length ?? 0) === 0) return NextResponse.json({ error: "Quote package is incomplete" }, { status: 400 });
   if (!requests?.length) return NextResponse.json({ error: "All supplier requests in this package have already been sent" }, { status: 409 });
 
   const contactIds = requests.map((row) => row.contact_id).filter(Boolean) as string[];
@@ -60,7 +61,10 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
       scope: quotePackage.scope,
       requestedQuoteDate: quotePackage.requested_quote_date,
       responseUrl: `${appUrl}/quote-request/${supplierRequest.token}`,
-      lines: lines.map((line) => ({ description: line.description_snapshot, qty: line.qty_snapshot, unit: line.unit_snapshot })),
+      lines: [
+        ...(lines ?? []).map((line) => ({ description: line.description_snapshot, qty: line.qty_snapshot, unit: line.unit_snapshot })),
+        ...(items ?? []).map((item) => ({ description: `${item.item_code_snapshot ? `${item.item_code_snapshot} · ` : ""}${item.description_snapshot}`, qty: item.qty_snapshot, unit: item.unit_snapshot })),
+      ],
       attachmentNames: (attachments ?? []).map((row) => row.filename),
     });
     try {
@@ -83,7 +87,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
 
   if (sent.length > 0) {
     await supabase.from("supplier_quote_packages").update({ status: "sent", sent_at: now }).eq("id", packageId);
-    await supabase.from("cost_lines").update({ quote_status: "S" }).in("id", lines.map((line) => line.cost_line_id));
+    if (lines?.length) await supabase.from("cost_lines").update({ quote_status: "S" }).in("id", lines.map((line) => line.cost_line_id));
   }
   return NextResponse.json({ sent, errors }, { status: sent.length > 0 ? 200 : 502 });
 }

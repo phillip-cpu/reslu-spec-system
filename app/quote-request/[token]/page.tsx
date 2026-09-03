@@ -14,10 +14,11 @@ export default async function SupplierQuoteRequestPage({ params }: { params: Pro
 
   const { data: quotePackage } = await supabase.from("supplier_quote_packages").select("*").eq("id", request.package_id).is("deleted_at", null).maybeSingle();
   if (!quotePackage) notFound();
-  const [{ data: project }, { data: contact }, { data: lines }, { data: attachments }] = await Promise.all([
+  const [{ data: project }, { data: contact }, { data: lines }, { data: items }, { data: attachments }] = await Promise.all([
     supabase.from("projects").select("name,address").eq("id", quotePackage.project_id).maybeSingle(),
     request.contact_id ? supabase.from("contacts").select("company,contact_name").eq("id", request.contact_id).maybeSingle() : Promise.resolve({ data: null }),
     supabase.from("supplier_quote_package_lines").select("*").eq("package_id", quotePackage.id).order("sort"),
+    supabase.from("supplier_quote_package_items").select("*").eq("package_id", quotePackage.id).order("sort"),
     supabase.from("supplier_quote_attachments").select("*").eq("package_id", quotePackage.id).eq("kind", "request").or(`request_id.is.null,request_id.eq.${request.id}`).order("sort"),
   ]);
   if (!project) notFound();
@@ -44,11 +45,12 @@ export default async function SupplierQuoteRequestPage({ params }: { params: Pro
         <section className="border border-[#dcd6cc] bg-white">
           <h2 className="border-b border-[#dcd6cc] bg-cream px-4 py-3 label-caps">Items to quote</h2>
           {(lines ?? []).map((line) => <div key={line.id} className="flex justify-between gap-4 border-b border-[#e5e0d6] px-4 py-3 text-body last:border-0"><span>{line.description_snapshot}</span><span className="shrink-0 text-charcoal/60">{line.qty_snapshot ?? "—"} {line.unit_snapshot ?? ""}</span></div>)}
+          {(items ?? []).map((item) => <div key={item.id} className="flex justify-between gap-4 border-b border-[#e5e0d6] px-4 py-3 text-body last:border-0"><span>{item.item_code_snapshot ? `${item.item_code_snapshot} · ` : ""}{item.description_snapshot}</span><span className="shrink-0 text-charcoal/60">{item.qty_snapshot ?? "—"} {item.unit_snapshot ?? ""}</span></div>)}
         </section>
 
         {files.length > 0 && <section><h2 className="label-caps mb-2">Reference files and images</h2><div className="grid gap-3 sm:grid-cols-2">{files.map((file) => <a key={file.id} href={file.url ?? "#"} target="_blank" rel="noreferrer" className="border border-[#dcd6cc] bg-white p-3 text-body text-nearblack hover:border-nearblack"><span className="block font-medium">{file.filename}</span>{file.caption && <span className="mt-1 block text-caption text-charcoal/60">{file.caption}</span>}</a>)}</div></section>}
 
-        {closed ? <p className="border border-sand bg-cream px-5 py-4 text-body">This request is closed. Please contact RESLU if anything needs to change.</p> : <SupplierQuoteResponseForm token={token} lines={lines ?? []} />}
+        {closed ? <p className="border border-sand bg-cream px-5 py-4 text-body">This request is closed. Please contact RESLU if anything needs to change.</p> : <SupplierQuoteResponseForm token={token} lines={lines ?? []} items={items ?? []} />}
       </main>
     </div>
   );

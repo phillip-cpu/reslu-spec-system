@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getUserRole } from "@/lib/auth";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
-import { buildQuoteThreadMatch, type QuoteContact, type QuoteCostLine, type QuoteEmail, type QuoteProject } from "@/lib/supplier-quote-email-matching";
+import { buildQuoteThreadMatch, inferQuoteContact, type QuoteContact, type QuoteCostLine, type QuoteEmail, type QuoteItem, type QuoteProject } from "@/lib/supplier-quote-email-matching";
 
 export const runtime = "nodejs";
 
@@ -47,10 +47,16 @@ export async function GET(request: NextRequest) {
     emailIds.length
       ? supabase.from("supplier_quote_request_emails").select("email_id").in("email_id", emailIds)
       : Promise.resolve({ data: [] as { email_id: string }[] }),
-    supabase.from("supplier_quote_email_matches").select("provider_mailbox,provider_thread_id"),
+    supabase.from("supplier_quote_email_matches").select("provider_mailbox,provider_thread_id,status,contact_id,evidence"),
   ]);
   const linkedEmailIds = new Set((linkedRows ?? []).map((row) => row.email_id));
-  const handledThreads = new Set((existingRows ?? []).map((row) => `${row.provider_mailbox}:${row.provider_thread_id}`));
+  const handledThreads = new Set((existingRows ?? []).filter((row) => {
+    if (row.status !== "review") return true;
+    const evidence = row.evidence && typeof row.evidence === "object" && !Array.isArray(row.evidence)
+      ? row.evidence as Record<string, unknown>
+      : null;
+    return Boolean(row.contact_id) && Array.isArray(evidence?.items);
+  }).map((row) => `${row.provider_mailbox}:${row.provider_thread_id}`));
 
   const groups = new Map<string, { mailbox: string; threadId: string; emails: EmailRow[] }>();
   for (const email of emails) {
@@ -66,13 +72,15 @@ export async function GET(request: NextRequest) {
   const threadGroups = [...groups.values()].slice(0, THREAD_BATCH_SIZE);
   if (threadGroups.length === 0) return NextResponse.json({ scanned: emails.length, reviewed: 0, auto_linked: 0, ignored: 0 });
 
-  const [projectsResult, contactsResult, sectionsResult, linesResult] = await Promise.all([
+  const [projectsResult, contactsResult, sectionsResult, linesResult, categoriesResult, itemsResult] = await Promise.all([
     supabase.from("projects").select("id,name,alias,job_number,address,client_name").is("deleted_at", null).limit(5000),
     supabase.from("contacts").select("id,company,email,specialty,category").is("deleted_at", null).limit(5000),
     supabase.from("cost_sections").select("id,name").limit(10000),
     supabase.from("cost_lines").select("id,project_id,section_id,description,contact_id").is("deleted_at", null).limit(20000),
+    supabase.from("categories").select("prefix,name").limit(1000),
+    supabase.from("items").select("id,project_id,item_code,name,description,category,brand,supplier,supplier_contact_id,cost_scope").is("deleted_at", null).limit(20000),
   ]);
-  const loadError = projectsResult.error ?? contactsResult.error ?? sectionsResult.error ?? linesResult.error;
+  const loadError = projectsResult.error ?? contactsResult.error ?? sectionsResult.error ?? linesResult.error ?? categoriesResult.error ?? itemsResult.error;
   if (loadError) return NextResponse.json({ error: loadError.message }, { status: 500 });
 
   const projects = (projectsResult.data ?? []) as QuoteProject[];
@@ -85,6 +93,11 @@ export async function GET(request: NextRequest) {
     contact_id: line.contact_id,
     section_name: sectionNames.get(line.section_id) ?? "Estimate",
   }));
+  const categoryNames = new Map((categoriesResult.data ?? []).map((category) => [category.prefix, category.name]));
+  const items: QuoteItem[] = (itemsResult.data ?? []).map((item) => ({
+    ...item,
+    category_name: categoryNames.get(item.category) ?? null,
+  })) as QuoteItem[];
 
   let reviewed = 0;
   let autoLinked = 0;
@@ -93,7 +106,29 @@ export async function GET(request: NextRequest) {
 
   for (const group of threadGroups) {
     try {
-      const match = buildQuoteThreadMatch({ emails: group.emails, projects, contacts, lines });
+      let match = buildQuoteThreadMatch({ emails: group.emails, projects, contacts, lines, items });
+      let contactWasCreated = false;
+      const hasOutgoingEmail = group.emails.some((email) => email.direction === "sent");
+      if (
+        !match.contact && match.externalEmail && hasOutgoingEmail &&
+        match.project && match.project.confidence >= 0.98 && match.intentConfidence >= 0.96
+      ) {
+        const inferred = inferQuoteContact(group.emails, match.externalEmail);
+        if (inferred && inferred.confidence >= 0.85) {
+          const { data: ensuredContact, error: contactError } = await supabase.rpc("ensure_supplier_quote_contact", {
+            p_email: inferred.email,
+            p_company: inferred.company,
+            p_specialty: inferred.specialty,
+          });
+          if (contactError) throw new Error(contactError.message);
+          if (ensuredContact?.id) {
+            const contact = ensuredContact as QuoteContact;
+            contactWasCreated = !contacts.some((existing) => existing.id === contact.id);
+            if (contactWasCreated) contacts.push(contact);
+            match = buildQuoteThreadMatch({ emails: group.emails, projects, contacts, lines, items });
+          }
+        }
+      }
       const seed = [...group.emails].sort((a, b) => a.received_at.localeCompare(b.received_at))[0];
       if (match.intentConfidence < 0.8 || (!match.project && !match.contact)) {
         await supabase.from("supplier_quote_email_matches").upsert({
@@ -117,7 +152,9 @@ export async function GET(request: NextRequest) {
       const evidence = {
         project: match.project?.reasons ?? [],
         contact: match.contact?.reasons ?? [],
+        address_book: contactWasCreated ? ["External supplier created automatically from a high-confidence outgoing quote request"] : [],
         intent: match.intentReason,
+        items: match.items.map((item) => ({ item_id: item.id, confidence: item.confidence, reason: item.reason })),
         thread_email_ids: group.emails.map((email) => email.id),
       };
       const { data: matchRow, error: matchError } = await supabase.from("supplier_quote_email_matches").upsert({
@@ -136,6 +173,12 @@ export async function GET(request: NextRequest) {
       }, { onConflict: "provider_mailbox,provider_thread_id" }).select("id").single();
       if (matchError || !matchRow) throw new Error(matchError?.message ?? "Could not save email match");
 
+      const [{ error: clearLineError }, { error: clearItemError }] = await Promise.all([
+        supabase.from("supplier_quote_email_match_lines").delete().eq("match_id", matchRow.id),
+        supabase.from("supplier_quote_email_match_items").delete().eq("match_id", matchRow.id),
+      ]);
+      if (clearLineError || clearItemError) throw new Error(clearLineError?.message ?? clearItemError?.message ?? "Could not refresh match targets");
+
       if (match.lines.length > 0) {
         const { error: lineError } = await supabase.from("supplier_quote_email_match_lines").upsert(
           match.lines.map((line) => ({ match_id: matchRow.id, cost_line_id: line.id, confidence: line.confidence, reason: line.reason, selected: line.selected })),
@@ -143,9 +186,17 @@ export async function GET(request: NextRequest) {
         );
         if (lineError) throw new Error(lineError.message);
       }
+      if (match.items.length > 0) {
+        const { error: itemError } = await supabase.from("supplier_quote_email_match_items").upsert(
+          match.items.map((item) => ({ match_id: matchRow.id, item_id: item.id, confidence: item.confidence, reason: item.reason, selected: item.selected })),
+          { onConflict: "match_id,item_id" }
+        );
+        if (itemError) throw new Error(itemError.message);
+      }
 
       if (match.canAutoLink && match.project && match.contact) {
         const selectedLineIds = match.lines.filter((line) => line.selected).map((line) => line.id);
+        const selectedItemIds = match.items.filter((item) => item.selected).map((item) => item.id);
         const { data: packageId, error: importError } = await supabase.rpc("import_supplier_quote_thread", {
           p_project_id: match.project.value.id,
           p_email_id: seed.id,
@@ -153,6 +204,7 @@ export async function GET(request: NextRequest) {
           p_title: match.title,
           p_scope: match.scope,
           p_cost_line_ids: selectedLineIds,
+          p_item_ids: selectedItemIds,
         });
         if (!importError && packageId) {
           await supabase.from("supplier_quote_email_matches").update({ status: "auto_linked", package_id: packageId, reviewed_at: new Date().toISOString() }).eq("id", matchRow.id);
@@ -171,7 +223,7 @@ export async function GET(request: NextRequest) {
           project_id: match.project?.value.id ?? null,
           subject: seed.subject,
           external_email: match.externalEmail,
-          instruction: "Review the suggested project, Address Book contact and estimate lines before linking this imported Gmail thread.",
+          instruction: "Review the suggested project, Address Book contact and estimate/FF&E items before linking this imported Gmail thread.",
         },
       }, { onConflict: "dedupe_key", ignoreDuplicates: true });
       reviewed++;

@@ -8,7 +8,10 @@ interface Line {
   qty_snapshot: number | null;
   unit_snapshot: string | null;
 }
-export function SupplierQuoteResponseForm({ token, lines }: { token: string; lines: Line[] }) {
+interface Item extends Line {
+  item_code_snapshot: string | null;
+}
+export function SupplierQuoteResponseForm({ token, lines, items }: { token: string; lines: Line[]; items: Item[] }) {
   const [mode, setMode] = useState<"turnaround" | "quote" | "decline">("turnaround");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +78,15 @@ export function SupplierQuoteResponseForm({ token, lines }: { token: string; lin
                 {line.qty_snapshot !== null && <span className="ml-2 text-charcoal/50">{line.qty_snapshot} {line.unit_snapshot ?? ""}</span>}
               </span>
               <span className="flex items-center border border-[#c9c2b4] bg-white px-2"><span className="text-charcoal/50">$</span><input required min="0" step="0.01" name={`line_amount_${line.id}`} type="number" className="w-full px-2 py-2 text-right text-body outline-none" /></span>
+            </label>
+          ))}
+          {items.map((item) => (
+            <label key={item.id} className="grid gap-2 border-b border-[#e5e0d6] pb-3 sm:grid-cols-[1fr_150px] sm:items-center">
+              <span className="text-body text-nearblack">
+                {item.item_code_snapshot ? `${item.item_code_snapshot} · ` : ""}{item.description_snapshot}
+                {item.qty_snapshot !== null && <span className="ml-2 text-charcoal/50">{item.qty_snapshot} {item.unit_snapshot ?? ""}</span>}
+              </span>
+              <span className="flex items-center border border-[#c9c2b4] bg-white px-2"><span className="text-charcoal/50">$</span><input required min="0" step="0.01" name={`item_amount_${item.id}`} type="number" className="w-full px-2 py-2 text-right text-body outline-none" /></span>
             </label>
           ))}
           <label className="block"><span className="label-caps">Quote reference</span><input name="quote_reference" className="mt-2 w-full border border-[#c9c2b4] px-3 py-2 text-body" /></label>

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getUserRole } from "@/lib/auth";
-import { matchQuoteContact, matchQuoteProject, quoteIntent, type QuoteContact, type QuoteEmail, type QuoteProject } from "@/lib/supplier-quote-email-matching";
+import { matchQuoteContact, matchQuoteItems, matchQuoteProject, quoteIntent, type QuoteContact, type QuoteEmail, type QuoteItem, type QuoteProject } from "@/lib/supplier-quote-email-matching";
 import { loadSupplierQuotePackages } from "@/lib/supplier-quote-server";
 import { createClient } from "@/lib/supabase/server";
 
@@ -12,6 +12,13 @@ type SuggestionLine = {
   selected: boolean;
   cost_lines: { id: string; description: string } | null;
 };
+type SuggestionItem = {
+  item_id: string;
+  confidence: number;
+  reason: string;
+  selected: boolean;
+  items: { id: string; item_code: string; name: string; category: string } | null;
+};
 type Suggestion = {
   id: string;
   seed_email_id: string;
@@ -22,6 +29,7 @@ type Suggestion = {
   contact_id: string | null;
   evidence: Record<string, unknown>;
   supplier_quote_email_match_lines: SuggestionLine[];
+  supplier_quote_email_match_items: SuggestionItem[];
 };
 
 const MAILBOX_PRIORITY = ["aria@reslu.com.au", "phillip@reslu.com.au", "tenille@reslu.com.au", "accounts@reslu.com.au", "marco@reslu.com.au"];
@@ -50,19 +58,23 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   if ("response" in auth) return auth.response;
   const { supabase } = auth;
 
-  const [{ data: project }, { data: suggestions, error: suggestionError }, { data: recentEmails, error: emailError }] = await Promise.all([
+  const [{ data: project }, { data: suggestions, error: suggestionError }, { data: recentEmails, error: emailError }, { data: itemRows, error: itemError }, { data: categories, error: categoryError }] = await Promise.all([
     supabase.from("projects").select("id,name,alias,job_number,address,client_name").eq("id", projectId).maybeSingle(),
     supabase.from("supplier_quote_email_matches")
-      .select("id,seed_email_id,provider_mailbox,provider_thread_id,external_email,project_confidence,contact_id,evidence,supplier_quote_email_match_lines(cost_line_id,confidence,reason,selected,cost_lines(id,description))")
+      .select("id,seed_email_id,provider_mailbox,provider_thread_id,external_email,project_confidence,contact_id,evidence,supplier_quote_email_match_lines(cost_line_id,confidence,reason,selected,cost_lines(id,description)),supplier_quote_email_match_items(item_id,confidence,reason,selected,items(id,item_code,name,category))")
       .eq("project_id", projectId).eq("status", "review").order("created_at", { ascending: false }),
     supabase.from("emails")
       .select("id,gmail_thread_refs,to_addrs,cc_addrs,from_addr,subject,received_at,direction,triage_label,clean_text")
       .not("gmail_thread_refs", "is", null).order("received_at", { ascending: false }).limit(500),
+    supabase.from("items").select("id,project_id,item_code,name,description,category,brand,supplier,supplier_contact_id,cost_scope").eq("project_id", projectId).is("deleted_at", null),
+    supabase.from("categories").select("prefix,name").limit(1000),
   ]);
   if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
-  if (suggestionError || emailError) return NextResponse.json({ error: suggestionError?.message ?? emailError?.message }, { status: 500 });
+  if (suggestionError || emailError || itemError || categoryError) return NextResponse.json({ error: suggestionError?.message ?? emailError?.message ?? itemError?.message ?? categoryError?.message }, { status: 500 });
 
   const typedProject = project as QuoteProject;
+  const categoryNames = new Map((categories ?? []).map((category) => [category.prefix, category.name]));
+  const quoteItems = (itemRows ?? []).map((item) => ({ ...item, category_name: categoryNames.get(item.category) ?? null })) as QuoteItem[];
   const typedSuggestions = (suggestions ?? []) as unknown as Suggestion[];
   const candidateEmails = [...((recentEmails ?? []) as CandidateEmail[])];
   const loadedEmailIds = new Set(candidateEmails.map((email) => email.id));
@@ -118,6 +130,24 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
         reason: line.reason,
         selected: line.selected,
       }));
+      const storedItemCandidates = (suggestion?.supplier_quote_email_match_items ?? []).map((item) => ({
+        id: item.item_id,
+        item_code: item.items?.item_code ?? "FF&E",
+        name: item.items?.name ?? "FF&E item",
+        category: item.items?.category ?? "",
+        confidence: Number(item.confidence),
+        reason: item.reason,
+        selected: item.selected,
+      }));
+      const itemCandidates = storedItemCandidates.length > 0 ? storedItemCandidates : matchQuoteItems(rows, quoteItems, matchingContact?.id).map((item) => ({
+        id: item.id,
+        item_code: item.item_code,
+        name: item.name,
+        category: item.category,
+        confidence: item.confidence,
+        reason: item.reason,
+        selected: item.selected,
+      }));
       return {
         id: seed.id,
         suggestion_id: suggestion?.id ?? null,
@@ -129,7 +159,9 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
         has_thread_id: true,
         suggested_contact: matchingContact,
         suggested_line_ids: lineCandidates.filter((line) => line.selected).map((line) => line.id),
+        suggested_item_ids: itemCandidates.filter((item) => item.selected).map((item) => item.id),
         line_candidates: lineCandidates,
+        item_candidates: itemCandidates,
         project_confidence: suggestion ? Number(suggestion.project_confidence) : matchQuoteProject(rows, [typedProject])?.confidence ?? 0,
         external_email: suggestion?.external_email ?? null,
         preview: seed.clean_text?.slice(0, 240) ?? null,
@@ -144,7 +176,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if ("response" in auth) return auth.response;
   const { supabase, info } = auth;
   const body = await request.json().catch(() => null) as null | {
-    email_id?: unknown; contact_id?: unknown; title?: unknown; scope?: unknown; line_ids?: unknown; suggestion_id?: unknown;
+    email_id?: unknown; contact_id?: unknown; title?: unknown; scope?: unknown; line_ids?: unknown; item_ids?: unknown; suggestion_id?: unknown;
   };
   const emailId = typeof body?.email_id === "string" ? body.email_id : "";
   const contactId = typeof body?.contact_id === "string" ? body.contact_id : "";
@@ -152,7 +184,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const scope = typeof body?.scope === "string" ? body.scope.trim() || null : null;
   const suggestionId = typeof body?.suggestion_id === "string" ? body.suggestion_id : null;
   const lineIds = Array.isArray(body?.line_ids) ? [...new Set(body.line_ids.filter((id): id is string => typeof id === "string"))] : [];
-  if (!emailId || !contactId || !title || lineIds.length === 0) return NextResponse.json({ error: "Email, one Address Book contact, title and estimate lines are required" }, { status: 400 });
+  const itemIds = Array.isArray(body?.item_ids) ? [...new Set(body.item_ids.filter((id): id is string => typeof id === "string"))] : [];
+  if (!emailId || !contactId || !title || lineIds.length + itemIds.length === 0) return NextResponse.json({ error: "Email, one Address Book contact, title and at least one estimate/FF&E item are required" }, { status: 400 });
 
   const [{ data: project }, { data: sourceEmail }, { data: suggestion }] = await Promise.all([
     supabase.from("projects").select("id,name,alias,job_number,address,client_name").eq("id", projectId).maybeSingle(),
@@ -167,7 +200,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   }
 
   const { data: packageId, error } = await supabase.rpc("import_supplier_quote_thread", {
-    p_project_id: projectId, p_email_id: emailId, p_contact_id: contactId, p_title: title, p_scope: scope, p_cost_line_ids: lineIds,
+    p_project_id: projectId, p_email_id: emailId, p_contact_id: contactId, p_title: title, p_scope: scope, p_cost_line_ids: lineIds, p_item_ids: itemIds,
   });
   if (error || !packageId) return NextResponse.json({ error: error?.message ?? "Could not link email thread" }, { status: 409 });
   if (suggestionId) {

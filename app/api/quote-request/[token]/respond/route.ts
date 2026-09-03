@@ -33,16 +33,35 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   }
   if (action !== "quote") return NextResponse.json({ error: "Invalid response" }, { status: 400 });
 
-  const { data: packageLines } = await supabase.from("supplier_quote_package_lines").select("id").eq("package_id", quoteRequest.package_id);
+  const [{ data: packageLines, error: packageLineError }, { data: packageItems, error: packageItemError }] = await Promise.all([
+    supabase.from("supplier_quote_package_lines").select("id").eq("package_id", quoteRequest.package_id),
+    supabase.from("supplier_quote_package_items").select("id").eq("package_id", quoteRequest.package_id),
+  ]);
+  const packageTargetError = packageLineError ?? packageItemError;
+  if (packageTargetError) return NextResponse.json({ error: packageTargetError.message }, { status: 500 });
   const responseLines = [];
   for (const line of packageLines ?? []) {
     const raw = String(form.get(`line_amount_${line.id}`) ?? "");
+    if (!raw.trim()) return NextResponse.json({ error: "Enter an amount for every line" }, { status: 400 });
     const amount = Number(raw);
     if (!Number.isFinite(amount) || amount < 0) return NextResponse.json({ error: "Enter a valid amount for every line" }, { status: 400 });
     responseLines.push({ request_id: quoteRequest.id, package_line_id: line.id, amount_ex_gst: amount });
   }
-  const total = responseLines.reduce((sum, line) => sum + line.amount_ex_gst, 0);
-  const { error: responseError } = await supabase.from("supplier_quote_response_lines").upsert(responseLines, { onConflict: "request_id,package_line_id" });
+  const responseItems = [];
+  for (const item of packageItems ?? []) {
+    const raw = String(form.get(`item_amount_${item.id}`) ?? "");
+    if (!raw.trim()) return NextResponse.json({ error: "Enter an amount for every FF&E item" }, { status: 400 });
+    const amount = Number(raw);
+    if (!Number.isFinite(amount) || amount < 0) return NextResponse.json({ error: "Enter a valid amount for every FF&E item" }, { status: 400 });
+    responseItems.push({ request_id: quoteRequest.id, package_item_id: item.id, amount_ex_gst: amount });
+  }
+  if (responseLines.length + responseItems.length === 0) return NextResponse.json({ error: "This quote request has no items" }, { status: 400 });
+  const total = [...responseLines, ...responseItems].reduce((sum, item) => sum + item.amount_ex_gst, 0);
+  const [responseLineWrite, responseItemWrite] = await Promise.all([
+    responseLines.length ? supabase.from("supplier_quote_response_lines").upsert(responseLines, { onConflict: "request_id,package_line_id" }) : Promise.resolve({ error: null }),
+    responseItems.length ? supabase.from("supplier_quote_response_items").upsert(responseItems, { onConflict: "request_id,package_item_id" }) : Promise.resolve({ error: null }),
+  ]);
+  const responseError = responseLineWrite.error ?? responseItemWrite.error;
   if (responseError) return NextResponse.json({ error: responseError.message }, { status: 500 });
 
   const files = form.getAll("files").filter((value): value is File => value instanceof File && value.size > 0);

@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildQuoteThreadMatch,
+  inferQuoteContact,
   matchQuoteContact,
+  matchQuoteItems,
   matchQuoteLines,
   matchQuoteProject,
   quoteIntent,
   type QuoteContact,
   type QuoteCostLine,
   type QuoteEmail,
+  type QuoteItem,
   type QuoteProject,
 } from "./supplier-quote-email-matching.ts";
 
@@ -26,6 +29,11 @@ const poolLines: QuoteCostLine[] = [
   { id: "glass", project_id: "hone", description: "GLASS POOL FENCE", contact_id: null, section_name: "Glazing" },
   { id: "footing", project_id: "hone", description: "Strip Footing for glass Pool fence", contact_id: null, section_name: "Earthworks / Footings" },
   { id: "temporary", project_id: "hone", description: "Temporary Pool Fence", contact_id: null, section_name: "Preliminaries & Site" },
+];
+const applianceItems: QuoteItem[] = [
+  { id: "oven", project_id: "hone", item_code: "AP-01", name: "Pyrolytic Oven", category: "AP", category_name: "Appliances", cost_scope: "direct" },
+  { id: "cooktop", project_id: "hone", item_code: "AP-02", name: "Induction Cooktop", category: "AP", category_name: "Appliances", cost_scope: "direct" },
+  { id: "install", project_id: "hone", item_code: "AP-03", name: "Appliance installation", category: "AP", category_name: "Appliances", cost_scope: "trade_package" },
 ];
 
 function email(overrides: Partial<QuoteEmail> = {}): QuoteEmail {
@@ -69,12 +77,35 @@ test("recognises explicit request and attached-quote language but ignores ordina
 test("ranks both glass pool fence and strip footing above a temporary fence", () => {
   const lines = matchQuoteLines([email()], poolLines);
   assert.deepEqual(lines.filter((line) => line.selected).map((line) => line.id).sort(), ["footing", "glass"]);
-  assert.equal(lines.find((line) => line.id === "temporary")?.confidence, 0.92);
+  assert.equal(lines.some((line) => line.id === "temporary"), false);
+});
+
+test("infers auditable supplier details from external quote recipients", () => {
+  assert.deepEqual(inferQuoteContact([email()], "adelaidepoolglass@mail.com"), {
+    company: "Adelaide Pool Glass",
+    email: "adelaidepoolglass@mail.com",
+    specialty: "Pool fencing",
+    confidence: 0.98,
+    reason: "Company inferred from external mailbox",
+  });
+  assert.equal(inferQuoteContact([email()], "info@precisepoolfencing.com.au")?.company, "Precise Pool Fencing");
+  assert.equal(inferQuoteContact([email()], "phillip@reslu.com.au"), null);
+});
+
+test("an FF&E schedule links every direct item in the named category", () => {
+  const result = matchQuoteItems([email({ subject: "RE: Hone - AP Schedule", clean_text: "Please see attached quotation." })], applianceItems);
+  assert.deepEqual(result.filter((item) => item.selected).map((item) => item.id), ["oven", "cooktop"]);
+  assert.equal(result.some((item) => item.id === "install"), false, "trade-package references must not become direct costs");
+});
+
+test("an exact FF&E item code selects only the referenced item", () => {
+  const result = matchQuoteItems([email({ subject: "Quote for Hone AP-01", clean_text: "Pricing attached." })], applianceItems);
+  assert.deepEqual(result.filter((item) => item.selected).map((item) => item.id), ["oven"]);
 });
 
 test("only auto-links when project, contact, intent and line evidence are all unambiguous", () => {
   const cautious = buildQuoteThreadMatch({ emails: [email()], projects: [hone, otherProject], contacts: [poolContact], lines: poolLines });
-  assert.equal(cautious.canAutoLink, false, "temporary-fence candidate forces review");
+  assert.equal(cautious.canAutoLink, true, "temporary fencing is not a candidate for a permanent glass-fence request");
   const certain = buildQuoteThreadMatch({ emails: [email()], projects: [hone, otherProject], contacts: [poolContact], lines: poolLines.slice(0, 2) });
   assert.equal(certain.canAutoLink, true);
   assert.deepEqual(certain.lines.filter((line) => line.selected).map((line) => line.id).sort(), ["footing", "glass"]);

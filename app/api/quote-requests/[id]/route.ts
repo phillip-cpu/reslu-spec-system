@@ -65,12 +65,59 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         .upsert(responseLines, { onConflict: "request_id,package_line_id" });
       if (responseLineError) return NextResponse.json({ error: responseLineError.message }, { status: 500 });
     }
-    const { data: allResponseLines, error: responseReadError } = await supabase
-      .from("supplier_quote_response_lines")
-      .select("amount_ex_gst")
-      .eq("request_id", id);
+  }
+
+  if (body.response_items !== undefined) {
+    if (!Array.isArray(body.response_items)) {
+      return NextResponse.json({ error: "response_items must be an array" }, { status: 400 });
+    }
+    const { data: packageItems, error: packageItemError } = await supabase
+      .from("supplier_quote_package_items")
+      .select("id")
+      .eq("package_id", current.package_id);
+    if (packageItemError) return NextResponse.json({ error: packageItemError.message }, { status: 500 });
+    const allowedIds = new Set((packageItems ?? []).map((item) => item.id));
+    const seenIds = new Set<string>();
+    const responseItems: { request_id: string; package_item_id: string; amount_ex_gst: number | null; note: string | null }[] = [];
+    for (const candidate of body.response_items) {
+      if (!candidate || typeof candidate !== "object") {
+        return NextResponse.json({ error: "Every FF&E response item must be an object" }, { status: 400 });
+      }
+      const item = candidate as Record<string, unknown>;
+      const packageItemId = typeof item.package_item_id === "string" ? item.package_item_id : "";
+      const amount = item.amount_ex_gst;
+      if (!allowedIds.has(packageItemId) || seenIds.has(packageItemId)) {
+        return NextResponse.json({ error: "One or more FF&E quote items are invalid or duplicated" }, { status: 400 });
+      }
+      if (amount !== null && (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0)) {
+        return NextResponse.json({ error: "FF&E quote amounts must be non-negative numbers" }, { status: 400 });
+      }
+      seenIds.add(packageItemId);
+      responseItems.push({
+        request_id: id,
+        package_item_id: packageItemId,
+        amount_ex_gst: amount as number | null,
+        note: typeof item.note === "string" ? item.note.trim() || null : null,
+      });
+    }
+    if (responseItems.length > 0) {
+      const { error: responseItemError } = await supabase
+        .from("supplier_quote_response_items")
+        .upsert(responseItems, { onConflict: "request_id,package_item_id" });
+      if (responseItemError) return NextResponse.json({ error: responseItemError.message }, { status: 500 });
+    }
+  }
+
+  if (body.response_lines !== undefined || body.response_items !== undefined) {
+    const [{ data: allResponseLines, error: responseLineReadError }, { data: allResponseItems, error: responseItemReadError }] = await Promise.all([
+      supabase.from("supplier_quote_response_lines").select("amount_ex_gst").eq("request_id", id),
+      supabase.from("supplier_quote_response_items").select("amount_ex_gst").eq("request_id", id),
+    ]);
+    const responseReadError = responseLineReadError ?? responseItemReadError;
     if (responseReadError) return NextResponse.json({ error: responseReadError.message }, { status: 500 });
-    const amounts = (allResponseLines ?? []).map((line) => line.amount_ex_gst).filter((amount): amount is number => typeof amount === "number");
+    const amounts = [...(allResponseLines ?? []), ...(allResponseItems ?? [])]
+      .map((row) => row.amount_ex_gst)
+      .filter((amount): amount is number => typeof amount === "number");
     patch.quote_amount_ex_gst = amounts.length > 0 ? amounts.reduce((sum, amount) => sum + amount, 0) : null;
   }
 
