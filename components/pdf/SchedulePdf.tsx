@@ -64,14 +64,14 @@ const LOGO_WHITE = path.join(process.cwd(), "public/reslu-logo-white.png");
 // unplanned continuation page beneath the running header.
 const ITEM_ROW_BUDGET = 58;
 const SECTION_LABEL_BUDGET = 24;
-const PAGE_CONTENT_BUDGET = 550;
+const PAGE_CONTENT_BUDGET = 600;
 const PAGE_MARGIN_H = 40; // pt
 const HEADER_BAND_HEIGHT = 92; // pt, cream band at top of every page
 
 // Fold this into the route's storage-cache key whenever the PDF layout
 // changes. Otherwise an unchanged item set can keep serving an older
 // cached render after a deployment.
-export const SCHEDULE_PDF_LAYOUT_VERSION = "compact-rows-v4";
+export const SCHEDULE_PDF_LAYOUT_VERSION = "compact-rows-v6";
 
 const styles = StyleSheet.create({
   // ── Cover page ──────────────────────────────────────────
@@ -333,7 +333,8 @@ interface PdfPageSection {
 /**
  * Keep PDF pagination deterministic. Letting react-pdf split a long list can
  * place a continued row at y=0, over the fixed header. A height budget lets us
- * fit roughly eight compact rows per page while accounting for category labels.
+ * fill each page with roughly nine compact rows while accounting for category
+ * labels, so a short continuation section uses the space above the footer.
  */
 function paginateGroups(groups: [string, PdfItem[]][]): PdfPageSection[][] {
   const pages: PdfPageSection[][] = [];
