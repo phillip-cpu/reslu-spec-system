@@ -71,7 +71,7 @@ export function buildProjectCloseoutReadiness(input: {
       state: supplierAttention > 0 ? "attention" : "clear",
       summary:
         supplierAttention > 0
-          ? `${plural(supplierAttention, "supplier invoice")} needs attention.`
+          ? `${plural(supplierAttention, "supplier invoice")} ${supplierAttention === 1 ? "needs" : "need"} attention.`
           : "Supplier invoices are reconciled.",
       detail: `${plural(counts.supplier_needs_matching, "invoice")} unmatched or proposed; ${plural(
         counts.supplier_approved_unpaid,
@@ -87,7 +87,7 @@ export function buildProjectCloseoutReadiness(input: {
       state: clientAttention > 0 ? "attention" : "clear",
       summary:
         clientAttention > 0
-          ? `${plural(clientAttention, "client or contract item")} needs attention.`
+          ? `${plural(clientAttention, "client or contract item")} ${clientAttention === 1 ? "needs" : "need"} attention.`
           : "Client billing, variations and signatures are clear.",
       detail: `${plural(counts.client_invoice_drafts, "draft invoice")}; ${plural(
         counts.client_invoices_unpaid,
