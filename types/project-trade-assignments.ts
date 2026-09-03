@@ -18,4 +18,3 @@ export interface ProjectTradeAssignment {
 export interface ProjectTradeAssignmentsResponse {
   assignments: ProjectTradeAssignment[];
 }
-

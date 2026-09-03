@@ -1060,10 +1060,10 @@ function AllocationEditor({
       const component = components.find((candidate) => candidate.id === matchId);
       return component?.library_item_id ? component : null;
     }
-    const itemId =
-      matchType === "item"
-        ? matchId
-        : sections.flatMap((section) => section.lines).find((line) => line.id === matchId)?.item_id;
+    // A linked estimate line is labour/install only. It is not a product
+    // purchase destination and must never update the item's reusable price.
+    if (matchType !== "item") return null;
+    const itemId = matchId;
     if (!itemId) return null;
     const item = items.find((candidate) => candidate.id === itemId);
     return item?.library_item_id ? item : null;
@@ -1286,9 +1286,7 @@ function AllocationEditor({
             const deliveryMode =
               draft.is_delivery || matchedCostLine?.line_kind === "delivery_allowance";
             const selectedCostingRow = draft.match_type === "cost_line"
-              ? matchedCostLine?.item_id
-                ? costingRowsByTarget.get(`item:${matchedCostLine.item_id}`) ?? null
-                : null
+              ? null
               : costingRowsByTarget.get(`${draft.match_type}:${draft.match_id}`) ?? null;
             const lineAccounting = invoiceStatus === "approved"
               ? "included"

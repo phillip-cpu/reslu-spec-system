@@ -42,4 +42,3 @@ export interface OrderByRequirementInput {
   trade_role: string | null;
   required_on_site_date: string | null;
 }
-

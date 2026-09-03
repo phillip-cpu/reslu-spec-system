@@ -33,31 +33,15 @@ export const runtime = "nodejs";
  *    lineVariance() in lib/estimate.ts recomputes on next read from
  *    this updated actual_paid_ex_gst, so "variance recalculates" falls
  *    out of the existing rollup math for free — no separate variance
- *    column to maintain. `affectedItem` is the cost line's own item_id,
- *    when set (a cost line isn't required to link to a spec item).
+ *    column to maintain. An item_id on the line is contextual only:
+ *    linked estimate lines are labour/install while product cost stays
+ *    in the FF&E schedule.
  *
- *  - item match (BOOKING SELECTION V2 + ARIA SUPPLIER INVOICES, r24,
- *    item 7 — REVERSES the pre-r24 "deliberately does NOT write
- *    anything on the item" behaviour, which routed ALL item-level
- *    actuals through cost_lines only): the matched item's OWN
- *    confirmed-cost field is still `cost_lines.actual_paid_ex_gst`
- *    (items themselves carry no actual-cost column of their own — see
- *    types/index.ts's Item interface, unchanged/protected this round —
- *    cost_lines.actual_paid_ex_gst IS "the item's real actual/confirmed
- *    cost field", exactly as the pre-r24 version of this comment
- *    described it, just now ALSO reachable when the invoice was matched
- *    directly to the item rather than to a cost line). Looked up via
- *    cost_lines.item_id = the matched item's id:
- *      - exactly one linked cost line -> same additive update as the
- *        cost_line-match branch above.
- *      - zero linked cost lines -> 207 warning, no write (nothing to
- *        credit against).
- *      - more than one linked cost line -> 207 warning, no write
- *        (ambiguous which line the payment applies to — safer to ask
- *        an admin to apply it manually via PATCH /api/estimate/lines/[id]
- *        than to guess and silently misattribute a real payment).
+ *  - item/component match: the approved invoice allocation is the
+ *    product actual. It is read directly by Invoice cost control and
+ *    Finance, and never writes a linked labour/install cost line.
  *
- *  - EITHER match type, THEN (r24 item 7's second half): if
+ *  - item/component match only, THEN (r24 item 7's second half): if
  *    `affectedItem.library_item_id` is set AND `apply_to_library_cost`
  *    (body, default true when library_item_id is set, false otherwise)
  *    is true, ALSO writes `library_items.price_trade` (unit cost =
@@ -231,8 +215,8 @@ export async function POST(
     );
   }
 
-  // Resolve the affected item (for the library-cost sync below) while
-  // applying the cost_line/item match's own actual_paid_ex_gst credit.
+  // Resolve an FF&E target only for product/library price sync. Estimate
+  // actual_paid_ex_gst is updated exclusively by a cost_line match.
   type AffectedItem = { id: string; quantity: number; library_item_id: string | null };
   type AffectedComponent = {
     id: string;
@@ -247,7 +231,7 @@ export async function POST(
   if (typedInvoice.proposed_match_type === "cost_line") {
     const { data: line, error: lineFetchError } = await supabase
       .from("cost_lines")
-      .select("id, actual_paid_ex_gst, item_id")
+      .select("id, actual_paid_ex_gst")
       .eq("id", typedInvoice.proposed_match_id)
       .single();
 
@@ -262,50 +246,14 @@ export async function POST(
       if (lineUpdateError) {
         warnings.push(`updating the cost line failed: ${lineUpdateError.message}`);
       }
-      if (line.item_id) {
-        const { data: item } = await supabase
-          .from("items")
-          .select("id, quantity, library_item_id")
-          .eq("id", line.item_id)
-          .maybeSingle();
-        if (item) affectedItem = item as AffectedItem;
-      }
     }
   } else if (typedInvoice.proposed_match_type === "item") {
-    // r24 item 7 — see this route's own header comment for the full
-    // "why cost_lines.actual_paid_ex_gst, not a new items column" story.
     const { data: item } = await supabase
       .from("items")
       .select("id, quantity, library_item_id")
       .eq("id", typedInvoice.proposed_match_id)
       .maybeSingle();
     if (item) affectedItem = item as AffectedItem;
-
-    const { data: linkedLines, error: linesFetchError } = await supabase
-      .from("cost_lines")
-      .select("id, actual_paid_ex_gst")
-      .eq("item_id", typedInvoice.proposed_match_id)
-      .is("deleted_at", null);
-
-    if (linesFetchError) {
-      warnings.push(`could not look up cost lines for this item: ${linesFetchError.message}`);
-    } else if (!linkedLines || linkedLines.length === 0) {
-      warnings.push("this item has no linked cost line — actuals were not updated (link one in the Estimate first)");
-    } else if (linkedLines.length > 1) {
-      warnings.push(
-        `this item is linked to ${linkedLines.length} cost lines — actuals were not updated automatically (ambiguous which line the payment applies to; apply it manually in the Estimate)`
-      );
-    } else {
-      const line = linkedLines[0];
-      const nextActual = roundToCents((line.actual_paid_ex_gst ?? 0) + typedInvoice.amount_ex_gst);
-      const { error: lineUpdateError } = await supabase
-        .from("cost_lines")
-        .update({ actual_paid_ex_gst: nextActual })
-        .eq("id", line.id);
-      if (lineUpdateError) {
-        warnings.push(`updating the cost line failed: ${lineUpdateError.message}`);
-      }
-    }
   } else if (typedInvoice.proposed_match_type === "item_component") {
     const { data: component } = await supabase
       .from("item_components")
@@ -323,30 +271,8 @@ export async function POST(
         parent_quantity: Number(parent.quantity),
       };
     }
-
-    const { data: linkedLines, error: linesFetchError } = component
-      ? await supabase
-          .from("cost_lines")
-          .select("id, actual_paid_ex_gst")
-          .eq("item_id", component.item_id)
-          .is("deleted_at", null)
-      : { data: null, error: null };
     if (!component) {
-      warnings.push("its matched assembly component could not be found — actuals were not updated");
-    } else if (linesFetchError) {
-      warnings.push(`could not look up the assembly's cost line: ${linesFetchError.message}`);
-    } else if (!linkedLines || linkedLines.length === 0) {
-      warnings.push("this assembly has no linked cost line — actuals were not updated");
-    } else if (linkedLines.length > 1) {
-      warnings.push("this assembly has more than one linked cost line — actuals were not updated");
-    } else {
-      const line = linkedLines[0];
-      const nextActual = roundToCents((line.actual_paid_ex_gst ?? 0) + typedInvoice.amount_ex_gst);
-      const { error: lineUpdateError } = await supabase
-        .from("cost_lines")
-        .update({ actual_paid_ex_gst: nextActual })
-        .eq("id", line.id);
-      if (lineUpdateError) warnings.push(`updating the cost line failed: ${lineUpdateError.message}`);
+      warnings.push("its matched assembly component could not be found — pricing was not updated");
     }
   }
 

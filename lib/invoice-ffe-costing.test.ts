@@ -131,11 +131,10 @@ test("archived components stay out of matching but their historical actual still
   assert.equal(rows.find((row) => row.match_type === "item")?.approved_actual_ex_gst, 70);
 });
 
-test("cost-line matches linked to an FF&E item are included in its approved actual", () => {
+test("cost-line matches stay in the labour/install lane and do not reduce FF&E", () => {
   const [row] = buildInvoiceFfeCostingRows({
     items: [baseItem],
     components: [],
-    costLineItemIds: { line: "tap" },
     approvedAllocations: [{
       invoice_id: "invoice-3",
       match_type: "cost_line",
@@ -143,6 +142,6 @@ test("cost-line matches linked to an FF&E item are included in its approved actu
       amount_ex_gst: 90,
     }],
   });
-  assert.equal(row.approved_actual_ex_gst, 90);
-  assert.equal(row.approved_invoice_count, 1);
+  assert.equal(row.approved_actual_ex_gst, 0);
+  assert.equal(row.approved_invoice_count, 0);
 });
