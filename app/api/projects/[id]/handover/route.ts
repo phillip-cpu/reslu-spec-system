@@ -44,7 +44,7 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const [{ data: projectFiles }, { data: itemFiles }, { data: sitePhotos }] = await Promise.all([
+  const [projectFilesResult, itemFilesResult, sitePhotosResult] = await Promise.all([
     supabase
       .from("project_files")
       .select("id,kind,filename,in_handover_pack,share_to_portal")
@@ -64,9 +64,19 @@ export async function GET(
       .order("taken_at", { ascending: false }),
   ]);
 
+  const readError =
+    projectFilesResult.error ?? itemFilesResult.error ?? sitePhotosResult.error;
+  if (readError) {
+    return NextResponse.json({ error: readError.message }, { status: 500 });
+  }
+
+  const projectFiles = projectFilesResult.data ?? [];
+  const itemFiles = itemFilesResult.data ?? [];
+  const sitePhotos = sitePhotosResult.data ?? [];
+
   return NextResponse.json({
-    project_files: projectFiles ?? [],
-    item_files: (itemFiles ?? []).map((f) => {
+    project_files: projectFiles,
+    item_files: itemFiles.map((f) => {
       // Supabase embeds items(name) as an object or array; the untyped
       // client infers it loosely, so cast the join shape.
       const joined = f.items as { name: string } | { name: string }[] | null;
@@ -78,7 +88,7 @@ export async function GET(
         item_name: Array.isArray(joined) ? joined[0]?.name : joined?.name,
       };
     }),
-    site_photos: sitePhotos ?? [],
+    site_photos: sitePhotos,
   });
 }
 

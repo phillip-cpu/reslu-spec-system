@@ -7,19 +7,22 @@ import {
   projectStatusForStage,
 } from "./project-lifecycle.ts";
 
-test("maps detailed project stages onto the five visible lifecycle steps", () => {
+test("maps every delivery stage onto its visible lifecycle step", () => {
   assert.equal(lifecycleStepIndex("quoting"), 1);
   assert.equal(lifecycleStepIndex("design"), 2);
   assert.equal(lifecycleStepIndex("preconstruction"), 3);
-  assert.equal(lifecycleStepIndex("handover"), 3);
-  assert.equal(lifecycleStepIndex("complete"), 4);
+  assert.equal(lifecycleStepIndex("construction"), 4);
+  assert.equal(lifecycleStepIndex("handover"), 5);
+  assert.equal(lifecycleStepIndex("complete"), 6);
   assert.equal(lifecycleStepIndex("on_hold"), null);
 });
 
-test("moves through the canonical proposal, design, construction and finalised progression", () => {
+test("moves through every canonical delivery stage without shortcuts", () => {
   assert.equal(nextProjectStage("quoting"), "design");
-  assert.equal(nextProjectStage("design"), "construction");
-  assert.equal(nextProjectStage("construction"), "complete");
+  assert.equal(nextProjectStage("design"), "preconstruction");
+  assert.equal(nextProjectStage("preconstruction"), "construction");
+  assert.equal(nextProjectStage("construction"), "handover");
+  assert.equal(nextProjectStage("handover"), "complete");
   assert.equal(nextProjectStage("complete"), null);
 });
 

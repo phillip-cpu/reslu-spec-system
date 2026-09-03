@@ -17,7 +17,9 @@ export const JOB_LIFECYCLE_STEPS = [
   { key: "lead", label: "Lead" },
   { key: "proposal", label: "Proposal" },
   { key: "design", label: "Design" },
+  { key: "preconstruction", label: "Pre-construction" },
   { key: "construction", label: "Construction" },
+  { key: "handover", label: "Handover" },
   { key: "finalised", label: "Finalised" },
 ] as const;
 
@@ -25,7 +27,7 @@ export function projectStageLabel(stage: ProjectStage): string {
   return PROJECT_STAGE_OPTIONS.find((option) => option.value === stage)?.label ?? stage;
 }
 
-/** Maps detailed delivery stages onto the five business lifecycle steps. */
+/** Maps delivery stages onto the visible lead-to-finalised lifecycle. */
 export function lifecycleStepIndex(stage: ProjectStage): number | null {
   switch (stage) {
     case "quoting":
@@ -33,11 +35,13 @@ export function lifecycleStepIndex(stage: ProjectStage): number | null {
     case "design":
       return 2;
     case "preconstruction":
-    case "construction":
-    case "handover":
       return 3;
-    case "complete":
+    case "construction":
       return 4;
+    case "handover":
+      return 5;
+    case "complete":
+      return 6;
     case "on_hold":
       return null;
   }
@@ -48,9 +52,11 @@ export function nextProjectStage(stage: ProjectStage): ProjectStage | null {
     case "quoting":
       return "design";
     case "design":
+      return "preconstruction";
     case "preconstruction":
       return "construction";
     case "construction":
+      return "handover";
     case "handover":
       return "complete";
     case "complete":

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 interface ProjectFileRow {
   id: string;
@@ -36,28 +36,45 @@ export function HandoverCurationPanel({ projectId }: { projectId: string }) {
   const [sitePhotos, setSitePhotos] = useState<SitePhotoRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  const reload = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/projects/${projectId}/handover`);
-      if (!res.ok) throw new Error("Could not load handover candidates.");
-      const data = await res.json();
-      setProjectFiles(data.project_files ?? []);
-      setItemFiles(data.item_files ?? []);
-      setSitePhotos(data.site_photos ?? []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load handover candidates.");
-    } finally {
-      setLoading(false);
-    }
-  }, [projectId]);
+  const [savingKeys, setSavingKeys] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
-    reload();
-  }, [reload]);
+    let active = true;
+    fetch(`/api/projects/${projectId}/handover`, { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(body.error ?? "Could not load handover candidates.");
+        }
+        if (active) {
+          setProjectFiles(body.project_files ?? []);
+          setItemFiles(body.item_files ?? []);
+          setSitePhotos(body.site_photos ?? []);
+        }
+      })
+      .catch((loadError) => {
+        if (active) {
+          setError(
+            loadError instanceof Error
+              ? loadError.message
+              : "Could not load handover candidates."
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [projectId]);
 
   async function toggle(table: "project_files" | "item_files" | "site_photos", id: string, next: boolean) {
+    const savingKey = `${table}:${id}`;
+    if (savingKeys.has(savingKey)) return;
     setError(null);
+    setSavingKeys((current) => new Set(current).add(savingKey));
     try {
       const res = await fetch(`/api/projects/${projectId}/handover`, {
         method: "PATCH",
@@ -70,17 +87,34 @@ export function HandoverCurationPanel({ projectId }: { projectId: string }) {
       if (table === "site_photos") setSitePhotos((cur) => cur.map((p) => (p.id === id ? { ...p, in_handover_pack: next } : p)));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not update");
+    } finally {
+      setSavingKeys((current) => {
+        const updated = new Set(current);
+        updated.delete(savingKey);
+        return updated;
+      });
     }
   }
 
   if (loading) return <p className="text-body text-charcoal/50">Loading…</p>;
 
+  const selectedCount =
+    projectFiles.filter((file) => file.in_handover_pack).length +
+    itemFiles.filter((file) => file.in_handover_pack).length +
+    sitePhotos.filter((photo) => photo.in_handover_pack).length;
+  const candidateCount = projectFiles.length + itemFiles.length + sitePhotos.length;
+
   return (
     <div className="space-y-8">
-      <p className="text-body text-charcoal/70">
-        Tick which files and photos belong in the client&apos;s Handover pack. The section appears on the portal once the
-        project&apos;s status is set to Completed.
-      </p>
+      <div className="flex flex-col gap-2 border border-[#dcd6cc] bg-offwhite p-4 sm:flex-row sm:items-center sm:justify-between">
+        <p className="max-w-2xl text-body text-charcoal/70">
+          Select the files and photos the client should receive. The pack becomes visible
+          when the job is Finalised.
+        </p>
+        <span className="shrink-0 text-caption font-semibold text-nearblack">
+          {selectedCount} of {candidateCount} selected
+        </span>
+      </div>
 
       {error && (
         <p className="border border-red-700/40 bg-red-50 px-4 py-2 text-body text-red-700">{error}</p>
@@ -89,14 +123,24 @@ export function HandoverCurationPanel({ projectId }: { projectId: string }) {
       <CurationList
         label="Compliance certificates & documents"
         empty="No certificates or shared documents yet."
-        items={projectFiles.map((f) => ({ id: f.id, label: f.filename, checked: f.in_handover_pack }))}
+        items={projectFiles.map((f) => ({
+          id: f.id,
+          label: f.filename,
+          checked: f.in_handover_pack,
+          saving: savingKeys.has(`project_files:${f.id}`),
+        }))}
         onToggle={(id, next) => toggle("project_files", id, next)}
       />
 
       <CurationList
         label="Manuals & warranties"
         empty="No install manuals or warranties uploaded to items yet."
-        items={itemFiles.map((f) => ({ id: f.id, label: `${f.item_name ? `${f.item_name} — ` : ""}${f.filename}`, checked: f.in_handover_pack }))}
+        items={itemFiles.map((f) => ({
+          id: f.id,
+          label: `${f.item_name ? `${f.item_name} — ` : ""}${f.filename}`,
+          checked: f.in_handover_pack,
+          saving: savingKeys.has(`item_files:${f.id}`),
+        }))}
         onToggle={(id, next) => toggle("item_files", id, next)}
       />
 
@@ -107,6 +151,7 @@ export function HandoverCurationPanel({ projectId }: { projectId: string }) {
           id: p.id,
           label: p.caption || new Date(p.taken_at).toLocaleDateString("en-AU"),
           checked: p.in_handover_pack,
+          saving: savingKeys.has(`site_photos:${p.id}`),
         }))}
         onToggle={(id, next) => toggle("site_photos", id, next)}
       />
@@ -122,12 +167,17 @@ function CurationList({
 }: {
   label: string;
   empty: string;
-  items: { id: string; label: string; checked: boolean }[];
+  items: { id: string; label: string; checked: boolean; saving: boolean }[];
   onToggle: (id: string, next: boolean) => void;
 }) {
   return (
-    <div>
-      <p className="label-caps mb-2 !text-sand">{label}</p>
+    <section className="border border-[#dcd6cc] bg-cream p-4">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="label-caps !text-sand">{label}</p>
+        <span className="text-caption text-charcoal/50">
+          {items.filter((item) => item.checked).length}/{items.length}
+        </span>
+      </div>
       {items.length === 0 ? (
         <p className="text-body text-charcoal/50">{empty}</p>
       ) : (
@@ -136,13 +186,18 @@ function CurationList({
             <li key={it.id} className="flex items-center justify-between gap-3 border-b border-[#e5e0d6] py-2">
               <span className="truncate text-body text-charcoal/80">{it.label}</span>
               <label className="flex shrink-0 items-center gap-2 text-caption text-charcoal/60">
-                <input type="checkbox" checked={it.checked} onChange={(e) => onToggle(it.id, e.target.checked)} />
-                In handover pack
+                <input
+                  type="checkbox"
+                  checked={it.checked}
+                  disabled={it.saving}
+                  onChange={(e) => onToggle(it.id, e.target.checked)}
+                />
+                {it.saving ? "Saving…" : "In handover pack"}
               </label>
             </li>
           ))}
         </ul>
       )}
-    </div>
+    </section>
   );
 }
