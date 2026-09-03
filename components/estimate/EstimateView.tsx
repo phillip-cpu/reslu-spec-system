@@ -747,7 +747,10 @@ function LineRow({
   // unsaved local edits, adopt it. While dirty, keep the user's
   // in-progress edits — don't clobber them mid-type.
   const lastLineId = useRef(line.id);
+  // This guard synchronizes the local draft with a newly supplied server row.
+  // eslint-disable-next-line react-hooks/refs
   if (!dirty && (lastLineId.current !== line.id || line.updated_at !== draft.updated_at)) {
+    // eslint-disable-next-line react-hooks/refs
     lastLineId.current = line.id;
     if (draft.id !== line.id || draft.updated_at !== line.updated_at) {
       setDraft(line);
@@ -768,6 +771,9 @@ function LineRow({
   // most lines have no contact link.
   useEffect(() => {
     if (!draft.contact_id) {
+      // Clearing a contact that was removed from the external row is part of
+      // this effect's synchronization boundary.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setLinkedContact(null);
       return;
     }
@@ -1483,8 +1489,8 @@ function FfeBlock({ ffe }: { ffe: EstimateResponse["ffe"] }) {
           <div className="border-t border-[#dcd6cc] px-4 py-3">
             <p className="text-body text-nearblack">
               FF&amp;E client quote {formatMoney(ffe.client_total)} · product cost {formatMoney(ffe.total)} —{" "}
-              {Math.round(ffe.quoted_share * 100)}% quoted /{" "}
-              {Math.round(ffe.placeholder_share * 100)}% placeholder
+              {ffe.quoted_count} quoted · {ffe.placeholder_count}{" "}
+              {ffe.placeholder_count === 1 ? "RRP placeholder" : "RRP placeholders"}
               {ffe.unpriced_count > 0 && (
                 <span className="text-charcoal/50"> · {ffe.unpriced_count} unpriced</span>
               )}

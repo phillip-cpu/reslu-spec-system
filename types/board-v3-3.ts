@@ -42,6 +42,7 @@ export type PatchBoardTaskV33Input = PatchBoardTaskInputV2 & {
   kind?: "task" | "milestone";
   booking_date?: string | null;
   booking_end_date?: string | null;
+  trade_role?: string | null;
 };
 
 /** PATCH /api/board-tasks/[id] response, Board v3.3 — adds reconfirm_visit_ids (populated only when a direct booking-date edit was synced onto a CONFIRMED linked visit — see that route's WORKS-DATE / VISIT SYNC doc comment). */

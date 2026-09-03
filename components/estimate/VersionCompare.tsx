@@ -27,6 +27,9 @@ export function VersionCompare({ projectId, a, b }: Props) {
 
   useEffect(() => {
     let active = true;
+    // Resetting fetch state is the effect's synchronization boundary when the
+    // selected comparison pair changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     setError(null);
     fetch(`/api/projects/${projectId}/versions/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`)
@@ -137,6 +140,11 @@ export function VersionCompare({ projectId, a, b }: Props) {
       )}
 
       {/* FF&E substitutions */}
+      {!data.ffeComparisonAvailable && (
+        <p className="border border-sand/50 bg-sand/10 px-4 py-3 text-body text-charcoal/65">
+          Item-level FF&amp;E comparison is unavailable because this older saved version predates frozen item detail. Its frozen FF&amp;E category totals are still included in the headline total.
+        </p>
+      )}
       {data.ffeSubstitutions.length > 0 && (
         <div className="border border-[#dcd6cc]">
           <div className="bg-cream px-4 py-2">

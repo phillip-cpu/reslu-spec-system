@@ -181,6 +181,7 @@ export interface ContactPickerOption {
   company: string;
   contact_name: string | null;
   trade_type?: string | null;
+  category?: string | null;
 }
 
 export interface ContactPickerProps {

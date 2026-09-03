@@ -402,7 +402,7 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
                   {projectStageLabel(finance.project.project_stage)}
                 </span>
                 <span className="border border-charcoal/20 px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] text-charcoal/60">
-                  Live forecast
+                  {constructionCostsIncluded ? "Saved costs · live timing" : "Design fee only"}
                 </span>
               </div>
               <h1 className="mt-4 font-display text-[38px] font-light leading-none text-nearblack md:text-[46px]">

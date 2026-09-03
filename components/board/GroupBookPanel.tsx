@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { ContactPickerOption } from "@/types/board-cockpit";
 import type { DocumentPackChoices } from "@/types/trade-doc-pack";
@@ -9,6 +9,7 @@ import { ContactPicker } from "@/components/shared/ContactPicker";
 import { pickPresetForContactCategory } from "@/lib/export-presets";
 import { scheduleLabel } from "@/lib/trade-doc-pack";
 import type { ExportPresetRow } from "@/types/round-export-batch";
+import type { ProjectTradeAssignment } from "@/types/project-trade-assignments";
 
 interface ContactCategoryLookup {
   id: string;
@@ -102,14 +103,15 @@ export function GroupBookPanel({
   const [contactEmails, setContactEmails] = useState<Map<string, string | null>>(new Map());
   const [allTasks, setAllTasks] = useState<GroupableTask[]>([]);
   const [presets, setPresets] = useState<ExportPresetRow[]>([]);
+  const [tradeAssignments, setTradeAssignments] = useState<ProjectTradeAssignment[]>([]);
   const [plansAvailability, setPlansAvailability] = useState<PlansAvailability>({ hasPlans: false, latestLabel: null });
   const [sowAvailability, setSowAvailability] = useState<SowAvailability>({ hasIssuedSow: false, latestLabel: null });
   const [loading, setLoading] = useState(true);
   const [contactId, setContactId] = useState<string | null>(null);
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
   const [dateDrafts, setDateDrafts] = useState<Map<string, DateDraft>>(new Map());
-  const [defaultsAppliedForContact, setDefaultsAppliedForContact] = useState<string | null>(null);
-  const [seedApplied, setSeedApplied] = useState(false);
+  const defaultsAppliedForContact = useRef<string | null>(null);
+  const seedApplied = useRef(false);
   const [showMoreLines, setShowMoreLines] = useState(false);
 
   const [includePlans, setIncludePlans] = useState(false);
@@ -131,19 +133,24 @@ export function GroupBookPanel({
       fetch(`/api/settings/export-presets`).then((r) => (r.ok ? r.json() : { presets: [] })),
       fetch(`/api/projects/${projectId}/files`).then((r) => (r.ok ? r.json() : { files: [] })),
       fetch(`/api/projects/${projectId}/sow`).then((r) => (r.ok ? r.json() : { sow_documents: [] })),
+      fetch(`/api/projects/${projectId}/trade-assignments`).then((r) =>
+        r.ok ? r.json() : { assignments: [] }
+      ),
     ])
-      .then(([contactsBody, boardBody, presetsBody, filesBody, sowBody]) => {
+      .then(([contactsBody, boardBody, presetsBody, filesBody, sowBody, assignmentsBody]) => {
         if (cancelled) return;
         const rawContacts: (ContactPickerOption & { category?: string | null; email?: string | null })[] = contactsBody.contacts ?? [];
         setContacts(rawContacts);
         setContactCategories(rawContacts.map((c) => ({ id: c.id, category: c.category ?? null })));
         setContactEmails(new Map(rawContacts.map((c) => [c.id, c.email ?? null])));
         setPresets(presetsBody.presets ?? []);
+        setTradeAssignments(assignmentsBody.assignments ?? []);
 
         type BoardTaskRow = {
           id: string;
           title: string;
           contact_id: string | null;
+          trade_role: string | null;
           booking_date: string | null;
           booking_end_date: string | null;
           phase_group_id: string | null;
@@ -163,6 +170,7 @@ export function GroupBookPanel({
           id: t.id,
           title: t.title,
           contact_id: t.contact_id,
+          trade_role: t.trade_role,
           booking_date: t.booking_date,
           booking_end_date: t.booking_end_date,
           phase_group_id: t.phase_group_id,
@@ -210,18 +218,39 @@ export function GroupBookPanel({
   // under a contact they don't belong to) — see this file's own header
   // comment for why a per-task contact mismatch isn't silently forced. ----
   useEffect(() => {
-    if (seedApplied || allTasks.length === 0) return;
-    setSeedApplied(true);
-    const ids = seedTaskIds ?? [];
-    if (ids.length === 0) return;
-    const seedTasks = allTasks.filter((t) => ids.includes(t.id));
-    const counts = new Map<string, number>();
-    for (const t of seedTasks) {
-      if (t.contact_id) counts.set(t.contact_id, (counts.get(t.contact_id) ?? 0) + 1);
-    }
-    const resolved = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
-    if (resolved) setContactId(resolved);
-  }, [allTasks, seedApplied, seedTaskIds]);
+    if (seedApplied.current || allTasks.length === 0) return;
+    seedApplied.current = true;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      const ids = seedTaskIds ?? [];
+      if (ids.length === 0) return;
+      const seedTasks = allTasks.filter((t) => ids.includes(t.id));
+      const counts = new Map<string, number>();
+      for (const t of seedTasks) {
+        if (t.contact_id) counts.set(t.contact_id, (counts.get(t.contact_id) ?? 0) + 1);
+      }
+      const resolved = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+      if (resolved) {
+        setContactId(resolved);
+        return;
+      }
+
+      const roleCounts = new Map<string, number>();
+      for (const task of seedTasks) {
+        const roleKey = task.trade_role?.trim().toLowerCase();
+        if (roleKey) roleCounts.set(roleKey, (roleCounts.get(roleKey) ?? 0) + 1);
+      }
+      const resolvedRole = [...roleCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+      const inheritedContactId = resolvedRole
+        ? tradeAssignments.find((assignment) => assignment.role_key === resolvedRole)?.contact_id
+        : null;
+      if (inheritedContactId) setContactId(inheritedContactId);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [allTasks, seedTaskIds, tradeAssignments]);
 
   const tasksForContact = useMemo(
     () => allTasks.filter((t) => t.contact_id === contactId),
@@ -282,54 +311,53 @@ export function GroupBookPanel({
   // report). No seed at all (blank/manual contact pick) starts with
   // nothing checked.
   useEffect(() => {
-    if (!contactId || defaultsAppliedForContact === contactId) return;
-    setDefaultsAppliedForContact(contactId);
-
-    const ids = seedTaskIds ?? [];
-    const eligibleIds = new Set(eligibleTasksForContact.map((t) => t.id));
-    const allEligibleIds = new Set(allTasks.filter((t) => t.phase_id).map((t) => t.id));
-    let initialSelection: Set<string>;
-    if (ids.length === 1 && eligibleTasksForContact.some((t) => t.id === ids[0])) {
-      initialSelection = new Set(eligibleIds);
-    } else if (ids.length > 0) {
-      initialSelection = new Set(ids.filter((id) => allEligibleIds.has(id)));
-    } else {
-      initialSelection = new Set();
-    }
-    setSelectedTaskIds(initialSelection);
-
-    // A multi-id seed that reaches outside the resolved contact's own
-    // tasks needs "+ Add more lines" open by default, or the now-checked
-    // rows would be invisible under the collapsed section.
-    if (ids.some((id) => !eligibleIds.has(id) && allEligibleIds.has(id))) {
-      setShowMoreLines(true);
-    }
-
-    // Seed the date drafts for every task now in view (checked or not)
-    // from its own stored works dates, so the inputs show real values
-    // immediately rather than flashing blank-then-filled.
-    setDateDrafts((cur) => {
-      const next = new Map(cur);
-      for (const t of [...eligibleTasksForContact, ...otherEligibleTasks]) {
-        if (!next.has(t.id)) next.set(t.id, { start: t.booking_date ?? "", end: t.booking_end_date ?? "" });
+    if (!contactId || defaultsAppliedForContact.current === contactId) return;
+    defaultsAppliedForContact.current = contactId;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      const ids = seedTaskIds ?? [];
+      const eligibleIds = new Set(eligibleTasksForContact.map((t) => t.id));
+      const allEligibleIds = new Set(allTasks.filter((t) => t.phase_id).map((t) => t.id));
+      let initialSelection: Set<string>;
+      if (ids.length === 1 && eligibleTasksForContact.some((t) => t.id === ids[0])) {
+        initialSelection = new Set(eligibleIds);
+      } else if (ids.length > 0) {
+        initialSelection = new Set(ids.filter((id) => allEligibleIds.has(id)));
+      } else {
+        initialSelection = new Set();
       }
-      return next;
-    });
+      setSelectedTaskIds(initialSelection);
 
-    setIncludePlans(plansAvailability.hasPlans);
-    setIncludeSow(sowAvailability.hasIssuedSow);
-    setIncludeSchedule(true);
-    const contactCategory = contactCategories.find((c) => c.id === contactId)?.category ?? null;
-    const matched = pickPresetForContactCategory(presets, contactCategory);
-    if (matched) {
-      setScheduleCategories([...matched.prefixes]);
-      setSchedulePresetName(matched.name);
-    } else {
-      setScheduleCategories(null);
-      setSchedulePresetName(null);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contactId, eligibleTasksForContact, plansAvailability, sowAvailability, contactCategories, presets]);
+      if (ids.some((id) => !eligibleIds.has(id) && allEligibleIds.has(id))) {
+        setShowMoreLines(true);
+      }
+
+      setDateDrafts((cur) => {
+        const next = new Map(cur);
+        for (const t of [...eligibleTasksForContact, ...otherEligibleTasks]) {
+          if (!next.has(t.id)) next.set(t.id, { start: t.booking_date ?? "", end: t.booking_end_date ?? "" });
+        }
+        return next;
+      });
+
+      setIncludePlans(plansAvailability.hasPlans);
+      setIncludeSow(sowAvailability.hasIssuedSow);
+      setIncludeSchedule(true);
+      const contactCategory = contactCategories.find((c) => c.id === contactId)?.category ?? null;
+      const matched = pickPresetForContactCategory(presets, contactCategory);
+      if (matched) {
+        setScheduleCategories([...matched.prefixes]);
+        setSchedulePresetName(matched.name);
+      } else {
+        setScheduleCategories(null);
+        setSchedulePresetName(null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [contactId, eligibleTasksForContact, otherEligibleTasks, allTasks, plansAvailability, sowAvailability, contactCategories, presets, seedTaskIds]);
 
   function toggleTask(taskId: string) {
     setSelectedTaskIds((cur) => {
@@ -546,9 +574,34 @@ export function GroupBookPanel({
           <p className="mt-3 text-body text-charcoal/50">Loading…</p>
         ) : (
           <div className="mt-3 space-y-3">
+            {tradeAssignments.some((assignment) => assignment.contact) && (
+              <div className="border border-[#dcd6cc] bg-offwhite px-3 py-2.5">
+                <p className="label-caps mb-2">Project trade team</p>
+                <div className="flex flex-wrap gap-2">
+                  {tradeAssignments
+                    .filter((assignment) => assignment.contact)
+                    .map((assignment) => (
+                      <button
+                        key={assignment.id}
+                        type="button"
+                        onClick={() => setContactId(assignment.contact_id)}
+                        className={
+                          "border px-2.5 py-1.5 text-left text-caption transition-colors " +
+                          (contactId === assignment.contact_id
+                            ? "border-nearblack bg-nearblack text-white"
+                            : "border-[#c9c2b4] text-charcoal hover:border-nearblack")
+                        }
+                      >
+                        <span className="font-medium">{assignment.trade_role}</span>
+                        <span className="block opacity-75">{assignment.contact?.company}</span>
+                      </button>
+                    ))}
+                </div>
+              </div>
+            )}
             <label className="block">
-              <span className="label-caps mb-1 block">Trade</span>
-              <ContactPicker contacts={contacts} selectedId={contactId} onSelect={setContactId} placeholder="Select a trade…" />
+              <span className="label-caps mb-1 block">Contractor</span>
+              <ContactPicker contacts={contacts} selectedId={contactId} onSelect={setContactId} placeholder="Select contractor…" />
             </label>
 
             {contactId && (

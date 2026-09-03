@@ -13,6 +13,7 @@ import { suppressProposalFollowupForLeadStage } from "@/lib/proposal-followups";
 import { quoteRequestFollowup } from "@/lib/supplier-quotes";
 import type { CpdDefaults } from "@/types/cpd";
 import type { MyWorkItem, MyWorkResponse } from "@/types/phase-12a-b";
+import { loadItemScheduleRequirementData } from "@/lib/item-schedule-requirements-server";
 
 export const runtime = "nodejs";
 
@@ -527,7 +528,7 @@ export async function GET() {
     if (itemRows.length > 0) {
       const projectIdsForOrdering = [...new Set(itemRows.map((i) => i.project_id))];
 
-      const [{ data: presetSetting }, { data: allVisits }, { data: allBookedTasks }] = await Promise.all([
+      const [{ data: presetSetting }, { data: allVisits }, { data: allBookedTasks }, requirementData] = await Promise.all([
         supabase.from("app_settings").select("value").eq("key", "export_presets").maybeSingle(),
         supabase
           .from("trade_visits")
@@ -541,6 +542,7 @@ export async function GET() {
           .in("project_id", projectIdsForOrdering)
           .is("deleted_at", null)
           .not("booking_date", "is", null),
+        loadItemScheduleRequirementData(supabase, projectIdsForOrdering),
       ]);
 
       const presets = resolveExportPresets(presetSetting?.value);
@@ -581,7 +583,14 @@ export async function GET() {
         category: c.category,
       }));
 
-      const orderingResults = deriveOrderBy(itemRows, presets, orderingContacts, orderingSources);
+      const orderingResults = deriveOrderBy(
+        itemRows,
+        presets,
+        orderingContacts,
+        orderingSources,
+        new Date(),
+        requirementData.orderByInputs
+      );
       const dueOrOverdue = orderingResults.filter((r) => r.status === "due_soon" || r.status === "overdue");
 
       if (dueOrOverdue.length > 0) {
@@ -617,7 +626,7 @@ export async function GET() {
         for (const r of dueOrOverdue) {
           const item = itemById.get(r.item_id);
           if (!item || !r.order_by || !r.works_date) continue;
-          const presetName = r.matched_preset?.name ?? "Unmapped trade";
+          const presetName = r.required_trade_role ?? r.matched_preset?.name ?? "Unmapped trade";
           const key = `${item.project_id}::${presetName}`;
           const existing = rollup.get(key);
           if (!existing) {

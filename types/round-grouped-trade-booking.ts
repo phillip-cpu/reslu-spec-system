@@ -92,6 +92,7 @@ export interface GroupableTask {
   id: string;
   title: string;
   contact_id: string | null;
+  trade_role: string | null;
   booking_date: string | null;
   booking_end_date: string | null;
   phase_group_id: string | null;

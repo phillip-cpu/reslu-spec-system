@@ -26,3 +26,22 @@ export function ffeClientQuoteUnitPrice(item: FfePriceInput): number | null {
   }
   return null;
 }
+
+/**
+ * Best-known FF&E product cost used by estimate and procurement summaries.
+ *
+ * A supplier/trade price is authoritative when present. Until then, RRP is an
+ * explicit placeholder cost (and therefore carries no margin). Keeping this
+ * cascade beside ffeClientQuoteUnitPrice prevents Procurement, Estimate and
+ * saved Finance baselines from silently producing different totals.
+ */
+export function ffeProductCostUnitPrice(item: FfePriceInput): number | null {
+  if (item.cost_scope === "trade_package") return null;
+  if (item.price_trade !== null && item.price_trade !== undefined) {
+    return item.price_trade;
+  }
+  if (item.price_rrp !== null && item.price_rrp !== undefined) {
+    return item.price_rrp;
+  }
+  return null;
+}

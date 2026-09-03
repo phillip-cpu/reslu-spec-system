@@ -19,7 +19,7 @@ export interface FfeForecastTiming {
   worksDate: string | null;
   tradeName: string | null;
   sourceId: string | null;
-  sourceKind: "visit" | "board_task_booking" | null;
+  sourceKind: "visit" | "board_task_booking" | "board_task_requirement" | null;
 }
 
 export interface FfePricingInput {
@@ -88,7 +88,7 @@ export function buildFfeForecastTimings(
         confidence: "medium",
         orderByStatus: result.status,
         worksDate: result.works_date,
-        tradeName: result.matched_preset?.name ?? null,
+        tradeName: result.required_trade_role ?? result.matched_preset?.name ?? null,
         sourceId: result.source?.source_id ?? null,
         sourceKind: result.source?.source_kind ?? null,
       };

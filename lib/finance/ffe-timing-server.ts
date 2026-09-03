@@ -13,6 +13,7 @@ import {
   summarizeFfePricing,
   type FfeForecastTiming,
 } from "./ffe-timing.ts";
+import { loadItemScheduleRequirementData } from "../item-schedule-requirements-server.ts";
 
 export interface ProjectFfeForecastTiming {
   itemCategories: Record<string, string>;
@@ -43,7 +44,7 @@ export async function loadProjectFfeForecastTiming(
     };
   }
 
-  const [itemsResult, visitsResult, tasksResult, presetResult] = await Promise.all([
+  const [itemsResult, visitsResult, tasksResult, presetResult, requirementData] = await Promise.all([
     supabase
       .from("items")
       .select("id,project_id,category,lead_time_weeks,ordered_at,cost_scope,price_trade,price_rrp")
@@ -62,6 +63,7 @@ export async function loadProjectFfeForecastTiming(
       .is("deleted_at", null)
       .not("booking_date", "is", null),
     supabase.from("app_settings").select("value").eq("key", "export_presets").maybeSingle(),
+    loadItemScheduleRequirementData(supabase, ids),
   ]);
   const readError =
     itemsResult.error ?? visitsResult.error ?? tasksResult.error ?? presetResult.error;
@@ -118,7 +120,8 @@ export async function loadProjectFfeForecastTiming(
     presets,
     contacts,
     sources.filter((source) => source.project_id === projectId),
-    now
+    now,
+    requirementData.orderByInputs.filter((requirement) => requirement.project_id === projectId)
   ));
   const timings = buildFfeForecastTimings(items, orderBy);
   const directItems = items.filter((item) => item.cost_scope !== "trade_package");

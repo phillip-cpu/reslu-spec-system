@@ -1,5 +1,7 @@
 import {
   ffeBestPrice,
+  ffeDerivedQuantity,
+  type FfeMeasurementInput,
   type FfeItemInput,
 } from "./estimate.ts";
 import type { FfeRollup } from "../types/index.ts";
@@ -42,20 +44,25 @@ function apportionMinor(total: number, weights: number[]): number[] {
  */
 export function buildEstimateFfeItemSnapshots(
   items: EstimateFfeSnapshotInput[],
-  ffe: FfeRollup
+  ffe: FfeRollup,
+  measurementsById?: Map<string, FfeMeasurementInput>
 ): EstimateFfeItemSnapshot[] {
   const snapshots = items
     .filter((item) => item.cost_scope !== "trade_package")
     .map((item): EstimateFfeItemSnapshot => {
       const { bestPrice, confidence } = ffeBestPrice(item);
-      const total = bestPrice === null ? 0 : Number(item.quantity) * bestPrice;
+      const measurement = item.measurement_id
+        ? measurementsById?.get(item.measurement_id) ?? null
+        : null;
+      const quantity = ffeDerivedQuantity(item, measurement);
+      const total = bestPrice === null ? 0 : quantity * bestPrice;
       const totalExGst = Math.round((total + Number.EPSILON) * 100) / 100;
       return {
         id: item.id,
         item_code: item.item_code,
         name: item.name,
         category: item.category,
-        quantity: Number(item.quantity),
+        quantity,
         cost_scope: "direct",
         unit_price_ex_gst: bestPrice,
         total_ex_gst: totalExGst,

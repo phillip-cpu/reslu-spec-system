@@ -55,6 +55,42 @@ test("unordered items inherit the procurement engine's trade-linked order-by dat
   assert.equal(timings.tap.worksDate, "2026-09-24");
 });
 
+test("Finance preserves the selected Work activity and trade role", () => {
+  const timings = buildFfeForecastTimings([
+    {
+      id: "mixer",
+      project_id: "p1",
+      category: "TW",
+      lead_time_weeks: 3,
+      ordered_at: null,
+      cost_scope: "direct",
+    },
+  ], [{
+    item_id: "mixer",
+    status: "ok",
+    order_by: "2026-10-07",
+    works_date: "2026-10-30",
+    source: {
+      source_id: "rough-in-task",
+      source_kind: "board_task_requirement",
+      project_id: "p1",
+      contact_id: null,
+      start_date: "2026-10-30",
+    },
+    matched_preset: null,
+    timing_basis: "required_activity",
+    required_activity_id: "rough-in-task",
+    required_activity_title: "Plumbing rough-in",
+    required_trade_role: "Plumber",
+    buffer_days: 2,
+  }]);
+
+  assert.equal(timings.mixer.plannedDate, "2026-10-07");
+  assert.equal(timings.mixer.tradeName, "Plumber");
+  assert.equal(timings.mixer.sourceKind, "board_task_requirement");
+  assert.equal(timings.mixer.sourceId, "rough-in-task");
+});
+
 test("missing lead times and bookings remain explicitly undated", () => {
   const items = [
     { id: "lead", project_id: "p1", category: "TW", lead_time_weeks: null, ordered_at: null, cost_scope: "direct" as const },

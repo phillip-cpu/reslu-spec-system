@@ -41,6 +41,12 @@ export interface OrderByRow {
   works_date: string | null;
   /** The preset (trade mapping) whose contact_categories/name-heuristic matched — null when status is 'no_booking'. Only `name` is needed for display ("Order by — Carpenter"). */
   matched_preset_name: string | null;
+  /** Explicit Work activity wins; category_contact_fallback is legacy inference. */
+  timing_basis: "required_activity" | "category_contact_fallback";
+  required_activity_id: string | null;
+  required_activity_title: string | null;
+  matched_trade_name: string | null;
+  buffer_days: number;
   /** The contact behind the winning works-date source, for a "booked: {company}" tooltip — null when status is 'no_booking'. */
   matched_contact: ContactSummary | null;
 }

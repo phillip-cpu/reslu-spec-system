@@ -9,6 +9,15 @@ import { derivedQuantity, derivedQuantityNote } from "@/lib/item-quantity";
 import type { ItemComponent } from "@/types/item-components";
 import { assemblyProcurementLabel } from "@/lib/item-components";
 import { ItemComponentsPanel } from "./ItemComponentsPanel";
+import { ItemScheduleRequirementsPanel } from "./ItemScheduleRequirementsPanel";
+import {
+  ffeClientQuoteUnitPrice,
+  ffeProductCostUnitPrice,
+} from "@/lib/ffe-pricing";
+import type {
+  ItemScheduleRequirement,
+  ItemScheduleRequirementsResponse,
+} from "@/types/item-schedule-requirements";
 
 const ITEM_STATUSES: ItemStatus[] = [
   "Specced",
@@ -69,15 +78,14 @@ interface Props {
   orderBy?: OrderByResponse | null;
   onAssemblyPriceChange: (itemId: string, priceTrade: number | null) => void;
   onError: (message: string | null) => void;
+  onProcurementTimingChange?: () => void;
 }
 
 // ── computations ────────────────────────────────────────────
 
-/** Client sell price = trade × (1 + markup%). Null if no trade price. */
+/** Shared quote cascade: marked-up trade price, then unmarked-up RRP placeholder. */
 function clientPrice(item: Item): number | null {
-  if (item.cost_scope === "trade_package") return null;
-  if (item.price_trade === null || item.price_trade === undefined) return null;
-  return item.price_trade * (1 + (item.markup_pct ?? 0) / 100);
+  return ffeClientQuoteUnitPrice(item);
 }
 
 /**
@@ -93,10 +101,9 @@ function lineTotal(item: Item, qtyOverride?: number): number | null {
   return cp === null ? null : cp * (qtyOverride ?? item.quantity);
 }
 
-function tradeTotal(item: Item, qtyOverride?: number): number | null {
-  if (item.cost_scope === "trade_package") return null;
-  if (item.price_trade === null || item.price_trade === undefined) return null;
-  return item.price_trade * (qtyOverride ?? item.quantity);
+function productCostTotal(item: Item, qtyOverride?: number): number | null {
+  const productCost = ffeProductCostUnitPrice(item);
+  return productCost === null ? null : productCost * (qtyOverride ?? item.quantity);
 }
 
 /**
@@ -221,10 +228,21 @@ function OrderByCell({
         Set lead time
       </span>
     );
+  } else if (status === "no_booking" && row?.timing_basis === "required_activity") {
+    chip = (
+      <span className="label-caps inline-block border border-sand px-2 py-1 !text-sand">
+        Schedule activity
+      </span>
+    );
   }
 
   return (
-    <div className="flex items-center justify-end gap-1.5">
+    <div
+      className="flex items-center justify-end gap-1.5"
+      title={row?.timing_basis === "required_activity"
+        ? `Required for ${row.required_activity_title ?? "linked Work activity"}${row.matched_trade_name ? ` · ${row.matched_trade_name}` : ""}${row.buffer_days ? ` · ${row.buffer_days} day site buffer` : ""}`
+        : "Inferred from the item category and earliest matching trade booking"}
+    >
       {showDot && (
         <span
           title="Missing lead time — set it so order dates can be calculated once a trade is booked."
@@ -405,23 +423,84 @@ export function ProcurementView({
   orderBy = null,
   onAssemblyPriceChange,
   onError,
+  onProcurementTimingChange,
 }: Props) {
   // Round B — which item's measurement-link picker is currently open
   // (null = none). Only one open at a time, same "single open popover"
   // shape the Estimate module's per-row link picker uses.
   const [linkPickerFor, setLinkPickerFor] = useState<string | null>(null);
   const [components, setComponents] = useState<ItemComponent[]>([]);
-  const [componentsLoaded, setComponentsLoaded] = useState(false);
   const [componentsOpenFor, setComponentsOpenFor] = useState<string | null>(null);
+  const [scheduleData, setScheduleData] = useState<ItemScheduleRequirementsResponse>({
+    requirements: [],
+    activities: [],
+  });
+  const [scheduleLoading, setScheduleLoading] = useState(true);
+  const [scheduleOpenFor, setScheduleOpenFor] = useState<string | null>(null);
+  const [scheduleSaving, setScheduleSaving] = useState(false);
 
   useEffect(() => {
-    if (!isAdmin || componentsLoaded) return;
-    setComponentsLoaded(true);
+    if (!isAdmin) return;
+    let cancelled = false;
     fetch(`/api/projects/${projectId}/item-components`)
       .then((response) => (response.ok ? response.json() : { components: [] }))
-      .then((body) => setComponents(body.components ?? []))
-      .catch(() => onError("Could not load item components."));
-  }, [componentsLoaded, isAdmin, onError, projectId]);
+      .then((body) => {
+        if (!cancelled) setComponents(body.components ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) onError("Could not load item components.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin, onError, projectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/projects/${projectId}/item-schedule-requirements`, { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error ?? "Could not load required activities.");
+        return body as ItemScheduleRequirementsResponse;
+      })
+      .then((body) => {
+        if (!cancelled) setScheduleData(body);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          onError(error instanceof Error ? error.message : "Could not load required activities.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setScheduleLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onError, projectId]);
+
+  async function mutateScheduleRequirement(
+    method: "POST" | "PATCH" | "DELETE",
+    body: Record<string, unknown>
+  ) {
+    setScheduleSaving(true);
+    onError(null);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/item-schedule-requirements`, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const next = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(next.error ?? "Could not update required activity.");
+      setScheduleData(next as ItemScheduleRequirementsResponse);
+      onProcurementTimingChange?.();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Could not update required activity.");
+    } finally {
+      setScheduleSaving(false);
+    }
+  }
 
   const measurementsById = useMemo(
     () => new Map(measurements.map((m) => [m.id, m])),
@@ -448,6 +527,15 @@ export function ProcurementView({
     }
     return map;
   }, [components]);
+  const requirementsByItem = useMemo(() => {
+    const map = new Map<string, ItemScheduleRequirement[]>();
+    for (const requirement of scheduleData.requirements) {
+      const current = map.get(requirement.item_id) ?? [];
+      current.push(requirement);
+      map.set(requirement.item_id, current);
+    }
+    return map;
+  }, [scheduleData.requirements]);
 
   const sortedCategories = useMemo(
     () => [...categories].sort((a, b) => a.sort_order - b.sort_order),
@@ -486,7 +574,7 @@ export function ProcurementView({
       0
     );
     const cost = items.reduce(
-      (s, it) => s + (tradeTotal(it, resolvedQuantity(it as ItemWithQtyLink, measurementsById)) ?? 0),
+      (s, it) => s + (productCostTotal(it, resolvedQuantity(it as ItemWithQtyLink, measurementsById)) ?? 0),
       0
     );
     return {
@@ -495,7 +583,10 @@ export function ProcurementView({
       margin: sell - cost,
       gst: sell * GST_RATE,
       incGst: sell * (1 + GST_RATE),
-      priced: directItems.filter((it) => it.price_trade !== null).length,
+      priced: directItems.filter((it) => ffeProductCostUnitPrice(it) !== null).length,
+      placeholders: directItems.filter(
+        (it) => it.price_trade === null && it.price_rrp !== null
+      ).length,
       directCount: directItems.length,
     };
   }, [items, measurementsById]);
@@ -520,7 +611,7 @@ export function ProcurementView({
         <Stat label="GST (10%)" value={money(totals.gst)} />
         <Stat label="Quote total (inc GST)" value={money(totals.incGst)} strong />
         <Stat
-          label="Trade cost / margin"
+          label="Product cost / margin"
           value={`${money(totals.cost)} · ${money(totals.margin)}`}
         />
         <Stat
@@ -533,8 +624,8 @@ export function ProcurementView({
           tone={variance !== null && variance < 0 ? "over" : "under"}
         />
         <Stat
-          label="Items priced"
-          value={`${totals.priced} / ${totals.directCount}`}
+          label="Pricing coverage"
+          value={`${totals.priced} / ${totals.directCount}${totals.placeholders > 0 ? ` · ${totals.placeholders} RRP` : ""}`}
         />
         <Stat label="Line items" value={String(items.length)} />
       </div>
@@ -573,6 +664,7 @@ export function ProcurementView({
                 {group.items.map((item) => {
                   const risk = riskFlag(item);
                   const itemComponents = componentsByItem.get(item.id) ?? [];
+                  const itemRequirements = requirementsByItem.get(item.id) ?? [];
                   const isAssembly = itemComponents.length > 0;
                   const packageIncluded = item.cost_scope === "trade_package";
                   return (
@@ -605,11 +697,13 @@ export function ProcurementView({
                         {isAdmin && (
                           <button
                             type="button"
-                            onClick={() =>
+                            onClick={() => {
+                              setScheduleOpenFor(null);
                               setComponentsOpenFor((current) =>
                                 current === item.id ? null : item.id
-                              )
-                            }
+                              );
+                            }}
+                            aria-expanded={componentsOpenFor === item.id}
                             className={clsx(
                               "mt-0.5 text-caption underline underline-offset-2",
                               isAssembly ? "text-sand" : "text-charcoal/45 hover:text-nearblack"
@@ -620,6 +714,27 @@ export function ProcurementView({
                                   itemComponents.length === 1 ? "" : "s"
                                 } · ${assemblyProcurementLabel(itemComponents)}`
                               : "Build as assembly"}
+                          </button>
+                        )}
+                        {!packageIncluded && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setComponentsOpenFor(null);
+                              setScheduleOpenFor((current) => current === item.id ? null : item.id);
+                            }}
+                            aria-expanded={scheduleOpenFor === item.id}
+                            className={clsx(
+                              "mt-0.5 block max-w-full truncate text-left text-caption underline underline-offset-2",
+                              itemRequirements.length > 0 ? "text-sand" : "text-charcoal/45 hover:text-nearblack"
+                            )}
+                            title={itemRequirements.length > 0
+                              ? itemRequirements.map((requirement) => requirement.activity?.title ?? "Missing activity").join(", ")
+                              : "Choose the Work activity that needs this item on site"}
+                          >
+                            {itemRequirements.length > 0
+                              ? `Needed for: ${itemRequirements[0].activity?.title ?? "missing activity"}${itemRequirements.length > 1 ? ` +${itemRequirements.length - 1}` : ""}`
+                              : scheduleLoading ? "Loading activity link…" : "Set required activity"}
                           </button>
                         )}
                       </td>
@@ -662,7 +777,18 @@ export function ProcurementView({
                         )}
                       </td>
                       <td className="px-2 py-1.5 text-right text-body text-charcoal/70">
-                        {packageIncluded ? "—" : money(clientPrice(item))}
+                        {packageIncluded ? (
+                          "—"
+                        ) : (
+                          <>
+                            {money(clientPrice(item))}
+                            {item.price_trade === null && item.price_rrp !== null && (
+                              <span className="block text-caption uppercase tracking-wide text-sand">
+                                RRP placeholder
+                              </span>
+                            )}
+                          </>
+                        )}
                       </td>
                       <td className="px-2 py-1.5 text-right text-body text-nearblack">
                         {packageIncluded
@@ -766,6 +892,36 @@ export function ProcurementView({
                         )}
                       </td>
                       </tr>
+                      {scheduleOpenFor === item.id && !packageIncluded && (
+                        <tr className="border-b border-nearblack">
+                          <td colSpan={14} className="px-2 py-3">
+                            <ItemScheduleRequirementsPanel
+                              projectId={projectId}
+                              requirements={itemRequirements}
+                              activities={scheduleData.activities}
+                              saving={scheduleSaving}
+                              onClose={() => setScheduleOpenFor(null)}
+                              onAdd={(boardTaskId) =>
+                                mutateScheduleRequirement("POST", {
+                                  item_id: item.id,
+                                  board_task_id: boardTaskId,
+                                  buffer_days: 0,
+                                  notes: null,
+                                })
+                              }
+                              onDelete={(requirementId) =>
+                                mutateScheduleRequirement("DELETE", { requirement_id: requirementId })
+                              }
+                              onBufferChange={(requirementId, bufferDays) =>
+                                mutateScheduleRequirement("PATCH", {
+                                  requirement_id: requirementId,
+                                  buffer_days: bufferDays,
+                                })
+                              }
+                            />
+                          </td>
+                        </tr>
+                      )}
                       {componentsOpenFor === item.id && (
                         <tr className="border-b border-nearblack">
                           <td colSpan={14} className="px-2 py-3">

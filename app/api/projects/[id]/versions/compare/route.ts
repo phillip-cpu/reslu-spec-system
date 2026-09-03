@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
-import { diffFfeSubstitutions, diffSections, totalSaving } from "@/lib/estimate-versions";
-import type { FfeSubstitutionItemInput } from "@/lib/estimate-versions";
+import {
+  diffFfeSubstitutions,
+  diffSections,
+  ffeSubstitutionItemsFromSnapshot,
+  totalSaving,
+} from "@/lib/estimate-versions";
 import { buildLiveSnapshot } from "@/lib/estimate-live-snapshot";
 import type { EstimateSnapshot, VersionCompareResponse } from "@/types/phase-12a-a";
 
@@ -68,60 +72,23 @@ export async function GET(
 
   const sections = diffSections(a.snapshot.sections, b.snapshot.sections);
 
-  // FF&E substitution matching needs item name/code/qty/price, not just
-  // the ffe rollup totals — pull items fresh, mapped by category isn't
-  // enough (item_code lives on `items`, not on the ffe rollup's
-  // category-grouped shape) so a small dedicated query is used here
-  // rather than trying to reconstruct per-item data from either
-  // snapshot's `ffe` block, which is already aggregated by category.
-  const [{ data: aItemsRaw }, { data: bItemsRaw }] = await Promise.all([
-    aParam === "current"
-      ? supabase
-          .from("items")
-          .select("item_code, name, quantity, price_trade, price_rrp")
-          .eq("project_id", projectId)
-          .neq("cost_scope", "trade_package")
-          .is("deleted_at", null)
-      : Promise.resolve({ data: null }),
-    bParam === "current"
-      ? supabase
-          .from("items")
-          .select("item_code, name, quantity, price_trade, price_rrp")
-          .eq("project_id", projectId)
-          .neq("cost_scope", "trade_package")
-          .is("deleted_at", null)
-      : Promise.resolve({ data: null }),
-  ]);
-
-  // Frozen versions don't store per-item FF&E detail in the snapshot
-  // (only the aggregated ffe rollup) — substitution matching against a
-  // frozen version's FF&E is therefore only meaningful when at least
-  // one side is "current" (the only side with live item rows
-  // available). Both-frozen comparisons still get the section/line
-  // diff and headline saving; ffeSubstitutions is empty in that case
-  // (documented in docs/API.md) rather than silently wrong.
-  const aItems: FfeSubstitutionItemInput[] = (aItemsRaw ?? []).map((i) => ({
-    item_code: i.item_code,
-    name: i.name,
-    quantity: i.quantity,
-    price_trade: i.price_trade,
-    price_rrp: i.price_rrp,
-  }));
-  const bItems: FfeSubstitutionItemInput[] = (bItemsRaw ?? []).map((i) => ({
-    item_code: i.item_code,
-    name: i.name,
-    quantity: i.quantity,
-    price_trade: i.price_trade,
-    price_rrp: i.price_rrp,
-  }));
-  const ffeSubstitutions =
-    aParam === "current" || bParam === "current" ? diffFfeSubstitutions(aItems, bItems) : [];
+  // Every newly saved version (and the in-memory Current side) carries frozen
+  // item identities. Older versions retain honest category totals but not the
+  // detail required for an item-level comparison; report that limitation
+  // instead of incorrectly showing every live item as newly added.
+  const aItems = ffeSubstitutionItemsFromSnapshot(a.snapshot);
+  const bItems = ffeSubstitutionItemsFromSnapshot(b.snapshot);
+  const ffeComparisonAvailable = aItems !== null && bItems !== null;
+  const ffeSubstitutions = ffeComparisonAvailable
+    ? diffFfeSubstitutions(aItems, bItems)
+    : [];
 
   const payload: VersionCompareResponse = {
     a: { label: a.label, created_at: a.created_at },
     b: { label: b.label, created_at: b.created_at },
     sections,
     ffeSubstitutions,
+    ffeComparisonAvailable,
     totalSavingExGst: totalSaving(a.snapshot, b.snapshot),
     totalA: a.snapshot.wholeJob.combinedExGst,
     totalB: b.snapshot.wholeJob.combinedExGst,

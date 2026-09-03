@@ -200,6 +200,8 @@ export interface VersionCompareResponse {
   b: { label: string; created_at: string | null };
   sections: SectionDiffEntry[];
   ffeSubstitutions: FfeSubstitution[];
+  /** False for a legacy snapshot that predates frozen per-item FF&E detail. */
+  ffeComparisonAvailable: boolean;
   totalSavingExGst: number;
   totalA: number;
   totalB: number;

@@ -11,7 +11,15 @@ import type {
 } from "@/types/sow-trade-tags";
 import type { ExportPresetRow } from "@/types/round-export-batch";
 import type { SowQualityReport } from "@/types/sow-quality";
-import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
+import type {
+  ProjectTradeAssignment,
+  ProjectTradeContact,
+} from "@/types/project-trade-assignments";
+import { ContactPicker } from "@/components/shared/ContactPicker";
+import {
+  FALLBACK_EXPORT_PRESETS,
+  contactMatchesPreset,
+} from "@/lib/export-presets";
 import { distinctTaggedTrades, groupSowLinesByTrade } from "@/lib/sow-trade-tags";
 import { reorderSowLines } from "@/lib/sow-reorder";
 
@@ -60,6 +68,11 @@ export function SowBuilder({ projectId }: Props) {
   // select's option list + the "Suggest trade tags" action's own
   // resolution list) and this action's own busy/result state.
   const [presets, setPresets] = useState<ExportPresetRow[]>([]);
+  const [tradeContacts, setTradeContacts] = useState<ProjectTradeContact[]>([]);
+  const [tradeAssignments, setTradeAssignments] = useState<ProjectTradeAssignment[]>([]);
+  const [additionalTradeRoles, setAdditionalTradeRoles] = useState<string[]>([]);
+  const [assignmentSavingRole, setAssignmentSavingRole] = useState<string | null>(null);
+  const [assignmentError, setAssignmentError] = useState<string | null>(null);
   const [suggestingTags, setSuggestingTags] = useState(false);
   const [suggestMessage, setSuggestMessage] = useState<string | null>(null);
   const [quality, setQuality] = useState<SowQualityReport | null>(null);
@@ -103,22 +116,65 @@ export function SowBuilder({ projectId }: Props) {
     }
   }, [projectId]);
 
-  // "Trade-scoped SOW extracts" round — trade preset names, fetched
-  // once (same team-visible route ExportDialog/BookVisitPanel already
-  // use), independent of the revision-switching loadAll/loadSow cycle
-  // above — presets are studio-wide config, not per-SOW data.
+  // Trade vocabulary, Address Book choices and the project-level trade
+  // roster are loaded together. A failure in one optional source does not
+  // blank the others, so the SOW itself remains usable during a transient
+  // contacts/settings failure.
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/settings/export-presets")
-      .then((r) => (r.ok ? r.json() : { presets: FALLBACK_EXPORT_PRESETS }))
-      .then((body) => {
-        if (!cancelled) setPresets(body.presets ?? FALLBACK_EXPORT_PRESETS);
+    Promise.all([
+      fetch("/api/settings/export-presets").then((r) =>
+        r.ok ? r.json() : { presets: FALLBACK_EXPORT_PRESETS }
+      ),
+      fetch("/api/contacts?limit=2000").then((r) =>
+        r.ok ? r.json() : { contacts: [] }
+      ),
+      fetch(`/api/projects/${projectId}/trade-assignments`).then((r) =>
+        r.ok ? r.json() : { assignments: [] }
+      ),
+    ])
+      .then(([presetsBody, contactsBody, assignmentsBody]) => {
+        if (cancelled) return;
+        setPresets(presetsBody.presets ?? FALLBACK_EXPORT_PRESETS);
+        setTradeContacts(contactsBody.contacts ?? []);
+        setTradeAssignments(assignmentsBody.assignments ?? []);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [projectId]);
+
+  async function setTradeAssignment(tradeRole: string, contactId: string | null) {
+    setAssignmentSavingRole(tradeRole);
+    setAssignmentError(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/trade-assignments`, {
+        method: contactId ? "PUT" : "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trade_role: tradeRole, contact_id: contactId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Could not update the project trade team.");
+
+      setTradeAssignments((current) => {
+        const withoutRole = current.filter(
+          (assignment) => assignment.role_key !== tradeRole.trim().toLowerCase()
+        );
+        return contactId && body.assignment
+          ? [...withoutRole, body.assignment as ProjectTradeAssignment].sort((a, b) =>
+              a.trade_role.localeCompare(b.trade_role)
+            )
+          : withoutRole;
+      });
+    } catch (err) {
+      setAssignmentError(
+        err instanceof Error ? err.message : "Could not update the project trade team."
+      );
+    } finally {
+      setAssignmentSavingRole(null);
+    }
+  }
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -635,9 +691,29 @@ export function SowBuilder({ projectId }: Props) {
     () => roomSections.filter((section) => !selectedSourceSectionIds.has(section.id)),
     [roomSections, selectedSourceSectionIds]
   );
+  const assignmentByRoleKey = useMemo(
+    () => new Map(tradeAssignments.map((assignment) => [assignment.role_key, assignment])),
+    [tradeAssignments]
+  );
+  const visibleTradeRoles = useMemo(
+    () =>
+      [...new Set([
+        ...taggedTrades,
+        ...tradeAssignments.map((assignment) => assignment.trade_role),
+        ...additionalTradeRoles,
+      ])].sort((a, b) => a.localeCompare(b)),
+    [taggedTrades, tradeAssignments, additionalTradeRoles]
+  );
 
   if (loading) {
-    return <p className="text-body text-charcoal/50">Loading Scope of Works…</p>;
+    return (
+      <div className="space-y-4" aria-busy="true" aria-live="polite">
+        <p className="text-body text-charcoal/60">Preparing the Scope of Works…</p>
+        <div className="h-16 animate-pulse border border-[#dcd6cc] bg-cream" />
+        <div className="h-14 animate-pulse border border-[#dcd6cc] bg-offwhite" />
+        <div className="h-14 animate-pulse border border-[#dcd6cc] bg-offwhite" />
+      </div>
+    );
   }
 
   if (revisions.length === 0) {
@@ -801,6 +877,22 @@ export function SowBuilder({ projectId }: Props) {
         </p>
       )}
 
+      <ProjectTradeTeamPanel
+        tradeRoles={visibleTradeRoles}
+        scopeTradeRoles={taggedTrades}
+        presets={presets}
+        contacts={tradeContacts}
+        assignmentsByRoleKey={assignmentByRoleKey}
+        savingRole={assignmentSavingRole}
+        error={assignmentError}
+        onAssign={(tradeRole, contactId) => void setTradeAssignment(tradeRole, contactId)}
+        onAddRole={(tradeRole) =>
+          setAdditionalTradeRoles((current) =>
+            current.includes(tradeRole) ? current : [...current, tradeRole]
+          )
+        }
+      />
+
       {isDraft && selectedLines.length > 0 && (
         <div className="sticky top-16 z-20 flex flex-wrap items-center justify-between gap-3 border border-nearblack bg-nearblack px-4 py-3 text-white shadow-lg">
           <p className="text-body font-semibold">
@@ -839,7 +931,7 @@ export function SowBuilder({ projectId }: Props) {
 
           <div className="min-w-0 space-y-4">
             <div className="space-y-4">
-              {sections.map((section) => {
+              {sections.map((section, sectionIndex) => {
                 const roomIndex = reorderableRoomSections.findIndex(
                   (candidate) => candidate.id === section.id
                 );
@@ -847,8 +939,13 @@ export function SowBuilder({ projectId }: Props) {
                   <div key={section.id} id={sectionAnchorId(section.id)} className="scroll-mt-24">
                     <SectionBlock
                       section={section}
+                      defaultExpanded={
+                        sectionIndex === 0 ||
+                        (section.source_room_id !== null && section.id === roomSections[0]?.id)
+                      }
                       readOnly={!isDraft}
                       presetNames={presets.map((p) => p.name)}
+                      assignmentsByRoleKey={assignmentByRoleKey}
                       onRename={(heading) => renameSection(section.id, heading)}
                       onDelete={() => deleteSection(section.id, section.heading)}
                       canMoveUp={roomIndex > 0}
@@ -1011,6 +1108,146 @@ function SowQualityReview({
             </details>
           )}
         </>
+      )}
+    </section>
+  );
+}
+
+function ProjectTradeTeamPanel({
+  tradeRoles,
+  scopeTradeRoles,
+  presets,
+  contacts,
+  assignmentsByRoleKey,
+  savingRole,
+  error,
+  onAssign,
+  onAddRole,
+}: {
+  tradeRoles: string[];
+  scopeTradeRoles: string[];
+  presets: ExportPresetRow[];
+  contacts: ProjectTradeContact[];
+  assignmentsByRoleKey: ReadonlyMap<string, ProjectTradeAssignment>;
+  savingRole: string | null;
+  error: string | null;
+  onAssign: (tradeRole: string, contactId: string | null) => void;
+  onAddRole: (tradeRole: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const [newRole, setNewRole] = useState("");
+  const scopeRoleKeys = new Set(scopeTradeRoles.map((role) => role.trim().toLowerCase()));
+  const visibleRoleKeys = new Set(tradeRoles.map((role) => role.trim().toLowerCase()));
+  const availableRoles = presets.filter(
+    (preset) => !visibleRoleKeys.has(preset.name.trim().toLowerCase())
+  );
+  const assignedCount = tradeRoles.filter(
+    (role) => assignmentsByRoleKey.get(role.trim().toLowerCase())?.contact
+  ).length;
+
+  function sortedContactsForRole(tradeRole: string): ProjectTradeContact[] {
+    const preset = presets.find(
+      (candidate) => candidate.name.trim().toLowerCase() === tradeRole.trim().toLowerCase()
+    );
+    return [...contacts].sort((a, b) => {
+      const aMatches = preset ? contactMatchesPreset(preset, a.category) : false;
+      const bMatches = preset ? contactMatchesPreset(preset, b.category) : false;
+      if (aMatches !== bMatches) return aMatches ? -1 : 1;
+      return a.company.localeCompare(b.company);
+    });
+  }
+
+  return (
+    <section className="border border-[#dcd6cc] bg-nearwhite">
+      <button
+        type="button"
+        onClick={() => setExpanded((current) => !current)}
+        className="flex w-full flex-wrap items-center justify-between gap-2 px-4 py-3 text-left hover:bg-cream/60"
+        aria-expanded={expanded}
+      >
+        <span>
+          <span className="label-caps block !text-nearblack">Project trade team</span>
+          <span className="text-caption text-charcoal/55">
+            Choose once here; Scope and unbooked Work tasks reuse the same contractor.
+          </span>
+        </span>
+        <span className="flex items-center gap-3 text-caption text-charcoal/55">
+          {assignedCount} of {tradeRoles.length} assigned
+          <span aria-hidden>{expanded ? "−" : "+"}</span>
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="space-y-3 border-t border-[#dcd6cc] px-4 py-4">
+          {error && (
+            <p className="border border-red-700/30 bg-red-50 px-3 py-2 text-caption text-red-700">
+              {error}
+            </p>
+          )}
+
+          {tradeRoles.length === 0 ? (
+            <p className="text-body text-charcoal/55">
+              No trade roles are tagged in this scope yet. Add one below, or use
+              &quot;Suggest trade tags&quot; first.
+            </p>
+          ) : (
+            <div className="grid gap-2 lg:grid-cols-2">
+              {tradeRoles.map((tradeRole) => {
+                const assignment = assignmentsByRoleKey.get(tradeRole.trim().toLowerCase());
+                const saving = savingRole === tradeRole;
+                return (
+                  <div
+                    key={tradeRole}
+                    className="flex flex-wrap items-center justify-between gap-3 border border-[#e5e0d6] bg-offwhite px-3 py-2.5"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-body font-medium text-nearblack">{tradeRole}</p>
+                      <p className="text-caption text-charcoal/45">
+                        {scopeRoleKeys.has(tradeRole.trim().toLowerCase())
+                          ? "Used in this scope"
+                          : "Project team"}
+                        {assignment?.contact ? " · feeds unbooked Work tasks" : " · contractor missing"}
+                      </p>
+                    </div>
+                    <fieldset disabled={saving} className="min-w-0">
+                      <ContactPicker
+                        contacts={sortedContactsForRole(tradeRole)}
+                        selectedId={assignment?.contact_id ?? null}
+                        placeholder={saving ? "Saving…" : "Assign contractor"}
+                        onSelect={(contactId) => onAssign(tradeRole, contactId)}
+                      />
+                    </fieldset>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-2 border-t border-[#e5e0d6] pt-3">
+            {availableRoles.length > 0 && (
+              <select
+                value={newRole}
+                onChange={(event) => {
+                  const role = event.target.value;
+                  setNewRole("");
+                  if (role) onAddRole(role);
+                }}
+                className="border border-[#c9c2b4] bg-nearwhite px-2 py-1.5 text-caption text-charcoal focus:border-nearblack focus:outline-none"
+                aria-label="Add another project trade role"
+              >
+                <option value="">+ Add another trade</option>
+                {availableRoles.map((preset) => (
+                  <option key={preset.name} value={preset.name}>
+                    {preset.name}
+                  </option>
+                ))}
+              </select>
+            )}
+            <a href="/contacts" className="text-caption text-charcoal/55 underline hover:text-nearblack">
+              Open Address Book
+            </a>
+          </div>
+        </div>
       )}
     </section>
   );
@@ -1272,8 +1509,10 @@ function AddSectionForm({ onAdd }: { onAdd: (heading: string) => Promise<void> }
 
 function SectionBlock({
   section,
+  defaultExpanded,
   readOnly,
   presetNames,
+  assignmentsByRoleKey,
   onRename,
   onDelete,
   canMoveUp,
@@ -1290,9 +1529,11 @@ function SectionBlock({
   onToggleLineSelection,
 }: {
   section: SowSectionWithTradedLines;
+  defaultExpanded: boolean;
   readOnly: boolean;
   /** "Trade-scoped SOW extracts" round — the trade `<select>`'s option list, threaded down to every LineRow. */
   presetNames: string[];
+  assignmentsByRoleKey: ReadonlyMap<string, ProjectTradeAssignment>;
   onRename: (heading: string) => Promise<void>;
   onDelete: () => void;
   canMoveUp: boolean;
@@ -1308,7 +1549,7 @@ function SectionBlock({
   selectedLineIds: ReadonlySet<string>;
   onToggleLineSelection: (lineId: string, checked: boolean) => void;
 }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [draggedLineId, setDraggedLineId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const lineGroups = groupSowLinesByTrade(section.lines);
@@ -1421,6 +1662,9 @@ function SectionBlock({
               .reduce((total, candidate) => total + candidate.lines.length, 0);
             const draggedLine = displayedLines.find((line) => line.id === draggedLineId);
             const draggingThisGroup = draggedLine && tradeKey(draggedLine) === group.trade;
+            const tradeAssignment = group.trade
+              ? assignmentsByRoleKey.get(group.trade.trim().toLowerCase())
+              : null;
 
             return (
               <div
@@ -1428,10 +1672,24 @@ function SectionBlock({
                 className={groupIndex > 0 ? "border-t border-[#dcd6cc]" : undefined}
               >
                 {hasTradeHeadings && (
-                  <div className="flex items-center justify-between border-b border-[#dcd6cc] bg-offwhite px-4 py-2">
-                    <p className="label-caps font-semibold !text-nearblack">
-                      {section.heading} — {group.trade ?? "General"}
-                    </p>
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#dcd6cc] bg-offwhite px-4 py-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="label-caps font-semibold !text-nearblack">
+                        {section.heading} — {group.trade ?? "General"}
+                      </p>
+                      {group.trade && (
+                        <span
+                          className={clsx(
+                            "border px-2 py-0.5 text-caption",
+                            tradeAssignment?.contact
+                              ? "border-[#c9c2b4] text-charcoal/65"
+                              : "border-[#BA7517]/40 text-[#9A5D0D]"
+                          )}
+                        >
+                          {tradeAssignment?.contact?.company ?? "Contractor not assigned"}
+                        </span>
+                      )}
+                    </div>
                     <span className="text-caption text-charcoal/45">
                       {group.lines.length} {group.lines.length === 1 ? "line" : "lines"}
                     </span>

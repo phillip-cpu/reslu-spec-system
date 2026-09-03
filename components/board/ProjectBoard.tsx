@@ -22,6 +22,9 @@ import { BOARD_LAYOUT_STORAGE_KEY, type BoardLayoutMode } from "@/types/phase-fi
 // wider type is required, regardless of what the actual runtime data
 // happens to contain. Both now correctly declare BoardColumnV3.
 import type { BoardColumnV3, BoardGroupV3, BoardTaskV3 } from "@/types/board-v3";
+import type { ExportPresetRow } from "@/types/round-export-batch";
+import type { ProjectTradeAssignment } from "@/types/project-trade-assignments";
+import { FALLBACK_EXPORT_PRESETS } from "@/lib/export-presets";
 import { shouldPromptMilestoneDiary } from "@/lib/board-cockpit";
 // migration 041 ("Small pair" item 2) — datetime-aware overdue check,
 // used wherever this file's own isPastDue() previously decided a due
@@ -2233,6 +2236,43 @@ function BoardTaskEditorBody({
   onBookVisit: () => void;
   onUnlinkVisit: () => void;
 }) {
+  const [tradePresets, setTradePresets] = useState<ExportPresetRow[]>(FALLBACK_EXPORT_PRESETS);
+  const [tradeAssignments, setTradeAssignments] = useState<ProjectTradeAssignment[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      fetch("/api/settings/export-presets").then((response) =>
+        response.ok ? response.json() : { presets: FALLBACK_EXPORT_PRESETS }
+      ),
+      fetch(`/api/projects/${task.project_id}/trade-assignments`).then((response) =>
+        response.ok ? response.json() : { assignments: [] }
+      ),
+    ])
+      .then(([presetBody, assignmentBody]) => {
+        if (cancelled) return;
+        setTradePresets(presetBody.presets ?? FALLBACK_EXPORT_PRESETS);
+        setTradeAssignments(assignmentBody.assignments ?? []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [task.project_id]);
+
+  const assignmentByRoleKey = new Map(
+    tradeAssignments.map((assignment) => [assignment.role_key, assignment])
+  );
+  const roleOptions = [...tradePresets];
+  if (
+    task.trade_role &&
+    !roleOptions.some(
+      (preset) => preset.name.trim().toLowerCase() === task.trade_role?.trim().toLowerCase()
+    )
+  ) {
+    roleOptions.push({ name: task.trade_role, prefixes: [] });
+  }
+
   function toggleAssignee(id: string) {
     const current = task.assignees.map((a) => a.id);
     const next = current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
@@ -2254,6 +2294,79 @@ function BoardTaskEditorBody({
         rows={2}
         className="w-full border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-body focus:border-nearblack focus:outline-none"
       />
+
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="flex flex-col gap-0.5">
+          <span className="label-caps !text-sand">Trade role</span>
+          <select
+            value={task.trade_role ?? ""}
+            onChange={(event) => {
+              const tradeRole = event.target.value || null;
+              if (!tradeRole) {
+                onPatch(
+                  { trade_role: null },
+                  { trade_role: null, trade_contact_inherited: false }
+                );
+                return;
+              }
+
+              const assignment = assignmentByRoleKey.get(tradeRole.trim().toLowerCase());
+              const inheritedContact = assignment?.contact_id
+                ? contacts.find((contact) => contact.id === assignment.contact_id) ?? null
+                : null;
+              onPatch(
+                { trade_role: tradeRole },
+                task.visit_id
+                  ? { trade_role: tradeRole, trade_contact_inherited: false }
+                  : {
+                      trade_role: tradeRole,
+                      trade_contact_inherited: true,
+                      contact_id: assignment?.contact_id ?? null,
+                      contact: inheritedContact
+                        ? {
+                            id: inheritedContact.id,
+                            company: inheritedContact.company,
+                            contact_name: inheritedContact.contact_name,
+                          }
+                        : null,
+                    }
+              );
+            }}
+            className="border border-[#c9c2b4] bg-nearwhite px-1.5 py-1 text-caption focus:border-nearblack focus:outline-none"
+          >
+            <option value="">No trade role</option>
+            {roleOptions.map((preset) => (
+              <option key={preset.name} value={preset.name}>
+                {preset.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="flex flex-col gap-0.5">
+          <span className="label-caps !text-charcoal/40">Connection</span>
+          <span className="py-1 text-caption text-charcoal/60">
+            {task.trade_role
+              ? task.visit_id
+                ? "Booking history retained"
+                : task.trade_contact_inherited
+                  ? "Using project trade team"
+                  : "Manual contractor override"
+              : "Choose a role to inherit the project contractor"}
+          </span>
+        </div>
+      </div>
+
+      {task.trade_role &&
+        !assignmentByRoleKey.get(task.trade_role.trim().toLowerCase())?.contact_id &&
+        !task.visit_id && (
+          <p className="text-caption text-[#9A5D0D]">
+            No project contractor is assigned for {task.trade_role}. Set it in{" "}
+            <a href={`/projects/${task.project_id}/sow`} className="underline hover:text-nearblack">
+              Scope
+            </a>
+            .
+          </p>
+        )}
 
       <div>
         <p className="label-caps mb-1 !text-sand">Assigned</p>
@@ -2294,7 +2407,10 @@ function BoardTaskEditorBody({
               const contact = contactId ? contacts.find((c) => c.id === contactId) ?? null : null;
               onPatch(
                 { contact_id: contactId },
-                { contact: contact ? { id: contact.id, company: contact.company, contact_name: contact.contact_name } : null }
+                {
+                  contact: contact ? { id: contact.id, company: contact.company, contact_name: contact.contact_name } : null,
+                  trade_contact_inherited: false,
+                }
               );
             }}
           />
