@@ -1,5 +1,16 @@
 import type { SupplierQuoteRequestStatus } from "@/types/supplier-quotes";
 
+export type SupplierQuoteSummaryStatus = "draft" | "awaiting" | "received" | "selected" | "closed";
+
+/** One plain-language state for an estimate line, derived from every supplier response in its RFQ package. */
+export function supplierQuoteSummaryStatus(statuses: SupplierQuoteRequestStatus[]): SupplierQuoteSummaryStatus {
+  if (statuses.includes("selected")) return "selected";
+  if (statuses.includes("quote_received")) return "received";
+  if (statuses.some((status) => status === "sent" || status === "acknowledged")) return "awaiting";
+  if (statuses.includes("draft")) return "draft";
+  return "closed";
+}
+
 const MONTHS: Record<string, number> = {
   jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2,
   apr: 3, april: 3, may: 4, jun: 5, june: 5, jul: 6, july: 6,

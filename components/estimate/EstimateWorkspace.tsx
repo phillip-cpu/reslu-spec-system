@@ -10,6 +10,7 @@ import { MeasurementsView } from "./MeasurementsView";
 import { VersionsPanel } from "./VersionsPanel";
 import { CalculatorsPanel } from "@/components/calculators/CalculatorsPanel";
 import { QuoteRequestsPanel } from "./QuoteRequestsPanel";
+import type { SupplierQuoteLaunchOptions } from "@/types/supplier-quotes";
 
 type View = "estimate" | "quotes" | "variations" | "measurements" | "versions" | "calculators";
 
@@ -50,7 +51,7 @@ export function EstimateWorkspace({ projectId, initialView = "estimate" }: Props
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notInitialised, setNotInitialised] = useState(false);
-  const [quoteSeedLineIds, setQuoteSeedLineIds] = useState<string[]>([]);
+  const [quoteLaunch, setQuoteLaunch] = useState<SupplierQuoteLaunchOptions>({});
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -352,7 +353,7 @@ export function EstimateWorkspace({ projectId, initialView = "estimate" }: Props
         {(
           [
             { key: "estimate", label: "Estimate" },
-            { key: "quotes", label: "Quote requests" },
+            { key: "quotes", label: "Quotes & RFQs" },
             { key: "variations", label: "Variations" },
             { key: "measurements", label: "Areas & Measurements" },
             { key: "versions", label: "Versions" },
@@ -363,7 +364,7 @@ export function EstimateWorkspace({ projectId, initialView = "estimate" }: Props
             key={t.key}
             type="button"
             onClick={() => {
-              if (t.key === "quotes") setQuoteSeedLineIds([]);
+              if (t.key === "quotes") setQuoteLaunch({});
               setView(t.key);
             }}
             className={clsx(
@@ -391,10 +392,10 @@ export function EstimateWorkspace({ projectId, initialView = "estimate" }: Props
           onLinesReordered={reorderLinesLocal}
           approvedVariationsTotal={approvedVariations}
           measurements={estimate?.measurements ?? []}
-          onOpenQuoteRequests={(lineIds = []) => {
-            setQuoteSeedLineIds(lineIds);
+          onOpenQuoteRequests={(options = {}) => {
+            setQuoteLaunch(options);
             setView("quotes");
-            window.scrollTo({ top: 0, behavior: "smooth" });
+            if (!options.packageId) window.scrollTo({ top: 0, behavior: "smooth" });
           }}
         />
       )}
@@ -411,7 +412,14 @@ export function EstimateWorkspace({ projectId, initialView = "estimate" }: Props
       )}
 
       {view === "quotes" && (
-        <QuoteRequestsPanel projectId={projectId} estimate={estimate} onEstimateReload={loadAll} initialLineIds={quoteSeedLineIds} />
+        <QuoteRequestsPanel
+          projectId={projectId}
+          estimate={estimate}
+          onEstimateReload={loadAll}
+          initialLineIds={quoteLaunch.lineIds ?? []}
+          initialPackageId={quoteLaunch.packageId}
+          initialMode={quoteLaunch.mode}
+        />
       )}
 
       {view === "measurements" && (

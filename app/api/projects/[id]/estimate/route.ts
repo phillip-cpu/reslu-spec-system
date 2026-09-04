@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { projectRollup, sectionRollup, ffeRollup, wholeJobSummary } from "@/lib/estimate";
+import { supplierQuoteSummaryStatus } from "@/lib/supplier-quotes";
 import type { CostSectionWithLines, EstimateResponse, Measurement, MeasurementWithGroup } from "@/types";
 import type { SupplierQuoteLineSummary } from "@/types/supplier-quotes";
 
@@ -197,14 +198,21 @@ export async function GET(
       const quotePackage = packageById.get(quoteLine.package_id);
       if (!quotePackage) continue;
       const requests = requestsByPackage.get(quoteLine.package_id) ?? [];
-      const promisedDates = requests.map((row) => row.promised_quote_at).filter((value): value is string => !!value).sort();
+      const promisedDates = requests
+        .filter((row) => ["sent", "acknowledged"].includes(row.status))
+        .map((row) => row.promised_quote_at)
+        .filter((value): value is string => !!value)
+        .sort();
+      const selectedRequest = requests.find((row) => row.status === "selected") ?? null;
       const summary: SupplierQuoteLineSummary = {
         package_id: quoteLine.package_id,
         package_title: quotePackage.title,
+        status: supplierQuoteSummaryStatus(requests.map((row) => row.status)),
         request_count: requests.length,
         received_count: requests.filter((row) => ["quote_received", "selected"].includes(row.status)).length,
         next_due: promisedDates[0] ?? null,
-        supplier_names: requests.map((row) => row.contact_id ? contactById.get(row.contact_id) : null).filter((value): value is string => !!value),
+        supplier_names: [...new Set(requests.map((row) => row.contact_id ? contactById.get(row.contact_id) : null).filter((value): value is string => !!value))],
+        selected_supplier_name: selectedRequest?.contact_id ? contactById.get(selectedRequest.contact_id) ?? null : null,
       };
       (quoteSummaries[quoteLine.cost_line_id] ??= []).push(summary);
     }

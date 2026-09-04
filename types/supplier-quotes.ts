@@ -1,4 +1,11 @@
 export type SupplierQuotePackageStatus = "draft" | "sent" | "complete" | "closed";
+export type SupplierQuoteSourceMode = "manual" | "existing" | "new";
+
+export interface SupplierQuoteLaunchOptions {
+  lineIds?: string[];
+  packageId?: string;
+  mode?: SupplierQuoteSourceMode;
+}
 export type SupplierQuoteRequestStatus =
   | "draft"
   | "sent"
@@ -95,8 +102,10 @@ export interface SupplierQuotePackage {
 export interface SupplierQuoteLineSummary {
   package_id: string;
   package_title: string;
+  status: "draft" | "awaiting" | "received" | "selected" | "closed";
   request_count: number;
   received_count: number;
   next_due: string | null;
   supplier_names: string[];
+  selected_supplier_name: string | null;
 }
