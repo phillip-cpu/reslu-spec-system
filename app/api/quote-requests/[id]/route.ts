@@ -129,5 +129,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   const { data: updated, error } = await supabase.from("supplier_quote_requests").update(patch).eq("id", id).select().single();
   if (error || !updated) return NextResponse.json({ error: error?.message ?? "Could not update quote request" }, { status: 500 });
+  if (patch.status === "quote_received") {
+    const { data: linkedLines } = await supabase
+      .from("supplier_quote_package_lines")
+      .select("cost_line_id")
+      .eq("package_id", current.package_id);
+    if (linkedLines?.length) {
+      await supabase.from("cost_lines").update({ quote_status: "Q" }).in("id", linkedLines.map((line) => line.cost_line_id));
+    }
+  }
   return NextResponse.json({ request: updated });
 }

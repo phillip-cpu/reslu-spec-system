@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildSupplierQuoteEmail, extractPromisedQuoteDate, quoteRequestFollowup } from "./supplier-quotes.ts";
+import { buildSupplierQuoteEmail, extractPromisedQuoteDate, quoteRequestFollowup, supplierQuoteSummaryStatus } from "./supplier-quotes.ts";
+
+test("estimate quote summaries prefer the most useful state", () => {
+  assert.equal(supplierQuoteSummaryStatus(["draft"]), "draft");
+  assert.equal(supplierQuoteSummaryStatus(["sent", "acknowledged"]), "awaiting");
+  assert.equal(supplierQuoteSummaryStatus(["sent", "quote_received"]), "received");
+  assert.equal(supplierQuoteSummaryStatus(["closed", "selected"]), "selected");
+  assert.equal(supplierQuoteSummaryStatus(["closed", "declined"]), "closed");
+});
 
 test("extracts common Australian supplier turnaround replies", () => {
   assert.equal(extractPromisedQuoteDate("We can have this back by 4 September.", "2026-08-28T03:00:00Z"), "2026-09-04");

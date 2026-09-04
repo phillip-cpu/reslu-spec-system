@@ -14,6 +14,7 @@ import { ItemLinkPicker } from "./ItemLinkPicker";
 import { MeasurementLinkPicker } from "./MeasurementLinkPicker";
 import { ContactLinkPicker } from "./ContactLinkPicker";
 import { deliveryAllowanceLineInput } from "@/lib/delivery-costs";
+import type { SupplierQuoteLaunchOptions, SupplierQuoteLineSummary } from "@/types/supplier-quotes";
 
 interface Props {
   projectId: string;
@@ -31,7 +32,7 @@ interface Props {
   approvedVariationsTotal: number;
   /** Week 7 — Estimate ↔ Schedule integration: every project measurement, for the link picker + resolving a linked line's display. */
   measurements: MeasurementWithGroup[];
-  onOpenQuoteRequests: (lineIds?: string[]) => void;
+  onOpenQuoteRequests: (options?: SupplierQuoteLaunchOptions) => void;
 }
 
 const QUOTE_STATUSES: { value: QuoteStatus; label: string }[] = [
@@ -39,6 +40,14 @@ const QUOTE_STATUSES: { value: QuoteStatus; label: string }[] = [
   { value: "S", label: "S — Sent, waiting" },
   { value: "NA", label: "NA — Not applicable" },
 ];
+
+function quoteSummaryHeading(summary: SupplierQuoteLineSummary): string {
+  if (summary.status === "selected") return `Selected quote${summary.selected_supplier_name ? ` · ${summary.selected_supplier_name}` : ""}`;
+  if (summary.status === "received") return `${summary.received_count} quote${summary.received_count === 1 ? "" : "s"} received`;
+  if (summary.status === "awaiting") return `Awaiting ${Math.max(0, summary.request_count - summary.received_count)} quote${summary.request_count - summary.received_count === 1 ? "" : "s"}`;
+  if (summary.status === "draft") return "Quote package not sent";
+  return "Quote package closed";
+}
 
 function num(v: number | null): string {
   return v === null || v === undefined ? "" : String(v);
@@ -437,7 +446,7 @@ export function EstimateView({
                   P/L {formatMoney(section.rollup.variance)}
                 </span>
               )}
-              {section.lines.length > 0 && <button type="button" onClick={() => onOpenQuoteRequests(section.lines.map((line) => line.id))} className="border border-sand px-2 py-1 text-caption text-sand hover:bg-white">Request pricing</button>}
+              {section.lines.length > 0 && <button type="button" onClick={() => onOpenQuoteRequests({ lineIds: section.lines.map((line) => line.id), mode: "new" })} className="border border-sand px-2 py-1 text-caption text-sand hover:bg-white">Request section pricing</button>}
               <button
                 type="button"
                 onClick={() => void addDeliveryAllowance(section.id)}
@@ -730,7 +739,7 @@ function LineRow({
   onDragOver: (event: React.DragEvent<HTMLTableRowElement>) => void;
   onDrop: (event: React.DragEvent<HTMLTableRowElement>) => void;
   quoteSummaries: EstimateResponse["quote_summaries"][string];
-  onOpenQuoteRequests: (lineIds?: string[]) => void;
+  onOpenQuoteRequests: (options?: SupplierQuoteLaunchOptions) => void;
 }) {
   const [linkOpen, setLinkOpen] = useState(false);
   const [measurementLinkOpen, setMeasurementLinkOpen] = useState(false);
@@ -985,12 +994,27 @@ function LineRow({
               </span>
             </p>
           )}
-          <button type="button" onClick={() => onOpenQuoteRequests([line.id])} className="mx-2 mb-1 inline-block border border-[#c9c2b4] px-1.5 py-0.5 text-caption text-charcoal/60 hover:border-sand hover:text-sand">Request quote</button>
-          {quoteSummaries.map((summary) => (
-            <button key={summary.package_id} type="button" onClick={() => onOpenQuoteRequests([line.id])} className="mx-2 mb-1 block border border-sand px-1.5 py-0.5 text-left text-caption text-sand hover:bg-cream">
-              Quotes {summary.received_count}/{summary.request_count} · {summary.package_title}{summary.next_due ? ` · due ${summary.next_due}` : ""}
+          <div className="mx-2 mb-1 space-y-1">
+            {quoteSummaries.map((summary) => (
+              <button
+                key={summary.package_id}
+                type="button"
+                onClick={() => onOpenQuoteRequests({ packageId: summary.package_id })}
+                className="block w-full border border-sand bg-cream px-2 py-1.5 text-left hover:bg-white"
+                title={`Open linked quote: ${summary.package_title}`}
+              >
+                <span className="block text-caption font-medium text-sand">{quoteSummaryHeading(summary)}</span>
+                <span className="block truncate text-caption text-charcoal/55">{summary.package_title}{summary.supplier_names.length ? ` · ${summary.supplier_names.join(", ")}` : ""}{summary.next_due ? ` · due ${summary.next_due}` : ""}</span>
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => onOpenQuoteRequests({ lineIds: [line.id], mode: "manual" })}
+              className="inline-block border border-[#c9c2b4] px-2 py-1 text-caption text-charcoal/70 hover:border-sand hover:text-sand"
+            >
+              {quoteSummaries.length ? "+ Add another quote" : "+ Link or request quote"}
             </button>
-          ))}
+          </div>
           {rowError && <p className="px-2 pb-1 text-caption text-red-700">⚠ {rowError}</p>}
         </td>
         <td className="w-24 px-0 py-0">
