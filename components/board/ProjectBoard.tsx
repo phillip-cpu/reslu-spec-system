@@ -2284,6 +2284,24 @@ function BoardTaskEditorBody({
 
   return (
     <div className="mt-2 space-y-2 border-t border-[#dcd6cc] pt-2">
+      {task.sow_revision_label && (
+        <div
+          className={clsx(
+            "flex flex-wrap items-center justify-between gap-2 border px-3 py-2 text-caption",
+            task.sow_scope_stale
+              ? "border-[#e2c7a7] bg-[#fff8f1] text-[#7a4818]"
+              : "border-[#cfe0c2] bg-[#edf5e8] text-[#3B6D11]"
+          )}
+        >
+          <span>
+            Scope {task.sow_revision_label} · {task.sow_line_count} linked line{task.sow_line_count === 1 ? "" : "s"}
+            {task.sow_scope_stale ? " · newer Scope revision needs review" : " · up to date"}
+          </span>
+          <a href={`/projects/${task.project_id}/sow`} className="font-semibold underline hover:no-underline">
+            Review scope
+          </a>
+        </div>
+      )}
       <textarea
         defaultValue={task.description ?? ""}
         placeholder="Description"
