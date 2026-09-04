@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import type { SowDocument, SowLineKind } from "@/types";
 import type {
@@ -15,6 +15,10 @@ import type {
   ProjectTradeAssignment,
   ProjectTradeContact,
 } from "@/types/project-trade-assignments";
+import type {
+  ApplySowWorkPlanResponse,
+  SowWorkPlanPreviewResponse,
+} from "@/types/sow-work-plan";
 import { ContactPicker } from "@/components/shared/ContactPicker";
 import {
   FALLBACK_EXPORT_PRESETS,
@@ -77,6 +81,14 @@ export function SowBuilder({ projectId }: Props) {
   const [suggestMessage, setSuggestMessage] = useState<string | null>(null);
   const [quality, setQuality] = useState<SowQualityReport | null>(null);
   const [qualityLoading, setQualityLoading] = useState(false);
+  const [workPlanOpen, setWorkPlanOpen] = useState(false);
+  const [workPlanLoading, setWorkPlanLoading] = useState(false);
+  const [workPlanApplying, setWorkPlanApplying] = useState(false);
+  const [workPlanPreview, setWorkPlanPreview] = useState<SowWorkPlanPreviewResponse | null>(null);
+  const [selectedWorkPlanKeys, setSelectedWorkPlanKeys] = useState<Set<string>>(() => new Set());
+  const [workPlanMessage, setWorkPlanMessage] = useState<string | null>(null);
+  const [workPlanError, setWorkPlanError] = useState<string | null>(null);
+  const workPlanReviewRef = useRef<HTMLDivElement>(null);
   // Fix round B — BUILD-SPEC.md §"SOW sticky outline" (improvements
   // backlog): sticky section outline sidebar, current section
   // highlighted via IntersectionObserver.
@@ -100,7 +112,17 @@ export function SowBuilder({ projectId }: Props) {
     setSelectedLineIds(new Set());
     setCopyTargetSectionIds(new Set());
     setCopyDialogOpen(false);
+    setWorkPlanOpen(false);
+    setWorkPlanPreview(null);
+    setSelectedWorkPlanKeys(new Set());
+    setWorkPlanMessage(null);
+    setWorkPlanError(null);
   }, [projectId]);
+
+  useEffect(() => {
+    if (!workPlanOpen) return;
+    workPlanReviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [workPlanOpen]);
 
   const loadQuality = useCallback(async (sowId: string) => {
     setQualityLoading(true);
@@ -406,6 +428,66 @@ export function SowBuilder({ projectId }: Props) {
       setError(err instanceof Error ? err.message : "Could not suggest trade tags.");
     } finally {
       setSuggestingTags(false);
+    }
+  }
+
+  async function loadWorkPlanPreview(options?: { keepMessage?: boolean }) {
+    if (!sow) return;
+    setWorkPlanOpen(true);
+    setWorkPlanLoading(true);
+    setWorkPlanError(null);
+    if (!options?.keepMessage) setWorkPlanMessage(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/sow/${sow.id}/work-plan`);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Could not build the Work Plan preview.");
+      const preview = body as SowWorkPlanPreviewResponse;
+      setWorkPlanPreview(preview);
+      setSelectedWorkPlanKeys(
+        new Set(
+          preview.suggestions
+            .filter((suggestion) => suggestion.state !== "current" && suggestion.phase_group_id)
+            .map((suggestion) => suggestion.key)
+        )
+      );
+    } catch (err) {
+      setWorkPlanError(err instanceof Error ? err.message : "Could not build the Work Plan preview.");
+    } finally {
+      setWorkPlanLoading(false);
+    }
+  }
+
+  async function applyWorkPlanSuggestions() {
+    if (!sow || selectedWorkPlanKeys.size === 0) return;
+    setWorkPlanApplying(true);
+    setWorkPlanError(null);
+    setWorkPlanMessage(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/sow/${sow.id}/work-plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          selections: [...selectedWorkPlanKeys].map((key) => ({
+            key,
+            fingerprint: workPlanPreview?.suggestions.find((suggestion) => suggestion.key === key)?.fingerprint ?? "",
+          })),
+        }),
+      });
+      const body = (await res.json().catch(() => ({}))) as ApplySowWorkPlanResponse & {
+        error?: string;
+      };
+      if (!res.ok) throw new Error(body.error ?? "Could not update the Work Plan.");
+      const changed = body.created_count + body.linked_count + body.refreshed_count;
+      setWorkPlanMessage(
+        changed > 0
+          ? `Work Plan updated: ${body.created_count} created, ${body.linked_count} linked and ${body.refreshed_count} refreshed.`
+          : "The selected Work Plan packages were already current."
+      );
+      await loadWorkPlanPreview({ keepMessage: true });
+    } catch (err) {
+      setWorkPlanError(err instanceof Error ? err.message : "Could not update the Work Plan.");
+    } finally {
+      setWorkPlanApplying(false);
     }
   }
 
@@ -808,6 +890,17 @@ export function SowBuilder({ projectId }: Props) {
             </button>
           )}
           {sow && (
+            <button
+              type="button"
+              onClick={() => void loadWorkPlanPreview()}
+              disabled={workPlanLoading}
+              className="border border-nearblack px-4 py-2 text-subhead text-nearblack transition-colors hover:bg-nearblack hover:text-white disabled:opacity-60"
+              title="Review Scope inclusions as phased Work Plan tasks"
+            >
+              {workPlanLoading ? "Building preview…" : "Build work plan"}
+            </button>
+          )}
+          {sow && (
             <div className="flex items-center gap-1.5">
               <a
                 href={`/api/projects/${projectId}/sow/${sow.id}/pdf`}
@@ -892,6 +985,43 @@ export function SowBuilder({ projectId }: Props) {
           )
         }
       />
+
+      {workPlanOpen && sow && (
+        <div ref={workPlanReviewRef} className="scroll-mt-20">
+          <SowWorkPlanReview
+            projectId={projectId}
+            preview={workPlanPreview}
+            loading={workPlanLoading}
+            applying={workPlanApplying}
+            selectedKeys={selectedWorkPlanKeys}
+            message={workPlanMessage}
+            error={workPlanError}
+            onToggle={(key) =>
+              setSelectedWorkPlanKeys((current) => {
+                const next = new Set(current);
+                if (next.has(key)) next.delete(key);
+                else next.add(key);
+                return next;
+              })
+            }
+            onSelectAll={() =>
+              setSelectedWorkPlanKeys(
+                new Set(
+                  (workPlanPreview?.suggestions ?? [])
+                    .filter(
+                      (suggestion) => suggestion.state !== "current" && suggestion.phase_group_id
+                    )
+                    .map((suggestion) => suggestion.key)
+                )
+              )
+            }
+            onClear={() => setSelectedWorkPlanKeys(new Set())}
+            onRefresh={() => void loadWorkPlanPreview()}
+            onApply={() => void applyWorkPlanSuggestions()}
+            onClose={() => setWorkPlanOpen(false)}
+          />
+        </div>
+      )}
 
       {isDraft && selectedLines.length > 0 && (
         <div className="sticky top-16 z-20 flex flex-wrap items-center justify-between gap-3 border border-nearblack bg-nearblack px-4 py-3 text-white shadow-lg">
@@ -995,6 +1125,227 @@ export function SowBuilder({ projectId }: Props) {
         />
       )}
     </div>
+  );
+}
+
+function SowWorkPlanReview({
+  projectId,
+  preview,
+  loading,
+  applying,
+  selectedKeys,
+  message,
+  error,
+  onToggle,
+  onSelectAll,
+  onClear,
+  onRefresh,
+  onApply,
+  onClose,
+}: {
+  projectId: string;
+  preview: SowWorkPlanPreviewResponse | null;
+  loading: boolean;
+  applying: boolean;
+  selectedKeys: ReadonlySet<string>;
+  message: string | null;
+  error: string | null;
+  onToggle: (key: string) => void;
+  onSelectAll: () => void;
+  onClear: () => void;
+  onRefresh: () => void;
+  onApply: () => void;
+  onClose: () => void;
+}) {
+  const changes = preview?.suggestions.filter((suggestion) => suggestion.state !== "current") ?? [];
+  const stateLabel = {
+    create: "Create task",
+    link: "Link existing task",
+    refresh: "Scope changed",
+    current: "Up to date",
+  } as const;
+
+  return (
+    <section className="scroll-mt-24 border-2 border-nearblack bg-offwhite" aria-busy={loading}>
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-nearblack px-5 py-4">
+        <div>
+          <p className="label-caps !text-sand">Scope → Work Plan</p>
+          <h2 className="mt-1 text-subhead text-nearblack">Review before adding anything to Work</h2>
+          <p className="mt-1 max-w-3xl text-body text-charcoal/65">
+            Detailed room clauses are rolled up by trade and construction phase. Existing task names,
+            dates, statuses and contractor overrides are preserved.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={loading || applying}
+            className="border border-[#c9c2b4] px-3 py-1.5 text-caption text-charcoal hover:border-nearblack disabled:opacity-50"
+          >
+            {loading ? "Checking…" : "Refresh preview"}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={applying}
+            className="border border-[#c9c2b4] px-3 py-1.5 text-caption text-charcoal hover:border-nearblack disabled:opacity-50"
+            aria-label="Close Work Plan review"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+
+      {message && (
+        <p className="border-b border-[#c9c2b4] bg-[#edf5e8] px-5 py-3 text-body text-[#3B6D11]">
+          {message}
+        </p>
+      )}
+
+      {error && (
+        <p role="alert" className="border-b border-red-700/40 bg-red-50 px-5 py-3 text-body text-red-700">
+          {error}
+        </p>
+      )}
+
+      {loading && !preview ? (
+        <div className="space-y-3 px-5 py-5">
+          <div className="h-14 animate-pulse bg-cream" />
+          <div className="h-14 animate-pulse bg-cream" />
+        </div>
+      ) : preview ? (
+        <>
+          <div className="flex flex-wrap gap-x-5 gap-y-1 border-b border-[#dcd6cc] bg-nearwhite px-5 py-3 text-caption text-charcoal/65">
+            <span>{preview.summary.included_lines} tagged scope inclusions</span>
+            <span>{preview.suggestions.length} trade/phase packages</span>
+            <span>{preview.summary.current_packages} already current</span>
+            <span>{preview.summary.proposed_changes} proposed changes</span>
+          </div>
+
+          {(preview.summary.untagged_inclusions > 0 || preview.summary.unplanned_packages > 0) && (
+            <div className="border-b border-[#e2c7a7] bg-[#fff8f1] px-5 py-3 text-body text-[#7a4818]">
+              {preview.summary.untagged_inclusions > 0 && (
+                <p>
+                  {preview.summary.untagged_inclusions} inclusion{preview.summary.untagged_inclusions === 1 ? " is" : "s are"} not included because no trade is assigned.
+                </p>
+              )}
+              {preview.summary.unplanned_packages > 0 && (
+                <p>
+                  {preview.summary.unplanned_packages} package{preview.summary.unplanned_packages === 1 ? " needs" : "s need"} a phase. These are left unchecked by default.
+                  {" "}Open the Work Plan once to set up its phases, then refresh this preview.
+                </p>
+              )}
+            </div>
+          )}
+
+          <div className="divide-y divide-[#dcd6cc]">
+            {preview.suggestions.map((suggestion) => {
+              const isCurrent = suggestion.state === "current";
+              const needsPhase = suggestion.phase_group_id === null;
+              return (
+                <div
+                  key={suggestion.key}
+                  className={clsx(
+                    "grid gap-3 px-5 py-4 md:grid-cols-[1.5rem_minmax(0,1fr)_auto]",
+                    isCurrent || needsPhase
+                      ? "bg-nearwhite text-charcoal/60"
+                      : selectedKeys.has(suggestion.key)
+                        ? "bg-cream/65"
+                        : "hover:bg-cream/45"
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    aria-label={`Select ${suggestion.existing_task_title ?? suggestion.title}`}
+                    checked={selectedKeys.has(suggestion.key)}
+                    disabled={isCurrent || needsPhase || applying}
+                    onChange={() => onToggle(suggestion.key)}
+                    className="mt-0.5 h-5 w-5 accent-nearblack"
+                  />
+                  <span className="min-w-0">
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="text-body font-semibold text-nearblack">
+                        {suggestion.existing_task_title ?? suggestion.title}
+                      </span>
+                      <span
+                        className={clsx(
+                          "label-caps px-2 py-0.5",
+                          suggestion.state === "current"
+                            ? "bg-[#edf5e8] !text-[#3B6D11]"
+                            : suggestion.state === "refresh"
+                              ? "bg-[#fff1e5] !text-[#9a4f0b]"
+                              : "bg-cream !text-charcoal"
+                        )}
+                      >
+                        {stateLabel[suggestion.state]}
+                      </span>
+                    </span>
+                    <span className="mt-1 block text-caption text-charcoal/60">
+                      {suggestion.phase_name ?? "No matching Work phase"} · {suggestion.trade_role} · {suggestion.line_ids.length} scope line{suggestion.line_ids.length === 1 ? "" : "s"}
+                    </span>
+                    <span className="mt-1 block text-caption text-charcoal/50">
+                      {suggestion.section_headings.join(", ") || "No room/section heading"}
+                      {suggestion.assigned_contact_name ? ` · ${suggestion.assigned_contact_name}` : " · Contractor not assigned"}
+                    </span>
+                    <details className="mt-2">
+                      <summary className="cursor-pointer text-caption text-charcoal/60">
+                        Preview linked scope
+                      </summary>
+                      <ul className="mt-2 space-y-1 border-l-2 border-sand pl-3 text-caption text-charcoal/65">
+                        {suggestion.line_previews.map((line, index) => (
+                          <li key={`${suggestion.key}-${index}`}>
+                            {line.length > 220 ? `${line.slice(0, 217)}…` : line}
+                          </li>
+                        ))}
+                        {suggestion.line_ids.length > suggestion.line_previews.length && (
+                          <li>+{suggestion.line_ids.length - suggestion.line_previews.length} more</li>
+                        )}
+                      </ul>
+                    </details>
+                  </span>
+                  <span className="text-right text-caption text-charcoal/50">
+                    {suggestion.state === "link" ? "Keeps the existing task" : suggestion.phase_group_id ? "Phased" : "Unplanned"}
+                  </span>
+                </div>
+              );
+            })}
+            {preview.suggestions.length === 0 && (
+              <p className="px-5 py-8 text-center text-body text-charcoal/55">
+                No trade-tagged inclusion lines are ready to build into the Work Plan.
+              </p>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-nearblack bg-nearwhite px-5 py-4">
+            <div className="flex flex-wrap items-center gap-3 text-caption">
+              <span className="text-charcoal/65">{selectedKeys.size} selected</span>
+              {changes.length > 0 && (
+                <>
+                  <button type="button" onClick={onSelectAll} disabled={applying} className="underline hover:no-underline disabled:opacity-50">
+                    Select all changes
+                  </button>
+                  <button type="button" onClick={onClear} disabled={applying} className="underline hover:no-underline disabled:opacity-50">
+                    Clear
+                  </button>
+                </>
+              )}
+              <a href={`/projects/${projectId}/board?view=grouped`} className="underline hover:no-underline">
+                Open Work Plan
+              </a>
+            </div>
+            <button
+              type="button"
+              onClick={onApply}
+              disabled={applying || loading || selectedKeys.size === 0}
+              className="bg-nearblack px-5 py-2 text-subhead text-white transition-colors hover:bg-charcoal disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {applying ? "Updating Work Plan…" : `Apply ${selectedKeys.size} selected`}
+            </button>
+          </div>
+        </>
+      ) : null}
+    </section>
   );
 }
 

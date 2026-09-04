@@ -4,6 +4,7 @@ import { rollupPhaseDatesForGroup } from "@/lib/phase-rollup";
 import type { AssigneeSummary, CreateBoardTaskInputV2 } from "@/types/phase-12a-b";
 import type { BoardTaskKind } from "@/types/board-cockpit";
 import { DEFAULT_STATUS_COLUMNS_V3 } from "@/lib/board-constants";
+import { addSowContextToBoardTasks } from "@/lib/board-sow-context";
 
 /** POST body — Phase 12a-B's CreateBoardTaskInputV2 plus this round's optional `kind` (milestone toggle at creation time). Intersection type rather than editing that interface directly, per this file's own edit-boundary discipline (types/phase-12a-b.ts is a prior, already-completed round's own file). */
 type CreateBoardTaskInputCockpit = CreateBoardTaskInputV2 & { kind?: BoardTaskKind };
@@ -152,7 +153,7 @@ export async function GET(
         .order("sort", { ascending: true })
     : { data: [] };
 
-  const taskRows = tasks ?? [];
+  const taskRows = await addSowContextToBoardTasks(supabase, projectId, tasks ?? []);
   const taskIds = taskRows.map((t) => t.id);
   const contactIds = [...new Set(taskRows.map((t) => t.contact_id).filter(Boolean))] as string[];
   // Board cockpit round (migration 029) — batch-fetch the linked

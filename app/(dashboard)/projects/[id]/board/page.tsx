@@ -9,6 +9,7 @@ import { DEFAULT_STATUS_COLUMNS_V3 } from "@/lib/board-constants";
 import type { AssigneeSummary } from "@/types/phase-12a-b";
 import type { LinkedVisitSummary } from "@/types/board-cockpit";
 import type { BoardColumnV3, BoardGroupV3, BoardTaskV3 } from "@/types/board-v3";
+import { addSowContextToBoardTasks } from "@/lib/board-sow-context";
 
 // Board v3 — Monday parity round: REPLACES the Board v2 Waiting-first
 // seed with the Monday-parity status vocabulary
@@ -104,7 +105,7 @@ export default async function ProjectBoardPage({
         .order("sort", { ascending: true })
     : { data: [] };
 
-  const taskRows = tasks ?? [];
+  const taskRows = await addSowContextToBoardTasks(supabase, id, tasks ?? []);
   const taskIds = taskRows.map((t) => t.id);
   const contactIds = [...new Set(taskRows.map((t) => t.contact_id).filter(Boolean))] as string[];
   // Board cockpit round (migration 029) — same batched visit join GET
