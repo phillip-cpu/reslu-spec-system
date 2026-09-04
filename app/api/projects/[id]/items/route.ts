@@ -372,9 +372,21 @@ export async function POST(
     .single();
 
   if (error) {
-    // Foreign-key violation on category → 400 (unknown prefix), else 500.
-    const status = error.code === "23503" ? 400 : 500;
-    return NextResponse.json({ error: error.message }, { status });
+    // Branch on stable Postgres codes rather than exposing a raw constraint
+    // name to staff. 23505 should be unreachable after the counter-repair
+    // migration, but a concurrent explicit import may still legitimately
+    // claim the same code first; asking the user to retry is safe because the
+    // failed INSERT is atomic and created no partial item.
+    if (error.code === "23503") {
+      return NextResponse.json({ error: "Unknown FF&E category" }, { status: 400 });
+    }
+    if (error.code === "23505") {
+      return NextResponse.json(
+        { error: "That FF&E code was just used by another item. Please try adding this item again." },
+        { status: 409 }
+      );
+    }
+    return NextResponse.json({ error: "Could not add the FF&E item. Please try again." }, { status: 500 });
   }
 
   // Track library usage (best-effort) and the project↔library link.
