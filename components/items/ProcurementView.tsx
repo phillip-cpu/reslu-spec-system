@@ -261,18 +261,22 @@ function NumCell({
   onCommit,
   width = "w-24",
   suffix,
+  ariaLabel,
 }: {
   value: number | null;
   onCommit: (v: number | null) => void;
   width?: string;
   suffix?: string;
+  ariaLabel?: string;
 }) {
   return (
     <div className="flex items-center gap-1">
       <input
         key={String(value)}
         type="number"
+        inputMode="decimal"
         step="any"
+        aria-label={ariaLabel}
         defaultValue={value ?? ""}
         onBlur={(e) => {
           const raw = e.target.value;
@@ -281,7 +285,7 @@ function NumCell({
         }}
         className={clsx(
           width,
-          "border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-right text-body focus:border-nearblack focus:outline-none"
+          "shrink-0 border border-[#c9c2b4] bg-nearwhite px-2 py-1 text-right text-body tabular-nums [appearance:textfield] focus:border-nearblack focus:outline-none [&::-webkit-inner-spin-button]:m-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:m-0 [&::-webkit-outer-spin-button]:appearance-none"
         )}
       />
       {suffix && <span className="text-caption text-charcoal/40">{suffix}</span>}
@@ -382,7 +386,8 @@ function QtyCell({
     <div className="relative flex items-center justify-end gap-1">
       <NumCell
         value={item.quantity}
-        width="w-16"
+        width="w-20"
+        ariaLabel={`Quantity for ${item.name}`}
         onCommit={(v) => onPatch(item.id, { quantity: v ?? 0 })}
       />
       <button
