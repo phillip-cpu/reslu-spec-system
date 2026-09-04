@@ -265,7 +265,7 @@ export function JobPlanWorkspace({
         ))}
       </div>
 
-      <p className="text-caption text-charcoal/50">Double-click any row to open its complete thread. Nothing here is a duplicate record.</p>
+      <p className="text-caption text-charcoal/50">Click or tap any row to open its complete thread; double-click works too. Nothing here is a duplicate record.</p>
 
       <div className="space-y-6">
         {groups.map((group) => (
@@ -323,7 +323,7 @@ export function JobPlanWorkspace({
                         </div>
 
                         <div>
-                          <p className="label-caps text-charcoal/45">FF&amp;E referenced in this clause</p>
+                          <p className="label-caps text-charcoal/45">FF&amp;E referenced in this package</p>
                           <div className="mt-2 space-y-4">
                             {thread.items.map((item) => (
                               <div key={item.id} className="border-l-2 border-sand pl-3">
@@ -341,7 +341,7 @@ export function JobPlanWorkspace({
                                 )}
                               </div>
                             ))}
-                            {thread.items.length === 0 && <p className="text-body text-charcoal/50">No exact project item code appears in this clause.</p>}
+                            {thread.items.length === 0 && <p className="text-body text-charcoal/50">No exact project item code appears in this package.</p>}
                           </div>
                           <Link href={`/projects/${projectId}?tab=ffe&view=procurement`} className="mt-3 inline-block text-caption font-medium text-nearblack underline underline-offset-4">Open FF&amp;E</Link>
                         </div>
