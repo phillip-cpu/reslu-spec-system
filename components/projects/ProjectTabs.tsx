@@ -8,6 +8,7 @@ import { ProjectLifecycle } from "./ProjectLifecycle";
 export type ProjectTabKey =
   | "overview"
   | "messages"
+  | "job-plan"
   | "design"
   | "sow"
   | "ffe"
@@ -31,6 +32,7 @@ interface Props {
 type ProjectNavGroup = "work" | "site" | "finance";
 
 const GROUP_FOR_TAB: Partial<Record<ProjectTabKey, ProjectNavGroup>> = {
+  "job-plan": "work",
   design: "work",
   sow: "work",
   ffe: "work",
@@ -53,7 +55,7 @@ export function ProjectTabs({ projectId, active, isAdmin, portalUrl }: Props) {
   const primary = [
     { key: "overview", label: "Overview", href: `/projects/${projectId}`, active: active === "overview" },
     { key: "messages", label: "Chat", href: `/projects/${projectId}/messages`, active: active === "messages" },
-    { key: "work", label: "Work", href: `/projects/${projectId}/board`, active: activeGroup === "work" },
+    { key: "work", label: "Work", href: `/projects/${projectId}/job-plan`, active: activeGroup === "work" },
     { key: "documents", label: "Documents", href: `/projects/${projectId}/documents`, active: active === "documents" },
     { key: "site", label: "Site", href: `/projects/${projectId}/diary`, active: activeGroup === "site" },
     { key: "client", label: "Client", href: `/projects/${projectId}/client`, active: active === "client" },
@@ -65,6 +67,7 @@ export function ProjectTabs({ projectId, active, isAdmin, portalUrl }: Props) {
 
   const childGroups: Record<ProjectNavGroup, { key: ProjectTabKey; label: string; href: string }[]> = {
     work: [
+      { key: "job-plan", label: "Plan", href: `/projects/${projectId}/job-plan` },
       { key: "design", label: "Design", href: `/projects/${projectId}/design` },
       { key: "sow", label: "Scope", href: `/projects/${projectId}/sow` },
       { key: "ffe", label: "FF&E", href: `/projects/${projectId}?tab=ffe` },
