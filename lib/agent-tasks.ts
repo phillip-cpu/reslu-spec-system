@@ -15,6 +15,7 @@ export interface StartAgentTaskRequest {
 
 export interface RealtimeAgentTaskRequest extends StartAgentTaskRequest {
   realtimeResponseId: string | null;
+  exactTranscript: string;
 }
 
 function cleanText(value: unknown, maximum: number) {
@@ -52,8 +53,9 @@ export function parseRealtimeAgentTaskRequest(value: unknown): RealtimeAgentTask
     source_call_id: body.call_id,
   });
   const realtimeResponseId = body.response_id == null ? null : cleanText(body.response_id, 160);
-  if (!parsed || !parsed.sourceCallId || (body.response_id != null && !realtimeResponseId)) return null;
-  return { ...parsed, realtimeResponseId };
+  const exactTranscript = cleanText(body.exact_transcript, 20_000) ?? parsed?.objective ?? null;
+  if (!parsed || !parsed.sourceCallId || !exactTranscript || (body.response_id != null && !realtimeResponseId)) return null;
+  return { ...parsed, realtimeResponseId, exactTranscript };
 }
 
 export function realtimeTaskAcknowledgement(title: string) {

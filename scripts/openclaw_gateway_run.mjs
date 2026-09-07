@@ -204,7 +204,7 @@ export function safeAgentEvent(frame, expectedRunId) {
     };
   }
   if (payload.stream === "assistant" && typeof data.delta === "string" && data.delta.length > 0) {
-    return { type: "assistant_delta", character_count: data.delta.length };
+    return { type: "assistant_delta", delta: data.delta.slice(0, 1200), character_count: data.delta.length };
   }
   return null;
 }

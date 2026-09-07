@@ -54,11 +54,12 @@ test("cancelling durable work needs a deliberate second action", () => {
   assert.doesNotMatch(workspace, /onClick=\{\(\) => onAction\(task\.id, "cancel"\)\}/);
 });
 
-test("agent work is a compact link to the dedicated Workroom and the composer does not trigger iPhone zoom", () => {
+test("agent work expands inside chat with Workroom as a secondary deep link and the composer avoids iPhone zoom", () => {
   assert.match(workspace, /max-w-full flex-1 flex-col overflow-x-hidden/);
   assert.match(workspace, /href=\{`\/workroom\?conversation=/);
-  assert.match(workspace, />Open Workroom<\/span>/);
-  assert.doesNotMatch(workspace, /agentWorkExpanded/);
+  assert.match(workspace, />\s*Open all work\s*<\/Link>/);
+  assert.match(workspace, /const \[agentWorkExpanded, setAgentWorkExpanded\] = useState\(true\)/);
+  assert.match(workspace, /aria-controls="conversation-agent-work-details"/);
   assert.doesNotMatch(workspace, /pb-3 md:flex md:max-h-52/);
   assert.match(workspace, /block truncate text-\[14px\]/);
   assert.match(workspace, /text-\[16px\].*md:text-body/);

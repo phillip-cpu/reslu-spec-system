@@ -26,6 +26,7 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -58,7 +59,7 @@ HISTORY_LIMIT = 80
 REALTIME_VOICE_HISTORY_LIMIT = 16
 TASK_HISTORY_LIMIT = 24
 ATTACHMENT_RECALL_LIMIT = 12
-TEXT_CHAT_THINKING_LEVEL = "low"
+TEXT_CHAT_THINKING_LEVEL = "medium"
 REALTIME_VOICE_THINKING_DEFAULT = "minimal"
 REALTIME_VOICE_MODEL_DEFAULT = "openai/gpt-5.6-terra"
 OPENCLAW_SESSION_VERSION_DEFAULT = "v3"
@@ -119,6 +120,28 @@ def bounded_json_data(value: object, maximum: int = 60000) -> str:
         if prefix_limit == 0:
             return "{}"
         prefix_limit //= 2
+
+
+def bounded_transcript_json(transcript: str, maximum: int = 60000) -> str:
+    """Bound a transcript while preserving the newest turns, not its stale head."""
+    value = {"chronological_transcript": transcript}
+    encoded = json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+    if len(encoded) <= maximum:
+        return encoded
+    keep = max(0, maximum - 256)
+    while keep > 0:
+        tail = transcript[-keep:]
+        first_line_break = tail.find("\n")
+        if first_line_break >= 0:
+            tail = tail[first_line_break + 1:]
+        encoded = json.dumps({
+            "truncated": True,
+            "chronological_transcript": tail,
+        }, ensure_ascii=True, separators=(",", ":"))
+        if len(encoded) <= maximum:
+            return encoded
+        keep //= 2
+    return "{}"
 
 
 def load_env_file(path: Path) -> None:
@@ -257,6 +280,35 @@ class SupabaseRest:
         if not isinstance(result, str) or not result:
             raise RuntimeError("specialist consultation completion returned no message id")
         return result
+
+    def complete_conversation_job(
+        self,
+        job_id: str,
+        body: str,
+        metadata: dict,
+        openclaw_usage: dict | None = None,
+    ) -> str:
+        result = self.request(
+            "POST",
+            "rpc/complete_agent_conversation_job",
+            {
+                "p_job_id": job_id,
+                "p_body": body,
+                "p_metadata": metadata,
+                "p_openclaw_usage": openclaw_usage,
+            },
+        )
+        if not isinstance(result, str) or not result:
+            raise RuntimeError("conversation job completion returned no message id")
+        return result
+
+    def fail_conversation_job(self, job_id: str, error: str) -> str | None:
+        result = self.request(
+            "POST",
+            "rpc/fail_agent_conversation_job",
+            {"p_job_id": job_id, "p_error": error[:4000]},
+        )
+        return result if isinstance(result, str) and result else None
 
     def rows(
         self,
@@ -508,6 +560,11 @@ def conversation_history(
         current_call_id,
         triggering_message_id,
     )
+    if triggering_message_id and not current_call_id:
+        # CURRENT_REQUEST_JSON is the sole copy of the triggering turn. Keeping
+        # it in history as well made agents echo or answer the same request
+        # twice, especially when an OpenClaw session already retained context.
+        messages = [row for row in messages if row.get("id") != triggering_message_id]
     messages_by_id = {row["id"]: row for row in messages}
     missing_reply_ids = sorted({
         row["reply_to_id"]
@@ -720,6 +777,71 @@ def conversation_scope_context(rest: SupabaseRest, conversation_id: str) -> dict
     return envelope
 
 
+def refresh_conversation_context_summary(rest: SupabaseRest, conversation_id: str) -> None:
+    """Write a compact canonical checkpoint after a completed agent turn."""
+    contexts = rest.rows(
+        "conversation_contexts",
+        {
+            "select": "conversation_id,summary",
+            "conversation_id": f"eq.{conversation_id}",
+            "limit": "1",
+        },
+        timeout_seconds=JOB_STATUS_REQUEST_TIMEOUT_SECONDS,
+    )
+    if not contexts:
+        return
+    messages = rest.rows(
+        "conversation_messages",
+        {
+            "select": "id,author_profile_id,author_agent_id,body,metadata,created_at",
+            "conversation_id": f"eq.{conversation_id}",
+            "deleted_at": "is.null",
+            "order": "created_at.desc",
+            "limit": "16",
+        },
+        timeout_seconds=JOB_STATUS_REQUEST_TIMEOUT_SECONDS,
+    )
+    tasks = rest.rows(
+        "agent_tasks",
+        {
+            "select": "id,title,status,owner_agent_id,progress_label,result_summary,updated_at",
+            "conversation_id": f"eq.{conversation_id}",
+            "status": "in.(queued,running,awaiting_approval)",
+            "order": "updated_at.desc",
+            "limit": "8",
+        },
+        timeout_seconds=JOB_STATUS_REQUEST_TIMEOUT_SECONDS,
+    )
+    previous = contexts[0].get("summary")
+    durable = previous if isinstance(previous, dict) else {}
+    summary = {
+        "version": 1,
+        "recent_exchanges": [
+            {
+                "message_id": row.get("id"),
+                "speaker_type": "human" if row.get("author_profile_id") else "agent",
+                "speaker_id": row.get("author_profile_id") or row.get("author_agent_id"),
+                "text": str(row.get("body") or "")[:1600],
+                "created_at": row.get("created_at"),
+            }
+            for row in reversed(messages or [])
+            if isinstance(row, dict)
+        ],
+        "active_assignments": tasks or [],
+        "last_message_id": messages[0].get("id") if messages else None,
+        # Preserve explicit durable fields if a future summarizer or a human
+        # checkpoint has supplied them; transport refreshes never erase them.
+        "decisions": durable.get("decisions", []),
+        "commitments": durable.get("commitments", []),
+        "blockers": durable.get("blockers", []),
+    }
+    rest.patch_where(
+        "conversation_contexts",
+        {"conversation_id": f"eq.{conversation_id}"},
+        {"summary": summary, "summary_updated_at": datetime.now(timezone.utc).isoformat()},
+    )
+
+
 def is_realtime_voice_message(rest: SupabaseRest, message_id: str) -> bool:
     """Keep voice latency tuning off the normal typed-chat path."""
     rows = rest.rows(
@@ -829,6 +951,98 @@ def triggering_message_agent_task_id(
     return str(candidate) if re.fullmatch(UUID_PATTERN, str(candidate or "")) else None
 
 
+def agent_task_chat_context(
+    rest: SupabaseRest,
+    conversation_id: str,
+    task_id: str | None,
+    owner_agent_id: str,
+) -> dict | None:
+    """Load the exact assignment behind a task-linked conversation turn."""
+    if not task_id or not re.fullmatch(UUID_PATTERN, task_id):
+        return None
+    tasks = rest.rows(
+        "agent_tasks",
+        {
+            "select": (
+                "id,conversation_id,title,objective,status,model_tier,approval_state,"
+                "result_summary,error,owner_agent_id,delegated_by_agent_id,source_task_id,updated_at"
+            ),
+            "id": f"eq.{task_id}",
+            "conversation_id": f"eq.{conversation_id}",
+            "owner_agent_id": f"eq.{owner_agent_id}",
+            "limit": "1",
+        },
+        timeout_seconds=JOB_STATUS_REQUEST_TIMEOUT_SECONDS,
+    )
+    if not isinstance(tasks, list) or not tasks:
+        raise RuntimeError("linked assignment does not belong to this agent and conversation")
+    artifacts = task_artifacts(rest, task_id)
+    events = rest.rows(
+        "agent_task_events",
+        {
+            "select": "id,event_type,label,detail,metadata,created_at",
+            "task_id": f"eq.{task_id}",
+            "order": "created_at.desc",
+            "limit": "12",
+        },
+        timeout_seconds=JOB_STATUS_REQUEST_TIMEOUT_SECONDS,
+    )
+    steering = rest.rows(
+        "conversation_messages",
+        {
+            "select": "id,author_profile_id,author_agent_id,body,metadata,created_at",
+            "conversation_id": f"eq.{conversation_id}",
+            "metadata->>agent_task_id": f"eq.{task_id}",
+            "deleted_at": "is.null",
+            "order": "created_at.desc",
+            "limit": "20",
+        },
+        timeout_seconds=JOB_STATUS_REQUEST_TIMEOUT_SECONDS,
+    )
+    results = rest.rows(
+        "conversation_messages",
+        {
+            "select": "id,author_profile_id,author_agent_id,body,metadata,created_at",
+            "conversation_id": f"eq.{conversation_id}",
+            "metadata->>task_id": f"eq.{task_id}",
+            "deleted_at": "is.null",
+            "order": "created_at.desc",
+            "limit": "10",
+        },
+        timeout_seconds=JOB_STATUS_REQUEST_TIMEOUT_SECONDS,
+    )
+    linked_messages = [
+        row for row in [*(steering or []), *(results or [])]
+        if isinstance(row, dict)
+    ]
+    linked_messages.sort(key=lambda row: str(row.get("created_at") or ""))
+    return {
+        "assignment": tasks[0],
+        "artifacts": artifacts[-10:] if isinstance(artifacts, list) else [],
+        "recent_events": list(reversed(events or [])),
+        "task_chat": linked_messages[-24:],
+    }
+
+
+def conversation_thinking_level(
+    newest_message: str,
+    attachments: list[dict],
+    linked_task_context: dict | None,
+) -> str:
+    """Spend reasoning where the request has scope, evidence, or consequences."""
+    text = newest_message.strip().lower()
+    if linked_task_context or attachments:
+        return "high"
+    if len(text) <= 32 and re.fullmatch(r"(?:hi|hello|hey|thanks|thank you|ok|okay|great|yes|no)[.! ]*", text):
+        return "low"
+    if any(token in text for token in (
+        "analyse", "analyze", "compare", "investigate", "plan", "strategy",
+        "why", "root cause", "approve", "send", "publish", "delete", "book",
+    )):
+        return "high"
+    return TEXT_CHAT_THINKING_LEVEL
+
+
 def realtime_voice_thinking_level() -> str:
     configured = os.environ.get(
         "RESLU_REALTIME_AGENT_THINKING",
@@ -850,9 +1064,9 @@ def realtime_voice_agent_model() -> str | None:
 
 def realtime_voice_personality(agent_slug: str) -> str:
     personalities = {
-        "aria": "Sound like Aria: immaculate, controlled and exceptionally professional. Be slick, precise and quietly decisive, with no visible personal side; never chatty, confessional, gushy or playful.",
+        "aria": "Sound like Aria: warm, composed and exceptionally capable. Be precise and quietly decisive, but let a little human personality show; never become gushy, theatrical or falsely intimate.",
         "marco": "Sound like Marco, RESLU's marketing intelligence: outgoing, energetic, socially confident and lightly witty. Add charm without forcing jokes, becoming flippant or losing commercial focus.",
-        "stuart": "Sound like Stuart: deliberately dry, conservative, terse and financially disciplined. Lead with the number, evidence, risk and recommendation; no theatrics or unnecessary warmth.",
+        "stuart": "Sound like Stuart: calm, financially disciplined and understated. Lead with the number, evidence, risk and recommendation, while remaining approachable and plainly human; no theatrics.",
     }
     return personalities.get(agent_slug, "Be concise, direct and useful.")
 
@@ -942,7 +1156,7 @@ def openclaw_session_key(
     ).strip()
     version = configured if re.fullmatch(r"[A-Za-z0-9_-]{1,20}", configured) else OPENCLAW_SESSION_VERSION_DEFAULT
     instant = now or datetime.now(timezone.utc)
-    adelaide_day = (instant + timedelta(hours=9, minutes=30)).strftime("%Y%m%d")
+    adelaide_day = instant.astimezone(ZoneInfo("Australia/Adelaide")).strftime("%Y%m%d")
     return f"reslu-conversation-{version}-{adelaide_day}-{conversation_id}"
 
 
@@ -951,6 +1165,11 @@ def openclaw_voice_session_key(conversation_id: str, call_id: str | None) -> str
     if call_id and re.fullmatch(UUID_PATTERN, call_id):
         return f"reslu-call-v1-{call_id}"
     return f"reslu-call-v1-conversation-{conversation_id}"
+
+
+def openclaw_conversation_turn_session_key(job_id: str) -> str:
+    """Use one canonical DB-backed context per typed turn without transcript replay."""
+    return f"reslu-conversation-turn-v1-{job_id}"
 
 
 def openclaw_task_session_key(task_id: str) -> str:
@@ -1231,6 +1450,7 @@ def invoke_agent(
     realtime_voice: bool = False,
     scope_context: dict | None = None,
     prior_attachment_recall: list[dict] | None = None,
+    linked_task_context: dict | None = None,
     session_key: str | None = None,
 ) -> str | None:
     attachment_descriptors = []
@@ -1268,8 +1488,9 @@ def invoke_agent(
     current_request_json = bounded_json_data(current_request, 24000)
     attachment_context_json = bounded_json_data(attachment_descriptors, 16000)
     prior_attachment_recall_json = bounded_json_data(prior_attachment_recall or [], 18000)
-    history_context_json = bounded_json_data({"chronological_transcript": history})
+    history_context_json = bounded_transcript_json(history)
     scope_context_json = bounded_json_data(scope_context or {}, 16000)
+    linked_task_context_json = bounded_json_data(linked_task_context or {}, 30000)
     transport_context_json = bounded_json_data({
         "conversation_id": conversation_id,
         "current_agent_slug": agent["slug"],
@@ -1288,11 +1509,19 @@ def invoke_agent(
             "Never return placeholder progress narration or describe waiting, searching, checking, or routine tool use. "
             "Give the useful answer, ask one necessary clarifying question, or briefly state an action that actually completed. "
         )
+    task_chat_instruction = ""
+    if linked_task_context:
+        task_chat_instruction = (
+            "This is a follow-up about only the assignment in AGENT_TASK_CONTEXT_JSON. "
+            "Answer from its exact objective, status, events, artifacts and task chat. Apply the user's newest direction to that assignment; "
+            "do not silently substitute another task or broaden its scope. "
+        )
     completion_instruction = ""
-    if agent.get("slug") == "marco" and not realtime_voice and not consultation_owner:
+    if not realtime_voice and not consultation_owner:
         completion_instruction = (
-            "Operate under a completion contract. Before Ads, SEO, content, campaign or landing-page advice, search Marco's curated Second Brain with at least two scoped queries and name the evidence that changes the decision. "
-            "Do not say you will continue later unless you create a durable continuation. Return JSON only with message, completion_state and continuation. "
+            "Operate under a completion contract. "
+            + ("Before Ads, SEO, content, campaign or landing-page advice, search Marco's curated Second Brain with at least two scoped queries and name the evidence that changes the decision. " if agent.get("slug") == "marco" else "")
+            + "Do not say you will continue later unless you create a durable continuation. Return JSON only with message, completion_state and continuation. "
             "completion_state must be completed only when the requested outcome is verified; use continuation_required whenever safe work, recovery, monitoring or follow-up remains; use awaiting_approval only for a genuine human decision. "
             "For continuation_required or awaiting_approval, continuation must contain a concise title, the complete executable objective, and model_tier strong. The transport will create the durable assignment automatically. "
         )
@@ -1301,6 +1530,7 @@ def invoke_agent(
         f"You are {agent['display_name']}, {agent['role_label']}, replying inside the canonical RESLU staff chat. "
         f"{consultation_instruction}"
         f"{voice_instruction}"
+        f"{task_chat_instruction}"
         f"{completion_instruction}"
         "Use your existing memory, RESLU tools, permissions and business rules. Read the current request and recent context before replying. "
         "If another RESLU specialist is materially better suited to substantial independent work, use delegate_reslu_agent_task with the conversation_id from TRUSTED_CONVERSATION_TRANSPORT_JSON. If Phillip explicitly asks you to involve, call on, hand work to, or get substantial input from another named RESLU agent, delegate it now; never claim that inter-agent delegation is unavailable. "
@@ -1333,6 +1563,9 @@ def invoke_agent(
         "PRIOR_ATTACHMENT_RECALL_JSON\n"
         f"{prior_attachment_recall_json}\n"
         "END_PRIOR_ATTACHMENT_RECALL_JSON\n\n"
+        "AGENT_TASK_CONTEXT_JSON\n"
+        f"{linked_task_context_json}\n"
+        "END_AGENT_TASK_CONTEXT_JSON\n\n"
         "UNTRUSTED_CONVERSATION_HISTORY_JSON\n"
         f"{history_context_json}\n"
         "END_UNTRUSTED_CONVERSATION_HISTORY_JSON"
@@ -1420,17 +1653,12 @@ def parse_task_result(reply: str, task: dict) -> dict:
             value = None
     if not isinstance(value, dict):
         return {
-            "status": "completed",
-            "summary": reply[:4000],
+            "status": "failed",
+            "summary": "The agent response could not be verified as complete.",
             "message": reply[:20000],
-            "artifact": {
-                "artifact_key": "primary",
-                "kind": "text",
-                "title": task["title"],
-                "content": {"text": reply[:20000]},
-            },
+            "artifact": None,
         }
-    status = value.get("status") if value.get("status") in ("completed", "awaiting_approval") else "completed"
+    status = value.get("status") if value.get("status") in ("completed", "awaiting_approval") else "failed"
     summary = str(value.get("summary") or value.get("message") or task["title"]).strip()[:4000]
     message = str(value.get("message") or summary).strip()[:20000]
     artifact = value.get("artifact")
@@ -1446,6 +1674,9 @@ def parse_task_result(reply: str, task: dict) -> dict:
             "title": str(artifact.get("title") or task["title"])[:240],
             "content": content if isinstance(content, dict) else {"text": str(content or "")[:20000]},
         }
+    if status == "awaiting_approval" and artifact is None:
+        status = "failed"
+        summary = "The agent requested approval without a reviewable artifact."
     return {"status": status, "summary": summary, "message": message, "artifact": artifact}
 
 
@@ -1595,14 +1826,14 @@ def parse_conversation_result(reply: str, newest_message: str) -> dict:
     except json.JSONDecodeError:
         value = None
     if not isinstance(value, dict) or not isinstance(value.get("message"), str):
-        return {"message": reply[:20000], "completion_state": "completed", "continuation": None}
+        return {"message": reply[:20000], "completion_state": "unverified", "continuation": None}
 
     message = value["message"].strip()[:20000] or reply[:20000]
     state = value.get("completion_state")
     if state not in {"completed", "continuation_required", "awaiting_approval"}:
-        state = "completed"
+        state = "unverified"
     continuation = value.get("continuation")
-    if state == "completed":
+    if state in {"completed", "unverified"}:
         continuation = None
     elif not isinstance(continuation, dict):
         continuation = {}
@@ -1740,6 +1971,7 @@ def invoke_task_agent(
     should_continue: Callable[[], bool],
     on_progress: Callable[[dict], None] | None = None,
     scope_context: dict | None = None,
+    steering_iteration: int = 0,
 ) -> dict | None:
     if is_meeting_minutes_task(task):
         return invoke_meeting_minutes_worker(task, should_continue)
@@ -1790,7 +2022,10 @@ def invoke_task_agent(
                 prompt=prompt,
                 agent_id=runtime_agent_id,
                 session_key=openclaw_task_session_key(task["id"]),
-                idempotency_key=f"reslu-task-{task['id']}-attempt-{int(task.get('retry_count') or 0)}",
+                idempotency_key=(
+                    f"reslu-task-{task['id']}-attempt-{int(task.get('retry_count') or 0)}"
+                    f"-steering-{steering_iteration}"
+                ),
                 timeout_seconds=TASK_PROCESS_TIMEOUT_SECONDS,
                 should_continue=should_continue,
                 thinking_level=thinking_level,
@@ -1897,13 +2132,23 @@ def gateway_progress_reporter(
     usage_capture: dict[str, dict] | None = None,
 ) -> Callable[[dict], None]:
     """Persist bounded metadata-only progress without storing tool arguments."""
-    state: dict[str, object] = {"label": None, "run_id": None, "usage_recorded": False}
+    state: dict[str, object] = {
+        "label": None,
+        "run_id": None,
+        "usage_recorded": False,
+        "draft": "",
+        "draft_persisted_at": 0.0,
+    }
 
     def report(event: dict) -> None:
         label = openclaw_progress_label(event)
         run_id = event.get("run_id") if event.get("type") == "accepted" else None
         safe_run_id = str(run_id)[:160] if isinstance(run_id, str) and run_id else None
         usage = bounded_openclaw_usage(event.get("usage")) if event.get("type") == "final" else None
+        draft_changed = False
+        if event.get("type") == "assistant_delta" and isinstance(event.get("delta"), str):
+            state["draft"] = (str(state["draft"]) + str(event["delta"]))[-4000:]
+            draft_changed = time.monotonic() - float(state["draft_persisted_at"]) >= 0.75
         if usage is not None and usage_capture is not None:
             # The canonical completion PATCH/RPC consumes this even if the
             # best-effort progress write below experiences a transient error.
@@ -1916,6 +2161,7 @@ def gateway_progress_reporter(
             label == state["label"]
             and (safe_run_id is None or safe_run_id == state["run_id"])
             and (usage is None or state["usage_recorded"] is True)
+            and not draft_changed
         ):
             return
         values: dict[str, object] = {
@@ -1927,6 +2173,8 @@ def gateway_progress_reporter(
             values["gateway_run_id"] = state["run_id"]
         if usage is not None:
             values["openclaw_usage"] = usage
+        if draft_changed and state["draft"]:
+            values["progress_message"] = str(state["draft"])
         try:
             rest.patch(table, row_id, values)
             if task_id and label and label != state["label"]:
@@ -1942,6 +2190,8 @@ def gateway_progress_reporter(
             state["label"] = label
         if usage is not None:
             state["usage_recorded"] = True
+        if draft_changed:
+            state["draft_persisted_at"] = time.monotonic()
 
     return report
 
@@ -1951,6 +2201,56 @@ def task_artifacts(rest: SupabaseRest, task_id: str) -> list[dict]:
         "agent_task_artifacts",
         {"select": "id,artifact_key,kind,title,content,status", "task_id": f"eq.{task_id}", "order": "created_at"},
     )
+
+
+def start_run_attempt(
+    rest: SupabaseRest,
+    *,
+    conversation_id: str,
+    agent_id: str,
+    reasoning_level: str,
+    model_name: str | None,
+    job_id: str | None = None,
+    task_id: str | None = None,
+    attempt_number: int = 1,
+    context_manifest: dict | None = None,
+) -> str | None:
+    try:
+        row = rest.insert("agent_run_attempts", {
+            "conversation_id": conversation_id,
+            "job_id": job_id,
+            "task_id": task_id,
+            "agent_id": agent_id,
+            "attempt_number": max(1, attempt_number),
+            "model_name": model_name,
+            "reasoning_level": reasoning_level,
+            "context_manifest": context_manifest or {},
+        })
+        attempt_id = row.get("id") if isinstance(row, dict) else None
+        return str(attempt_id) if attempt_id else None
+    except Exception as exc:  # noqa: BLE001 - telemetry must never block useful work
+        print(f"[agent-attempt] could not start telemetry: {exc}", file=sys.stderr, flush=True)
+        return None
+
+
+def finish_run_attempt(
+    rest: SupabaseRest,
+    attempt_id: str | None,
+    status: str,
+    usage: dict | None = None,
+    error: str | None = None,
+) -> None:
+    if not attempt_id:
+        return
+    try:
+        rest.patch("agent_run_attempts", attempt_id, {
+            "status": status,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "openclaw_usage": usage,
+            "error": error[:4000] if error else None,
+        })
+    except Exception as exc:  # noqa: BLE001
+        print(f"[agent-attempt] could not finish telemetry: {exc}", file=sys.stderr, flush=True)
 
 
 def store_task_artifact(rest: SupabaseRest, task: dict, artifact: dict) -> dict:
@@ -2047,15 +2347,73 @@ def process_task(rest: SupabaseRest, task: dict) -> str:
         task_id=task["id"],
         usage_capture=usage_capture,
     )
-    result = invoke_task_agent(
-        agent,
-        task,
-        history,
-        artifacts,
-        should_continue=lambda: task_should_continue(rest, task["id"]),
-        on_progress=report_progress,
-        scope_context=scope_context,
-    )
+    steering_iteration = 0
+    processed_steering_version = int(task.get("steering_version") or 0)
+    while True:
+        attempt_id = start_run_attempt(
+            rest,
+            conversation_id=task["conversation_id"],
+            agent_id=task["owner_agent_id"],
+            task_id=task["id"],
+            attempt_number=int(task.get("retry_count") or 0) + steering_iteration + 1,
+            reasoning_level=task_thinking_level(task["model_tier"]),
+            model_name=task_model_override(task["model_tier"]) or f"{agent['slug']}-default",
+            context_manifest={
+                "history_limit": TASK_HISTORY_LIMIT,
+                "artifact_count": len(artifacts),
+                "steering_version": processed_steering_version,
+                "scope_kind": (scope_context or {}).get("scope_kind"),
+            },
+        )
+        try:
+            result = invoke_task_agent(
+                agent,
+                task,
+                history,
+                artifacts,
+                should_continue=lambda: task_should_continue(rest, task["id"]),
+                on_progress=report_progress,
+                scope_context=scope_context,
+                steering_iteration=steering_iteration,
+            )
+        except Exception as exc:
+            finish_run_attempt(rest, attempt_id, "failed", usage_capture.get("value"), str(exc))
+            raise
+        if result is None:
+            finish_run_attempt(rest, attempt_id, "cancelled", usage_capture.get("value"))
+        else:
+            finish_run_attempt(rest, attempt_id, "completed", usage_capture.get("value"))
+        if result is None:
+            break
+        current_rows = rest.rows(
+            "agent_tasks",
+            {
+                "select": "status,cancellation_requested_at,steering_version,approval_state,approval_note,retry_count",
+                "id": f"eq.{task['id']}",
+                "limit": "1",
+            },
+            timeout_seconds=JOB_STATUS_REQUEST_TIMEOUT_SECONDS,
+        )
+        current = current_rows[0] if current_rows else {}
+        newest_steering_version = int(current.get("steering_version") or 0)
+        if (
+            current.get("status") == "running"
+            and current.get("cancellation_requested_at") is None
+            and newest_steering_version > processed_steering_version
+        ):
+            if steering_iteration >= 2:
+                rest.patch("agent_tasks", task["id"], {"status": "queued", "claimed_at": None})
+                insert_task_event(rest, task["id"], "queued", "Latest direction queued for a fresh pass")
+                return "queued"
+            processed_steering_version = newest_steering_version
+            steering_iteration += 1
+            task = {**task, **current}
+            history = conversation_history(rest, task["conversation_id"], TASK_HISTORY_LIMIT)
+            artifacts = task_artifacts(rest, task["id"])
+            insert_task_event(rest, task["id"], "progress", "Applying your latest direction")
+            continue
+        processed_steering_version = newest_steering_version
+        break
     if result is None or not task_should_continue(rest, task["id"]):
         rest.patch("agent_tasks", task["id"], {
             "status": "cancelled",
@@ -2063,6 +2421,31 @@ def process_task(rest: SupabaseRest, task: dict) -> str:
         })
         insert_task_event(rest, task["id"], "cancelled", "Task cancelled")
         return "cancelled"
+    if result["status"] == "failed":
+        completed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        rest.patch("agent_tasks", task["id"], {
+            "status": "failed",
+            "completed_at": completed_at,
+            "result_summary": None,
+            "error": result["summary"],
+            "processed_steering_version": processed_steering_version,
+        })
+        insert_task_event(rest, task["id"], "failed", "Task result could not be verified", result["summary"])
+        rest.insert("conversation_messages", {
+            "conversation_id": task["conversation_id"],
+            "author_agent_id": task.get("delegated_by_agent_id") or task["owner_agent_id"],
+            "body": (
+                "I could not verify this assignment as complete. Here is the unverified runtime output so nothing is hidden:\n\n"
+                + result["message"]
+            )[:20000],
+            "metadata": {
+                "source": "agent_task",
+                "task_id": task["id"],
+                "task_status": "failed",
+                "completion_state": "unverified",
+            },
+        })
+        return "failed"
     stored_artifact = None
     if result["artifact"]:
         stored_artifact = store_task_artifact(rest, task, result["artifact"])
@@ -2085,7 +2468,7 @@ def process_task(rest: SupabaseRest, task: dict) -> str:
             content["review_media_error"] = media_error
             rest.patch("agent_task_artifacts", stored_artifact["id"], {"content": content})
             stored_artifact["content"] = content
-            insert_task_event(rest, task["id"], "error", "Review media needs attention", media_error)
+            insert_task_event(rest, task["id"], "progress", "Review media needs attention", media_error)
 
     awaiting_approval = result["status"] == "awaiting_approval"
     completed_at = None if awaiting_approval else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -2105,6 +2488,7 @@ def process_task(rest: SupabaseRest, task: dict) -> str:
         "model_name": task_model_override(task["model_tier"]) or f"{agent['slug']}-default",
         "completed_at": completed_at,
         "error": None,
+        "processed_steering_version": processed_steering_version,
     }
     if usage_capture.get("value") is not None:
         completion_values["openclaw_usage"] = usage_capture["value"]
@@ -2140,6 +2524,10 @@ def process_task(rest: SupabaseRest, task: dict) -> str:
             },
         },
     )
+    try:
+        refresh_conversation_context_summary(rest, task["conversation_id"])
+    except Exception as exc:  # noqa: BLE001
+        print(f"[conversation-context] could not refresh task summary: {exc}", file=sys.stderr, flush=True)
     return "awaiting_approval" if awaiting_approval else "completed"
 
 
@@ -2231,16 +2619,14 @@ def agent_worker_loop(
             if job:
                 try:
                     if job_is_processing(rest, job["id"]):
-                        rest.patch(
-                            "agent_conversation_jobs",
-                            job["id"],
+                        rest.fail_conversation_job(job["id"], str(exc))
+                        rest.patch_where(
+                            "agent_run_attempts",
+                            {"job_id": f"eq.{job['id']}", "status": "eq.processing"},
                             {
                                 "status": "failed",
-                                "completed_at": time.strftime(
-                                    "%Y-%m-%dT%H:%M:%SZ",
-                                    time.gmtime(),
-                                ),
-                                "error": str(exc)[:2000],
+                                "completed_at": datetime.now(timezone.utc).isoformat(),
+                                "error": str(exc)[:4000],
                             },
                         )
                 except Exception as patch_error:  # noqa: BLE001
@@ -2301,7 +2687,7 @@ def task_worker_loop(base_url: str, service_key: str, slug: str) -> None:
                 try:
                     if task_should_continue(rest, task["id"]):
                         retry_count = int(task.get("retry_count") or 0)
-                        if slug == "marco" and retry_count < 1:
+                        if retry_count < 1:
                             rest.patch("agent_tasks", task["id"], {
                                 "status": "queued",
                                 "retry_count": retry_count + 1,
@@ -2317,7 +2703,7 @@ def task_worker_loop(base_url: str, service_key: str, slug: str) -> None:
                                 task["id"],
                                 "queued",
                                 "Automatic recovery queued",
-                                "Marco will inspect authoritative state before continuing.",
+                                f"{slug.title()} will inspect authoritative state before continuing.",
                             )
                         else:
                             rest.patch("agent_tasks", task["id"], {
@@ -2326,6 +2712,15 @@ def task_worker_loop(base_url: str, service_key: str, slug: str) -> None:
                                 "error": str(exc)[:4000],
                             })
                             insert_task_event(rest, task["id"], "failed", "Task failed", str(exc))
+                        rest.patch_where(
+                            "agent_run_attempts",
+                            {"task_id": f"eq.{task['id']}", "status": "eq.processing"},
+                            {
+                                "status": "failed",
+                                "completed_at": datetime.now(timezone.utc).isoformat(),
+                                "error": str(exc)[:4000],
+                            },
+                        )
                 except Exception as patch_error:  # noqa: BLE001
                     print(f"[agent-task] could not mark failed: {patch_error}", file=sys.stderr, flush=True)
             time.sleep(POLL_SECONDS)
@@ -2390,6 +2785,12 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
         job["triggering_message_id"],
     )
     agent = agent_identity(rest, job["agent_id"])
+    linked_task_context = agent_task_chat_context(
+        rest,
+        job["conversation_id"],
+        linked_agent_task_id,
+        job["agent_id"],
+    )
     consultation = (
         agent_consultation_for_job(rest, job["id"])
         if is_specialist_consultation
@@ -2406,7 +2807,7 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
         job["conversation_id"],
         history_limit,
         current_call_id=realtime_call_id if is_realtime_voice else None,
-        triggering_message_id=job["triggering_message_id"] if is_realtime_voice else None,
+        triggering_message_id=job["triggering_message_id"],
     )
     prior_attachment_recall = conversation_attachment_recall(rest, job["conversation_id"])
     scope_context = conversation_scope_context(rest, job["conversation_id"])
@@ -2418,6 +2819,27 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
         materialized = materialize_attachments(rest, attachments, Path(temporary_directory))
         if not job_is_processing(rest, job["id"]):
             return "cancelled"
+        reasoning_level = (
+            realtime_voice_thinking_level()
+            if is_realtime_voice
+            else conversation_thinking_level(newest_message, materialized, linked_task_context)
+        )
+        model_name = realtime_voice_agent_model() if is_realtime_voice else None
+        attempt_id = start_run_attempt(
+            rest,
+            conversation_id=job["conversation_id"],
+            agent_id=job["agent_id"],
+            job_id=job["id"],
+            reasoning_level=reasoning_level,
+            model_name=model_name or f"{agent['slug']}-default",
+            context_manifest={
+                "history_limit": history_limit,
+                "attachment_count": len(materialized),
+                "linked_task_id": linked_agent_task_id,
+                "scope_kind": (scope_context or {}).get("scope_kind"),
+                "transport": "voice" if is_realtime_voice else "text",
+            },
+        )
         usage_capture: dict[str, dict] = {}
         report_progress = gateway_progress_reporter(
             rest,
@@ -2431,12 +2853,8 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
             job["conversation_id"],
             materialized,
             should_continue=lambda: job_should_continue(rest, job["id"]),
-            thinking_level=(
-                realtime_voice_thinking_level()
-                if is_realtime_voice
-                else TEXT_CHAT_THINKING_LEVEL
-            ),
-            model=realtime_voice_agent_model() if is_realtime_voice else None,
+            thinking_level=reasoning_level,
+            model=model_name,
             idempotency_key=job["id"],
             on_progress=report_progress,
             newest_message=newest_message,
@@ -2445,23 +2863,26 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
             realtime_voice=is_realtime_voice,
             scope_context=scope_context,
             prior_attachment_recall=prior_attachment_recall,
+            linked_task_context=linked_task_context,
             session_key=(
                 openclaw_voice_session_key(job["conversation_id"], realtime_call_id)
                 if is_realtime_voice
-                else None
+                else openclaw_conversation_turn_session_key(job["id"])
             ),
         )
     if reply is None:
+        finish_run_attempt(rest, attempt_id, "cancelled", usage_capture.get("value"))
         return "cancelled"
     # A newer voice turn can cancel this job while the agent is running.
     # Discard late output; completed external side effects remain real.
     if not job_is_processing(rest, job["id"]):
+        finish_run_attempt(rest, attempt_id, "cancelled", usage_capture.get("value"))
         return "cancelled"
     visible_reply = reply
     completion_state = "completed"
     continuation_task = None
     continuation_error = None
-    if not consultation and agent.get("slug") == "marco" and not is_realtime_voice:
+    if not consultation and not is_realtime_voice:
         conversation_result = parse_conversation_result(reply, newest_message)
         visible_reply = conversation_result["message"]
         completion_state = conversation_result["completion_state"]
@@ -2477,47 +2898,37 @@ def process_job(rest: SupabaseRest, job: dict) -> str:
             except Exception as exc:  # noqa: BLE001 - retain the useful visible answer
                 continuation_error = str(exc)[:1000]
                 print(
-                    f"[conversation-bridge] could not persist Marco continuation for {job['id']}: {exc}",
+                    f"[conversation-bridge] could not persist continuation for {job['id']}: {exc}",
                     file=sys.stderr,
                     flush=True,
                 )
     if consultation:
         rest.complete_agent_consultation(job["id"], visible_reply, usage_capture.get("value"))
     else:
-        rest.insert(
-            "conversation_messages",
-            {
-                "conversation_id": job["conversation_id"],
-                "author_agent_id": job["agent_id"],
-                "body": visible_reply,
-                "metadata": {
-                    "source": "agent_runtime",
-                    "job_id": job["id"],
-                    "completion_state": completion_state,
-                    **(
-                        {"continuation_task_id": continuation_task["id"]}
-                        if continuation_task else {}
-                    ),
-                    **(
-                        {"continuation_queue_error": continuation_error}
-                        if continuation_error else {}
-                    ),
-                    **({"agent_task_id": linked_agent_task_id} if linked_agent_task_id else {}),
-                },
-            },
-        )
-        completion_values: dict[str, object] = {
-            "status": "done",
-            "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "error": None,
-        }
-        if usage_capture.get("value") is not None:
-            completion_values["openclaw_usage"] = usage_capture["value"]
-        rest.patch(
-            "agent_conversation_jobs",
+        rest.complete_conversation_job(
             job["id"],
-            completion_values,
+            visible_reply,
+            {
+                "source": "agent_runtime",
+                "job_id": job["id"],
+                "completion_state": completion_state,
+                **(
+                    {"continuation_task_id": continuation_task["id"]}
+                    if continuation_task else {}
+                ),
+                **(
+                    {"continuation_queue_error": continuation_error}
+                    if continuation_error else {}
+                ),
+                **({"agent_task_id": linked_agent_task_id} if linked_agent_task_id else {}),
+            },
+            usage_capture.get("value"),
         )
+        try:
+            refresh_conversation_context_summary(rest, job["conversation_id"])
+        except Exception as exc:  # noqa: BLE001 - a checkpoint never invalidates the canonical reply
+            print(f"[conversation-context] could not refresh summary: {exc}", file=sys.stderr, flush=True)
+    finish_run_attempt(rest, attempt_id, "completed", usage_capture.get("value"))
     return "done"
 
 

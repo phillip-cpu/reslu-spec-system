@@ -34,6 +34,7 @@ function decision(toolName, mode, params = {}, derivedPaths = []) {
 
 test("recognises only stable RESLU conversation session keys", () => {
   assert.equal(isResluConversationSession(sessionKey), true);
+  assert.equal(isResluConversationSession("agent:main:reslu-call-v1-12345678"), true);
   assert.equal(isResluConversationSession("agent:main:reslu-task-123"), false);
   assert.equal(isResluConversationSession("agent:main:whatsapp:direct:+614"), false);
 });

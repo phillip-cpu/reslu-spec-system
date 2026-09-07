@@ -2,6 +2,7 @@ import type { AgentSlug } from "@/types/conversations";
 
 export interface RealtimeConsultRequest {
   query: string;
+  exactTranscript?: string;
   agentSlug: AgentSlug;
   callId: string;
   toolCallId: string;
@@ -20,7 +21,10 @@ export function consultMessageMatchesIntent(
   if (!message.metadata || typeof message.metadata !== "object" || Array.isArray(message.metadata)) return false;
   const metadata = message.metadata as Record<string, unknown>;
   const targets = metadata.target_agent_slugs;
-  return message.body === intent.query
+  const exactTranscriptMatches = message.body === (intent.exactTranscript ?? intent.query)
+    && metadata.normalized_query === intent.query;
+  const legacyQueryMatches = message.body === intent.query && metadata.normalized_query == null;
+  return (exactTranscriptMatches || legacyQueryMatches)
     && metadata.source === "voice"
     && metadata.transport === "openai_realtime_webrtc"
     && metadata.realtime_call_id === intent.callId
@@ -41,15 +45,16 @@ export function parseRealtimeConsultRequest(value: unknown): RealtimeConsultRequ
   if (!value || typeof value !== "object") return null;
   const body = value as Record<string, unknown>;
   const query = typeof body.query === "string" ? body.query.trim() : "";
+  const exactTranscript = typeof body.exact_transcript === "string" ? body.exact_transcript.trim() : query;
   const agentSlug = body.agent_slug === "aria" || body.agent_slug === "marco" || body.agent_slug === "stuart"
     ? body.agent_slug
     : null;
   const callId = safeProviderId(body.call_id);
   const toolCallId = safeProviderId(body.tool_call_id);
   const responseId = body.response_id == null ? null : safeProviderId(body.response_id);
-  if (!query || query.length > 20_000 || !agentSlug || !callId || !toolCallId) return null;
+  if (!query || query.length > 20_000 || !exactTranscript || exactTranscript.length > 20_000 || !agentSlug || !callId || !toolCallId) return null;
   if (body.response_id != null && !responseId) return null;
-  return { query, agentSlug, callId, toolCallId, responseId };
+  return { query, exactTranscript, agentSlug, callId, toolCallId, responseId };
 }
 
 export function consultStatus(status: string, hasReply: boolean) {

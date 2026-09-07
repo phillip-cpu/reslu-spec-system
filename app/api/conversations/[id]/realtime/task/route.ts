@@ -49,11 +49,12 @@ export async function POST(request: NextRequest, context: Context) {
     realtime_response_id: body.realtimeResponseId,
     target_agent_slugs: [body.agentSlug],
     model_tier: body.modelTier,
+    normalized_objective: body.objective,
   };
   let messageResult = await supabase.from("conversation_messages").insert({
     conversation_id: id,
     author_profile_id: user.id,
-    body: body.objective,
+    body: body.exactTranscript,
     metadata,
   }).select("id").single();
   if (messageResult.error?.code === "23505") {

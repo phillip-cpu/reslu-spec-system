@@ -86,6 +86,7 @@ export interface ConversationAgentActivity {
   queued_at: string;
   claimed_at: string | null;
   progress_label: string | null;
+  progress_message?: string | null;
   progress_updated_at: string | null;
 }
 
