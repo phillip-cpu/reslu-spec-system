@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import clsx from "clsx";
 import type {
   CreateLeadInput,
@@ -163,6 +164,8 @@ export function LeadsWorkspace() {
       />
 
       {summary && <PipelineDashboard summary={summary} />}
+
+      <Link href="/leads/measurement" className="inline-block underline">Website enquiry quality report →</Link>
 
       <UnlinkedInvoicesPanel />
 
