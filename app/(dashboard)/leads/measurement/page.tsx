@@ -19,7 +19,7 @@ export default async function LeadMeasurementPage() {
   for (let offset = 0; ; offset += 500) {
     if (offset >= 10000) { failure = 'This report exceeds 10,000 submissions. Narrowing the server query is required before totals can be shown.'; break; }
     const { data, error } = await supabase.from('leads')
-      .select('id,first_name,surname_project,email,received_at,created_at,deleted_at,stage,page,gclid,utm_source,utm_medium,lead_measurement_reviews(id,status,reason,duplicate_of,reviewed_at)')
+      .select('id,first_name,surname_project,email,received_at,created_at,deleted_at,stage,page,gclid,utm_source,utm_medium,lead_measurement_reviews:lead_measurement_reviews!lead_measurement_reviews_lead_id_fkey(id,status,reason,duplicate_of,reviewed_at)')
       .eq('source', 'WEBSITE').order('created_at', { ascending: false }).order('id').range(offset, offset + 499);
     if (error) { failure = 'The enquiry report could not load. Please try again.'; break; }
     rows.push(...(data ?? []) as unknown as MeasurementLead[]);
