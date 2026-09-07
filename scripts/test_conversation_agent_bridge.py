@@ -438,8 +438,9 @@ class ConversationAgentBridgeTests(unittest.TestCase):
                 )
 
         recover.assert_not_called()
-        rest.patch.assert_called_once()
-        self.assertEqual(rest.patch.call_args.args[2]["status"], "failed")
+        rest.fail_conversation_job.assert_called_once_with("job-1", "provider unavailable")
+        rest.patch_where.assert_called_once()
+        self.assertEqual(rest.patch_where.call_args.args[0], "agent_run_attempts")
 
     def test_background_tasks_have_workers_independent_from_conversation_turns(self):
         with mock.patch.object(conversation_agent_bridge.threading, "Thread") as thread:
@@ -573,9 +574,9 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         aria = conversation_agent_bridge.realtime_voice_personality("aria")
         marco = conversation_agent_bridge.realtime_voice_personality("marco")
         stuart = conversation_agent_bridge.realtime_voice_personality("stuart")
-        self.assertIn("immaculate, controlled", aria)
+        self.assertIn("warm, composed", aria)
         self.assertIn("lightly witty", marco)
-        self.assertIn("dry, conservative, terse", stuart)
+        self.assertIn("calm, financially disciplined", stuart)
         self.assertEqual(len({aria, marco, stuart}), 3)
 
     @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
@@ -1126,7 +1127,7 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         )
         self.assertEqual(result, {
             "message": "The verified change is live.",
-            "completion_state": "completed",
+            "completion_state": "unverified",
             "continuation": None,
         })
 
@@ -1538,14 +1539,12 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             self.assertFalse(observed_path.exists())
             self.assertEqual(
                 observed_thinking_level,
-                conversation_agent_bridge.TEXT_CHAT_THINKING_LEVEL,
+                "high",
             )
 
-        rest.insert.assert_called_once()
-        self.assertEqual(rest.patch.call_count, 2)
-        completion = rest.patch.call_args_list[-1].args[2]
-        self.assertEqual(completion["status"], "done")
-        self.assertEqual(completion["openclaw_usage"]["total_tokens"], 125)
+        self.assertEqual(rest.insert.call_args.args[0], "agent_run_attempts")
+        rest.complete_conversation_job.assert_called_once()
+        self.assertEqual(rest.complete_conversation_job.call_args.args[3]["total_tokens"], 125)
 
     def test_process_job_applies_fast_model_only_to_realtime_voice(self):
         rest = mock.Mock()
@@ -1657,7 +1656,8 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             "Marco's bounded advice.",
             None,
         )
-        rest.insert.assert_not_called()
+        self.assertEqual(rest.insert.call_count, 1)
+        self.assertEqual(rest.insert.call_args.args[0], "agent_run_attempts")
         rest.patch.assert_not_called()
 
     @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")

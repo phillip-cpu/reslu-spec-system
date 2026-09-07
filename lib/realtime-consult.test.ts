@@ -24,6 +24,7 @@ test("consult routing accepts bounded canonical provider ids and agent slugs", (
     response_id: "resp_123",
   }), {
     query: "What is happening with the Norwood project?",
+    exactTranscript: "What is happening with the Norwood project?",
     agentSlug: "aria",
     callId: "call-123",
     toolCallId: "tool_123",

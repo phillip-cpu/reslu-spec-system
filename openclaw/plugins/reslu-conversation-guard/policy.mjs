@@ -1,6 +1,6 @@
 import path from "node:path";
 
-const CONVERSATION_SESSION = /(?:^|:)reslu-conversation-[A-Za-z0-9_-]+-/;
+const CONVERSATION_SESSION = /(?:^|:)(?:reslu-conversation-[A-Za-z0-9_-]+-|reslu-call-v1-)/;
 const BRIDGE_MARKERS = {
   requestStart: "CURRENT_REQUEST_JSON\n",
   requestEnd: "\nEND_CURRENT_REQUEST_JSON",

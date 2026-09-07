@@ -57,6 +57,7 @@ type ActiveAgentJobRow = {
   created_at: string;
   claimed_at: string | null;
   progress_label: string | null;
+  progress_message: string | null;
   progress_updated_at: string | null;
 };
 
@@ -125,7 +126,7 @@ async function activeAgentActivity(
   if (agentIds.size === 0) return [];
   const { data, error } = await supabase
     .from("agent_conversation_jobs")
-    .select("agent_id,status,created_at,claimed_at,progress_label,progress_updated_at")
+    .select("agent_id,status,created_at,claimed_at,progress_label,progress_message,progress_updated_at")
     .eq("conversation_id", conversationId)
     .in("status", ["pending", "processing"])
     .order("created_at", { ascending: true })
@@ -146,6 +147,7 @@ async function activeAgentActivity(
         queued_at: job.created_at,
         claimed_at: job.claimed_at,
         progress_label: job.progress_label,
+        progress_message: job.progress_message,
         progress_updated_at: job.progress_updated_at,
       });
       continue;
@@ -155,6 +157,7 @@ async function activeAgentActivity(
       current.status = "processing";
       current.claimed_at = job.claimed_at;
       current.progress_label = job.progress_label;
+      current.progress_message = job.progress_message;
       current.progress_updated_at = job.progress_updated_at;
     }
   }
@@ -424,7 +427,30 @@ export async function POST(request: NextRequest, context: Context) {
       || explicitTargets.has(slug)
       || new RegExp(`(?:^|\\s)@?${agent.display_name}(?:\\s|[,.!?]|$)`, "i").test(messageBody);
   });
-  const linkedTaskOwner = linkedTask ? agents.find((agent) => agent.id === linkedTask.owner_agent_id) ?? null : null;
+  let linkedTaskOwner = linkedTask ? agents.find((agent) => agent.id === linkedTask.owner_agent_id) ?? null : null;
+  if (linkedTask && !linkedTaskOwner) {
+    // Delegated specialists are not required to be visible participants in
+    // the parent chat. A task-linked message must still reach the task's exact
+    // owner instead of silently falling back to whichever agent is present.
+    const { data: owner, error: ownerError } = await supabase
+      .from("conversation_agents")
+      .select("id,slug,display_name,role_label,avatar_url")
+      .eq("id", linkedTask.owner_agent_id)
+      .eq("active", true)
+      .maybeSingle();
+    if (ownerError) return NextResponse.json({ error: ownerError.message }, { status: 500 });
+    if (!owner || !AGENT_SLUGS.has(owner.slug as AgentSlug)) {
+      return NextResponse.json({ error: "The assignment owner is unavailable" }, { status: 409 });
+    }
+    linkedTaskOwner = {
+      id: owner.id,
+      type: "agent",
+      display_name: owner.display_name,
+      avatar_url: owner.avatar_url,
+      agent_slug: owner.slug as AgentSlug,
+      role_label: owner.role_label,
+    };
+  }
   const targetAgents = linkedTaskOwner
     ? [linkedTaskOwner]
     : agents.length === 1 && participantResult.participants.length === 2 && explicitTargets.size === 0
@@ -435,7 +461,7 @@ export async function POST(request: NextRequest, context: Context) {
     // checks this state before publishing output, so a late reply cannot
     // appear after the interruption. Any business side effect already
     // completed by the agent remains real and auditable.
-    const { error: cancellationError } = await supabase.rpc("cancel_agent_conversation_jobs", {
+    const { error: cancellationError } = await supabase.rpc("cancel_realtime_voice_agent_jobs", {
       p_conversation_id: id,
       p_agent_ids: targetAgents.map((agent) => agent.id),
     });

@@ -12,7 +12,7 @@ const workspace = read("components/conversations/ConversationWorkspace.tsx");
 test("active agent work is member-scoped and contains status rather than message content", () => {
   assert.match(route, /conversationParticipants\(supabase, id, user\.id\)/);
   assert.match(route, /\.from\("agent_conversation_jobs"\)[\s\S]*\.eq\("conversation_id", conversationId\)/);
-  assert.match(route, /\.select\("agent_id,status,created_at,claimed_at,progress_label,progress_updated_at"\)/);
+  assert.match(route, /\.select\("agent_id,status,created_at,claimed_at,progress_label,progress_message,progress_updated_at"\)/);
   assert.match(route, /\.in\("status", \["pending", "processing"\]\)/);
 });
 

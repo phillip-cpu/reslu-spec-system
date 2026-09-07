@@ -121,7 +121,7 @@ export async function POST(request: NextRequest, context: Context) {
 
   // A newer voice consult supersedes unfinished speech for this agent. This
   // suppresses late output but cannot reverse a business action already done.
-  const { error: cancellationError } = await supabase.rpc("cancel_agent_conversation_jobs", {
+  const { error: cancellationError } = await supabase.rpc("cancel_realtime_voice_agent_jobs", {
     p_conversation_id: id,
     p_agent_ids: [agent.id],
   });
@@ -138,6 +138,7 @@ export async function POST(request: NextRequest, context: Context) {
 
   const metadata = {
     source: "voice",
+    normalized_query: body.query,
     transport: "openai_realtime_webrtc",
     realtime_call_id: body.callId,
     realtime_tool_call_id: body.toolCallId,
@@ -149,7 +150,7 @@ export async function POST(request: NextRequest, context: Context) {
     .insert({
       conversation_id: id,
       author_profile_id: user.id,
-      body: body.query,
+      body: body.exactTranscript,
       metadata,
     })
     .select("id,body,metadata,created_at")

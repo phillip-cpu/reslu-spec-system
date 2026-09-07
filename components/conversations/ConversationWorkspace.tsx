@@ -13,6 +13,7 @@ import {
 import { latestAgentComputerState } from "@/lib/agent-operating-workspace";
 import { visibleAgentWorkTasks } from "@/lib/agent-work-visibility";
 import { boundedFetch } from "@/lib/bounded-request";
+import { SimpleMarkdown } from "@/lib/simple-markdown";
 import {
   isTransientConversationNetworkError,
   retrySameConversationIntent,
@@ -533,6 +534,13 @@ function taskStatusDot(task: AgentTask) {
   return task.status === "running" ? "bg-blue-600" : "bg-charcoal/45";
 }
 
+function taskWorkroomView(task: AgentTask) {
+  if (task.status === "failed") return "recovery";
+  if (task.status === "queued" || task.status === "running") return "outstanding";
+  if (task.status === "completed" || task.status === "cancelled") return "history";
+  return "approvals";
+}
+
 function taskCurrentDetail(task: AgentTask) {
   return task.error
     ?? task.result_summary
@@ -576,21 +584,27 @@ function AgentTaskRow({
 
 function AgentTaskCard({
   task,
+  taskMessages = [],
   compact = false,
   dark = false,
   canRetry = false,
   onAction,
   onDiscuss,
+  onSendTaskMessage,
 }: {
   task: AgentTask;
+  taskMessages?: ConversationMessage[];
   compact?: boolean;
   dark?: boolean;
   canRetry?: boolean;
   onAction: (taskId: string, action: "cancel" | "approve" | "reject" | "retry" | "dismiss", artifactId?: string) => void;
   onDiscuss?: (task: AgentTask) => void;
+  onSendTaskMessage?: (task: AgentTask, body: string) => Promise<void>;
 }) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [confirmingRetry, setConfirmingRetry] = useState(false);
+  const [taskChatDraft, setTaskChatDraft] = useState("");
+  const [taskChatSending, setTaskChatSending] = useState(false);
   const latestEvent = task.events.at(-1);
   const computer = latestAgentComputerState(task);
   const active = task.status === "queued" || task.status === "running";
@@ -776,6 +790,63 @@ function AgentTaskCard({
           </div>
         );
       })}
+      {!compact && onSendTaskMessage && (
+        <section className={clsx("mt-4 border-t pt-3", dark ? "border-white/10" : "border-[#ded7cd]")} aria-label={`Task chat for ${task.title}`}>
+          <div className="flex items-center justify-between gap-3">
+            <p className={clsx("text-[10px] font-semibold uppercase tracking-[0.14em]", dark ? "text-white/45" : "text-charcoal/45")}>Task chat</p>
+            <p className={clsx("text-[11px]", dark ? "text-white/35" : "text-charcoal/40")}>Sent only to {task.owner_agent?.display_name ?? "this task's agent"}</p>
+          </div>
+          {taskMessages.length > 0 && (
+            <ol className="mt-2 max-h-44 space-y-2 overflow-y-auto" aria-label="Messages about this task">
+              {taskMessages.slice(-6).map((message) => (
+                <li key={message.id} className={clsx("rounded-lg px-3 py-2 text-[13px] leading-relaxed", message.author.is_self
+                  ? dark ? "ml-6 bg-white/10 text-white/85" : "ml-6 bg-[#e9e2d6] text-charcoal/85"
+                  : dark ? "mr-6 bg-black/20 text-white/75" : "mr-6 bg-white text-charcoal/75") }>
+                  <span className="block text-[10px] font-semibold uppercase tracking-[0.1em] opacity-55">{message.author.display_name}</span>
+                  <span className="mt-0.5 block whitespace-pre-wrap break-words">{message.body}</span>
+                </li>
+              ))}
+            </ol>
+          )}
+          <form
+            className="mt-2 flex items-end gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const body = taskChatDraft.trim();
+              if (!body || taskChatSending) return;
+              setTaskChatSending(true);
+              void onSendTaskMessage(task, body)
+                .then(() => setTaskChatDraft(""))
+                .finally(() => setTaskChatSending(false));
+            }}
+          >
+            <label className="min-w-0 flex-1">
+              <span className="sr-only">Ask or steer {task.owner_agent?.display_name ?? "the agent"} about this task</span>
+              <textarea
+                value={taskChatDraft}
+                onChange={(event) => setTaskChatDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }
+                }}
+                rows={2}
+                maxLength={20000}
+                placeholder="Ask a question or change the direction…"
+                className={clsx("max-h-28 min-h-12 w-full resize-none rounded-lg border px-3 py-2 text-[14px] outline-none", dark ? "border-white/20 bg-black/20 text-white placeholder:text-white/35" : "border-[#cfc6b8] bg-white text-nearblack placeholder:text-charcoal/40")}
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={taskChatSending || !taskChatDraft.trim()}
+              className={clsx("min-h-12 shrink-0 rounded-lg px-4 py-2 text-[13px] font-semibold disabled:opacity-35", dark ? "bg-sand text-nearblack" : "bg-nearblack text-white")}
+            >
+              {taskChatSending ? "Sending…" : "Send"}
+            </button>
+          </form>
+        </section>
+      )}
       {!compact && onDiscuss && (
         <button
           type="button"
@@ -1366,6 +1437,7 @@ export function ConversationWorkspace({
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageBody, setEditingMessageBody] = useState("");
   const [messageMutationId, setMessageMutationId] = useState<string | null>(null);
+  const [outcomeFeedbackByMessage, setOutcomeFeedbackByMessage] = useState<Record<string, "useful" | "needs_work" | "finished_elsewhere">>({});
   const [forwardingMessage, setForwardingMessage] = useState<ConversationMessage | null>(null);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [draftAttachments, setDraftAttachments] = useState<DraftAttachment[]>([]);
@@ -1387,6 +1459,7 @@ export function ConversationWorkspace({
   const [agentTasks, setAgentTasks] = useState<AgentTask[]>([]);
   const [selectedAgentTaskId, setSelectedAgentTaskId] = useState<string | null>(null);
   const [composerAgentTask, setComposerAgentTask] = useState<AgentTask | null>(null);
+  const [agentWorkExpanded, setAgentWorkExpanded] = useState(true);
   const [meetingModeOpen, setMeetingModeOpen] = useState(false);
   const [meetingSourceCallId, setMeetingSourceCallId] = useState<string | null>(null);
   const [meetingMinutesId, setMeetingMinutesId] = useState<string | null>(null);
@@ -1471,6 +1544,7 @@ export function ConversationWorkspace({
   const pendingRealtimeInterruptionsRef = useRef(new Map<string, RealtimeInterruptionTiming>());
   const pendingSpokenToolCallIdRef = useRef<string | null>(null);
   const inputTranscriptByItemRef = useRef(new Map<string, string>());
+  const latestInputTranscriptRef = useRef("");
   const lastReadMessageByConversationRef = useRef(new Map<string, string>());
   const messageSearchRequestRef = useRef(0);
   const conversationListRequestRef = useRef(0);
@@ -1666,6 +1740,19 @@ export function ConversationWorkspace({
   const selectedAgentTask = visibleAgentTasks.find((task) => task.id === selectedAgentTaskId)
     ?? visibleAgentTasks[0]
     ?? null;
+  const taskMessagesById = useMemo(() => {
+    const grouped = new Map<string, ConversationMessage[]>();
+    for (const message of messages) {
+      const taskId = typeof message.metadata.agent_task_id === "string"
+        ? message.metadata.agent_task_id
+        : typeof message.metadata.task_id === "string"
+          ? message.metadata.task_id
+          : null;
+      if (!taskId) continue;
+      grouped.set(taskId, [...(grouped.get(taskId) ?? []), message]);
+    }
+    return grouped;
+  }, [messages]);
   const activeAgentWorkCount = visibleAgentTasks.filter((task) => task.status === "queued" || task.status === "running").length
     + agentActivity.reduce((total, activity) => total + Math.max(1, activity.pending_turns), 0);
   const attentionAgentWorkCount = visibleAgentTasks.filter((task) => task.status === "awaiting_approval" || task.status === "failed").length;
@@ -1687,6 +1774,11 @@ export function ConversationWorkspace({
       setError(reason instanceof Error ? reason.message : "Could not update background task");
     });
   }, [updateAgentTask]);
+  const discussAgentTask = useCallback((task: AgentTask) => {
+    setComposerAgentTask(task);
+    setAgentWorkExpanded(false);
+    window.setTimeout(() => composerInputRef.current?.focus(), 0);
+  }, []);
   const headerParticipant = callAgent
     ?? selectedConversation?.participants.find((participant) => !participant.is_self)
     ?? selectedConversation?.participants[0]
@@ -2071,7 +2163,12 @@ export function ConversationWorkspace({
           reply_to_id: entry.replyToId,
         }),
       });
-      const result = await response.json().catch(() => ({}));
+      const result = await response.json().catch(() => ({})) as {
+        message?: ConversationMessage;
+        queued_agents?: AgentSlug[];
+        queue_error?: string | null;
+        error?: string;
+      };
       if (!response.ok) {
         const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
         await persistOutboxEntry({
@@ -2095,6 +2192,26 @@ export function ConversationWorkspace({
         ].sort((left, right) => (
           left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id)
         )));
+        if (!result.queue_error && result.queued_agents?.length) {
+          setAgentActivity((current) => {
+            const next = [...current];
+            for (const slug of result.queued_agents ?? []) {
+              const agent = participants.find((participant) => participant.type === "agent" && participant.agent_slug === slug);
+              if (!agent || next.some((activity) => activity.agent_id === agent.id)) continue;
+              next.push({
+                agent_id: agent.id,
+                status: "pending",
+                pending_turns: 1,
+                queued_at: new Date().toISOString(),
+                claimed_at: null,
+                progress_label: "Message received",
+                progress_message: null,
+                progress_updated_at: null,
+              });
+            }
+            return next;
+          });
+        }
       }
       shouldStickToBottomRef.current = true;
       await discardOutboxEntry(entry.clientMessageId).catch(() => null);
@@ -2153,7 +2270,7 @@ export function ConversationWorkspace({
       window.clearTimeout(timeout);
       outboxInFlightRef.current.delete(entry.clientMessageId);
     }
-  }, [discardOutboxEntry, loadConversations, loadMessages, persistOutboxEntry]);
+  }, [discardOutboxEntry, loadConversations, loadMessages, participants, persistOutboxEntry]);
 
   const flushOutbox = useCallback(async () => {
     const ownerProfileId = currentUserIdRef.current;
@@ -2375,6 +2492,26 @@ export function ConversationWorkspace({
     }
   }, [messageMutationId]);
 
+  const recordAgentOutcome = useCallback(async (
+    message: ConversationMessage,
+    outcome: "useful" | "needs_work" | "finished_elsewhere",
+  ) => {
+    const conversationId = selectedIdRef.current;
+    if (!conversationId) return;
+    const response = await boundedFetch(
+      `/api/conversations/${conversationId}/messages/${message.id}/outcome`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ outcome }),
+      },
+      CONVERSATION_ACTION_TIMEOUT_MS,
+    );
+    const result = await response.json().catch(() => ({})) as { error?: string };
+    if (!response.ok) throw new Error(result.error ?? "Could not save outcome feedback");
+    setOutcomeFeedbackByMessage((current) => ({ ...current, [message.id]: outcome }));
+  }, []);
+
   const toggleMessagePin = useCallback(async (message: ConversationMessage) => {
     const conversationId = selectedIdRef.current;
     if (!conversationId || messageMutationId) return;
@@ -2491,7 +2628,7 @@ export function ConversationWorkspace({
   useEffect(() => {
     if (!selectedId) return;
     const initial = window.setTimeout(() => void loadMessages(selectedId), 0);
-    const timer = window.setInterval(() => void loadMessages(selectedId), callActiveRef.current ? 1200 : 3000);
+    const timer = window.setInterval(() => void loadMessages(selectedId), 1200);
     return () => {
       window.clearTimeout(initial);
       window.clearInterval(timer);
@@ -2504,7 +2641,7 @@ export function ConversationWorkspace({
     }
     const refresh = () => void loadAgentTasks(selectedId).catch(() => null);
     const initial = window.setTimeout(refresh, 0);
-    const timer = window.setInterval(refresh, callId ? 1500 : 6000);
+    const timer = window.setInterval(refresh, callId ? 1200 : 2000);
     return () => {
       window.clearTimeout(initial);
       window.clearInterval(timer);
@@ -3615,6 +3752,7 @@ export function ConversationWorkspace({
     activeRealtimeProgressCueRef.current = null;
     pendingSpokenToolCallIdRef.current = null;
     inputTranscriptByItemRef.current.clear();
+    latestInputTranscriptRef.current = "";
     callTranscriptStickRef.current = true;
     setCallTranscriptExpanded(false);
     setCallTranscript([]);
@@ -3810,6 +3948,7 @@ export function ConversationWorkspace({
       timing.consultStartedAt = performance.now();
       const consultBody = JSON.stringify({
         query,
+        exact_transcript: latestInputTranscriptRef.current || query,
         ...(specialist
           ? { owner_agent_slug: callAgent.agent_slug, target_agent_slug: targetAgent }
           : { agent_slug: callAgent.agent_slug }),
@@ -3967,6 +4106,7 @@ export function ConversationWorkspace({
       const taskBody = JSON.stringify({
         title,
         objective,
+        exact_transcript: latestInputTranscriptRef.current || objective,
         model_tier: modelTier,
         agent_slug: callAgent.agent_slug,
         call_id: callIdRef.current,
@@ -4169,6 +4309,7 @@ export function ConversationWorkspace({
     }
     if (event.type === "conversation.item.input_audio_transcription.completed" && event.item_id && event.transcript) {
       inputTranscriptByItemRef.current.set(event.item_id, event.transcript);
+      latestInputTranscriptRef.current = event.transcript.trim();
       upsertCallTranscript({ id: `user-${event.item_id}`, speaker: "user", text: event.transcript, final: true });
       return;
     }
@@ -4626,6 +4767,7 @@ export function ConversationWorkspace({
     activeRealtimeProgressCueRef.current = null;
     pendingSpokenToolCallIdRef.current = null;
     inputTranscriptByItemRef.current.clear();
+    latestInputTranscriptRef.current = "";
     callTranscriptStickRef.current = true;
     setCallTranscriptExpanded(false);
     setCallTranscript([]);
@@ -5011,8 +5153,11 @@ export function ConversationWorkspace({
                 )}
                 aria-label="Agent work"
               >
-                <Link
-                  href={`/workroom?conversation=${encodeURIComponent(selectedConversation.id)}`}
+                <button
+                  type="button"
+                  onClick={() => setAgentWorkExpanded((expanded) => !expanded)}
+                  aria-expanded={agentWorkExpanded}
+                  aria-controls="conversation-agent-work-details"
                   className="flex min-h-16 w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-white/30 md:px-4"
                 >
                   <span aria-hidden className="flex h-9 min-w-14 shrink-0 items-center justify-center rounded-lg border border-[#c9beae] bg-[#f8f5ef] px-2 text-[10px] font-bold uppercase tracking-[0.16em] text-charcoal/65">
@@ -5033,20 +5178,28 @@ export function ConversationWorkspace({
                           : "Tasks, approvals, and results stay connected to this chat")}
                     </span>
                   </span>
-                  <span className="hidden shrink-0 text-caption font-semibold text-charcoal/50 sm:block">Open Workroom</span>
-                  <span aria-hidden className="shrink-0 text-[18px] text-charcoal/45">→</span>
-                </Link>
+                  <span className="hidden shrink-0 text-caption font-semibold text-charcoal/50 sm:block">{agentWorkExpanded ? "Hide details" : "Work here"}</span>
+                  <span aria-hidden className="shrink-0 text-[18px] text-charcoal/45">{agentWorkExpanded ? "⌃" : "⌄"}</span>
+                </button>
                 <div
                   id="conversation-agent-work-details"
-                  className="hidden"
-                  aria-hidden="true"
+                  className={clsx(!agentWorkExpanded && "hidden")}
+                  aria-hidden={!agentWorkExpanded}
                 >
                   <div className="flex items-start justify-between gap-4 border-b border-[#ddd5c8] px-4 py-3">
                     <div>
                       <p className="text-[15px] font-semibold text-nearblack">Work in this conversation</p>
                       <p className="mt-0.5 text-[12px] leading-snug text-charcoal/55">Follow progress, review decisions, or steer an agent without losing the chat.</p>
                     </div>
-                    <span className="shrink-0 text-[11px] text-charcoal/40">{visibleAgentTasks.length} task{visibleAgentTasks.length === 1 ? "" : "s"}</span>
+                    <div className="flex shrink-0 items-center gap-3">
+                      <span className="text-[11px] text-charcoal/40">{visibleAgentTasks.length} task{visibleAgentTasks.length === 1 ? "" : "s"}</span>
+                      <Link
+                        href={`/workroom?conversation=${encodeURIComponent(selectedConversation.id)}${selectedAgentTask ? `&view=${taskWorkroomView(selectedAgentTask)}&task=${encodeURIComponent(selectedAgentTask.id)}` : ""}`}
+                        className="text-[11px] font-semibold text-charcoal/65 underline decoration-charcoal/25 underline-offset-2"
+                      >
+                        Open all work
+                      </Link>
+                    </div>
                   </div>
                   <div className="grid max-h-[58vh] min-h-0 grid-cols-1 overflow-y-auto md:grid-cols-[minmax(220px,0.85fr)_minmax(320px,1.35fr)] md:overflow-hidden">
                     <div className="min-w-0 border-b border-[#ddd5c8] md:max-h-[52vh] md:overflow-y-auto md:border-b-0 md:border-r">
@@ -5061,6 +5214,7 @@ export function ConversationWorkspace({
                                 <span className="min-w-0 flex-1">
                                   <span className="block text-[13px] font-semibold text-nearblack">{agent?.display_name ?? "Agent"}</span>
                                   <span className="mt-0.5 block text-[12px] leading-snug text-charcoal/60">{activity.status === "processing" ? activity.progress_label ?? "Working on your request" : "Waiting to start"}</span>
+                                  {activity.progress_message && <span className="mt-1 line-clamp-3 block whitespace-pre-wrap text-[12px] leading-relaxed text-charcoal/70">{activity.progress_message}</span>}
                                   {activity.pending_turns > 1 && <span className="mt-1 block text-[10px] text-charcoal/40">{activity.pending_turns} requests in progress</span>}
                                 </span>
                               </div>
@@ -5090,8 +5244,13 @@ export function ConversationWorkspace({
                       {selectedAgentTask ? (
                         <AgentTaskCard
                           task={selectedAgentTask}
+                          taskMessages={taskMessagesById.get(selectedAgentTask.id) ?? []}
                           canRetry={selectedAgentTask.requested_by === selfParticipant?.id && selectedAgentTask.retry_count < 3}
                           onAction={handleTaskAction}
+                          onDiscuss={discussAgentTask}
+                          onSendTaskMessage={async (task, body) => {
+                            await queueDraftMessage(selectedConversation.id, body, [], null, task);
+                          }}
                         />
                       ) : (
                         <div className="flex min-h-44 flex-col items-center justify-center px-6 text-center">
@@ -5431,7 +5590,13 @@ export function ConversationWorkspace({
                             <p className="conversation-meta mt-2 uppercase tracking-widest text-white/60">Editing changes the message history; it does not resend the request.</p>
                           </div>
                         ) : !voiceNoteAttachment ? (
-                          <p className={clsx("mt-2 whitespace-pre-wrap break-words text-[16px] leading-[1.55] md:text-[15px]", message.deleted_at && "italic opacity-60")}>{message.body}</p>
+                          message.author.type === "agent" && !message.deleted_at ? (
+                            <div className="mt-2 break-words text-[16px] leading-[1.55] md:text-[15px]">
+                              <SimpleMarkdown text={message.body} tone={own ? "inverse" : "default"} />
+                            </div>
+                          ) : (
+                            <p className={clsx("mt-2 whitespace-pre-wrap break-words text-[16px] leading-[1.55] md:text-[15px]", message.deleted_at && "italic opacity-60")}>{message.body}</p>
+                          )
                         ) : null}
                         {!message.deleted_at && (message.attachments ?? []).length > 0 && (
                           <div className={clsx("mt-3 grid gap-2", message.attachments.length > 1 && "grid-cols-2")}>
@@ -5512,6 +5677,33 @@ export function ConversationWorkspace({
                           <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>
                             Completed by {message.metadata.delegated_agent_name}
                           </p>
+                        )}
+                        {!pending && !message.deleted_at && message.author.type === "agent" && (
+                          <div className={clsx("mt-3 flex flex-wrap items-center gap-1.5 border-t pt-2", own ? "border-white/15" : "border-charcoal/10")} aria-label="Was this agent response useful?">
+                            <span className={clsx("conversation-meta mr-1", own ? "text-white/50" : "text-charcoal/45")}>Outcome</span>
+                            {([
+                              ["useful", "Useful"],
+                              ["needs_work", "Needs work"],
+                              ["finished_elsewhere", "Finished elsewhere"],
+                            ] as const).map(([outcome, label]) => (
+                              <button
+                                key={outcome}
+                                type="button"
+                                aria-pressed={outcomeFeedbackByMessage[message.id] === outcome}
+                                onClick={() => void recordAgentOutcome(message, outcome).catch((reason) => {
+                                  setError(reason instanceof Error ? reason.message : "Could not save outcome feedback");
+                                })}
+                                className={clsx(
+                                  "rounded-full border px-2.5 py-1 text-[11px]",
+                                  outcomeFeedbackByMessage[message.id] === outcome
+                                    ? own ? "border-white bg-white text-nearblack" : "border-nearblack bg-nearblack text-white"
+                                    : own ? "border-white/20 text-white/65" : "border-[#d4cbbd] text-charcoal/60",
+                                )}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
                         )}
                         {!message.deleted_at && message.edited_at && <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>Edited</p>}
                         {own && (pending || message.client_message_id) && (
