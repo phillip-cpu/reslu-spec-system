@@ -18,6 +18,8 @@ test("the external write follows an atomic one-shot claim and records uncertaint
   assert.ok(claim > 0 && write > claim);
   assert.match(service, /eq\("state", "executing"\)\.select\("id"\)\.maybeSingle/);
   assert.match(service, /inspect_before_retry/);
+  assert.match(service, /!Array\.isArray\(duplicate\.Invoices\)/);
+  assert.doesNotMatch(service, /update\(\{ state: "(?:partial|failed|verified)"/);
   assert.match(service, /verifyCustomerInvoiceReadback/);
   assert.match(service, /file\.FileName === filename && Number\(file\.ContentLength\) === bytes\.length/);
   assert.doesNotMatch(service, /Status: "AUTHORISED"|\/Email|\/Payments/);

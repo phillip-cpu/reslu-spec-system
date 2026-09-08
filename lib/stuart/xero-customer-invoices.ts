@@ -66,7 +66,8 @@ export async function createStuartXeroDraftCustomerInvoice(raw: unknown, actionR
     if (!alternatives.some(scope => connection.scopes.includes(scope))) throw new Error("Reconnect Xero with invoice, attachment, contact-read and settings-read access");
   }
   const duplicate = await xeroGet<{ Invoices?: XeroRecord[] }>(connection, "api.xro/2.0/Invoices", { where: `Type=="ACCREC"&&InvoiceNumber=="${input.invoice_number}"` });
-  if ((duplicate.Invoices ?? []).length) throw new Error("This customer invoice number already exists in Xero, including deleted/voided history. Review it; no duplicate was created.");
+  if (!Array.isArray(duplicate.Invoices)) throw new Error("Xero did not confirm the duplicate check; no draft was attempted");
+  if (duplicate.Invoices.length) throw new Error("This customer invoice number already exists in Xero, including deleted/voided history. Review it; no duplicate was created.");
   const contacts = await xeroGet<{ Contacts?: XeroRecord[] }>(connection, `api.xro/2.0/Contacts/${input.contact_id}`);
   const contact = contacts.Contacts?.[0];
   if (!contact || contact.ContactID !== input.contact_id || contact.ContactStatus !== "ACTIVE" || normalizedName(contact.Name) !== normalizedName(input.customer_name)) throw new Error("The approved customer does not match one active existing Xero contact");
@@ -98,7 +99,9 @@ export async function createStuartXeroDraftCustomerInvoice(raw: unknown, actionR
     if (!attached.Attachments?.some(file => file.FileName === filename && Number(file.ContentLength) === bytes.length)) throw new Error("Draft exists but its source attachment was not verified");
     return { provider_id: xeroInvoiceId, xero_invoice_id: xeroInvoiceId, invoice_number: input.invoice_number, invoice_type: "ACCREC", status: "DRAFT", attachment_uploaded: true, provider_readback_verified: true, human_action: "Review the draft in Xero. Nothing was authorised, sent or paid." };
   } catch (error) {
-    await service.from("aria_action_runs").update({ state: "partial", metadata: { ...action.metadata, customer_invoice: { xero_invoice_id: xeroInvoiceId, source_attachment_id: source.id, source_sha256: sha256, stage: "inspect_before_retry" } } }).eq("id", action.id);
+    // Keep the claimed state until the authority transport writes its terminal
+    // receipt. Marking it terminal here would prevent finish_aria_action.
+    await service.from("aria_action_runs").update({ metadata: { ...action.metadata, customer_invoice: { xero_invoice_id: xeroInvoiceId, source_attachment_id: source.id, source_sha256: sha256, stage: "inspect_before_retry" } } }).eq("id", action.id);
     throw new Error(`${error instanceof Error ? error.message : "Customer draft outcome is uncertain"}${xeroInvoiceId ? ` Existing Xero draft: ${xeroInvoiceId}.` : " No successful creation is confirmed; check Xero before retrying."}`);
   }
 }
