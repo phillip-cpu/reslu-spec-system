@@ -14,6 +14,10 @@ import { latestAgentComputerState } from "@/lib/agent-operating-workspace";
 import { visibleAgentWorkTasks } from "@/lib/agent-work-visibility";
 import { boundedFetch } from "@/lib/bounded-request";
 import { SimpleMarkdown } from "@/lib/simple-markdown";
+import { ChatContent } from "./ChatContent";
+import { ChatReader, type ChatReaderDocument } from "./ChatReader";
+import { ChatProgress } from "./ChatProgress";
+import { isAgentInterruption } from "@/lib/chat-content";
 import {
   isTransientConversationNetworkError,
   retrySameConversationIntent,
@@ -1415,6 +1419,10 @@ export function ConversationWorkspace({
   const [newOpen, setNewOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [conversationFilter, setConversationFilter] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const sidebarPreferenceRef = useRef<boolean | null>(null);
+  const [readerDocument, setReaderDocument] = useState<ChatReaderDocument | null>(null);
+  const [showLatest, setShowLatest] = useState(false);
   const [conversationMenuOpen, setConversationMenuOpen] = useState(false);
   const [groupDetailsOpen, setGroupDetailsOpen] = useState(false);
   const [preferenceSaving, setPreferenceSaving] = useState(false);
@@ -1459,7 +1467,7 @@ export function ConversationWorkspace({
   const [agentTasks, setAgentTasks] = useState<AgentTask[]>([]);
   const [selectedAgentTaskId, setSelectedAgentTaskId] = useState<string | null>(null);
   const [composerAgentTask, setComposerAgentTask] = useState<AgentTask | null>(null);
-  const [agentWorkExpanded, setAgentWorkExpanded] = useState(true);
+  const [agentWorkExpanded, setAgentWorkExpanded] = useState(false);
   const [meetingModeOpen, setMeetingModeOpen] = useState(false);
   const [meetingSourceCallId, setMeetingSourceCallId] = useState<string | null>(null);
   const [meetingMinutesId, setMeetingMinutesId] = useState<string | null>(null);
@@ -1728,6 +1736,21 @@ export function ConversationWorkspace({
     ].some((value) => value?.toLowerCase().includes(term)));
   }, [conversationFilter, draftsByConversation, visibleConversations]);
   const draft = selectedId ? draftsByConversation[selectedId] ?? "" : "";
+  useEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (sidebarPreferenceRef.current === null) setSidebarCollapsed(entry.contentRect.width < 900);
+    });
+    observer.observe(workspace);
+    return () => observer.disconnect();
+  }, [loading]);
+  useEffect(() => {
+    const input = composerInputRef.current;
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 144)}px`;
+  }, [draft, selectedId]);
   const attachmentUploadInProgress = draftAttachments.some((item) => (
     item.status === "preparing" || item.status === "uploading"
   ));
@@ -2835,6 +2858,9 @@ export function ConversationWorkspace({
     setHasOlderMessages(false);
     setHistoryAnchorMessageId(null);
     setMessageSearchOpen(false);
+    setShowLatest(false);
+    setAgentWorkExpanded(false);
+    setReaderDocument(null);
     setReplyingTo(null);
     setMessageMenuId(null);
     setEditingMessageId(null);
@@ -4899,15 +4925,16 @@ export function ConversationWorkspace({
     <div
       ref={workspaceRef}
       className={clsx(
-        "conversation-accessible flex min-h-0 min-w-0 overflow-hidden border border-[#d4cbbd] bg-[#f5f1e8]",
+        "conversation-accessible chat-workspace flex min-h-0 min-w-0 overflow-hidden border border-[#d4cbbd] bg-[#f5f1e8]",
+        sidebarCollapsed && selectedId && "chat-sidebar-collapsed",
         drawer
           ? "relative h-full w-full border-0"
           : "fixed inset-x-0 top-[var(--conversation-vtop,0px)] z-20 h-[var(--conversation-vh,100dvh)] md:relative md:inset-auto md:z-auto md:h-[calc(100vh-7.5rem)] md:min-h-[560px]",
       )}
     >
-      <aside className={clsx("flex min-h-0 w-full shrink-0 flex-col border-r border-[#d4cbbd] bg-[#ede8de]", drawer ? "md:w-64" : "md:w-80", selectedId && "hidden md:flex")}>
+      <aside aria-label="Conversations" className={clsx("chat-sidebar flex min-h-0 w-full shrink-0 flex-col border-r border-[#d4cbbd] bg-[#ede8de]", drawer ? "md:w-64" : "md:w-80", selectedId && "hidden md:flex")}>
         <div className="flex items-center justify-between border-b border-[#d4cbbd] py-3 pl-20 pr-3 md:p-4">
-          <p className="label-caps">Conversations</p>
+          <p className="chat-sidebar-title">Chats</p>
           <button onClick={() => setNewOpen(true)} disabled={sending || voiceNoteRecording} className="min-h-11 bg-nearblack px-4 py-2 text-body text-white disabled:opacity-30">New chat</button>
         </div>
         {data.conversations.length === 0 ? (
@@ -4955,7 +4982,7 @@ export function ConversationWorkspace({
             ) : (
               <div className="min-h-0 overflow-y-auto">
                 {filteredConversations.map((conversation) => (
-                  <button key={conversation.id} onClick={() => selectConversation(conversation.id)} disabled={(sending || voiceNoteRecording) && selectedId !== conversation.id} className={clsx("flex w-full gap-3 border-b border-[#dcd6cc] p-4 text-left disabled:opacity-40", selectedId === conversation.id ? "bg-[#f5f1e8]" : "hover:bg-white/30")}>
+                  <button key={conversation.id} aria-current={selectedId === conversation.id ? "true" : undefined} onClick={() => selectConversation(conversation.id)} disabled={(sending || voiceNoteRecording) && selectedId !== conversation.id} className={clsx("chat-list-item flex w-full gap-3 border-b border-[#dcd6cc] p-4 text-left disabled:opacity-40", selectedId === conversation.id ? "bg-[#f5f1e8]" : "hover:bg-white/30")}>
                     <Avatar participant={conversation.participants.find((p) => !p.is_self) ?? conversation.participants[0]} />
                     <span className="min-w-0 flex-1">
                       <span className="flex min-w-0 items-center gap-2">
@@ -5036,7 +5063,11 @@ export function ConversationWorkspace({
         )}
         {selectedConversation ? (
           <>
-            <header className="sticky top-0 z-10 flex min-h-16 shrink-0 items-center gap-2 border-b border-[#d4cbbd] bg-[#f5f1e8]/95 py-2 pl-16 pr-2 backdrop-blur md:min-h-20 md:gap-3 md:px-4 md:py-3">
+            <header className="chat-header sticky top-0 z-10 flex min-h-16 shrink-0 items-center gap-2 border-b border-[#d4cbbd] bg-[#f5f1e8]/95 py-2 pl-16 pr-2 backdrop-blur md:min-h-20 md:gap-3 md:px-4 md:py-3">
+              <button type="button" onClick={() => {
+                sidebarPreferenceRef.current = !sidebarCollapsed;
+                setSidebarCollapsed(!sidebarCollapsed);
+              }} aria-label={sidebarCollapsed ? "Show conversation list" : "Hide conversation list"} aria-expanded={!sidebarCollapsed} className="chat-icon-button hidden md:flex">☰</button>
               <button onClick={() => selectConversation(null)} disabled={sending || voiceNoteRecording} className="flex h-11 w-8 shrink-0 items-center justify-center text-xl text-charcoal/70 disabled:opacity-30 md:hidden" aria-label="Back to conversations">‹</button>
               {headerParticipant && <Avatar participant={headerParticipant} />}
               <div className="min-w-0 flex-1">
@@ -5050,6 +5081,7 @@ export function ConversationWorkspace({
                   <span className="truncate">{participants.map((participant) => participant.display_name).join(", ")}</span>
                 </p>
               </div>
+              <button type="button" onClick={() => setMessageSearchOpen(true)} aria-label="Search this conversation" className="chat-icon-button">⌕</button>
               {callAgent && (
                 <button disabled={voiceNoteRecording} onClick={() => void startCall()} aria-label={`Call ${callAgent.display_name}`} className="flex h-11 shrink-0 items-center justify-center gap-2 border border-nearblack px-3 text-nearblack hover:bg-nearblack hover:text-white disabled:opacity-35 md:px-4">
                   <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -5148,7 +5180,7 @@ export function ConversationWorkspace({
             {agentWorkVisible && (
               <section
                 className={clsx(
-                  "relative z-20 w-full min-w-0 max-w-full shrink-0 border-b border-[#d4cbbd] bg-[#eee9df]",
+                  "chat-work-panel relative z-20 w-full min-w-0 max-w-full shrink-0 border-b border-[#d4cbbd] bg-[#eee9df]",
                   drawer && "md:overflow-visible",
                 )}
                 aria-label="Agent work"
@@ -5183,8 +5215,11 @@ export function ConversationWorkspace({
                 </button>
                 <div
                   id="conversation-agent-work-details"
-                  className={clsx(!agentWorkExpanded && "hidden")}
+                  className={clsx("chat-work-details", !agentWorkExpanded && "hidden")}
                   aria-hidden={!agentWorkExpanded}
+                  role="region"
+                  aria-label="Conversation activity details"
+                  onKeyDown={(event) => { if (event.key === "Escape") setAgentWorkExpanded(false); }}
                 >
                   <div className="flex items-start justify-between gap-4 border-b border-[#ddd5c8] px-4 py-3">
                     <div>
@@ -5192,6 +5227,7 @@ export function ConversationWorkspace({
                       <p className="mt-0.5 text-[12px] leading-snug text-charcoal/55">Follow progress, review decisions, or steer an agent without losing the chat.</p>
                     </div>
                     <div className="flex shrink-0 items-center gap-3">
+                      <button type="button" onClick={() => setAgentWorkExpanded(false)} className="chat-icon-button" aria-label="Close activity panel">×</button>
                       <span className="text-[11px] text-charcoal/40">{visibleAgentTasks.length} task{visibleAgentTasks.length === 1 ? "" : "s"}</span>
                       <Link
                         href={`/workroom?conversation=${encodeURIComponent(selectedConversation.id)}${selectedAgentTask ? `&view=${taskWorkroomView(selectedAgentTask)}&task=${encodeURIComponent(selectedAgentTask.id)}` : ""}`}
@@ -5377,12 +5413,14 @@ export function ConversationWorkspace({
               onScroll={(event) => {
                 const pane = event.currentTarget;
                 shouldStickToBottomRef.current = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 96;
+                setShowLatest(!shouldStickToBottomRef.current);
                 const newestCanonicalMessage = messages.at(-1);
                 if (selectedId && newestCanonicalMessage && shouldStickToBottomRef.current) {
                   void markConversationRead(selectedId, newestCanonicalMessage.id);
                 }
               }}
-              className="min-h-0 flex-1 overscroll-contain overflow-y-auto bg-[#faf7f0] px-3 py-4 md:px-8 md:py-6"
+              className="chat-timeline min-h-0 flex-1 overscroll-contain overflow-y-auto bg-[#faf7f0] px-3 py-4 md:px-8 md:py-6"
+              aria-label="Message history"
             >
               {!historyAnchorMessageId && hasOlderMessages && (
                 <div className="mx-auto mb-5 max-w-3xl text-center">
@@ -5397,13 +5435,13 @@ export function ConversationWorkspace({
                 </div>
               )}
               {messages.length === 0 && <p className="mx-auto mt-20 max-w-sm text-center text-body text-charcoal/50">This is the beginning of the conversation. Its history will stay here for everyone in the chat.</p>}
-              <div className="mx-auto max-w-3xl space-y-4">
+              <div className="chat-reading-column mx-auto max-w-3xl space-y-4">
                 {timelineItems.map(({ message, pending }, index) => {
                   const own = message.author.is_self;
                   const previousMessage = timelineItems[index - 1]?.message;
                   const showDaySeparator = !previousMessage || conversationDayKey(previousMessage.created_at) !== conversationDayKey(message.created_at);
                   const daySeparator = showDaySeparator ? (
-                    <div className="sticky top-2 z-[5] flex justify-center py-1" role="separator" aria-label={conversationDayLabel(message.created_at)}>
+                    <div className="flex justify-center py-1" role="separator" aria-label={conversationDayLabel(message.created_at)}>
                       <span className="conversation-meta rounded-full border border-[#d4cbbd] bg-[#f5f1e8]/95 px-3 py-1 font-semibold text-charcoal/70 shadow-sm backdrop-blur">
                         {conversationDayLabel(message.created_at)}
                       </span>
@@ -5424,9 +5462,10 @@ export function ConversationWorkspace({
                   if (record) return (
                     <Fragment key={message.id}>
                       {daySeparator}
-                      <div id={`conversation-message-${message.id}`} className="conversation-timeline-item border-y border-[#d4cbbd] py-3 text-center">
-                        <p className="label-caps">{message.kind === "call_record" ? "Call completed" : message.kind === "meeting_record" ? "Meeting completed" : "Group update"}</p>
+                      <div id={`conversation-message-${message.id}`} className={clsx("conversation-timeline-item chat-system-record border-y border-[#d4cbbd] py-3 text-center", isAgentInterruption(message) && "chat-interruption")}>
+                        <p className="label-caps">{isAgentInterruption(message) ? "Response interrupted" : message.kind === "call_record" ? "Call completed" : message.kind === "meeting_record" ? "Meeting completed" : "Group update"}</p>
                         <p className="mt-2 text-caption text-charcoal/60">{message.body}</p>
+                        {isAgentInterruption(message) && <button type="button" className="chat-text-button" onClick={() => setAgentWorkExpanded(true)}>Review activity before retrying →</button>}
                         {message.kind === "meeting_record" && typeof message.metadata.meeting_minutes_id === "string" && (
                           <button
                             type="button"
@@ -5449,7 +5488,8 @@ export function ConversationWorkspace({
                     <div
                       id={`conversation-message-${message.id}`}
                       className={clsx(
-                        "conversation-timeline-item flex gap-3",
+                        "conversation-timeline-item chat-message-row flex gap-3",
+                        message.author.type === "agent" && "chat-agent-row",
                         own && "flex-row-reverse",
                         (messageMenuId === message.id || editingMessageId === message.id) && "conversation-timeline-item-active"
                       )}
@@ -5461,7 +5501,7 @@ export function ConversationWorkspace({
                         onPointerMove={moveMessageLongPress}
                         onPointerUp={cancelMessageLongPress}
                         onPointerCancel={cancelMessageLongPress}
-                        className={clsx("group relative min-w-0 max-w-[78%] border px-3 py-3 md:px-4", own ? "border-nearblack bg-nearblack text-white" : "border-[#d4cbbd] bg-[#f5f1e8] text-charcoal")}
+                        className={clsx("chat-message group relative min-w-0 border px-3 py-3 md:px-4", own ? "chat-message-own border-nearblack bg-nearblack text-white" : "chat-message-received border-[#d4cbbd] bg-[#f5f1e8] text-charcoal")}
                       >
                         <div className="flex items-baseline gap-2">
                           <span className={clsx("text-caption font-semibold", own ? "text-white" : "text-nearblack")}>{message.author.display_name}</span>
@@ -5476,7 +5516,7 @@ export function ConversationWorkspace({
                             aria-label={`Actions for message from ${message.author.display_name}`}
                             aria-haspopup="menu"
                             aria-expanded={messageMenuId === message.id}
-                            className={clsx("ml-auto -my-2 -mr-2 flex h-11 w-11 items-center justify-center rounded-full text-[11px] tracking-widest transition-opacity focus:opacity-100 md:opacity-0 md:group-hover:opacity-100", own ? "text-white/65 hover:bg-white/10" : "text-charcoal/55 hover:bg-black/5")}
+                            className={clsx("ml-auto -my-2 -mr-2 flex h-11 w-11 items-center justify-center rounded-full text-[11px] tracking-widest", own ? "text-white/65 hover:bg-white/10" : "text-charcoal/55 hover:bg-black/5")}
                           >
                             <span aria-hidden>•••</span>
                           </button>
@@ -5591,15 +5631,15 @@ export function ConversationWorkspace({
                           </div>
                         ) : !voiceNoteAttachment ? (
                           message.author.type === "agent" && !message.deleted_at ? (
-                            <div className="mt-2 break-words text-[16px] leading-[1.55] md:text-[15px]">
-                              <SimpleMarkdown text={message.body} tone={own ? "inverse" : "default"} />
+                            <div className="chat-answer mt-2">
+                              <ChatContent text={message.body} />
                             </div>
                           ) : (
-                            <p className={clsx("mt-2 whitespace-pre-wrap break-words text-[16px] leading-[1.55] md:text-[15px]", message.deleted_at && "italic opacity-60")}>{message.body}</p>
+                            <p className={clsx("chat-human-text mt-2 whitespace-pre-wrap break-words", message.deleted_at && "italic opacity-60")}>{message.body}</p>
                           )
                         ) : null}
                         {!message.deleted_at && (message.attachments ?? []).length > 0 && (
-                          <div className={clsx("mt-3 grid gap-2", message.attachments.length > 1 && "grid-cols-2")}>
+                          <div className="chat-attachments mt-3 grid gap-2">
                             {message.attachments.map((attachment) => {
                               const attachmentKind = conversationAttachmentKind(attachment.mime_type);
                               const imageAttachment = attachmentKind === "image";
@@ -5630,6 +5670,12 @@ export function ConversationWorkspace({
                                   </div>
                                   <audio controls playsInline preload="metadata" src={attachment.url} className="h-10 w-full" aria-label={`Voice note from ${message.author.display_name}`} />
                                 </div>
+                              );
+                              if (attachment.mime_type === "application/pdf" && attachment.url) return (
+                                <button key={attachment.id} type="button" className="chat-file-card" onClick={() => setReaderDocument({ title: attachment.filename, author: message.author.display_name, url: attachment.url! })}>
+                                  <span className="chat-file-icon" aria-hidden>PDF</span>
+                                  <span><strong>{attachment.filename}</strong><small>{fileSizeLabel(attachment.byte_size)} · Open document</small></span><span aria-hidden>↗</span>
+                                </button>
                               );
                               return (
                                 <a key={attachment.id} href={attachment.url ?? undefined} target="_blank" rel="noreferrer" className={clsx("flex min-w-0 items-center gap-3 border px-3 py-3", own ? "border-white/15 bg-white/10" : "border-[#d4cbbd] bg-white/50", !attachment.url && "pointer-events-none opacity-50")}>
@@ -5679,7 +5725,11 @@ export function ConversationWorkspace({
                           </p>
                         )}
                         {!pending && !message.deleted_at && message.author.type === "agent" && (
-                          <div className={clsx("mt-3 flex flex-wrap items-center gap-1.5 border-t pt-2", own ? "border-white/15" : "border-charcoal/10")} aria-label="Was this agent response useful?">
+                          <div className="chat-answer-actions">
+                            <button type="button" onClick={() => void copyCanonicalMessage(message)}>Copy</button>
+                            <button type="button" onClick={() => setReaderDocument({ title: `Response from ${message.author.display_name}`, author: message.author.display_name, text: message.body })}>Read full screen ↗</button>
+                          <details className="chat-feedback"><summary>Feedback</summary>
+                          <div className="chat-feedback-options" aria-label="Was this agent response useful?">
                             <span className={clsx("conversation-meta mr-1", own ? "text-white/50" : "text-charcoal/45")}>Outcome</span>
                             {([
                               ["useful", "Useful"],
@@ -5703,7 +5753,7 @@ export function ConversationWorkspace({
                                 {label}
                               </button>
                             ))}
-                          </div>
+                          </div></details></div>
                         )}
                         {!message.deleted_at && message.edited_at && <p className={clsx("conversation-meta mt-2 uppercase tracking-widest", own ? "text-white/60" : "text-charcoal/55")}>Edited</p>}
                         {own && (pending || message.client_message_id) && (
@@ -5761,7 +5811,14 @@ export function ConversationWorkspace({
               </div>
             </div>
 
-            <form onSubmit={submitDraft} className="shrink-0 border-t border-[#d4cbbd] bg-[#f5f1e8] px-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 md:p-4">
+            {showLatest && <div className="chat-latest"><button type="button" onClick={() => {
+              const pane = messagesScrollerRef.current;
+              if (pane) pane.scrollTo({ top: pane.scrollHeight, behavior: "auto" });
+              shouldStickToBottomRef.current = true;
+              setShowLatest(false);
+            }}>↓ Latest messages</button></div>}
+            <ChatProgress activities={agentActivity} participants={participants} onDetails={() => setAgentWorkExpanded(true)} />
+            <form onSubmit={submitDraft} className="chat-composer shrink-0 border-t border-[#d4cbbd] bg-[#f5f1e8] px-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 md:p-4">
               {!online && (
                 <p className="conversation-meta mx-auto mb-2 max-w-3xl text-center font-medium text-amber-800" role="status">
                   Offline — messages will stay on this device and send when the connection returns.
@@ -5869,7 +5926,9 @@ export function ConversationWorkspace({
                   ref={composerInputRef}
                   value={draft}
                   disabled={sending || voiceNoteRecording}
-                  onChange={(event) => selectedId && updateDraft(selectedId, event.target.value)}
+                  onChange={(event) => {
+                    if (selectedId) updateDraft(selectedId, event.target.value);
+                  }}
                   onPaste={(event) => {
                     if (!event.clipboardData.files.length) return;
                     event.preventDefault();
@@ -5877,7 +5936,7 @@ export function ConversationWorkspace({
                   }}
                   onFocus={() => setAttachmentMenuOpen(false)}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
+                    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && window.matchMedia("(hover: hover) and (pointer: fine)").matches) {
                       event.preventDefault();
                       event.currentTarget.form?.requestSubmit();
                     }
@@ -5920,14 +5979,14 @@ export function ConversationWorkspace({
                     onError={setError}
                     onRecordingChange={setVoiceNoteRecording}
                   />
-                  {!voiceNoteRecording && <span className="conversation-meta hidden flex-1 text-center text-charcoal/55 sm:block">Up to 6 files · voice notes up to 5 min</span>}
+                  {!voiceNoteRecording && <span className="conversation-meta hidden flex-1 text-center text-charcoal/55 sm:block">Enter to send · Shift + Enter for a new line</span>}
                   {!voiceNoteRecording && (
                     <button
                       disabled={composerBusy || attachmentUploadFailed || (!draft.trim() && !draftAttachments.some((item) => item.status === "ready"))}
                       aria-label="Send message"
                       className="flex h-11 min-w-11 shrink-0 items-center justify-center rounded-full bg-nearblack px-3 text-subhead text-white disabled:opacity-30"
                     >
-                      <span aria-hidden>↑</span><span className="sr-only">Send</span>
+                      <span aria-hidden>↑</span><span className="ml-2">Send</span>
                     </button>
                   )}
                 </div>
@@ -5940,6 +5999,8 @@ export function ConversationWorkspace({
           <div className="flex flex-1 items-center justify-center text-body text-charcoal/45">Choose a conversation or start a new one.</div>
         )}
       </section>
+
+      {readerDocument && <ChatReader document={readerDocument} onClose={() => setReaderDocument(null)} />}
 
       {mediaViewer && (
         <div

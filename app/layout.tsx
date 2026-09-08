@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { ServiceWorkerRegistrar } from "@/components/ServiceWorkerRegistrar";
 import "./globals.css";
+import "@/components/conversations/chat.css";
 
 /**
  * Home-screen app polish (BUILD-SPEC.md §"Phase 11 addition — mobile

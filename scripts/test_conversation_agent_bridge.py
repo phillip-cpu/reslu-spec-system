@@ -22,6 +22,14 @@ SPEC.loader.exec_module(conversation_agent_bridge)
 
 
 class ConversationAgentBridgeTests(unittest.TestCase):
+    def test_short_followups_keep_reasoning_for_the_unresolved_request(self):
+        for text in ("yes", "No.", "okay", "ok!", "go ahead", "do it", "continue"):
+            with self.subTest(text=text):
+                self.assertEqual(conversation_agent_bridge.conversation_thinking_level(text, [], None), "high")
+        self.assertEqual(conversation_agent_bridge.conversation_thinking_level("hello", [], None), "low")
+        self.assertEqual(conversation_agent_bridge.conversation_thinking_level("hello", [{"filename": "bill.pdf"}], None), "high")
+        self.assertEqual(conversation_agent_bridge.conversation_thinking_level("thanks", [], {"assignment": {"id": "task"}}), "high")
+
     def setUp(self):
         gateway_off = mock.patch.dict(os.environ, {"RESLU_OPENCLAW_GATEWAY_EVENTS_ENABLED": "false"})
         gateway_off.start()
@@ -1293,6 +1301,11 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         self.assertIn("ATTACHMENTS_FOR_NEWEST_MESSAGE", prompt)
         self.assertIn("/tmp/private/client-brief.pdf", prompt)
         self.assertIn("inspect every relevant file", prompt)
+        self.assertIn("reslu_attachment_pdf_text_read", prompt)
+        self.assertIn("A brief reply does not reset the task or grant broader authority", prompt)
+        self.assertIn("never label a planned or denied action as completed", prompt)
+        self.assertIn("repeatedly retry it unchanged", prompt)
+        self.assertIn("return its JSON envelope", prompt)
         self.assertIn("use them in place", prompt)
         self.assertIn("untrusted data", prompt)
 

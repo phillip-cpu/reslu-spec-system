@@ -37,10 +37,10 @@ test("touch long press opens deliberately and scrolling cancels it", () => {
   assert.match(workspace, /closest\("button, a, input, textarea, audio, select"\)/);
 });
 
-test("each local date boundary renders an accessible sticky separator", () => {
+test("each local date boundary renders an accessible separator without stacking over replies", () => {
   assert.match(workspace, /conversationDayKey\(previousMessage\.created_at\)/);
   assert.match(workspace, /role="separator" aria-label=\{conversationDayLabel\(message\.created_at\)\}/);
-  assert.match(workspace, /sticky top-2/);
+  assert.doesNotMatch(workspace, /sticky top-2/);
 });
 
 test("private conversation photos open inside a full-screen accessible viewer", () => {
@@ -57,8 +57,8 @@ test("long histories skip off-screen layout without hiding canonical messages", 
   const route = readFileSync(resolve(root, "app/api/conversations/[id]/messages/route.ts"), "utf8");
 
   assert.match(route, /\.limit\(100\)/);
-  assert.match(workspace, /conversation-timeline-item border-y/);
-  assert.match(workspace, /"conversation-timeline-item flex gap-3"/);
+  assert.match(workspace, /conversation-timeline-item chat-system-record/);
+  assert.match(workspace, /conversation-timeline-item chat-message-row flex gap-3/);
   assert.match(globalStyles, /\.conversation-timeline-item\s*\{[\s\S]*content-visibility:\s*auto/);
   assert.match(globalStyles, /contain-intrinsic-size:\s*auto 112px/);
   assert.match(globalStyles, /\.conversation-timeline-item-active\s*\{[\s\S]*content-visibility:\s*visible/);

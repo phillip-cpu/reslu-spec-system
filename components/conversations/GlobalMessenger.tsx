@@ -6,8 +6,8 @@ import clsx from "clsx";
 import { ConversationWorkspace } from "@/components/conversations/ConversationWorkspace";
 
 const STORAGE_KEY = "reslu:desktop-messenger:v1";
-const DEFAULT_WIDTH = 820;
-const DEFAULT_HEIGHT = 720;
+const DEFAULT_WIDTH = 1120;
+const DEFAULT_HEIGHT = 820;
 const MIN_WIDTH = 520;
 const MIN_HEIGHT = 460;
 
@@ -66,6 +66,7 @@ export function GlobalMessenger() {
   const [ready, setReady] = useState(false);
   const [open, setOpen] = useState(false);
   const [minimized, setMinimized] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [callActive, setCallActive] = useState(false);
   const [callCompact, setCallCompact] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -160,18 +161,19 @@ export function GlobalMessenger() {
         aria-label="Persistent RESLU messenger"
         className={clsx(
           "fixed z-[60] flex flex-col overflow-hidden border border-[#cfc6b8] bg-[#f5f1e8] shadow-[0_24px_90px_rgba(20,18,15,0.38)]",
-          onMessagesPage ? "inset-y-0 left-56 right-0 rounded-none border-y-0 border-r-0 shadow-none" : "bottom-5 right-5 rounded-2xl",
+          "chat-messenger",
+          onMessagesPage ? "inset-y-0 left-56 right-0 rounded-none border-y-0 border-r-0 shadow-none" : expanded ? "inset-4 rounded-2xl" : "bottom-5 right-5 rounded-2xl",
           !panelChromeVisible && "invisible pointer-events-none",
         )}
-        style={onMessagesPage ? undefined : {
+        style={onMessagesPage || expanded ? undefined : {
           width: dimensions.width,
           height: minimized ? 58 : dimensions.height,
           maxWidth: "calc(100vw - 2.5rem)",
           maxHeight: "calc(100vh - 2.5rem)",
         }}
       >
-        <header className="relative flex h-[58px] shrink-0 items-center gap-3 border-b border-[#d4cbbd] bg-nearblack px-4 text-white">
-          {!minimized && !onMessagesPage && (
+        {!onMessagesPage && <header className="relative flex h-[58px] shrink-0 items-center gap-3 border-b border-[#d4cbbd] bg-nearblack px-4 text-white">
+          {!minimized && !expanded && (
             <button
               type="button"
               aria-label="Resize messenger"
@@ -189,14 +191,15 @@ export function GlobalMessenger() {
             </svg>
           </span>
           <div className="min-w-0 flex-1">
-            <p className="truncate text-subhead font-semibold">RESLU Messages</p>
+            <p className="truncate text-[16px] font-semibold">RESLU Messages</p>
             <p className="truncate text-xs text-white/65">Stays open while you move through RESLU</p>
           </div>
           {!onMessagesPage && (
             <>
+              <button type="button" onClick={() => { setExpanded(value => !value); setMinimized(false); }} className="flex h-11 items-center px-3 text-[14px] text-white hover:bg-white/10" aria-label={expanded ? "Restore window size" : "Expand messenger"}>{expanded ? "Restore" : "Expand ↗"}</button>
               <button
                 type="button"
-                onClick={() => setMinimized((value) => !value)}
+                onClick={() => { setMinimized((value) => !value); setExpanded(false); }}
                 className="flex h-9 w-9 items-center justify-center rounded-full text-lg text-white/70 hover:bg-white/10 hover:text-white"
                 aria-label={minimized ? "Restore messenger" : "Minimise messenger"}
               >
@@ -212,7 +215,7 @@ export function GlobalMessenger() {
               </button>
             </>
           )}
-        </header>
+        </header>}
         <div className={clsx("min-h-0 flex-1", minimized && !onMessagesPage && "invisible")}>
           <ConversationWorkspace
             presentation="drawer"
