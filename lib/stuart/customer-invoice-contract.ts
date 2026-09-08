@@ -6,6 +6,20 @@ export type CustomerInvoiceInput = {
   issuer_name: string; customer_name: string; contact_id: string;
   invoice_date: string; due_date: string; currency: "AUD"; reference: string;
   subtotal_ex_gst: number; gst: number; total_inc_gst: number; lines: CustomerInvoiceLine[];
+  issued_to_client?: boolean;
+};
+export type CustomerInvoiceReconciliation = {
+  rule: "issued-client-invoice-one-cent-v1";
+  line_index: number | null;
+  adjustment_ex_gst: number;
+  source_line_amount_ex_gst: number | null;
+  resulting_line_amount_ex_gst: number | null;
+  source_subtotal_ex_gst: number;
+  source_line_subtotal_ex_gst: number;
+  resulting_subtotal_ex_gst: number;
+  total_inc_gst: number;
+  gst: number;
+  note: string;
 };
 
 export function invoiceCents(value: unknown): number {
@@ -22,7 +36,7 @@ function validDate(value: unknown) {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 }
 
-export function validateCustomerInvoice(value: unknown): CustomerInvoiceInput {
+export function prepareCustomerInvoice(value: unknown): { input: CustomerInvoiceInput; reconciliation: CustomerInvoiceReconciliation | null } {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("A customer invoice is required");
   const input = value as CustomerInvoiceInput;
   if (!CUSTOMER_INVOICE_UUID.test(input.source_attachment_id ?? "") || !CUSTOMER_INVOICE_UUID.test(input.contact_id ?? "")) throw new Error("Exact source attachment and existing Xero contact IDs are required");
@@ -31,6 +45,7 @@ export function validateCustomerInvoice(value: unknown): CustomerInvoiceInput {
   for (const key of ["issuer_name", "customer_name", "reference"] as const) requiredText(input[key], key, 255);
   if (!validDate(input.invoice_date) || !validDate(input.due_date) || input.due_date < input.invoice_date) throw new Error("Verified invoice and due dates are required");
   if (input.currency !== "AUD") throw new Error("Only verified AUD customer invoices are supported");
+  if (input.issued_to_client !== undefined && typeof input.issued_to_client !== "boolean") throw new Error("Issued-to-client confirmation must be a boolean");
   if (!Array.isArray(input.lines) || !input.lines.length || input.lines.length > 100) throw new Error("One to 100 verified source lines are required");
   let subtotal = 0; let tax = 0;
   for (const line of input.lines) {
@@ -41,12 +56,39 @@ export function validateCustomerInvoice(value: unknown): CustomerInvoiceInput {
     if (amount < 0 || gst < 0) throw new Error("Credits and negative adjustments require a separate reviewed workflow");
     subtotal += amount; tax += gst;
   }
-  if (invoiceCents(input.total_inc_gst) <= 0) throw new Error("Invoice total must be positive");
-  if (subtotal !== invoiceCents(input.subtotal_ex_gst) || tax !== invoiceCents(input.gst) || subtotal + tax !== invoiceCents(input.total_inc_gst)) {
-    throw new Error("Source lines, GST and header totals disagree. Resolve the discrepancy explicitly before approving a draft; no automatic rounding adjustment is allowed.");
+  const total = invoiceCents(input.total_inc_gst);
+  const headerTax = invoiceCents(input.gst);
+  const headerSubtotal = invoiceCents(input.subtotal_ex_gst);
+  if (total <= 0 || headerTax < 0 || headerSubtotal < 0) throw new Error("Invoice total must be positive and header amounts non-negative");
+  if (subtotal === headerSubtotal && tax === headerTax && subtotal + tax === total) return { input, reconciliation: null };
+
+  // The issued document's total and GST are authoritative. Only reconcile a
+  // one-cent net-line/subtotal discrepancy; never recalculate or move its GST.
+  const targetSubtotal = total - headerTax;
+  const delta = targetSubtotal - subtotal;
+  if (input.issued_to_client !== true || tax !== headerTax || targetSubtotal < 0 || Math.abs(delta) > 1 || Math.abs(targetSubtotal - headerSubtotal) > 1 || Math.abs(subtotal - headerSubtotal) > 1) {
+    throw new Error("Source lines, GST and header totals disagree beyond the issued-invoice one-cent net reconciliation rule. Preserve the issued total, GST and PDF; review the discrepancy.");
   }
-  return input;
+  let lineIndex: number | null = null;
+  if (delta !== 0) {
+    // Largest positive net line, first on a tie: deterministic across retries.
+    for (let index = 0; index < input.lines.length; index++) {
+      if (input.lines[index].amount_ex_gst > 0 && (lineIndex === null || input.lines[index].amount_ex_gst > input.lines[lineIndex].amount_ex_gst)) lineIndex = index;
+    }
+    if (lineIndex === null || invoiceCents(input.lines[lineIndex].amount_ex_gst) + delta < 0) throw new Error("No safe existing net line can absorb the one-cent reconciliation");
+  }
+  const reconciled = { ...input, subtotal_ex_gst: targetSubtotal / 100, lines: input.lines.map((line, index) => ({ ...line, amount_ex_gst: index === lineIndex ? (invoiceCents(line.amount_ex_gst) + delta) / 100 : line.amount_ex_gst })) };
+  return { input: reconciled, reconciliation: {
+    rule: "issued-client-invoice-one-cent-v1", line_index: lineIndex, adjustment_ex_gst: delta / 100,
+    source_line_amount_ex_gst: lineIndex === null ? null : input.lines[lineIndex].amount_ex_gst,
+    resulting_line_amount_ex_gst: lineIndex === null ? null : reconciled.lines[lineIndex].amount_ex_gst,
+    source_subtotal_ex_gst: input.subtotal_ex_gst, source_line_subtotal_ex_gst: subtotal / 100,
+    resulting_subtotal_ex_gst: targetSubtotal / 100, total_inc_gst: input.total_inc_gst, gst: input.gst,
+    note: "The invoice already sent to the client is authoritative. Reconciled only the Xero draft net amount to its issued total and GST; original PDF, tax amounts and client-facing invoice remain unchanged.",
+  } };
 }
+
+export function validateCustomerInvoice(value: unknown): CustomerInvoiceInput { return prepareCustomerInvoice(value).input; }
 
 export function customerInvoiceKey(invoiceNumber: string) { return `xero-customer-invoice:${invoiceNumber}`; }
 

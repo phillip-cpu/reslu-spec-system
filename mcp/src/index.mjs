@@ -2296,7 +2296,7 @@ const TOOLS = [
   },
   {
     name: "create_stuart_xero_draft_customer_invoice",
-    description: "Create a source-backed AUD customer sales invoice in Xero as DRAFT ACCREC, never a supplier bill. Requires exact owner approval of the full payload and source SHA-256, an existing active customer, the connected legal issuer, approved revenue/tax codes and reconciled source lines/GST/header totals. In _authority use expected_absent=true and idempotency_key xero-customer-invoice:<invoice_number> exactly. Never silently fix a one-cent discrepancy; ask which source should be corrected before requesting approval. Duplicates and uncertain retries fail closed. It cannot authorise, send, pay or change a contact.",
+    description: "Create a source-backed AUD customer sales invoice in Xero as DRAFT ACCREC, never a supplier bill. Requires exact owner approval of the full source payload and SHA-256, an existing active customer, the connected legal issuer and approved revenue/tax codes. The invoice already sent to the client is authoritative: when issued_to_client=true, pass its original lines and header figures unchanged. The server reconciles at most one cent of net-line/subtotal difference to the issued total and GST, on the largest positive net line (first on ties), and records the before/after audit. Show this reconciliation in the draft review; do not ask which invoice to change for this one-cent case. Never alter the issued PDF, total, GST, or add an invented charge. Larger differences or tax conflicts require review. In _authority use expected_absent=true and idempotency_key xero-customer-invoice:<invoice_number> exactly. Duplicates and uncertain retries fail closed. It cannot authorise, send, pay or change a contact.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2305,6 +2305,7 @@ const TOOLS = [
         issuer_name: { type: "string" }, customer_name: { type: "string" }, contact_id: { type: "string", format: "uuid" },
         invoice_date: { type: "string", format: "date" }, due_date: { type: "string", format: "date" }, currency: { type: "string", enum: ["AUD"] }, reference: { type: "string" },
         subtotal_ex_gst: { type: "number" }, gst: { type: "number" }, total_inc_gst: { type: "number" },
+        issued_to_client: { type: "boolean", description: "True only when the human or traceable sending evidence confirms this exact source invoice was already sent to the client. Include this in the approved payload. Preserve its original figures; the server audits any permitted one-cent net reconciliation." },
         lines: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", properties: { description: { type: "string" }, amount_ex_gst: { type: "number" }, gst: { type: "number" }, account_code: { type: "string" }, tax_type: { type: "string" } }, required: ["description", "amount_ex_gst", "gst", "account_code", "tax_type"], additionalProperties: false } },
       },
       required: ["source_attachment_id", "source_sha256", "invoice_number", "issuer_name", "customer_name", "contact_id", "invoice_date", "due_date", "currency", "reference", "subtotal_ex_gst", "gst", "total_inc_gst", "lines"], additionalProperties: false,

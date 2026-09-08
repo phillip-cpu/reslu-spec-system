@@ -195,6 +195,7 @@ export function approvalBoundary(artifact: AgentTaskArtifact, policy: WorkroomAp
   const request = authorityRequest(artifact);
   if (!request) return "This approves the reviewed content for the agent's next step. It does not itself send, publish, book or create an external record.";
   if (!policy) return `The requested action (${request.tool_name}) is not registered as an approvable RESLU action, so it cannot run from this review.`;
+  if (request.tool_name === "create_stuart_xero_draft_customer_invoice" && request.tool_args.issued_to_client === true) return "The invoice already sent to the client is authoritative. This creates a Xero draft matching its total and GST, with any one-cent net-line/subtotal reconciliation recorded in the audit. The issued PDF and tax amounts stay unchanged. Larger differences stop for review; nothing is authorised or sent, and uncertain creation is not retried blindly.";
   if (policy.rollback_kind === "manual-recovery") return "This action cannot be automatically undone. RESLU will verify the provider result and will not retry an uncertain outcome blindly.";
   if (policy.rollback_kind === "compensating-action") return "This creates an external commitment or draft. Reversal requires a separate corrective action.";
   if (policy.rollback_kind === "restore-version") return "This changes an authoritative RESLU record. The prior version can be restored if needed.";
