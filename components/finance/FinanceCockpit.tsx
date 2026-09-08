@@ -51,7 +51,7 @@ function MetricCard({
 
 type ContributionAction =
   | { kind: "link"; href: string; label: string }
-  | { kind: "tab"; tab: "commitments" | "bills"; label: string };
+  | { kind: "tab"; tab: "commitments" | "bills"; label: string; recordId?: string; dueDate?: string };
 
 function contributionAction(item: EffectiveFinanceContribution): ContributionAction | null {
   const trace = item.sourceTrace;
@@ -68,6 +68,10 @@ function contributionAction(item: EffectiveFinanceContribution): ContributionAct
       label: "Open invoice",
     };
   }
+  if (sourceType === "supplier_invoice_allocation") {
+    return { kind: "tab", tab: "bills", label: "Review bill / record payment",
+      recordId: typeof trace.supplier_invoice_id === "string" ? trace.supplier_invoice_id : undefined };
+  }
   if (sourceType === "client_claim" && projectId) {
     return { kind: "link", href: `/projects/${projectId}/invoices`, label: "Open claim" };
   }
@@ -75,10 +79,13 @@ function contributionAction(item: EffectiveFinanceContribution): ContributionAct
     return { kind: "link", href: `/projects/${projectId}/timeline`, label: "Edit timing" };
   }
   if (trace.source === "recurring_commitment") {
-    return { kind: "tab", tab: "commitments", label: "Edit outgoing" };
+    return { kind: "tab", tab: "commitments", label: "Review / record payment",
+      recordId: typeof trace.recurring_commitment_id === "string" ? trace.recurring_commitment_id : undefined,
+      dueDate: typeof trace.due_date === "string" ? trace.due_date : undefined };
   }
   if (sourceType === "xero_invoice") {
-    return { kind: "tab", tab: "bills", label: "Open bill" };
+    // These are external Xero records, not local Company bills.
+    return null;
   }
   if (projectId) {
     return { kind: "link", href: `/projects/${projectId}/finance`, label: "Open project" };
@@ -105,13 +112,17 @@ function contributionTimingLabel(
 
 function PeriodDetail({
   period,
+  asOfDate,
   onOpenTab,
 }: {
   period: FinanceProjectionPeriod;
-  onOpenTab: (tab: "commitments" | "bills") => void;
+  asOfDate: string;
+  onOpenTab: (tab: "commitments" | "bills", recordId?: string, dueDate?: string) => void;
 }) {
   const inflows = period.contributions.filter((item) => item.direction === "inflow");
   const outflows = period.contributions.filter((item) => item.direction === "outflow");
+  const overdue = outflows.filter((item) => item.state !== "actual_paid" && item.effectiveDate && item.effectiveDate < asOfDate)
+    .reduce((sum, item) => sum + item.amountMinor, 0);
   return (
     <section aria-labelledby="selected-week-heading" className="mt-5 border border-charcoal/20 bg-offwhite">
       <div className="grid grid-cols-2 border-b border-charcoal/20 md:grid-cols-4">
@@ -132,6 +143,10 @@ function PeriodDetail({
         <h2 id="selected-week-heading" className="mt-2 font-display text-section text-nearblack">
           Week of {formatFinanceDate(period.startsOn)}
         </h2>
+        {overdue > 0 && <p className="mt-3 border-l-2 border-amber-700 bg-amber-50 p-3 text-body text-amber-900">
+          Includes {formatMinorCurrency(overdue)} from earlier due dates, still recorded as unpaid or unconfirmed.
+          If already paid, open the item and record its actual payment date. Changing its due date does not mark it paid.
+        </p>}
         <div className="mt-5 grid gap-5 md:grid-cols-2">
           {[
             ["Inflows", inflows, "No dated inflows in this week."],
@@ -160,7 +175,9 @@ function PeriodDetail({
                             {projectOrSupplier} · {contributionTimingLabel(item, period)}
                           </span>
                           <span className="mt-1 block text-[9px] font-semibold uppercase tracking-[0.12em] text-charcoal/45">
-                            {action?.label ?? `${item.confidence} confidence`}
+                            {action?.label ?? (item.sourceTrace.source_type === "xero_invoice"
+                              ? "Xero record · review this invoice number in Xero"
+                              : `${item.confidence} confidence`)}
                           </span>
                         </span>
                         <span className="shrink-0 text-nearblack">{formatMinorCurrency(item.amountMinor)}</span>
@@ -179,7 +196,7 @@ function PeriodDetail({
                         ) : action?.kind === "tab" ? (
                           <button
                             type="button"
-                            onClick={() => onOpenTab(action.tab)}
+                            onClick={() => onOpenTab(action.tab, action.recordId, action.dueDate)}
                             className="flex w-full items-start justify-between gap-4 py-3 text-left text-body transition-colors hover:bg-offwhite focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-nearblack"
                             aria-label={`${action.label}: ${item.description}`}
                           >
@@ -212,6 +229,8 @@ export function FinanceCockpit() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [activeTab, setActiveTab] = useState<CockpitTab>("cash");
   const [syncingXero, setSyncingXero] = useState(false);
+  const [forecastView, setForecastView] = useState<"cash" | "planning">("cash");
+  const [focusedSource, setFocusedSource] = useState<{ recordId?: string; dueDate?: string }>({});
 
   const loadCockpit = useCallback(async () => {
     const openingMinor = dollarsInputToMinor(openingCash);
@@ -270,7 +289,7 @@ export function FinanceCockpit() {
         b.exposure_minor - a.exposure_minor
     );
   }, [data]);
-  const projection = data?.projection ?? null;
+  const projection = forecastView === "planning" ? data?.planning_projection ?? null : data?.cash_projection ?? data?.projection ?? null;
   const selectedPeriod = projection?.periods[selectedIndex] ?? null;
   const lowestPeriod =
     projection?.lowestCashPeriodIndex === null || projection?.lowestCashPeriodIndex === undefined
@@ -286,19 +305,19 @@ export function FinanceCockpit() {
                 Live cashflow
               </span>
               <span className={`border px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] ${
-                data?.source_status.xero === "healthy"
+                data?.source_status.xero === "healthy" && data?.source_status.payment_coverage === "partial"
                   ? "border-[#304b33] bg-[#304b33]/10 text-[#304b33]"
                   : "border-[#c9971e] bg-[#c9971e]/10 text-[#76570a]"
               }`}>
-                {data?.source_status.xero === "healthy" ? "Xero connected" : data?.source_status.xero === "degraded" ? "Xero needs sync" : "Xero not connected"}
+                {data?.source_status.xero === "healthy" ? data.source_status.payment_coverage === "no_payment_records" ? "Bank synced · payments not reconciled" : "Xero connected · review coverage" : data?.source_status.xero === "degraded" ? "Xero needs sync" : "Xero not connected"}
               </span>
             </div>
             <h1 className="mt-4 font-display text-[38px] font-light leading-none text-nearblack md:text-[46px]">
               Executive finance cockpit
             </h1>
             <p className="mt-3 max-w-2xl text-body text-charcoal/60">
-              Client payments, issued claims, scheduled contract milestones and recurring costs flow
-              here automatically. Locked cost forecasts remain read-only.
+              Contract claims, supplier bills and recurring costs share this forecast.
+              Bills leave future outflows only when their payment is recorded or matched.
             </p>
           </div>
           <form
@@ -349,7 +368,7 @@ export function FinanceCockpit() {
               type="button"
               role="tab"
               aria-selected={activeTab === key}
-              onClick={() => setActiveTab(key as CockpitTab)}
+              onClick={() => { setFocusedSource({}); setActiveTab(key as CockpitTab); }}
               className={`shrink-0 border-b-2 px-4 py-3 text-subhead ${
                 activeTab === key
                   ? "border-nearblack text-nearblack"
@@ -380,9 +399,12 @@ export function FinanceCockpit() {
           asOfDate={asOfDate}
           canEdit={data.can_edit_forecast}
           onChanged={() => void loadCockpit()}
+          focusCommitmentId={focusedSource.recordId}
+          focusDueDate={focusedSource.dueDate}
+          onOpenCompanyInvoice={(invoiceId) => { setFocusedSource({ recordId: invoiceId }); setActiveTab("bills"); }}
         />
       ) : activeTab === "bills" ? (
-        <FinanceCompanyInvoicesPanel />
+        <FinanceCompanyInvoicesPanel focusInvoiceId={focusedSource.recordId} onChanged={loadCockpit} />
       ) : activeTab === "projects" ? (
         <section className="border border-charcoal/20 bg-offwhite" aria-labelledby="finance-projects-heading">
           <div className="border-b border-charcoal/20 p-5 md:p-7">
@@ -435,14 +457,22 @@ export function FinanceCockpit() {
         </section>
       ) : (
         <>
+          {data && (data.source_status.payment_coverage === "no_payment_records" || data.source_status.payment_conflicts > 0 || data.source_status.recurring_bills_needing_link > 0 || data.source_status.unresolved_currency_bills > 0) && (
+            <div role="status" className="border border-amber-700/30 bg-amber-50 p-4 text-body text-amber-900">
+              {data.source_status.payment_coverage === "no_payment_records" && <p>Bank balance synced, but Xero has supplied no payment records. Old bills below still rely on the payment status saved in Spec.</p>}
+              {data.source_status.payment_conflicts > 0 && <p>{data.source_status.payment_conflicts} payment record conflict(s) need review. Recorded cash has been preserved.</p>}
+              {data.source_status.recurring_bills_needing_link > 0 && <p>{data.source_status.recurring_bills_needing_link} company bill(s) need a recurring due-date link to avoid counting the scheduled expense too. <button type="button" className="underline" onClick={() => setActiveTab("bills")}>Review company bills</button></p>}
+              {data.source_status.unresolved_currency_bills > 0 && <p>{data.source_status.unresolved_currency_bills} bill(s) are excluded because their AUD value is not confirmed.</p>}
+            </div>
+          )}
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard
               label="Available cash"
               value={projection ? formatMinorCurrency(projection.openingCashMinor) : "—"}
               detail={data?.source_status.opening_cash === "request_preview"
-                ? "Manual preview · not persisted"
+                ? "Start-of-day balance · manual preview, not persisted"
                 : data?.source_status.opening_cash === "xero_bank_summary"
-                  ? `Xero cash accounts · ${data.source_status.xero_cash_as_of ? formatFinanceDate(data.source_status.xero_cash_as_of) : "latest sync"}`
+                  ? `Closing balance through ${data.source_status.xero_cash_as_of ? formatFinanceDate(data.source_status.xero_cash_as_of) : "latest sync"} · earlier payments already included`
                   : "Connect approved bank source or enter preview"}
             />
             <MetricCard
@@ -469,7 +499,13 @@ export function FinanceCockpit() {
             <div className="flex flex-col gap-3 border-b border-charcoal/20 p-5 md:flex-row md:items-end md:justify-between md:p-7">
               <div>
                 <p className="label-caps">Cash curve</p>
-                <h2 id="cash-curve-heading" className="mt-2 font-display text-section text-nearblack">Actual and forecast cash</h2>
+                <h2 id="cash-curve-heading" className="mt-2 font-display text-section text-nearblack">{forecastView === "cash" ? "Bills, claims and recurring cash" : "Cash including remaining project estimates"}</h2>
+                <div className="mt-3 flex gap-2" role="group" aria-label="Forecast cost coverage">
+                  {([ ["cash", "Committed cash"], ["planning", "Include project estimates"] ] as const).map(([view, label]) => (
+                    <button key={view} type="button" aria-pressed={forecastView === view} onClick={() => setForecastView(view)} className={`border px-3 py-2 text-caption ${forecastView === view ? "border-nearblack bg-nearblack text-white" : "border-charcoal/25 text-nearblack"}`}>{label}</button>
+                  ))}
+                </div>
+                <p className="mt-2 text-caption text-charcoal/60">{forecastView === "cash" ? `${formatMinorCurrency(data?.allowance_summary.total_minor ?? 0)} of uncommitted project estimates are shown only in the planning view.` : "Remaining estimates use dates from the project schedule; they are allowances, not bills to pay."}</p>
               </div>
               <p className="text-caption text-charcoal/50">
                 Calculated {data ? new Intl.DateTimeFormat("en-AU", { dateStyle: "medium", timeStyle: "short" }).format(new Date(data.source_status.calculated_at)) : "—"}
@@ -490,7 +526,8 @@ export function FinanceCockpit() {
           {selectedPeriod && (
             <PeriodDetail
               period={selectedPeriod}
-              onOpenTab={(tab) => setActiveTab(tab)}
+              asOfDate={projection?.asOfDate ?? asOfDate}
+              onOpenTab={(tab, recordId, dueDate) => { setFocusedSource({ recordId, dueDate }); setActiveTab(tab); }}
             />
           )}
 
@@ -500,7 +537,7 @@ export function FinanceCockpit() {
               <p className="mt-3 text-subhead text-nearblack">
                 {projection ? formatMinorCurrency(projection.unknownTimingMinor) : "—"} unallocated
               </p>
-              <p className="mt-2 text-body text-charcoal/55">Add a contract milestone or construction-program date to place these amounts in the cash timeline.</p>
+              <p className="mt-2 text-body text-charcoal/55">Confirm the source invoice’s due or actual payment date, or link its project schedule timing. Unknown dates are not guessed.</p>
             </div>
             <div className="border border-charcoal/20 bg-offwhite p-5">
               <p className="label-caps">Xero actuals</p>
@@ -513,7 +550,7 @@ export function FinanceCockpit() {
               </p>
               <p className="mt-2 text-body text-charcoal/55">
                 {data?.source_status.xero === "healthy"
-                  ? `${data.source_status.xero_matched_invoices} matched · ${data.source_status.xero_unmatched_invoices} unmatched. Credit-card liabilities are excluded from available cash.`
+                  ? `${data.source_status.xero_matched_supplier_bills} supplier bills matched · ${data.source_status.xero_matched_invoices} client invoices matched · ${data.source_status.xero_payment_records} payment records. A bank balance sync does not confirm individual bills are paid.`
                   : "Sync Xero to add bank cash, authorised bills and payments."}
               </p>
               {data?.source_status.xero !== "not_configured" && (

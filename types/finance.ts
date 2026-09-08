@@ -184,6 +184,7 @@ export interface FinanceRecurringCommitment {
   amount_minor: number;
   frequency: FinanceRecurringFrequency;
   first_due_date: string;
+  tracking_started_on?: string | null;
   end_date: string | null;
   gst_treatment: FinanceGstTreatment;
   annual_escalation_bps: number;
@@ -413,6 +414,11 @@ export interface FinanceCockpitResponse {
     xero_matched_invoices: number;
     xero_matched_supplier_bills: number;
     xero_unmatched_invoices: number;
+    payment_coverage: "not_connected" | "no_payment_records" | "partial";
+    xero_payment_records: number;
+    payment_conflicts: number;
+    recurring_bills_needing_link: number;
+    unresolved_currency_bills: number;
     calculated_at: string;
   };
   counts: {

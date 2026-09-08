@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
+import type { FinanceRecurringOccurrence } from "@/lib/finance/recurrence";
 import {
   dollarsInputToMinor,
   formatFinanceDate,
@@ -56,6 +57,15 @@ type FormState = {
   reason: string;
 };
 
+type PaymentOccurrence = FinanceRecurringOccurrence & {
+  linked_invoice_id: string | null;
+  commitment_version: number;
+};
+type PaymentRegister = FinanceRecurringCommitmentsResponse & {
+  occurrences: PaymentOccurrence[];
+  summary: FinanceRecurringCommitmentsResponse["summary"] & { linked_occurrence_count: number };
+};
+
 function blankForm(
   asOfDate: string,
   frequency: FinanceRecurringFrequency = "fortnightly"
@@ -108,27 +118,42 @@ export function FinanceRecurringCommitmentsPanel({
   asOfDate,
   canEdit,
   onChanged,
+  onOpenCompanyInvoice,
+  focusCommitmentId,
+  focusDueDate,
 }: {
   asOfDate: string;
   canEdit: boolean;
   onChanged: () => void;
+  onOpenCompanyInvoice?: (invoiceId: string) => void;
+  focusCommitmentId?: string | null;
+  focusDueDate?: string | null;
 }) {
-  const [data, setData] = useState<FinanceRecurringCommitmentsResponse | null>(null);
+  const [data, setData] = useState<PaymentRegister | null>(null);
   const [form, setForm] = useState<FormState>(() => blankForm(asOfDate));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [paymentFor, setPaymentFor] = useState<PaymentOccurrence | null>(null);
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentDate, setPaymentDate] = useState(asOfDate);
+  const [paymentReason, setPaymentReason] = useState("");
+  const [paymentSaving, setPaymentSaving] = useState(false);
+  const [paymentSuccess, setPaymentSuccess] = useState<string | null>(null);
+  const [paymentFilter, setPaymentFilter] = useState("");
+  const [showPaid, setShowPaid] = useState(false);
+  const [showAllWeeks, setShowAllWeeks] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const response = await fetch(
-        `/api/finance/recurring-commitments?as_of_date=${encodeURIComponent(asOfDate)}`,
+        `/api/finance/recurring-payments?as_of_date=${encodeURIComponent(asOfDate)}`,
         { cache: "no-store" }
       );
-      const body = (await response.json()) as FinanceRecurringCommitmentsResponse & {
+      const body = (await response.json()) as PaymentRegister & {
         error?: string;
       };
       if (!response.ok) throw new Error(body.error ?? "Could not load recurring commitments");
@@ -144,6 +169,92 @@ export function FinanceRecurringCommitmentsPanel({
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+
+  useEffect(() => {
+    if (!focusCommitmentId) return;
+    const timer = window.setTimeout(() => {
+      setPaymentFilter(focusCommitmentId);
+      setShowAllWeeks(true);
+      setShowPaid(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [focusCommitmentId, focusDueDate, data]);
+
+  useEffect(() => {
+    if (!focusCommitmentId || !focusDueDate || !showAllWeeks) return;
+    const timer = window.setTimeout(() => {
+      document.getElementById(`recurring-occurrence-${focusCommitmentId}-${focusDueDate}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [focusCommitmentId, focusDueDate, showAllWeeks, paymentFilter, data]);
+
+  const nearbyEnd = new Date(`${asOfDate}T00:00:00Z`);
+  nearbyEnd.setUTCDate(nearbyEnd.getUTCDate() + 13);
+  const visibleOccurrences = (data?.occurrences ?? []).filter((item) =>
+    (!paymentFilter || item.commitment_id === paymentFilter) &&
+    (showPaid || item.linked_invoice_id || item.remaining_minor > 0) &&
+    (showAllWeeks || item.due_date <= nearbyEnd.toISOString().slice(0, 10))
+  );
+
+  function openPayment(item: PaymentOccurrence) {
+    setPaymentFor(item);
+    setPaymentAmount((item.remaining_minor / 100).toFixed(2));
+    setPaymentDate(asOfDate);
+    setPaymentReason("");
+    setPaymentSuccess(null);
+  }
+
+  async function recordPayment() {
+    if (!paymentFor) return;
+    const amount = dollarsInputToMinor(paymentAmount);
+    if (!amount || amount <= 0 || amount > paymentFor.remaining_minor) {
+      setError("Enter a payment greater than zero and no more than the remaining amount.");
+      return;
+    }
+    setPaymentSaving(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/finance/recurring-payments", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ commitment_id: paymentFor.commitment_id, due_date: paymentFor.due_date,
+          amount_minor: amount, paid_on: paymentDate, reason: paymentReason,
+          expected_version: paymentFor.payment_version,
+          expected_commitment_version: paymentFor.commitment_version }),
+      });
+      const body = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "Could not record payment");
+      setPaymentSuccess(`Payment recorded for ${paymentFor.name}. The outstanding forecast has been updated.`);
+      setPaymentFor(null);
+      await load();
+      onChanged();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not record payment");
+    } finally { setPaymentSaving(false); }
+  }
+
+  async function undoPayment(item: PaymentOccurrence) {
+    const reason = window.prompt(`Undo the last recorded payment for ${item.name}? This corrects the record; it does not refund money. Enter the correction reason:`);
+    if (!reason?.trim()) return;
+    setPaymentSaving(true);
+    setError(null);
+    setPaymentSuccess(null);
+    try {
+      const response = await fetch("/api/finance/recurring-payments", {
+        method: "DELETE", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ commitment_id: item.commitment_id, due_date: item.due_date,
+          expected_version: item.payment_version, expected_commitment_version: item.commitment_version, reason }),
+      });
+      const body = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "Could not correct payment");
+      setPaymentFor(null);
+      setPaymentSuccess(`Last payment record for ${item.name} was undone. Its evidence remains in the audit history; no money was refunded.`);
+      await load();
+      onChanged();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not correct payment");
+    } finally { setPaymentSaving(false); }
+  }
 
   function patchForm<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -224,7 +335,7 @@ export function FinanceRecurringCommitmentsPanel({
             <p className="label-caps">Company overheads</p>
             <h2 className="mt-2 font-display text-section text-nearblack">Planned company outgoings</h2>
             <p className="mt-2 max-w-2xl text-body text-charcoal/60">
-              Add repeating commitments or one-time expected purchases such as marketing and entertainment. Active items flow directly into the 13-week shadow forecast.
+              Add repeating commitments or one-time purchases. Record each payment below; only the unpaid amount stays in the forecast.
             </p>
           </div>
           {canEdit && (
@@ -242,6 +353,7 @@ export function FinanceRecurringCommitmentsPanel({
         </div>
 
         {error && <div role="alert" className="border-b border-red-700/30 bg-red-50 p-4 text-body text-red-800">{error}</div>}
+        {paymentSuccess && <div role="status" className="border-b border-[#304b33]/20 bg-[#304b33]/5 p-4 text-body text-[#304b33]">{paymentSuccess}</div>}
 
         {showForm && canEdit && (
           <form
@@ -273,8 +385,50 @@ export function FinanceRecurringCommitmentsPanel({
 
         <div className="grid grid-cols-1 border-b border-charcoal/20 sm:grid-cols-3">
           <div className="border-b border-charcoal/15 p-4 sm:border-b-0 sm:border-r"><p className="label-caps">Active</p><p className="mt-2 text-subhead text-nearblack">{data?.summary.active_count ?? "—"}</p></div>
-          <div className="border-b border-charcoal/15 p-4 sm:border-b-0 sm:border-r"><p className="label-caps">13-week outflow</p><p className="mt-2 text-subhead text-nearblack">{data ? formatMinorCurrency(data.summary.projected_outflow_minor) : "—"}</p></div>
+          <div className="border-b border-charcoal/15 p-4 sm:border-b-0 sm:border-r"><p className="label-caps">{data?.summary.linked_occurrence_count ? "Unlinked planned outgoings" : "13-week unpaid outflow"}</p><p className="mt-2 text-subhead text-nearblack">{data ? formatMinorCurrency(data.summary.projected_outflow_minor) : "—"}</p>{Boolean(data?.summary.linked_occurrence_count) && <p className="mt-1 text-caption text-charcoal/50">Linked bills are reconciled in the cash timeline, not counted again here.</p>}</div>
           <div className="p-4"><p className="label-caps">Next due</p><p className="mt-2 text-subhead text-nearblack">{formatFinanceDate(data?.summary.next_due_date)}</p></div>
+        </div>
+
+        <div className="border-b border-charcoal/20 p-5 md:p-7">
+          <h3 className="font-display text-xl text-nearblack">Payments — what is still owing</h3>
+          <p className="mt-2 max-w-3xl text-body text-charcoal/60">An overdue date is not proof of payment. Tracked occurrences stay here until you record what was paid. If a company bill is linked, update the payment on that bill.</p>
+          <p className="mt-1 text-caption text-charcoal/50">Tracking starts on each commitment’s tracking date. Earlier unrecorded occurrences have not been marked paid or added as new debts.</p>
+          <div className="my-4 flex flex-wrap items-center gap-4 text-caption">
+            <label><span className="sr-only">Filter outgoing</span><select value={paymentFilter} onChange={(event) => setPaymentFilter(event.target.value)} className="border border-charcoal/20 bg-offwhite px-3 py-2"><option value="">All outgoings</option>{(data?.commitments ?? []).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={showPaid} onChange={(event) => setShowPaid(event.target.checked)} />Include paid occurrences</label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={showAllWeeks} onChange={(event) => setShowAllWeeks(event.target.checked)} />Show all 13 weeks</label>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[700px] border-collapse text-left">
+              <thead><tr className="border-b border-charcoal/20 text-caption text-charcoal/60"><th className="py-3 pr-3">Outgoing / due</th><th className="p-3 text-right">Expected</th><th className="p-3 text-right">Paid</th><th className="p-3 text-right">Still owing</th><th className="p-3">Action</th></tr></thead>
+              <tbody>
+                {visibleOccurrences.map((item) => <Fragment key={`${item.commitment_id}:${item.due_date}`}>
+                  <tr id={`recurring-occurrence-${item.commitment_id}-${item.due_date}`} className={`border-b border-charcoal/10 text-body ${focusCommitmentId === item.commitment_id && focusDueDate === item.due_date ? "bg-amber-50 ring-1 ring-inset ring-amber-500/40" : ""}`}>
+                    <td className="py-3 pr-3">{item.name}<span className={`mt-1 block text-caption ${!item.linked_invoice_id && item.remaining_minor > 0 && item.due_date < asOfDate ? "text-amber-800" : "text-charcoal/50"}`}>{formatFinanceDate(item.due_date)}{!item.linked_invoice_id && item.remaining_minor > 0 && item.due_date < asOfDate ? " · overdue, not marked paid" : ""}</span></td>
+                    <td className="p-3 text-right">{formatMinorCurrency(item.amount_minor)}</td>
+                    <td className="p-3 text-right">{item.linked_invoice_id ? "—" : formatMinorCurrency(item.paid_minor)}</td>
+                    <td className="p-3 text-right">{item.linked_invoice_id ? "—" : formatMinorCurrency(item.remaining_minor)}</td>
+                    <td className="p-3">{item.linked_invoice_id
+                      ? <button type="button" onClick={() => onOpenCompanyInvoice?.(item.linked_invoice_id!)} disabled={!onOpenCompanyInvoice} className="border-b border-charcoal/30 text-caption disabled:opacity-60">Managed on company bill</button>
+                      : item.remaining_minor === 0 ? <span className="text-caption text-[#304b33]">Paid{item.paid_on ? ` · ${formatFinanceDate(item.paid_on)}` : ""}</span>
+                      : canEdit ? <button type="button" disabled={paymentSaving} onClick={() => openPayment(item)} className="border border-charcoal/25 px-3 py-2 text-caption disabled:opacity-40">Record payment</button> : <span className="text-caption">{item.status === "part_paid" ? "Part paid" : "Unpaid"}</span>}
+                      {canEdit && !item.linked_invoice_id && item.payment_entries.length > 0 && <button type="button" disabled={paymentSaving} onClick={() => void undoPayment(item)} className="mt-2 block border-b border-charcoal/30 text-caption text-charcoal/60 disabled:opacity-40">Undo last payment record</button>}</td>
+                  </tr>
+                  {paymentFor?.commitment_id === item.commitment_id && paymentFor.due_date === item.due_date && <tr><td colSpan={5} className="border-b border-charcoal/20 bg-cream p-4">
+                    <form onSubmit={(event) => { event.preventDefault(); void recordPayment(); }} className="flex flex-wrap items-end gap-3">
+                      <label><span className="block text-caption">Amount paid this time</span><input required inputMode="decimal" value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} className="mt-1 w-36 border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
+                      <label><span className="block text-caption">Actual payment date</span><input required type="date" value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} className="mt-1 border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
+                      <label className="min-w-48 flex-1"><span className="block text-caption">Reference / note</span><input required value={paymentReason} onChange={(event) => setPaymentReason(event.target.value)} placeholder="Bank reference or payment note" className="mt-1 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body" /></label>
+                      <button type="submit" disabled={paymentSaving} className="bg-nearblack px-4 py-2 text-body text-white disabled:opacity-40">{paymentSaving ? "Saving…" : "Save payment"}</button>
+                      <button type="button" disabled={paymentSaving} onClick={() => setPaymentFor(null)} className="px-2 py-2 text-body">Cancel</button>
+                      <p className="w-full text-caption text-charcoal/60">This records an existing payment; it does not transfer money. Each payment keeps its actual date.</p>
+                    </form>
+                  </td></tr>}
+                </Fragment>)}
+                {!loading && visibleOccurrences.length === 0 && <tr><td colSpan={5} className="py-6 text-center text-body text-charcoal/50">No outstanding occurrences in this view.</td></tr>}
+              </tbody>
+            </table>
+          </div>
         </div>
 
         <div className="overflow-x-auto">

@@ -148,7 +148,7 @@ export async function POST(
       .is("deleted_at", null),
     supabase
       .from("invoices")
-      .select("id,project_id,supplier,invoice_number,invoice_date,due_date,amount_ex_gst,gst,total,status,payment_status,amount_paid,paid_at,proposed_match_type,proposed_match_id,invoice_allocations(id,match_type,match_id,amount_ex_gst)")
+      .select("id,project_id,supplier,invoice_number,invoice_date,due_date,amount_ex_gst,gst,total,status,payment_status,amount_paid,paid_at,payment_history,proposed_match_type,proposed_match_id,invoice_allocations(id,match_type,match_id,amount_ex_gst)")
       .eq("project_id", projectId)
       .eq("status", "approved"),
   ]);

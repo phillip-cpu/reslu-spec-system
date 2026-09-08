@@ -166,11 +166,21 @@ export function resolveEffectiveContributions(inputs: FinanceContributionInput[]
 export function calculateShadowProjection(input: {
   asOfDate: string;
   openingCashMinor: number;
+  /** Closing balance date: paid cash through this day is already included.
+   * Without a date, opening cash is the balance at the start of asOfDate.
+   */
+  openingCashAsOfDate?: string;
   contributions: FinanceContributionInput[];
   weeklyPeriods?: number;
 }): FinanceShadowProjection {
   assertPlainDate(input.asOfDate, "asOfDate");
   assertMinor(input.openingCashMinor, "openingCashMinor", true);
+  if (input.openingCashAsOfDate !== undefined) {
+    assertPlainDate(input.openingCashAsOfDate, "openingCashAsOfDate");
+    if (input.openingCashAsOfDate > input.asOfDate) {
+      throw new Error("openingCashAsOfDate cannot be after asOfDate");
+    }
+  }
   const periodDates = buildWeeklyPeriods(input.asOfDate, input.weeklyPeriods ?? 13);
   const resolved = resolveEffectiveContributions(input.contributions);
   const firstStart = periodDates[0].startsOn;
@@ -186,10 +196,14 @@ export function calculateShadowProjection(input: {
     }
 
     let effectiveDate = contribution.effectiveDate;
+    const alreadyInOpeningCash = input.openingCashAsOfDate !== undefined
+      ? effectiveDate <= input.openingCashAsOfDate
+      : effectiveDate < input.asOfDate;
+    if (contribution.state === "actual_paid" && alreadyInOpeningCash) continue;
+
     if (effectiveDate < firstStart) {
-      // Historical paid cash is already represented in opening cash.
-      if (contribution.state === "actual_paid") continue;
-      // Overdue unpaid/forecast obligations are due in the first week.
+      // Carry overdue obligations and cash paid since an older opening
+      // balance into the first week, retaining their original dates.
       effectiveDate = firstStart;
     }
     if (effectiveDate > lastEnd) {

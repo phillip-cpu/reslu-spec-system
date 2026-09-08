@@ -58,11 +58,95 @@ function dollarsToMinor(value: number | string | null): number {
   return minor;
 }
 
+/** Cache totals are not evidence that a recorded payment has been reversed. */
+function mergePaymentAmounts(
+  existing: FinanceContributionInput[],
+  xeroAccruedMinor: number,
+  xeroPaidMinor: number
+) {
+  const localPaidShares = existing.map((contribution) => contribution.actualPaidMinor ?? 0);
+  const localPaidMinor = localPaidShares.reduce((sum, amount) => sum + amount, 0);
+  const paidMinor = Math.max(localPaidMinor, xeroPaidMinor);
+  // A credit may reduce the invoice balance, but cannot erase cash already paid.
+  // Refunds require separate evidence; keep the discrepancy visible for review.
+  const accruedMinor = Math.max(xeroAccruedMinor, paidMinor);
+  const weights = existing.map((contribution, index) => Math.max(
+    (contribution.actualAccruedMinor ?? 0) - localPaidShares[index], 0
+  ));
+  const remainingAccruedShares = apportionMinor(
+    accruedMinor - localPaidMinor,
+    weights.some((weight) => weight > 0) ? weights : existing.map(() => 1)
+  );
+  const accruedShares = localPaidShares.map((paid, index) => paid + remainingAccruedShares[index]);
+  const additionalPaidShares = apportionMinor(paidMinor - localPaidMinor, remainingAccruedShares);
+  return {
+    accruedShares,
+    paidShares: localPaidShares.map((paid, index) => paid + additionalPaidShares[index]),
+    paidMinor,
+    accruedMinor,
+    localPaidMinor,
+    conflict: localPaidMinor > xeroPaidMinor,
+  };
+}
+
+function mergedPaidDate(
+  existing: FinanceContributionInput,
+  paidMinor: number,
+  xeroPaidDate: string | null,
+  preserveLocalPayment: boolean
+): string | null {
+  if (paidMinor === 0) return null;
+  const localPaidMinor = existing.actualPaidMinor ?? 0;
+  if (localPaidMinor > 0 && (preserveLocalPayment || paidMinor === localPaidMinor)) {
+    return existing.actualPaidDate ?? null;
+  }
+  return xeroPaidDate ?? existing.actualPaidDate ?? null;
+}
+
+/** Keep a known earlier payment separate from a later increase in Xero's total. */
+function splitAdditionalPayment(
+  existing: FinanceContributionInput,
+  merged: FinanceContributionInput,
+  xeroPaidDate: string | null
+): [FinanceContributionInput, FinanceContributionInput?] {
+  const localPaidMinor = existing.actualPaidMinor ?? 0;
+  const additionalPaidMinor = (merged.actualPaidMinor ?? 0) - localPaidMinor;
+  if (localPaidMinor <= 0 || additionalPaidMinor <= 0 || (existing.actualPaidDate ?? null) === xeroPaidDate) {
+    return [merged];
+  }
+  return [{
+    ...merged,
+    plannedMinor: Math.max(merged.plannedMinor - additionalPaidMinor, 0),
+    committedMinor: merged.committedMinor === undefined
+      ? undefined : Math.max(merged.committedMinor - additionalPaidMinor, 0),
+    actualAccruedMinor: (merged.actualAccruedMinor ?? 0) - additionalPaidMinor,
+    actualPaidMinor: localPaidMinor,
+    actualPaidDate: existing.actualPaidDate ?? null,
+  }, {
+    ...merged,
+    contributionKey: `${existing.contributionKey}|xero_payment_increment:${merged.sourceTrace?.xero_invoice_id}:${merged.sourceTrace?.xero_invoice_paid_minor}`,
+    plannedMinor: 0,
+    committedMinor: 0,
+    actualAccruedMinor: additionalPaidMinor,
+    actualPaidMinor: additionalPaidMinor,
+    plannedDate: null,
+    committedDate: null,
+    actualDueDate: null,
+    actualPaidDate: xeroPaidDate,
+    sourceTrace: {
+      ...merged.sourceTrace,
+      parent_contribution_key: existing.contributionKey,
+      xero_payment_component: "incremental",
+    },
+  }];
+}
+
 /**
  * Converts Xero's authorised invoices into cashflow facts. Sales invoices are
- * overlaid onto matching RESLU claims by invoice number; this replaces the
- * internal status rather than adding a second inflow. Unmatched records remain
- * explicit Xero entries so accounting cash facts are not silently discarded.
+ * overlaid onto matching RESLU claims by invoice number without adding a second
+ * inflow. Local payment evidence survives a lower cached payment total until a
+ * reversal can be reconciled explicitly. Unmatched records remain explicit
+ * Xero entries so accounting cash facts are not silently discarded.
  */
 export function applyXeroInvoiceActuals(input: {
   contributions: FinanceContributionInput[];
@@ -71,14 +155,17 @@ export function applyXeroInvoiceActuals(input: {
   xeroInvoices: CachedXeroInvoice[];
   xeroPayments: CachedXeroPayment[];
 }): XeroActualContributionResult {
-  const result = input.contributions.map((contribution) => ({
+  const result: FinanceContributionInput[] = input.contributions.map((contribution) => ({
     ...contribution,
     sourceTrace: { ...(contribution.sourceTrace ?? {}) },
   }));
-  const contributionIndexByClientInvoiceId = new Map<string, number>();
+  const contributionIndicesByClientInvoiceId = new Map<string, number[]>();
   result.forEach((contribution, index) => {
     const id = contribution.sourceTrace?.client_invoice_id;
-    if (typeof id === "string") contributionIndexByClientInvoiceId.set(id, index);
+    if (typeof id !== "string") return;
+    contributionIndicesByClientInvoiceId.set(id, [
+      ...(contributionIndicesByClientInvoiceId.get(id) ?? []), index,
+    ]);
   });
   const clientInvoiceByNumber = new Map(
     input.clientInvoices
@@ -118,32 +205,44 @@ export function applyXeroInvoiceActuals(input: {
     const grossMinor = dollarsToMinor(invoice.total);
     const creditedMinor = Math.min(dollarsToMinor(invoice.amount_credited), grossMinor);
     const accruedMinor = grossMinor - creditedMinor;
-    if (accruedMinor <= 0) continue;
+    // Fully credited supplier bills must still clear their matched local debt.
+    // Client contract credits require their separate claim-value reconciliation.
+    if (grossMinor <= 0 || (accruedMinor <= 0 && invoice.invoice_type === "ACCREC")) continue;
     const paidMinor = Math.min(dollarsToMinor(invoice.amount_paid), accruedMinor);
-    const paidDate = paidDateByInvoiceId.get(invoice.xero_invoice_id) ??
-      (invoice.status.toUpperCase() === "PAID" ? invoice.invoice_date : null);
+    const paidDate = paidDateByInvoiceId.get(invoice.xero_invoice_id) ?? null;
     includedInvoices += 1;
 
     if (invoice.invoice_type === "ACCREC") {
       const clientInvoice = clientInvoiceByNumber.get(normaliseInvoiceNumber(invoice.invoice_number));
-      const contributionIndex = clientInvoice
-        ? contributionIndexByClientInvoiceId.get(clientInvoice.id)
-        : undefined;
-      if (contributionIndex !== undefined) {
-        const existing = result[contributionIndex];
-        result[contributionIndex] = {
-          ...existing,
-          actualAccruedMinor: accruedMinor,
-          actualPaidMinor: paidMinor,
-          actualDueDate: invoice.due_date ?? existing.actualDueDate,
-          actualPaidDate: paidMinor > 0 ? paidDate ?? existing.actualPaidDate : null,
-          confidence: "confirmed",
-          sourceTrace: {
-            ...(existing.sourceTrace ?? {}),
-            xero_invoice_id: invoice.xero_invoice_id,
-            xero_match: "invoice_number",
-          },
-        };
+      const indices = clientInvoice
+        ? contributionIndicesByClientInvoiceId.get(clientInvoice.id) ?? []
+        : [];
+      if (indices.length > 0) {
+        const payment = mergePaymentAmounts(indices.map((index) => result[index]), accruedMinor, paidMinor);
+        indices.forEach((index, shareIndex) => {
+          const existing = result[index];
+          const merged: FinanceContributionInput = {
+            ...existing,
+            actualAccruedMinor: payment.accruedShares[shareIndex],
+            actualPaidMinor: payment.paidShares[shareIndex],
+            actualDueDate: invoice.due_date ?? existing.actualDueDate,
+            actualPaidDate: mergedPaidDate(existing, payment.paidShares[shareIndex], paidDate, payment.conflict),
+            confidence: "confirmed",
+            sourceTrace: {
+              ...(existing.sourceTrace ?? {}),
+              xero_invoice_id: invoice.xero_invoice_id,
+              xero_match: "invoice_number",
+              xero_payment_conflict: payment.conflict ? "local_paid_exceeds_xero" : null,
+              local_invoice_paid_minor: payment.localPaidMinor,
+              xero_invoice_paid_minor: paidMinor,
+              xero_invoice_accrued_minor: accruedMinor,
+              xero_invoice_credited_minor: creditedMinor,
+            },
+          };
+          const [retained, incremental] = splitAdditionalPayment(existing, merged, paidDate);
+          result[index] = retained;
+          if (incremental) result.push(incremental);
+        });
         matchedClientInvoices += 1;
         continue;
       }
@@ -159,30 +258,45 @@ export function applyXeroInvoiceActuals(input: {
         ? contributionIndicesBySupplierInvoiceId.get(supplierInvoice.id) ?? []
         : [];
       if (supplierInvoice && indices.length > 0) {
-        const weights = indices.map((index) => result[index].actualAccruedMinor ?? 0);
-        const accruedShares = apportionMinor(accruedMinor, weights);
-        const paidShares = apportionMinor(paidMinor, accruedShares);
+        const payment = mergePaymentAmounts(indices.map((index) => result[index]), accruedMinor, paidMinor);
         indices.forEach((index, shareIndex) => {
           const existing = result[index];
-          result[index] = {
+          const merged: FinanceContributionInput = {
             ...existing,
-            actualAccruedMinor: accruedShares[shareIndex],
-            actualPaidMinor: paidShares[shareIndex],
+            plannedMinor: accruedMinor === 0 ? 0 : existing.plannedMinor,
+            committedMinor: accruedMinor === 0 ? 0 : existing.committedMinor,
+            actualAccruedMinor: payment.accruedShares[shareIndex],
+            actualPaidMinor: payment.paidShares[shareIndex],
             actualDueDate: invoice.due_date ?? existing.actualDueDate,
-            actualPaidDate: paidShares[shareIndex] > 0 ? paidDate ?? existing.actualPaidDate : null,
+            actualPaidDate: mergedPaidDate(existing, payment.paidShares[shareIndex], paidDate, payment.conflict),
             confidence: "confirmed",
             sourceTrace: {
               ...(existing.sourceTrace ?? {}),
               xero_invoice_id: invoice.xero_invoice_id,
               xero_match: "supplier_invoice_number",
+              xero_payment_conflict: payment.conflict ? "local_paid_exceeds_xero" : null,
+              local_invoice_paid_minor: payment.localPaidMinor,
+              xero_invoice_paid_minor: paidMinor,
+              xero_invoice_accrued_minor: accruedMinor,
+              xero_invoice_credited_minor: creditedMinor,
+              payment_status: payment.paidMinor === payment.accruedMinor
+                ? "paid"
+                : payment.paidMinor > 0 ? "part_paid" : "unpaid",
             },
           };
+          const [retained, incremental] = splitAdditionalPayment(existing, merged, paidDate);
+          result[index] = retained;
+          if (incremental) result.push(incremental);
         });
         matchedSupplierInvoices += 1;
         continue;
       }
     }
 
+    if (accruedMinor === 0) {
+      includedInvoices -= 1;
+      continue;
+    }
     unmatchedInvoices += 1;
     result.push({
       contributionKey: `xero:invoice:${invoice.xero_invoice_id}`,
