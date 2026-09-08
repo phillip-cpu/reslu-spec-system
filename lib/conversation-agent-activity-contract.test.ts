@@ -23,7 +23,8 @@ test("the current thread shows truthful queued and processing feedback", () => {
   assert.match(workspace, /activity\.progress_label \?\? "Working on your request"/);
   assert.match(workspace, /Waiting to start/);
   assert.match(workspace, /role="status" aria-live="polite"/);
-  assert.match(workspace, /const \[agentWorkExpanded, setAgentWorkExpanded\] = useState\(true\)/);
+  assert.match(workspace, /const \[agentWorkExpanded, setAgentWorkExpanded\] = useState\(false\)/);
+  assert.match(workspace, /<ChatProgress activities=\{agentActivity\}/);
   assert.match(workspace, /agentWorkVisible = Boolean\(selectedConversation\)/);
   assert.match(workspace, /No agent tasks yet/);
   assert.match(workspace, /Start work together/);
