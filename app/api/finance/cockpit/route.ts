@@ -11,7 +11,8 @@ import {
   type FinanceEstimateSnapshot,
 } from "@/lib/finance/baseline";
 import { buildCompanyClientClaimPortfolio } from "@/lib/finance/company-client-claims";
-import { generateRecurringContributions } from "@/lib/finance/recurrence";
+import { generateRecurringContributions, normalizeRecurringPayment } from "@/lib/finance/recurrence";
+import { reconcileRecurringInvoiceActuals } from "@/lib/finance/recurring-invoice-actuals";
 import { isIsoDate } from "@/lib/finance/readiness";
 import { buildSectionForecastDates } from "@/lib/finance/schedule-cost-timing";
 import {
@@ -285,12 +286,12 @@ export async function GET(request: NextRequest) {
           .maybeSingle(),
         service
           .from("xero_invoices")
-          .select("xero_invoice_id,invoice_type,status,invoice_number,contact_name,invoice_date,due_date,total,amount_paid,amount_credited")
-          .eq("connection_id", connection.id),
+          .select("xero_invoice_id,invoice_type,status,invoice_number,contact_name,invoice_date,due_date,total,amount_paid,amount_credited", { count: "exact" })
+          .eq("connection_id", connection.id).limit(1000),
         service
           .from("xero_payments")
-          .select("xero_invoice_id,payment_date,status")
-          .eq("connection_id", connection.id),
+          .select("xero_invoice_id,payment_date,status", { count: "exact" })
+          .eq("connection_id", connection.id).limit(1000),
         service
           .from("xero_bank_accounts")
           .select("id,name,bank_account_type,account_class,current_balance,balance_as_of,balance_source")
@@ -300,6 +301,10 @@ export async function GET(request: NextRequest) {
       const xeroReadError = cashResult.error ?? invoiceResult.error ?? paymentResult.error ?? accountResult.error;
       if (xeroReadError) {
         return NextResponse.json({ error: xeroReadError.message }, { status: 500 });
+      }
+      if ((invoiceResult.count ?? 0) > (invoiceResult.data?.length ?? 0) ||
+          (paymentResult.count ?? 0) > (paymentResult.data?.length ?? 0)) {
+        return NextResponse.json({ error: "Xero history exceeds the safe loading limit. No incomplete cash totals have been shown." }, { status: 422 });
       }
       xeroCashSnapshot = cashResult.data;
       xeroInvoices = (invoiceResult.data ?? []) as CachedXeroInvoice[];
@@ -336,19 +341,26 @@ export async function GET(request: NextRequest) {
     lines = (data ?? []) as unknown as ForecastLineRow[];
   }
 
-  const [recurringResult, facilityResult] = await Promise.all([
+  const [recurringResult, facilityResult, recurringPaymentResult, supplierInvoiceResult] = await Promise.all([
     supabase
       .from("finance_recurring_commitments")
       .select("*")
-      .eq("status", "active")
       .order("first_due_date", { ascending: true }),
     supabase
       .from("finance_credit_facilities")
       .select("facility_type,credit_limit_minor,xero_bank_account_id")
       .eq("status", "active"),
+    supabase.from("finance_recurring_occurrence_payments").select("*", { count: "exact" }).limit(1000),
+    supabase.from("invoices")
+      .select("id,project_id,expense_scope,currency_code,company_expense_category,recurring_commitment_id,recurring_due_date,supplier,invoice_number,invoice_date,due_date,amount_ex_gst,gst,total,status,payment_status,amount_paid,paid_at,payment_history,proposed_match_type,proposed_match_id,invoice_allocations(id,match_type,match_id,amount_ex_gst)", { count: "exact" })
+      .eq("status", "approved").limit(1000),
   ]);
-  const recurringError = recurringResult.error ?? facilityResult.error;
+  const recurringError = recurringResult.error ?? facilityResult.error ?? recurringPaymentResult.error ?? supplierInvoiceResult.error;
   if (recurringError) return NextResponse.json({ error: recurringError.message }, { status: 500 });
+  if ((recurringPaymentResult.count ?? 0) > (recurringPaymentResult.data?.length ?? 0) ||
+      (supplierInvoiceResult.count ?? 0) > (supplierInvoiceResult.data?.length ?? 0)) {
+    return NextResponse.json({ error: "Finance history exceeds the safe loading limit. No incomplete cash totals have been shown." }, { status: 422 });
+  }
   const rawRecurring = recurringResult.data;
   const rawFacilities = facilityResult.data ?? [];
 
@@ -373,7 +385,7 @@ export async function GET(request: NextRequest) {
   let estimateVersions: EstimateVersionRow[] = [];
   let costSections: CostSectionForecastRow[] = [];
   let contractVariations: ClientContractVariation[] = [];
-  let supplierInvoices: SupplierCashInvoice[] = [];
+  const supplierInvoices = (supplierInvoiceResult.data ?? []) as unknown as SupplierCashInvoice[];
   let itemCategories: Record<string, string> = {};
   let ffeForecastTiming: ProjectFfeForecastTiming = {
     itemCategories: {},
@@ -395,7 +407,6 @@ export async function GET(request: NextRequest) {
       estimateResult,
       costSectionResult,
       contractVariationResult,
-      supplierInvoiceResult,
       loadedFfeForecastTiming,
     ] = await Promise.all([
       supabase
@@ -435,11 +446,6 @@ export async function GET(request: NextRequest) {
         .in("project_id", companyProjectIds)
         .eq("status", "active")
         .is("deleted_at", null),
-      supabase
-        .from("invoices")
-        .select("id,project_id,supplier,invoice_number,invoice_date,due_date,amount_ex_gst,gst,total,status,payment_status,amount_paid,paid_at,proposed_match_type,proposed_match_id,invoice_allocations(id,match_type,match_id,amount_ex_gst)")
-        .in("project_id", companyProjectIds)
-        .eq("status", "approved"),
       loadProjectFfeForecastTiming(supabase, companyProjectIds),
     ]);
     const companyReadError =
@@ -450,7 +456,7 @@ export async function GET(request: NextRequest) {
       estimateResult.error ??
       costSectionResult.error;
       // keep the first read error deterministic across all company sources
-    const allCompanyReadError = companyReadError ?? contractVariationResult.error ?? supplierInvoiceResult.error;
+    const allCompanyReadError = companyReadError ?? contractVariationResult.error;
     if (allCompanyReadError) {
       return NextResponse.json({ error: allCompanyReadError.message }, { status: 500 });
     }
@@ -461,7 +467,6 @@ export async function GET(request: NextRequest) {
     estimateVersions = (estimateResult.data ?? []) as unknown as EstimateVersionRow[];
     costSections = (costSectionResult.data ?? []) as CostSectionForecastRow[];
     contractVariations = (contractVariationResult.data ?? []) as ClientContractVariation[];
-    supplierInvoices = (supplierInvoiceResult.data ?? []) as unknown as SupplierCashInvoice[];
     ffeForecastTiming = loadedFfeForecastTiming;
     itemCategories = loadedFfeForecastTiming.itemCategories;
     } catch (readError) {
@@ -567,6 +572,7 @@ export async function GET(request: NextRequest) {
     );
     const recurringContributions = generateRecurringContributions({
       commitments: recurringCommitments,
+      payments: ((recurringPaymentResult.data ?? []) as Record<string, unknown>[]).map(normalizeRecurringPayment),
       asOfDate,
     });
     const clientClaimPortfolio = buildCompanyClientClaimPortfolio({
@@ -587,7 +593,12 @@ export async function GET(request: NextRequest) {
       xeroInvoices,
       xeroPayments,
     });
-    const reconciledCashContributions = xeroActuals.contributions;
+    const recurringReconciliation = reconcileRecurringInvoiceActuals({
+      contributions: xeroActuals.contributions,
+      recurringContributions,
+      invoices: supplierInvoices,
+    });
+    const reconciledCashContributions = recurringReconciliation.contributions;
     const clientClaimContributions = reconciledCashContributions.filter(
       (contribution) =>
         contribution.sourceTrace?.source_type === "client_claim" ||
@@ -609,7 +620,7 @@ export async function GET(request: NextRequest) {
     );
     const contributions = [
       ...reconciledCashContributions,
-      ...recurringContributions,
+      ...recurringReconciliation.recurringContributions,
     ];
     const xeroCashMinor = xeroCashSnapshot
       ? Math.round(Number(xeroCashSnapshot.cash_balance) * 100)
@@ -618,11 +629,14 @@ export async function GET(request: NextRequest) {
       throw new Error("Xero cash balance is outside safe minor-unit range");
     }
     const openingCashMinor = requestedOpeningCashMinor ?? xeroCashMinor ?? 0;
+    const openingCashAsOfDate = requestedOpeningCashMinor === null && xeroCashSnapshot
+      ? xeroCashSnapshot.as_of_date : undefined;
     const shadowEnabled = financeShadowProjectionEnabled();
     const planningProjection = shadowEnabled
       ? calculateShadowProjection({
           asOfDate,
           openingCashMinor,
+          openingCashAsOfDate,
           contributions,
         })
       : null;
@@ -630,6 +644,7 @@ export async function GET(request: NextRequest) {
       ? calculateShadowProjection({
           asOfDate,
           openingCashMinor,
+          openingCashAsOfDate,
           contributions: cashCommitmentContributions(contributions),
         })
       : null;
@@ -768,6 +783,14 @@ export async function GET(request: NextRequest) {
         xero_matched_invoices: xeroActuals.matchedClientInvoices,
         xero_matched_supplier_bills: xeroActuals.matchedSupplierInvoices,
         xero_unmatched_invoices: xeroActuals.unmatchedInvoices,
+        payment_coverage: !xeroConnection ? "not_connected"
+          : xeroPayments.some((payment) => payment.status !== "DELETED") ? "partial" : "no_payment_records",
+        xero_payment_records: xeroPayments.filter((payment) => payment.status !== "DELETED").length,
+        payment_conflicts: new Set(contributions.filter((item) =>
+          item.sourceTrace?.xero_payment_conflict || item.sourceTrace?.recurring_payment_conflict || item.sourceTrace?.recurring_payment_date_conflict
+        ).map((item) => item.sourceTrace?.supplier_invoice_id ?? item.sourceTrace?.client_invoice_id ?? item.contributionKey)).size,
+        recurring_bills_needing_link: recurringReconciliation.billsNeedingLink,
+        unresolved_currency_bills: supplierReconciliation.unresolvedCurrencyInvoices,
         calculated_at: new Date().toISOString(),
       },
       counts: {
@@ -778,7 +801,7 @@ export async function GET(request: NextRequest) {
         design_only_projects: profiles.filter(
           (profile) => profile.finance_state === "design_only"
         ).length,
-        active_recurring_commitments: recurringCommitments.length,
+        active_recurring_commitments: recurringCommitments.filter((item) => item.status === "active").length,
         connected_client_claims: clientClaimPortfolio.contributions.length,
         connected_projects: clientClaimPortfolio.summary.projectCount,
         reconciled_supplier_invoices: supplierReconciliation.includedInvoices,
@@ -794,11 +817,11 @@ export async function GET(request: NextRequest) {
         ),
       },
       recurring_summary: {
-        projected_outflow_minor: recurringContributions.reduce(
+        projected_outflow_minor: recurringReconciliation.recurringContributions.reduce(
           (sum, item) => sum + item.plannedMinor,
           0
         ),
-        next_due_date: recurringContributions[0]?.plannedDate ?? null,
+        next_due_date: recurringReconciliation.recurringContributions.find((item) => item.plannedMinor > 0)?.plannedDate ?? null,
       },
       liquidity_summary: {
         bank_cash_minor: openingCashMinor,

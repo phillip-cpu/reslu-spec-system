@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUserRole } from "@/lib/auth";
 import { financeFoundationEnabled } from "@/lib/finance/feature-flags";
 import { hasFinanceCapability } from "@/lib/finance/permissions";
-import { generateRecurringContributions } from "@/lib/finance/recurrence";
+import { GET as getPaymentRegister } from "../recurring-payments/route";
 import { isIsoDate } from "@/lib/finance/readiness";
 import { createClient } from "@/lib/supabase/server";
 import type {
@@ -49,58 +49,8 @@ async function financeUser() {
 }
 
 export async function GET(request: NextRequest) {
-  const { supabase, user } = await financeUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!financeFoundationEnabled()) {
-    return NextResponse.json({ error: "Finance foundation is not enabled" }, { status: 404 });
-  }
-  const [viewPermission, editPermission] = await Promise.all([
-    hasFinanceCapability(supabase, "finance.view_company"),
-    hasFinanceCapability(supabase, "finance.edit_forecast"),
-  ]);
-  if (viewPermission.error) {
-    return NextResponse.json({ error: viewPermission.error }, { status: 500 });
-  }
-  if (!viewPermission.allowed && !editPermission.allowed) {
-    return NextResponse.json({ error: "Recurring commitment access denied" }, { status: 403 });
-  }
-
-  const asOfDate = request.nextUrl.searchParams.get("as_of_date") ??
-    new Date().toISOString().slice(0, 10);
-  if (!isIsoDate(asOfDate)) {
-    return NextResponse.json({ error: "as_of_date must be an ISO calendar date" }, { status: 400 });
-  }
-
-  const { data, error } = await supabase
-    .from("finance_recurring_commitments")
-    .select("*")
-    .neq("status", "archived")
-    .order("status", { ascending: true })
-    .order("first_due_date", { ascending: true });
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
-  try {
-    const commitments = ((data ?? []) as Record<string, unknown>[]).map(normalizeCommitment);
-    const contributions = generateRecurringContributions({ commitments, asOfDate });
-    return NextResponse.json({
-      commitments,
-      can_edit: !editPermission.error && editPermission.allowed,
-      as_of_date: asOfDate,
-      summary: {
-        active_count: commitments.filter((item) => item.status === "active").length,
-        projected_outflow_minor: contributions.reduce(
-          (sum, item) => sum + item.plannedMinor,
-          0
-        ),
-        next_due_date: contributions[0]?.plannedDate ?? null,
-      },
-    });
-  } catch (caught) {
-    return NextResponse.json(
-      { error: caught instanceof Error ? caught.message : "Could not read commitments" },
-      { status: 422 }
-    );
-  }
+  // Existing consumers use the same settled totals as Planned outgoings.
+  return getPaymentRegister(request);
 }
 
 export async function POST(request: NextRequest) {

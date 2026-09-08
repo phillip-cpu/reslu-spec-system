@@ -10,7 +10,12 @@ export interface SupplierCashAllocation {
 
 export interface SupplierCashInvoice {
   id: string;
-  project_id: string;
+  project_id: string | null;
+  expense_scope?: string;
+  currency_code?: string | null;
+  company_expense_category?: string | null;
+  recurring_commitment_id?: string | null;
+  recurring_due_date?: string | null;
   supplier: string;
   invoice_number: string;
   invoice_date: string | null;
@@ -22,6 +27,7 @@ export interface SupplierCashInvoice {
   payment_status: SupplierInvoicePaymentStatus;
   amount_paid: number | string;
   paid_at: string | null;
+  payment_history?: Array<{ amount_minor: number; paid_on: string }>;
   proposed_match_type?: InvoiceMatchType | null;
   proposed_match_id?: string | null;
   invoice_allocations?: SupplierCashAllocation[];
@@ -34,6 +40,7 @@ export interface SupplierActualReconciliationResult {
   unmatchedAllocations: number;
   accruedMinor: number;
   paidMinor: number;
+  unresolvedCurrencyInvoices: number;
 }
 
 function dollarsToMinor(value: number | string): number {
@@ -79,6 +86,44 @@ function planKeys(
   return keys;
 }
 
+/** Split cash already paid into its real instalment dates, leaving debt on its due date. */
+function preservePaymentDates(
+  contributions: FinanceContributionInput[], invoices: SupplierCashInvoice[]
+): FinanceContributionInput[] {
+  const result = [...contributions];
+  for (const invoice of invoices) {
+    const entries = invoice.payment_history ?? [];
+    if (!entries.length) continue;
+    const totalPaid = dollarsToMinor(invoice.amount_paid);
+    if (entries.some((entry) => !Number.isSafeInteger(entry.amount_minor) || entry.amount_minor <= 0) ||
+        entries.reduce((sum, entry) => sum + entry.amount_minor, 0) !== totalPaid) {
+      throw new Error(`Invoice ${invoice.invoice_number} payment history needs review`);
+    }
+    const indices = result.map((item, index) => item.sourceTrace?.supplier_invoice_id === invoice.id ? index : -1)
+      .filter((index) => index >= 0);
+    const remainingPaidShares = indices.map((index) => result[index].actualPaidMinor ?? 0);
+    if (!indices.length) continue;
+    indices.forEach((index) => {
+      const item = result[index];
+      result[index] = { ...item, actualAccruedMinor: (item.actualAccruedMinor ?? 0) - (item.actualPaidMinor ?? 0),
+        actualPaidMinor: 0, actualPaidDate: null };
+    });
+    entries.forEach((entry, entryIndex) => {
+      const shares = apportionMinor(entry.amount_minor, remainingPaidShares);
+      indices.forEach((index, shareIndex) => {
+        const amount = shares[shareIndex];
+        remainingPaidShares[shareIndex] -= amount;
+        if (!amount) return;
+        const template = result[index];
+        result.push({ ...template, contributionKey: `${template.contributionKey}:payment:${entryIndex}`,
+          plannedMinor: 0, committedMinor: 0, actualAccruedMinor: amount, actualPaidMinor: amount,
+          actualPaidDate: entry.paid_on, sourceTrace: { ...template.sourceTrace, payment_entry_index: entryIndex } });
+      });
+    });
+  }
+  return result;
+}
+
 /**
  * Replaces the invoiced slice of an estimate with invoice actuals. Keeping the
  * actual allocation on its own key preserves each bill's due/payment date while
@@ -101,9 +146,16 @@ export function reconcileSupplierInvoiceActuals(input: {
   let unmatchedAllocations = 0;
   let accruedMinor = 0;
   let paidMinor = 0;
+  let unresolvedCurrencyInvoices = 0;
 
   for (const invoice of input.invoices) {
     if (invoice.status !== "approved") continue;
+    // Project invoices use the existing AUD contract convention. Company bills
+    // can arrive in another currency and must not be added to AUD as-is.
+    if (!invoice.project_id && invoice.currency_code !== "AUD") {
+      unresolvedCurrencyInvoices += 1;
+      continue;
+    }
     const saved = invoice.invoice_allocations ?? [];
     const allocations = saved.length > 0
       ? saved
@@ -115,11 +167,42 @@ export function reconcileSupplierInvoiceActuals(input: {
             amount_ex_gst: invoice.amount_ex_gst,
           }]
         : [];
-    if (allocations.length === 0) continue;
-
-    const weights = allocations.map((allocation) => dollarsToMinor(allocation.amount_ex_gst));
     const invoiceGrossMinor = dollarsToMinor(invoice.total);
     const invoicePaidMinor = Math.min(dollarsToMinor(invoice.amount_paid), invoiceGrossMinor);
+    if (allocations.length === 0) {
+      // Approved company bills (and unallocated approved project bills) are
+      // obligations in their own right; an estimate match is not payment proof.
+      includedInvoices += 1;
+      accruedMinor += invoiceGrossMinor;
+      paidMinor += invoicePaidMinor;
+      contributions.push({
+        contributionKey: `supplier:invoice:${invoice.id}`,
+        direction: "outflow",
+        description: `${invoice.supplier} — ${invoice.invoice_number}`,
+        plannedMinor: 0,
+        actualAccruedMinor: invoiceGrossMinor,
+        actualPaidMinor: invoicePaidMinor,
+        actualDueDate: invoice.due_date ?? invoice.invoice_date,
+        actualPaidDate: invoicePaidMinor > 0 ? invoice.paid_at : null,
+        baseEligible: true,
+        confidence: invoice.due_date ? "confirmed" : invoice.invoice_date ? "medium" : "unknown",
+        sourceTrace: {
+          source_type: "supplier_invoice_allocation",
+          supplier_invoice_id: invoice.id,
+          supplier_invoice_number: invoice.invoice_number,
+          supplier: invoice.supplier,
+          project_id: invoice.project_id,
+          category: invoice.company_expense_category ?? null,
+          recurring_commitment_id: invoice.recurring_commitment_id ?? null,
+          recurring_due_date: invoice.recurring_due_date ?? null,
+          payment_status: invoice.payment_status,
+          reconciliation: "standalone_actual",
+          cash_basis: "gross_inc_gst",
+        },
+      });
+      continue;
+    }
+    const weights = allocations.map((allocation) => dollarsToMinor(allocation.amount_ex_gst));
     const grossShares = apportionMinor(invoiceGrossMinor, weights);
     const paidShares = apportionMinor(invoicePaidMinor, grossShares);
     includedInvoices += 1;
@@ -127,12 +210,12 @@ export function reconcileSupplierInvoiceActuals(input: {
     paidMinor += invoicePaidMinor;
 
     allocations.forEach((allocation, index) => {
-      const matchedPlanKey = planKeys(
+      const matchedPlanKey = (invoice.project_id ? planKeys(
         invoice.project_id,
         allocation,
         input.itemCategories ?? {},
         input.componentParentItemIds ?? {}
-      ).find((key) => planIndex.has(key)) ?? null;
+      ) : []).find((key) => planIndex.has(key)) ?? null;
       const matched = matchedPlanKey !== null;
       const matchedPlanIndex = matchedPlanKey ? planIndex.get(matchedPlanKey) : undefined;
       const matchedPlan = matchedPlanIndex === undefined
@@ -191,7 +274,9 @@ export function reconcileSupplierInvoiceActuals(input: {
     const committed = item.committedMinor ?? 0;
     contributions[index] = {
       ...item,
-      plannedMinor: committed > 0 ? item.plannedMinor : Math.max(item.plannedMinor - actual, 0),
+      // An awarded commitment supersedes the estimate even after its last cent
+      // is invoiced. Otherwise zeroing the commitment resurrects the old plan.
+      plannedMinor: committed > 0 ? 0 : Math.max(item.plannedMinor - actual, 0),
       committedMinor: committed > 0 ? Math.max(committed - actual, 0) : item.committedMinor,
       sourceTrace: {
         ...(item.sourceTrace ?? {}),
@@ -201,11 +286,12 @@ export function reconcileSupplierInvoiceActuals(input: {
   }
 
   return {
-    contributions,
+    contributions: preservePaymentDates(contributions, input.invoices),
     includedInvoices,
     matchedAllocations,
     unmatchedAllocations,
     accruedMinor,
     paidMinor,
+    unresolvedCurrencyInvoices,
   };
 }

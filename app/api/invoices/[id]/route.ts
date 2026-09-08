@@ -4,6 +4,9 @@ import { getUserRole } from "@/lib/auth";
 import { validateInvoiceAllocations } from "@/lib/invoice-allocations";
 import { DUPLICATE_INVOICE_MESSAGE } from "@/lib/invoice-duplicates";
 import { saveInvoiceDeliveryItemLinks } from "@/lib/invoice-delivery-links";
+import { isRecurringOccurrenceDate } from "@/lib/finance/recurrence";
+import { adelaideToday } from "@/lib/finance/presentation";
+import type { FinanceRecurringCommitment } from "@/types/finance";
 import type { InvoiceMatchType } from "@/types";
 import type { InvoiceWithAllocations, InvoiceWithIntake } from "@/types/round-supplier-invoice-intake";
 
@@ -23,9 +26,10 @@ const EDITABLE_FIELDS = new Set([
   "payment_status",
   "amount_paid",
   "paid_at",
+  "recurring_due_date",
 ]);
 
-const CASH_FIELDS = new Set(["due_date", "payment_status", "amount_paid", "paid_at"]);
+const CASH_FIELDS = new Set(["due_date", "payment_status", "amount_paid", "paid_at", "recurring_due_date"]);
 const NUMERIC_FIELDS = new Set(["amount_ex_gst", "gst", "total", "amount_paid"]);
 const PAYMENT_STATUSES = new Set(["unpaid", "part_paid", "paid"]);
 
@@ -160,11 +164,30 @@ export async function PATCH(
     }
   }
 
-  for (const field of ["due_date", "paid_at"] as const) {
+  for (const field of ["due_date", "paid_at", "recurring_due_date"] as const) {
     if (!Object.prototype.hasOwnProperty.call(update, field)) continue;
     if (update[field] !== null && !validDate(update[field])) {
       return NextResponse.json({ error: `${field} must be an ISO calendar date or null` }, { status: 400 });
     }
+  }
+  if (typeof update.recurring_due_date === "string") {
+    if (!existing.recurring_commitment_id || existing.project_id || existing.currency_code !== "AUD") {
+      return NextResponse.json({ error: "First confirm this bill is in AUD and link it to a recurring outgoing" }, { status: 400 });
+    }
+    const { data: commitment, error: commitmentError } = await supabase
+      .from("finance_recurring_commitments")
+      .select("*")
+      .eq("id", existing.recurring_commitment_id)
+      .single();
+    if (commitmentError || !commitment) {
+      return NextResponse.json({ error: "Could not read the linked recurring outgoing" }, { status: 400 });
+    }
+    if (!isRecurringOccurrenceDate(commitment as FinanceRecurringCommitment, update.recurring_due_date)) {
+      return NextResponse.json({ error: "Choose a due date from this outgoing's recurring schedule" }, { status: 400 });
+    }
+  }
+  if (typeof update.paid_at === "string" && update.paid_at > adelaideToday()) {
+    return NextResponse.json({ error: "Use the actual payment date, not a future date" }, { status: 400 });
   }
   if (
     Object.prototype.hasOwnProperty.call(update, "payment_status") &&
@@ -305,6 +328,9 @@ export async function PATCH(
 
   if (error) {
     if (error.code === "23505") {
+      if ("recurring_due_date" in update) {
+        return NextResponse.json({ error: "Another approved bill already replaces this recurring payment date" }, { status: 409 });
+      }
       return NextResponse.json({ error: DUPLICATE_INVOICE_MESSAGE }, { status: 409 });
     }
     return NextResponse.json({ error: error.message }, { status: 500 });

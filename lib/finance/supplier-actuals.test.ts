@@ -2,6 +2,73 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { calculateShadowProjection, resolveEffectiveContributions } from "./projection.ts";
 import { reconcileSupplierInvoiceActuals } from "./supplier-actuals.ts";
+import type { SupplierCashInvoice } from "./supplier-actuals.ts";
+
+const companyBill: SupplierCashInvoice = {
+  id: "rent-bill", project_id: null, expense_scope: "company", currency_code: "AUD",
+  supplier: "Landlord", invoice_number: "RENT-SEP", invoice_date: "2026-09-01",
+  due_date: "2026-09-13", amount_ex_gst: 1000, gst: 100, total: 1100,
+  status: "approved", payment_status: "paid", amount_paid: 1100, paid_at: "2026-09-04",
+};
+
+test("approved company bill uses its recorded payment without needing a project allocation", () => {
+  const result = reconcileSupplierInvoiceActuals({ contributions: [], invoices: [companyBill] });
+  assert.equal(result.includedInvoices, 1);
+  assert.equal(result.paidMinor, 110000);
+  const projection = calculateShadowProjection({
+    asOfDate: "2026-09-08", openingCashMinor: 200000, contributions: result.contributions,
+  });
+  assert.equal(projection.periods[0].outflowMinor, 0);
+});
+
+test("company bills contribute only outstanding balance and require known AUD currency", () => {
+  const result = reconcileSupplierInvoiceActuals({ contributions: [], invoices: [
+    { ...companyBill, payment_status: "part_paid", amount_paid: 100 },
+    { ...companyBill, id: "foreign", currency_code: "USD" },
+    { ...companyBill, id: "unknown", currency_code: null },
+    { ...companyBill, id: "draft", status: "unmatched" },
+  ] });
+  assert.equal(result.unresolvedCurrencyInvoices, 2);
+  assert.equal(result.includedInvoices, 1);
+  const projection = calculateShadowProjection({
+    asOfDate: "2026-09-08", openingCashMinor: 200000, contributions: result.contributions,
+  });
+  assert.equal(projection.periods[0].outflowMinor, 100000);
+});
+
+test("successive supplier payments retain each instalment date across the bank cutoff", () => {
+  for (const allocations of [undefined, [
+    { id: "a1", match_type: "cost_line" as const, match_id: "c1", amount_ex_gst: 400 },
+    { id: "a2", match_type: "cost_line" as const, match_id: "c2", amount_ex_gst: 600 },
+  ]]) {
+    const result = reconcileSupplierInvoiceActuals({ contributions: [], invoices: [{
+      ...companyBill, project_id: allocations ? "p1" : null, invoice_allocations: allocations,
+      payment_status: "part_paid", amount_paid: 100, paid_at: "2026-09-08",
+      payment_history: [{ amount_minor: 4000, paid_on: "2026-09-04" }, { amount_minor: 6000, paid_on: "2026-09-08" }],
+    }] });
+    const projection = calculateShadowProjection({
+      asOfDate: "2026-09-08", openingCashAsOfDate: "2026-09-07", openingCashMinor: 200000, contributions: result.contributions,
+    });
+    assert.equal(projection.periods[0].contributions.filter((item) => item.state === "actual_paid").reduce((sum, item) => sum + item.amountMinor, 0), 6000);
+    assert.equal(projection.periods[0].outflowMinor, 106000); // $60 new cash + $1,000 outstanding
+    assert.equal(result.contributions.reduce((sum, item) => sum + (item.actualAccruedMinor ?? 0), 0), 110000);
+  }
+});
+
+test("invoicing the full awarded commitment cannot resurrect the replaced estimate", () => {
+  const result = reconcileSupplierInvoiceActuals({ contributions: [{
+    contributionKey: "project:p1|cost_line:c1|scope:base", description: "Awarded trade",
+    direction: "outflow", plannedMinor: 150000, committedMinor: 110000,
+    plannedDate: "2026-09-13", committedDate: "2026-09-13",
+  }], invoices: [{ ...companyBill, project_id: "p1", invoice_allocations: [
+    { id: "allocation", match_type: "cost_line", match_id: "c1", amount_ex_gst: 1000 },
+  ] }] });
+  const projection = calculateShadowProjection({
+    asOfDate: "2026-09-08", openingCashMinor: 200000, contributions: result.contributions,
+  });
+  assert.equal(result.contributions[0].plannedMinor, 0);
+  assert.equal(projection.periods[0].outflowMinor, 0);
+});
 
 test("supplier actual replaces the invoiced plan slice instead of doubling it", () => {
   const result = reconcileSupplierInvoiceActuals({
