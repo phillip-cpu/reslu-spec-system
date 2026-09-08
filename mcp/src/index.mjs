@@ -2296,7 +2296,7 @@ const TOOLS = [
   },
   {
     name: "create_stuart_xero_draft_customer_invoice",
-    description: "Create a source-backed AUD customer sales invoice in Xero as DRAFT ACCREC, never a supplier bill. Requires exact owner approval of the full payload and source SHA-256, an existing active customer, the connected legal issuer, approved revenue/tax codes and reconciled source lines/GST/header totals. Use authority idempotency_key xero-customer-invoice:<invoice_number> exactly. Never silently fix a one-cent discrepancy; ask which source should be corrected before requesting approval. Duplicates and uncertain retries fail closed. It cannot authorise, send, pay or change a contact.",
+    description: "Create a source-backed AUD customer sales invoice in Xero as DRAFT ACCREC, never a supplier bill. Requires exact owner approval of the full payload and source SHA-256, an existing active customer, the connected legal issuer, approved revenue/tax codes and reconciled source lines/GST/header totals. In _authority use expected_absent=true and idempotency_key xero-customer-invoice:<invoice_number> exactly. Never silently fix a one-cent discrepancy; ask which source should be corrected before requesting approval. Duplicates and uncertain retries fail closed. It cannot authorise, send, pay or change a contact.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2309,16 +2309,16 @@ const TOOLS = [
       },
       required: ["source_attachment_id", "source_sha256", "invoice_number", "issuer_name", "customer_name", "contact_id", "invoice_date", "due_date", "currency", "reference", "subtotal_ex_gst", "gst", "total_inc_gst", "lines"], additionalProperties: false,
     },
-    handler: async (body, context) => apiFetch("/api/stuart/xero-customer-invoices", { method: "POST", headers: { "x-reslu-action-run-id": context?.actionRunId ?? "" }, body: JSON.stringify(body) }),
+    handler: async (body) => apiFetch("/api/stuart/xero-customer-invoices", { method: "POST", body: JSON.stringify(body) }),
   },
   {
     name: "search_stuart_xero_contacts",
     description:
-      "Search existing Xero supplier contacts by name before creating a draft bill. Returns at most 25 contact IDs, names and statuses. Read-only: it cannot create or change a Xero contact, bill, payment or approval.",
+      "Search existing Xero contacts by name before creating a draft supplier bill or customer invoice. Returns at most 25 contact IDs, names and statuses. Read-only: it cannot create or change a Xero contact, invoice, bill, payment or approval.",
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string", minLength: 2, maxLength: 100, description: "Supplier name or distinctive name fragment" },
+        query: { type: "string", minLength: 2, maxLength: 100, description: "Customer or supplier name, or distinctive name fragment" },
       },
       required: ["query"],
       additionalProperties: false,
@@ -2530,7 +2530,10 @@ async function getAriaPolicyMap() {
 }
 
 async function listedToolsForAgent() {
-  if (AGENT_ROLE !== "aria") return TOOLS.filter(({ name }) => toolAllowedForAgent(name));
+  if (AGENT_ROLE !== "aria") return TOOLS.filter(({ name }) => toolAllowedForAgent(name)).map(tool =>
+    tool.name === "create_stuart_xero_draft_customer_invoice"
+      ? decorateAriaTool(tool, { risk_tier: "R2", action_class: "commit" })
+      : tool);
   try {
     const policies = await getAriaPolicyMap();
     return TOOLS
@@ -2565,7 +2568,7 @@ async function callAriaTool(tool, name, args) {
   }
 
   try {
-    const result = await tool.handler(toolArgs, { actionRunId: action.id });
+    const result = await tool.handler(toolArgs);
     const finished = await apiFetch("/api/aria-actions/finish", {
       method: "POST",
       body: JSON.stringify({ action_run_id: action.id, result }),

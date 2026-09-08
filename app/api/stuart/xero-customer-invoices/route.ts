@@ -8,8 +8,8 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   const client = await createClient(); const { data: { user } } = await client.auth.getUser();
-  if (!isStuartUser(user)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  try { return NextResponse.json(await customerInvoiceSource(request.nextUrl.searchParams.get("source_attachment_id") ?? "")); }
+  if (!user || !isStuartUser(user)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  try { return NextResponse.json(await customerInvoiceSource(request.nextUrl.searchParams.get("source_attachment_id") ?? "", user.id)); }
   catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Source unavailable" }, { status: 400 }); }
 }
 
@@ -17,6 +17,9 @@ export async function POST(request: NextRequest) {
   const client = await createClient(); const { data: { user } } = await client.auth.getUser();
   if (!user || !isStuartUser(user)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   try {
-    return NextResponse.json(await createStuartXeroDraftCustomerInvoice(await request.json(), request.headers.get("x-reslu-action-run-id") ?? "", user.id));
+    const body = await request.json();
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("A customer invoice and approval envelope are required");
+    const { _authority, ...invoice } = body;
+    return NextResponse.json(await createStuartXeroDraftCustomerInvoice(invoice, _authority, user.id));
   } catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Customer draft failed" }, { status: 400 }); }
 }

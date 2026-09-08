@@ -50,10 +50,10 @@ export function validateCustomerInvoice(value: unknown): CustomerInvoiceInput {
 
 export function customerInvoiceKey(invoiceNumber: string) { return `xero-customer-invoice:${invoiceNumber}`; }
 
-export function validateCustomerInvoiceAuthority(action: Record<string, unknown> | null, actorId: string, payloadHash: string, invoiceNumber: string, now = Date.now()) {
-  const started = Date.parse(String(action?.started_at ?? ""));
-  if (!action || action.tool_name !== CUSTOMER_INVOICE_TOOL || action.actor_profile_id !== actorId || action.risk_tier !== "R2" || action.authorization_kind !== "exact-approval" || !action.approval_receipt_id || action.payload_sha256 !== payloadHash || action.state !== "executing"
-    || action.idempotency_key !== customerInvoiceKey(invoiceNumber) || !Number.isFinite(started) || now - started > 15 * 60 * 1000 || started > now + 60000) throw new Error("The exact customer invoice needs a fresh owner approval and its invoice-scoped idempotency key");
+export function validateCustomerInvoiceApproval(receipt: Record<string, unknown> | null, payloadHash: string, invoiceNumber: string, authority: { approval_receipt_id?: string | null; idempotency_key: string; expected_version?: string | null; expected_absent?: boolean }, now = Date.now()) {
+  const expiry = Date.parse(String(receipt?.expires_at ?? ""));
+  if (!receipt || !authority.approval_receipt_id || receipt.id !== authority.approval_receipt_id || receipt.tool_name !== CUSTOMER_INVOICE_TOOL || receipt.tenant_id !== "reslu" || receipt.target_type !== "customer_invoice" || receipt.target_id !== invoiceNumber || !receipt.approved_by || receipt.revoked_at || !Number.isFinite(expiry) || expiry <= now || receipt.payload_sha256 !== payloadHash
+    || receipt.idempotency_key !== customerInvoiceKey(invoiceNumber) || authority.idempotency_key !== receipt.idempotency_key || receipt.expected_version != null || authority.expected_version != null || authority.expected_absent !== true) throw new Error("The exact customer invoice needs an unexpired owner approval, expected_absent=true and its invoice-scoped idempotency key");
 }
 
 export function customerInvoicePayload(input: CustomerInvoiceInput) {

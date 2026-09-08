@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CUSTOMER_INVOICE_TOOL, customerInvoiceKey, customerInvoicePayload, validateCustomerInvoice, validateCustomerInvoiceAuthority, verifyCustomerInvoiceReadback } from "./customer-invoice-contract.ts";
+import { CUSTOMER_INVOICE_TOOL, customerInvoiceKey, customerInvoicePayload, validateCustomerInvoice, validateCustomerInvoiceApproval, verifyCustomerInvoiceReadback } from "./customer-invoice-contract.ts";
 const sample = { source_attachment_id: "a68c1024-c04c-4cad-96fe-74e4921adda3", source_sha256: "a".repeat(64), contact_id: "a68c1024-c04c-4cad-96fe-74e4921adda4", invoice_number: "TEST-1252", issuer_name: "Test issuer", customer_name: "Test customer", invoice_date: "2026-09-05", due_date: "2026-09-10", currency: "AUD", reference: "Synthetic test only", subtotal_ex_gst: 100, gst: 10, total_inc_gst: 110, lines: [{ description: "Test line", amount_ex_gst: 100, gst: 10, account_code: "200", tax_type: "OUTPUT" }] };
 test("customer invoices can only produce DRAFT ACCREC with exact dates, tax and source lines", () => {
   const input = validateCustomerInvoice(sample); const payload = customerInvoicePayload(input);
@@ -20,9 +20,12 @@ test("provider readback must match the complete approved draft and cannot be an 
   for (const delta of [{ Type: "ACCPAY" }, { Status: "AUTHORISED" }, { Total: 110.01 }, { DueDate: "2026-09-11" }, { Contact: { ContactID: "other" } }, { LineItems: [] }]) assert.throws(() => verifyCustomerInvoiceReadback({ ...row, ...delta }, input));
 });
 
-test("only a fresh exact-owner action for the same actor, payload and invoice may execute once", () => {
+test("only an unrevoked exact-owner receipt for the same tenant, payload, invoice and key may create a draft", () => {
   const now = Date.parse("2026-09-08T08:00:00Z");
-  const action = { tool_name: CUSTOMER_INVOICE_TOOL, actor_profile_id: "stuart", payload_sha256: "approved-hash", approval_receipt_id: "receipt", authorization_kind: "exact-approval", risk_tier: "R2", state: "executing", idempotency_key: customerInvoiceKey("00001252"), started_at: "2026-09-08T07:59:00Z" };
-  assert.doesNotThrow(() => validateCustomerInvoiceAuthority(action, "stuart", "approved-hash", "00001252", now));
-  for (const delta of [{ tool_name: "create_stuart_xero_draft_bill" }, { actor_profile_id: "other" }, { payload_sha256: "changed" }, { authorization_kind: "request" }, { approval_receipt_id: null }, { state: "verifying" }, { state: "verified" }, { idempotency_key: "another-attempt" }, { started_at: "2026-09-08T07:00:00Z" }, { started_at: "invalid" }]) assert.throws(() => validateCustomerInvoiceAuthority({ ...action, ...delta }, "stuart", "approved-hash", "00001252", now));
+  const authority = { approval_receipt_id: "receipt", idempotency_key: customerInvoiceKey("00001252"), expected_absent: true };
+  const receipt = { id: "receipt", tool_name: CUSTOMER_INVOICE_TOOL, tenant_id: "reslu", target_type: "customer_invoice", target_id: "00001252", payload_sha256: "approved-hash", approved_by: "owner", revoked_at: null, idempotency_key: customerInvoiceKey("00001252"), expires_at: "2026-09-08T08:15:00Z" };
+  assert.doesNotThrow(() => validateCustomerInvoiceApproval(receipt, "approved-hash", "00001252", authority, now));
+  for (const delta of [{ tool_name: "create_stuart_xero_draft_bill" }, { tenant_id: "other" }, { payload_sha256: "changed" }, { target_type: "invoice" }, { target_id: "another" }, { approved_by: null }, { revoked_at: "2026-09-08" }, { idempotency_key: "another-attempt" }, { expires_at: "2026-09-08T07:00:00Z" }, { expires_at: "invalid" }]) assert.throws(() => validateCustomerInvoiceApproval({ ...receipt, ...delta }, "approved-hash", "00001252", authority, now));
+  assert.throws(() => validateCustomerInvoiceApproval(receipt, "approved-hash", "00001252", { ...authority, expected_absent: false }, now));
+  assert.throws(() => validateCustomerInvoiceApproval(receipt, "approved-hash", "00001252", { ...authority, approval_receipt_id: "another" }, now));
 });

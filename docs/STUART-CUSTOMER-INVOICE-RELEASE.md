@@ -7,7 +7,7 @@ Stuart's controlled tool list contained only supplier-bill creation (`ACCPAY`). 
 ## Narrow new capability
 
 - Read source identity, its SHA-256, connected issuer and bounded revenue/tax-code choices. Source metadata is explicitly not content verification.
-- Create only an AUD `DRAFT` `ACCREC`, with exact-owner approval bound to the complete payload and PDF fingerprint. The server independently checks the approved action, actor, hash, expiry/revocation and invoice-scoped idempotency key; a caller cannot bypass approval by directly invoking the endpoint.
+- Create only an AUD `DRAFT` `ACCREC`, with exact-owner approval bound to the complete payload and PDF fingerprint. The server independently checks the approval receipt, active Stuart actor, hash, expiry/revocation, expected absence and invoice-scoped idempotency key; a caller cannot bypass approval by directly invoking the endpoint. Stuart has a dedicated, single-capability receipt check and ledger claim: Aria's identity-gated approval RPCs remain unchanged.
 - Require a ready original PDF in a conversation containing Stuart, one active existing customer contact, the connected legal issuer, approved revenue/sales-tax codes and exact agreement between source-line, GST and header amounts.
 - Reserve the existing action ledger atomically before the provider write. Concurrent attempts or uncertain outcomes cannot blindly repeat creation. Send a stable Xero idempotency key and check invoice-number duplicates, including deleted/voided history.
 - Attach the original, read the invoice and attachments back from Xero, and verify dates, customer, amounts, tax codes, account codes, reference and DRAFT status before reporting success.
@@ -19,7 +19,7 @@ Sources: [Xero's official accounting schema](https://github.com/XeroAPI/Xero-Ope
 
 ## Verification / remaining gate
 
-- Eight focused tests cover exact financial arithmetic (including the reported one-cent discrepancy), immutable DRAFT direction, source requirements, authority/replay rejection, readback and API boundaries. Eleven conversation-guard tests retain blocked attachment/forwarded writes, authorisation and sending. TypeScript, targeted ESLint and MCP syntax checks pass.
+- Nine focused tests passed, covering exact financial arithmetic (including the reported one-cent discrepancy), immutable DRAFT direction, source requirements, authority/replay rejection, readback and API boundaries. Eleven conversation-guard tests and five connector authority tests passed, retaining blocked attachment/forwarded writes, authorisation and sending. TypeScript, targeted ESLint and MCP syntax checks passed. Boundary tests inspect wiring; a real approved end-to-end write has not been exercised.
 - The Mac mini address `arias-mac-mini.local` did not resolve using the existing trusted SSH configuration. Website release does not update its MCP process, guard plugin or injected Stuart instructions. Update that checkout and restart only the relevant services after checking active work; then confirm the new tool is listed.
 - The user has not yet answered whether to create a draft or only repair the capability. Even with draft approval, resolve the one-cent source discrepancy and approve the exact customer/contact/revenue/tax mapping before creating invoice 00001252. Do not silently insert a balancing line.
 - No real financial write was used as a test. An approved end-to-end Xero draft/readback remains unverified until the above gate is met.
