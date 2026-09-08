@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentTaskArtifact } from "../types/conversations.ts";
-import { approvalActionLabel, authorityRequest, authorityTimingIssue, inaccessibleAssets, reviewKind, reviewMediaIssue, reviewMediaPreviews, socialReviewPosts } from "./workroom-review.ts";
+import { approvalActionLabel, approvalBoundary, authorityRequest, authorityTimingIssue, inaccessibleAssets, reviewKind, reviewMediaIssue, reviewMediaPreviews, socialReviewPosts } from "./workroom-review.ts";
 
 function artifact(content: Record<string, unknown>, kind: AgentTaskArtifact["kind"] = "report"): AgentTaskArtifact {
   return { id: "a", task_id: "t", artifact_key: "review", kind, title: "Review", content, status: "draft", created_at: "", updated_at: "" };
@@ -28,6 +28,18 @@ test("separates content approval from exact execution authority", () => {
     tool_name: "send_aria_email", owner: "Aria", purpose: "Send email", risk_tier: "R2",
     approval_rule: "exact-owner", verification_kind: "provider_readback", rollback_kind: "manual-recovery",
   }), "Send email");
+});
+
+test("issued customer invoice review discloses the narrow reconciliation without bypassing registration", () => {
+  const value = artifact({ authority_request: { tool_name: "create_stuart_xero_draft_customer_invoice", tool_args: { issued_to_client: true } } });
+  assert.match(approvalBoundary(value, null), /not registered/);
+  const policy = { tool_name: "create_stuart_xero_draft_customer_invoice", owner: "Finance", purpose: "Customer draft", risk_tier: "R2", approval_rule: "exact-owner", verification_kind: "provider_readback", rollback_kind: "manual-recovery" } as const;
+  const boundary = approvalBoundary(value, policy);
+  assert.match(boundary, /already sent to the client is authoritative/);
+  assert.match(boundary, /one-cent.*recorded in the audit/);
+  assert.match(boundary, /PDF and tax amounts stay unchanged/);
+  assert.match(boundary, /nothing is authorised or sent/);
+  assert.match(approvalBoundary(artifact({ authority_request: { tool_name: policy.tool_name, tool_args: {} } }), policy), /cannot be automatically undone/);
 });
 
 test("blocks stale or over-broad execution windows before a decision", () => {

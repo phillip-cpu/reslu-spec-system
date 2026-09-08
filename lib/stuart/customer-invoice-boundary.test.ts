@@ -35,3 +35,14 @@ test("customer capability preserves exact-owner R2 and is not granted to other a
   assert.match(migration, /'commit','R2','exact-owner','provider_readback','provider-key','manual-recovery',true,array\['stuart'\]/);
   assert.doesNotMatch(migration, /grant |security definer|create table/i);
 });
+test("the source-bound approval and pre-write audit retain the issued-invoice reconciliation on success and uncertainty", () => {
+  assert.match(service, /const \{ input, reconciliation \} = prepareCustomerInvoice\(raw\)/);
+  assert.match(service, /const digest = payloadSha256\(raw\)/);
+  assert.match(service, /metadata: \{ transport: "stuart-customer-invoice", reconciliation, resulting_payload_sha256:/);
+  assert.match(service, /provider_readback_verified: true, reconciliation/);
+  assert.match(service, /finish\("partial", \{ xero_invoice_id: xeroInvoiceId, stage: "inspect_before_retry", reconciliation \}/);
+  assert.match(service, /xeroPutBytes\(connection, [^\n]*bytes, "application\/pdf"\)/);
+  const instructions = read("../../openclaw/stuart-workspace/AGENTS.md");
+  assert.match(instructions, /invoice already sent to the client is gospel/);
+  assert.match(read("../workroom-review.ts"), /request\.tool_args\.issued_to_client === true/);
+});
