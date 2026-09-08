@@ -9,6 +9,7 @@ import {
   normalizeGmailSendRequest,
   normalizeGmailSearchRequest,
   normalizeMailbox,
+  pdfTextConverterCandidates,
   resolveGoogleAuthInput,
   resolveGoogleIntegrationWorkspace,
   resolveGmailSender,
@@ -124,6 +125,18 @@ test("staged PDF paths must stay inside private attachment storage", () => {
   assert.throws(() => resolveStagedAttachmentPath(workspace, "/private/tmp/client.pdf"), /outside private staging/);
   assert.throws(() => resolveStagedAttachmentPath(workspace, `${workspace}/.reslu-conversation-attachments/job-1/client.txt`), /not a PDF/);
   assert.throws(() => resolveStagedAttachmentPath(workspace, "client.pdf"), /must be absolute/);
+});
+
+test("PDF extraction falls back to the bundled pypdf runtime when Poppler is absent", () => {
+  const candidates = pdfTextConverterCandidates({
+    HOME: "/Users/vale",
+    PATH: "/usr/bin:/bin",
+  });
+  assert.deepEqual(candidates.at(-1), {
+    kind: "pypdf",
+    executable: "/Users/vale/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+  });
+  assert.ok(candidates.some((candidate) => candidate.executable === "/usr/bin/pdftotext"));
 });
 
 test("registered adapters expose only the four fixed read-only tools", () => {

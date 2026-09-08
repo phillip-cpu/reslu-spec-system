@@ -12,6 +12,12 @@ const MAILBOXES = ["aria", "phillip", "tenille", "marco"];
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_CALENDAR_WINDOW_MS = 31 * DAY_MS;
 const execFileAsync = promisify(execFile);
+const PYPDF_EXTRACT_SCRIPT = [
+  "from pypdf import PdfReader",
+  "import sys",
+  "reader = PdfReader(sys.argv[1])",
+  "print('\\n\\n'.join((page.extract_text() or '') for page in reader.pages))",
+].join("; ");
 
 const CALENDAR_PARAMETERS = {
   type: "object",
@@ -465,16 +471,60 @@ async function readStagedPdf(workspaceDir, params) {
   if (!stat.isFile() || stat.size <= 0 || stat.size > 25 * 1024 * 1024) {
     throw new Error("staged PDF size is invalid");
   }
-  const { stdout } = await execFileAsync(
-    "/opt/homebrew/bin/pdftotext",
-    ["-layout", "-nopgbrk", pdfPath, "-"],
-    { encoding: "utf8", timeout: 15_000, maxBuffer: 1_000_000 },
-  );
+  const converter = await resolvePdfTextConverter();
+  const args = converter.kind === "pdftotext"
+    ? ["-layout", "-nopgbrk", pdfPath, "-"]
+    : ["-c", PYPDF_EXTRACT_SCRIPT, pdfPath];
+  const { stdout } = await execFileAsync(converter.executable, args, {
+    encoding: "utf8",
+    timeout: 15_000,
+    maxBuffer: 1_000_000,
+  });
   return {
     filename: path.basename(pdfPath),
     text: boundedText(stdout, 40_000),
     truncated: stdout.trim().length > 40_000,
   };
+}
+
+export function pdfTextConverterCandidates(env = process.env) {
+  const candidates = [];
+  if (env.RESLU_PDFTOTEXT_PATH && path.isAbsolute(env.RESLU_PDFTOTEXT_PATH)) {
+    candidates.push({ kind: "pdftotext", executable: env.RESLU_PDFTOTEXT_PATH });
+  }
+  candidates.push(
+    { kind: "pdftotext", executable: "/opt/homebrew/bin/pdftotext" },
+    { kind: "pdftotext", executable: "/usr/local/bin/pdftotext" },
+    { kind: "pdftotext", executable: "/usr/bin/pdftotext" },
+  );
+  for (const directory of (env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
+    candidates.push({ kind: "pdftotext", executable: path.join(directory, "pdftotext") });
+  }
+  if (env.RESLU_PDF_PYTHON_PATH && path.isAbsolute(env.RESLU_PDF_PYTHON_PATH)) {
+    candidates.push({ kind: "pypdf", executable: env.RESLU_PDF_PYTHON_PATH });
+  }
+  if (env.HOME && path.isAbsolute(env.HOME)) {
+    candidates.push({
+      kind: "pypdf",
+      executable: path.join(
+        env.HOME,
+        ".cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      ),
+    });
+  }
+  return candidates;
+}
+
+async function resolvePdfTextConverter() {
+  for (const candidate of pdfTextConverterCandidates()) {
+    try {
+      await fs.access(candidate.executable);
+      return candidate;
+    } catch {
+      // Try the next fixed, trusted converter path.
+    }
+  }
+  throw new Error("no supported PDF text converter is installed");
 }
 
 function toolResult(source, data) {
