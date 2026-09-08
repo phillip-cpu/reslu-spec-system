@@ -173,6 +173,7 @@ export function policyForArtifact(artifact: AgentTaskArtifact, policies: Workroo
 const ACTION_LABELS: Record<string, string> = {
   send_aria_email: "Send email",
   create_stuart_xero_draft_bill: "Create Xero draft bill",
+  create_stuart_xero_draft_customer_invoice: "Create Xero draft customer invoice",
   create_stuart_xero_supplier_contact: "Create supplier contact",
   approve_proposal: "Apply proposed change",
   reject_proposal: "Reject proposed change",

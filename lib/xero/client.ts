@@ -159,7 +159,7 @@ export async function xeroGet<T>(
 async function xeroWrite<T>(
   connection: StoredXeroConnection,
   path: string,
-  init: { method: "POST" | "PUT"; body: BodyInit; contentType: string }
+  init: { method: "POST" | "PUT"; body: BodyInit; contentType: string; idempotencyKey?: string }
 ): Promise<T> {
   const url = new URL(path, "https://api.xero.com/");
   const request = (token: string) => fetch(url, {
@@ -169,6 +169,7 @@ async function xeroWrite<T>(
       "xero-tenant-id": connection.tenant_id,
       Accept: "application/json",
       "Content-Type": init.contentType,
+      ...(init.idempotencyKey ? { "Idempotency-Key": init.idempotencyKey } : {}),
     },
     body: init.body,
     cache: "no-store",
@@ -186,12 +187,14 @@ async function xeroWrite<T>(
 export async function xeroPostJson<T>(
   connection: StoredXeroConnection,
   path: string,
-  body: unknown
+  body: unknown,
+  idempotencyKey?: string,
 ): Promise<T> {
   return xeroWrite<T>(connection, path, {
     method: "POST",
     body: JSON.stringify(body),
     contentType: "application/json",
+    idempotencyKey,
   });
 }
 
