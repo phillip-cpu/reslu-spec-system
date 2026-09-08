@@ -64,6 +64,7 @@ const TARGET_KEYS: Record<string, { type: string; keys: string[] }> = {
   attach_stuart_source_invoice: { type: "invoice", keys: ["invoice_id"] },
   create_stuart_xero_supplier_contact: { type: "invoice", keys: ["invoice_id"] },
   create_stuart_xero_draft_bill: { type: "invoice", keys: ["invoice_id"] },
+  create_stuart_xero_draft_customer_invoice: { type: "customer_invoice", keys: ["invoice_number"] },
   commit_company_overhead_finance_intake: { type: "email", keys: ["source_email_id"] },
   reconcile_stuart_supplier_statement: { type: "supplier_statement", keys: ["supplier", "statement_date"] },
   delegate_reslu_agent_task: { type: "conversation", keys: ["conversation_id"] },

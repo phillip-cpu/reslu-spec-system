@@ -69,6 +69,7 @@ const HUMAN_STUART_OPERATION_TOOLS = new Set([
   "reslu-stuart__attach_stuart_source_invoice",
   "reslu-stuart__create_stuart_xero_supplier_contact",
   "reslu-stuart__create_stuart_xero_draft_bill",
+  "reslu-stuart__create_stuart_xero_draft_customer_invoice",
 ]);
 const HUMAN_RESEARCH_TOOLS = new Set(["web_search", "web_fetch"]);
 const ARIA_SKILL_DIRS = new Set([

@@ -83,6 +83,11 @@ test("direct human turns can operate Reslu and delegate while host and messaging
   assert.equal(decision("reslu-stuart__attach_stuart_source_invoice", "human_request"), undefined);
   assert.equal(decision("reslu-stuart__create_stuart_xero_supplier_contact", "human_request"), undefined);
   assert.equal(decision("reslu-stuart__create_stuart_xero_draft_bill", "human_request"), undefined);
+  assert.equal(decision("reslu-stuart__create_stuart_xero_draft_customer_invoice", "human_request"), undefined);
+  assert.equal(decision("reslu-stuart__create_stuart_xero_draft_customer_invoice", "attachment_review")?.block, true);
+  assert.equal(decision("reslu-stuart__create_stuart_xero_draft_customer_invoice", "forwarded_context")?.block, true);
+  assert.equal(decision("reslu-stuart__authorise_xero_customer_invoice", "human_request")?.block, true);
+  assert.equal(decision("reslu-stuart__send_xero_customer_invoice", "human_request")?.block, true);
   assert.equal(decision("reslu-stuart__approve_xero_bill", "human_request")?.block, true);
   assert.equal(decision("reslu-marco__add_brain_note", "human_request")?.block, true);
   assert.equal(decision("message", "human_request")?.block, true);

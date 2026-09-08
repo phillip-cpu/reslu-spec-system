@@ -2289,6 +2289,29 @@ const TOOLS = [
     handler: async (body) => apiFetch("/api/stuart/xero-draft-bills", { method: "POST", body: JSON.stringify(body) }),
   },
   {
+    name: "get_stuart_customer_invoice_source",
+    description: "Read the SHA-256 and identity of one original PDF shared in a conversation containing Stuart. This is source identity only, not content verification. Inspect the original; do not infer contents from a filename. No accounting writes.",
+    inputSchema: { type: "object", properties: { source_attachment_id: { type: "string", format: "uuid" } }, required: ["source_attachment_id"], additionalProperties: false },
+    handler: async ({ source_attachment_id }) => apiFetch(`/api/stuart/xero-customer-invoices?source_attachment_id=${encodeURIComponent(source_attachment_id)}`),
+  },
+  {
+    name: "create_stuart_xero_draft_customer_invoice",
+    description: "Create a source-backed AUD customer sales invoice in Xero as DRAFT ACCREC, never a supplier bill. Requires exact owner approval of the full payload and source SHA-256, an existing active customer, the connected legal issuer, approved revenue/tax codes and reconciled source lines/GST/header totals. Use authority idempotency_key xero-customer-invoice:<invoice_number> exactly. Never silently fix a one-cent discrepancy; ask which source should be corrected before requesting approval. Duplicates and uncertain retries fail closed. It cannot authorise, send, pay or change a contact.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        source_attachment_id: { type: "string", format: "uuid" }, source_sha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        invoice_number: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
+        issuer_name: { type: "string" }, customer_name: { type: "string" }, contact_id: { type: "string", format: "uuid" },
+        invoice_date: { type: "string", format: "date" }, due_date: { type: "string", format: "date" }, currency: { type: "string", enum: ["AUD"] }, reference: { type: "string" },
+        subtotal_ex_gst: { type: "number" }, gst: { type: "number" }, total_inc_gst: { type: "number" },
+        lines: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", properties: { description: { type: "string" }, amount_ex_gst: { type: "number" }, gst: { type: "number" }, account_code: { type: "string" }, tax_type: { type: "string" } }, required: ["description", "amount_ex_gst", "gst", "account_code", "tax_type"], additionalProperties: false } },
+      },
+      required: ["source_attachment_id", "source_sha256", "invoice_number", "issuer_name", "customer_name", "contact_id", "invoice_date", "due_date", "currency", "reference", "subtotal_ex_gst", "gst", "total_inc_gst", "lines"], additionalProperties: false,
+    },
+    handler: async (body, context) => apiFetch("/api/stuart/xero-customer-invoices", { method: "POST", headers: { "x-reslu-action-run-id": context?.actionRunId ?? "" }, body: JSON.stringify(body) }),
+  },
+  {
     name: "search_stuart_xero_contacts",
     description:
       "Search existing Xero supplier contacts by name before creating a draft bill. Returns at most 25 contact IDs, names and statuses. Read-only: it cannot create or change a Xero contact, bill, payment or approval.",
@@ -2542,7 +2565,7 @@ async function callAriaTool(tool, name, args) {
   }
 
   try {
-    const result = await tool.handler(toolArgs);
+    const result = await tool.handler(toolArgs, { actionRunId: action.id });
     const finished = await apiFetch("/api/aria-actions/finish", {
       method: "POST",
       body: JSON.stringify({ action_run_id: action.id, result }),
@@ -2585,6 +2608,8 @@ const STUART_ALLOWED_TOOLS = new Set([
   "classify_stuart_unallocated_invoice",
   "create_stuart_xero_supplier_contact",
   "create_stuart_xero_draft_bill",
+  "get_stuart_customer_invoice_source",
+  "create_stuart_xero_draft_customer_invoice",
   "search_stuart_xero_contacts",
   "reconcile_stuart_supplier_statement",
 ]);
