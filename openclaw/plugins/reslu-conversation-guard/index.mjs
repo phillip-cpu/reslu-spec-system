@@ -34,6 +34,7 @@ export default definePluginEntry({
           "reslu_calendar_events_list",
           "reslu_gmail_messages_search",
           "reslu_gmail_message_read",
+          "reslu_gmail_attachment_read",
           "reslu_attachment_pdf_text_read",
         ],
       },
