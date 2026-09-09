@@ -6,6 +6,7 @@ import { ASSET_BUCKET, slugFilename } from "@/lib/storage";
 import { sniffFileKind } from "@/lib/file-sniff";
 import type { Lead } from "@/types";
 import { inferProjectTypeFromText, inferSingleRoomSubtypeFromText } from "@/lib/project-templates";
+import { websiteAttribution } from "@/lib/website-attribution";
 
 export const runtime = "nodejs";
 
@@ -133,6 +134,9 @@ export async function POST(request: NextRequest) {
 
   // Same two checks as the spec's reference route: a payload that
   // isn't a lead, or has no email, is malformed — reject.
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return NextResponse.json({ error: "invalid" }, { status: 400 });
+  }
   const email = clean(body.email, 160);
   if (body.type !== "lead" || !email || !email.includes("@")) {
     return NextResponse.json({ error: "invalid" }, { status: 400 });
@@ -184,6 +188,7 @@ export async function POST(request: NextRequest) {
       utm_medium: clean(body.utm_medium, 100),
       utm_campaign: clean(body.utm_campaign, 150),
       utm_content: clean(body.utm_content, 150),
+      ...websiteAttribution(body),
       created_by: null, // webhook — no app user behind it
     })
     .select()
