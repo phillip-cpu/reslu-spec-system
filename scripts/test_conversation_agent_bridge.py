@@ -163,11 +163,32 @@ class ConversationAgentBridgeTests(unittest.TestCase):
             conversation_agent_bridge.openclaw_progress_label({"type": "assistant_delta"}),
             "Drafting the response",
         )
-        self.assertIsNone(
+        self.assertEqual(
             conversation_agent_bridge.openclaw_progress_label({
                 "type": "tool", "phase": "end", "name": "gmail_search",
-            })
+            }),
+            "Reviewing the results",
         )
+
+    @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
+    def test_live_chat_prompt_skips_generic_startup_and_bounds_research(self, popen):
+        process = popen.return_value
+        process.communicate.return_value = ('{"final":"Useful answer"}', "")
+        process.returncode = 0
+
+        conversation_agent_bridge.invoke_agent(
+            {"slug": "aria", "display_name": "Aria", "role_label": "Studio assistant"},
+            "Phillip: Check the maintenance workflow",
+            "conversation-123",
+            newest_message="Check the maintenance workflow",
+        )
+
+        command = popen.call_args.args[0]
+        prompt = command[command.index("--message") + 1]
+        self.assertIn("not a new main-session startup", prompt)
+        self.assertIn("Do not run generic startup routines or inbox scans", prompt)
+        self.assertIn("no more than 8 tool calls", prompt)
+        self.assertIn("completion_state continuation_required", prompt)
 
     def test_gateway_progress_persists_run_id_and_deduplicates_labels(self):
         rest = mock.Mock()
@@ -260,6 +281,26 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         )
         self.assertEqual(invoke_gateway.call_args.kwargs["idempotency_key"], "job-123")
         self.assertEqual(invoke_gateway.call_args.kwargs["model"], "openai/gpt-5.6-terra")
+        self.assertEqual(
+            invoke_gateway.call_args.kwargs["timeout_seconds"],
+            conversation_agent_bridge.AGENT_PROCESS_TIMEOUT_SECONDS,
+        )
+
+    @mock.patch.object(conversation_agent_bridge, "invoke_agent_via_gateway")
+    def test_realtime_voice_keeps_its_shorter_gateway_timeout(self, invoke_gateway):
+        invoke_gateway.return_value = "Gateway answer"
+        with mock.patch.dict(os.environ, {"RESLU_OPENCLAW_GATEWAY_EVENTS_ENABLED": "true"}):
+            conversation_agent_bridge.invoke_agent(
+                {"slug": "aria", "display_name": "Aria", "role_label": "Studio assistant"},
+                "Phillip: Hello",
+                "conversation-123",
+                realtime_voice=True,
+            )
+
+        self.assertEqual(
+            invoke_gateway.call_args.kwargs["timeout_seconds"],
+            conversation_agent_bridge.REALTIME_VOICE_PROCESS_TIMEOUT_SECONDS,
+        )
 
     @mock.patch.object(conversation_agent_bridge, "invoke_agent_via_gateway")
     def test_shared_gateway_sends_native_images_to_every_agent(self, invoke_gateway):
@@ -1360,7 +1401,11 @@ class ConversationAgentBridgeTests(unittest.TestCase):
         self.assertEqual(reply, "Finished answer")
         process.terminate.assert_not_called()
 
-    @mock.patch.object(conversation_agent_bridge.time, "monotonic", side_effect=[0.0, 211.0])
+    @mock.patch.object(
+        conversation_agent_bridge.time,
+        "monotonic",
+        side_effect=[0.0, conversation_agent_bridge.AGENT_PROCESS_TIMEOUT_SECONDS + 1.0],
+    )
     @mock.patch.object(conversation_agent_bridge.subprocess, "Popen")
     def test_agent_process_keeps_hard_timeout(self, popen, _monotonic):
         process = popen.return_value

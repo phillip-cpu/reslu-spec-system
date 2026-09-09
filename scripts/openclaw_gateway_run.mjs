@@ -7,6 +7,8 @@ import { pathToFileURL } from "node:url";
 const PROTOCOL_VERSION = 4;
 const DEFAULT_GATEWAY_URL = "ws://127.0.0.1:18789";
 const CONNECT_TIMEOUT_MS = 10_000;
+const DEFAULT_RUN_START_TIMEOUT_SECONDS = 45;
+const DEFAULT_FINALIZATION_GRACE_SECONDS = 30;
 const HISTORY_RECONCILE_TIMEOUT_MS = 30_000;
 const HISTORY_RECONCILE_INTERVAL_MS = 1_000;
 const HISTORY_TIMESTAMP_TOLERANCE_MS = 2_000;
@@ -62,11 +64,34 @@ export function validateRunInput(value) {
   if (!Number.isFinite(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 3600) {
     throw new Error("Invalid run timeout");
   }
+  const startTimeoutSeconds = value.startTimeoutSeconds === undefined
+    ? DEFAULT_RUN_START_TIMEOUT_SECONDS
+    : Number(value.startTimeoutSeconds);
+  if (!Number.isFinite(startTimeoutSeconds) || startTimeoutSeconds < 1 || startTimeoutSeconds > 300) {
+    throw new Error("Invalid run start timeout");
+  }
+  const finalizationGraceSeconds = value.finalizationGraceSeconds === undefined
+    ? DEFAULT_FINALIZATION_GRACE_SECONDS
+    : Number(value.finalizationGraceSeconds);
+  if (!Number.isFinite(finalizationGraceSeconds) || finalizationGraceSeconds < 0 || finalizationGraceSeconds > 300) {
+    throw new Error("Invalid finalization grace");
+  }
   const thinking = typeof value.thinking === "string" && value.thinking ? value.thinking : undefined;
   const model = typeof value.model === "string" && value.model.trim() ? value.model.trim() : undefined;
   if (model && !MODEL_PATTERN.test(model)) throw new Error("Invalid model override");
   const attachments = validateImageAttachments(value.attachments);
-  return { message, agentId, sessionKey, idempotencyKey, timeoutSeconds, thinking, model, attachments };
+  return {
+    message,
+    agentId,
+    sessionKey,
+    idempotencyKey,
+    timeoutSeconds,
+    startTimeoutSeconds,
+    finalizationGraceSeconds,
+    thinking,
+    model,
+    attachments,
+  };
 }
 
 export function buildAgentParams(input) {
@@ -240,6 +265,9 @@ export async function runGatewayAgent(input, options = {}) {
   let acceptedAt = null;
   let historyReconcileDeadline = null;
   let historyReconcileTimer = null;
+  let runStartTimer = null;
+  let runTimer = null;
+  let executionStarted = false;
   let terminal = false;
   let abortRequested = false;
   let resolveDone;
@@ -256,6 +284,13 @@ export async function runGatewayAgent(input, options = {}) {
   const clearHistoryReconcileTimer = () => {
     if (historyReconcileTimer) clearTimeout(historyReconcileTimer);
     historyReconcileTimer = null;
+  };
+
+  const clearRunTimers = () => {
+    if (runStartTimer) clearTimeout(runStartTimer);
+    if (runTimer) clearTimeout(runTimer);
+    runStartTimer = null;
+    runTimer = null;
   };
 
   const scheduleHistoryReconcile = (delay = 0) => {
@@ -280,6 +315,7 @@ export async function runGatewayAgent(input, options = {}) {
   const closeWithError = (reason) => {
     if (terminal) return;
     terminal = true;
+    clearRunTimers();
     clearHistoryReconcileTimer();
     rejectDone(reason instanceof Error ? reason : new Error(String(reason)));
   };
@@ -290,11 +326,30 @@ export async function runGatewayAgent(input, options = {}) {
     request("chat.abort", { sessionKey: buildAgentParams(input).sessionKey, runId: acceptedRunId });
   };
 
+  const markExecutionStarted = () => {
+    if (executionStarted || terminal) return;
+    executionStarted = true;
+    if (runStartTimer) clearTimeout(runStartTimer);
+    runStartTimer = null;
+    const finalizationGraceMs = options.finalizationGraceMs
+      ?? input.finalizationGraceSeconds * 1000;
+    runTimer = setTimeout(() => {
+      abortRun();
+      closeWithError(new Error("OpenClaw Gateway run timed out"));
+    }, input.timeoutSeconds * 1000 + finalizationGraceMs);
+  };
+
+  const armRunStartTimer = () => {
+    if (executionStarted || terminal || runStartTimer) return;
+    const runStartTimeoutMs = options.runStartTimeoutMs
+      ?? input.startTimeoutSeconds * 1000;
+    runStartTimer = setTimeout(() => {
+      abortRun();
+      closeWithError(new Error("OpenClaw Gateway run start timed out"));
+    }, runStartTimeoutMs);
+  };
+
   const connectTimer = setTimeout(() => closeWithError(new Error("OpenClaw Gateway connect timed out")), CONNECT_TIMEOUT_MS);
-  const runTimer = setTimeout(() => {
-    abortRun();
-    closeWithError(new Error("OpenClaw Gateway run timed out"));
-  }, input.timeoutSeconds * 1000 + CONNECT_TIMEOUT_MS);
 
   const handleSignal = () => {
     abortRun();
@@ -371,19 +426,23 @@ export async function runGatewayAgent(input, options = {}) {
           session_key: typeof frame.payload?.sessionKey === "string" ? frame.payload.sessionKey : input.sessionKey,
           accepted_at: acceptedAt,
         });
+        armRunStartTimer();
       }
       return;
     }
     const event = safeAgentEvent(frame, acceptedRunId || input.idempotencyKey);
     if (!event) return;
+    markExecutionStarted();
     output(event);
     if (["final", "error", "aborted"].includes(event.type)) {
       terminal = true;
+      clearRunTimers();
       clearHistoryReconcileTimer();
       if (event.type === "final") resolveDone(event.reply);
       else rejectDone(new Error(event.message));
       setTimeout(() => websocket.close(), 0);
     } else if (event.type === "lifecycle" && event.phase === "end") {
+      clearRunTimers();
       scheduleHistoryReconcile();
     } else if (event.type === "lifecycle" && event.phase === "error") {
       closeWithError(new Error("OpenClaw run failed"));
@@ -398,7 +457,7 @@ export async function runGatewayAgent(input, options = {}) {
     return await done;
   } finally {
     clearTimeout(connectTimer);
-    clearTimeout(runTimer);
+    clearRunTimers();
     clearHistoryReconcileTimer();
     process.removeListener("SIGTERM", handleSignal);
     process.removeListener("SIGINT", handleSignal);

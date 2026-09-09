@@ -53,7 +53,13 @@ BRIDGE_WORKER_NAMES = (
 )
 AGENT_STATUS_CHECK_SECONDS = 0.5
 AGENT_TERMINATE_GRACE_SECONDS = 2.0
-AGENT_PROCESS_TIMEOUT_SECONDS = 210.0
+AGENT_PROCESS_TIMEOUT_SECONDS = 300.0
+REALTIME_VOICE_PROCESS_TIMEOUT_SECONDS = 210.0
+GATEWAY_RUN_START_TIMEOUT_SECONDS = 45.0
+GATEWAY_FINALIZATION_GRACE_SECONDS = 30.0
+GATEWAY_HELPER_GUARD_SECONDS = 5.0
+LIVE_CHAT_RESEARCH_BUDGET_SECONDS = 210
+LIVE_CHAT_TOOL_CALL_BUDGET = 8
 TASK_PROCESS_TIMEOUT_SECONDS = 900.0
 HISTORY_LIMIT = 80
 REALTIME_VOICE_HISTORY_LIMIT = 16
@@ -1288,7 +1294,11 @@ def openclaw_progress_label(event: dict) -> str | None:
             "start": "Thinking",
             "finishing": "Finishing the response",
         }.get(event.get("phase"))
-    if event_type != "tool" or event.get("phase") not in (None, "start", "started"):
+    if event_type != "tool":
+        return None
+    if event.get("phase") in ("end", "ended", "complete", "completed", "result"):
+        return "Reviewing the results"
+    if event.get("phase") not in (None, "start", "started"):
         return None
     name = str(event.get("name") or "").lower()
     if any(token in name for token in ("calendar", "schedule", "event")):
@@ -1366,6 +1376,8 @@ def invoke_agent_via_gateway(
         "sessionKey": session_key,
         "idempotencyKey": idempotency_key,
         "timeoutSeconds": int(timeout_seconds),
+        "startTimeoutSeconds": int(GATEWAY_RUN_START_TIMEOUT_SECONDS),
+        "finalizationGraceSeconds": int(GATEWAY_FINALIZATION_GRACE_SECONDS),
         "thinking": thinking_level,
         "model": model,
         "attachments": native_image_attachments or None,
@@ -1379,13 +1391,19 @@ def invoke_agent_via_gateway(
     reply: str | None = None
     errors: list[str] = []
     started_at = time.monotonic()
+    helper_timeout_seconds = (
+        timeout_seconds
+        + GATEWAY_RUN_START_TIMEOUT_SECONDS
+        + GATEWAY_FINALIZATION_GRACE_SECONDS
+        + GATEWAY_HELPER_GUARD_SECONDS
+    )
     try:
         while selector.get_map():
             if should_continue is not None and not should_continue():
                 stop_agent_process(process)
                 return None
-            if time.monotonic() - started_at >= timeout_seconds + 15:
-                raise subprocess.TimeoutExpired(command, timeout_seconds)
+            if time.monotonic() - started_at >= helper_timeout_seconds:
+                raise subprocess.TimeoutExpired(command, helper_timeout_seconds)
             for key, _ in selector.select(timeout=AGENT_STATUS_CHECK_SECONDS):
                 line = key.fileobj.readline()
                 if line == "":
@@ -1517,6 +1535,7 @@ def invoke_agent(
             "do not silently substitute another task or broaden its scope. "
         )
     completion_instruction = ""
+    live_turn_instruction = ""
     if not realtime_voice and not consultation_owner:
         completion_instruction = (
             "Operate under a completion contract. "
@@ -1525,6 +1544,12 @@ def invoke_agent(
             "completion_state must be completed only when the requested outcome is verified; use continuation_required whenever safe work, recovery, monitoring or follow-up remains; use awaiting_approval only for a genuine human decision. "
             "For continuation_required or awaiting_approval, continuation must contain a concise title, the complete executable objective, and model_tier strong. The transport will create the durable assignment automatically. "
         )
+        live_turn_instruction = (
+            "This isolated transport thread continues an existing canonical conversation; it is not a new main-session startup. "
+            "Do not run generic startup routines or inbox scans unless CURRENT_REQUEST_JSON requires them. "
+            f"For a live reply, aim to use no more than {LIVE_CHAT_TOOL_CALL_BUDGET} tool calls and stop starting new research after about {LIVE_CHAT_RESEARCH_BUDGET_SECONDS} seconds. "
+            "Reserve time to synthesize a useful answer. If more safe work remains, return the verified findings already available with completion_state continuation_required instead of researching until the hard deadline. "
+        )
     prompt = (
         "[RESLU conversation]\n"
         f"You are {agent['display_name']}, {agent['role_label']}, replying inside the canonical RESLU staff chat. "
@@ -1532,6 +1557,7 @@ def invoke_agent(
         f"{voice_instruction}"
         f"{task_chat_instruction}"
         f"{completion_instruction}"
+        f"{live_turn_instruction}"
         "Use your existing memory, RESLU tools, permissions and business rules. Read the current request and recent context before replying. "
         "If another RESLU specialist is materially better suited to substantial independent work, use delegate_reslu_agent_task with the conversation_id from TRUSTED_CONVERSATION_TRANSPORT_JSON. If Phillip explicitly asks you to involve, call on, hand work to, or get substantial input from another named RESLU agent, delegate it now; never claim that inter-agent delegation is unavailable. "
         "Aria owns studio coordination and client/admin work; Marco owns commercial and marketing strategy; Stuart owns finance. Do not delegate trivial work, do not delegate to yourself, and do not claim the specialist has finished before their result appears in this chat. "
@@ -1571,6 +1597,11 @@ def invoke_agent(
         "END_UNTRUSTED_CONVERSATION_HISTORY_JSON"
     )
     resolved_session_key = session_key or openclaw_session_key(conversation_id)
+    process_timeout_seconds = (
+        REALTIME_VOICE_PROCESS_TIMEOUT_SECONDS
+        if realtime_voice
+        else AGENT_PROCESS_TIMEOUT_SECONDS
+    )
     if openclaw_gateway_events_enabled():
         try:
             return invoke_agent_via_gateway(
@@ -1578,7 +1609,7 @@ def invoke_agent(
                 agent_id=openclaw_agent_id(agent["slug"]),
                 session_key=resolved_session_key,
                 idempotency_key=idempotency_key or f"reslu-conversation-{time.time_ns()}",
-                timeout_seconds=AGENT_PROCESS_TIMEOUT_SECONDS,
+                timeout_seconds=process_timeout_seconds,
                 should_continue=should_continue,
                 thinking_level=thinking_level,
                 model=model,
@@ -1601,7 +1632,7 @@ def invoke_agent(
         command.extend(["--thinking", thinking_level])
     if model:
         command.extend(["--model", model])
-    command.extend(["--message", prompt, "--timeout", "180", "--json"])
+    command.extend(["--message", prompt, "--timeout", str(int(process_timeout_seconds)), "--json"])
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -1618,8 +1649,8 @@ def invoke_agent(
                 if should_continue is not None and not should_continue():
                     stop_agent_process(process)
                     return None
-                if time.monotonic() - started_at >= AGENT_PROCESS_TIMEOUT_SECONDS:
-                    raise subprocess.TimeoutExpired(command, AGENT_PROCESS_TIMEOUT_SECONDS)
+                if time.monotonic() - started_at >= process_timeout_seconds:
+                    raise subprocess.TimeoutExpired(command, process_timeout_seconds)
     except BaseException:
         stop_agent_process(process)
         raise

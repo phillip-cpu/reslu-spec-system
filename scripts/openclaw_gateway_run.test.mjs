@@ -32,8 +32,12 @@ test("agent runs require a bounded stable session and idempotency key", () => {
   assert.equal(input.sessionKey, "reslu-conversation-v2-123");
   assert.equal(input.idempotencyKey, "job-123");
   assert.equal(input.model, "openai/gpt-5.6-terra");
+  assert.equal(input.startTimeoutSeconds, 45);
+  assert.equal(input.finalizationGraceSeconds, 30);
   assert.throws(() => validateRunInput({ ...input, sessionKey: "../private" }), /session key/);
   assert.throws(() => validateRunInput({ ...input, timeoutSeconds: 0 }), /timeout/);
+  assert.throws(() => validateRunInput({ ...input, startTimeoutSeconds: 0 }), /start timeout/);
+  assert.throws(() => validateRunInput({ ...input, finalizationGraceSeconds: -1 }), /finalization grace/);
   assert.throws(() => validateRunInput({ ...input, model: "openai/gpt-5.6-terra --unsafe" }), /model override/);
 });
 
@@ -253,4 +257,53 @@ test("a lifecycle end recovers from durable history without rerunning the agent"
   assert.equal(await run, "Recovered once");
   assert.equal(sentMethods.filter((method) => method === "agent").length, 1);
   assert.equal(sentMethods.filter((method) => method === "chat.history").length, 1);
+});
+
+test("the execution timeout starts with run activity, not helper startup", async () => {
+  const socket = {
+    readyState: WebSocket.OPEN,
+    onmessage: null,
+    onerror: null,
+    onclose: null,
+    send(raw) {
+      const request = JSON.parse(raw);
+      if (request.method === "connect") {
+        setImmediate(() => this.onmessage({ data: JSON.stringify({
+          type: "res", id: request.id, ok: true,
+        }) }));
+      } else if (request.method === "agent") {
+        setImmediate(() => this.onmessage({ data: JSON.stringify({
+          type: "res",
+          id: request.id,
+          ok: true,
+          payload: { runId: "run-delayed", sessionKey: request.params.sessionKey, acceptedAt: 10_000 },
+        }) }));
+        setTimeout(() => this.onmessage({ data: JSON.stringify({
+          type: "event",
+          event: "agent",
+          payload: { runId: "run-delayed", stream: "lifecycle", data: { phase: "start" } },
+        }) }), 80);
+        setTimeout(() => this.onmessage({ data: JSON.stringify({
+          type: "event",
+          event: "chat",
+          payload: { runId: "run-delayed", state: "final", message: "Finished in budget" },
+        }) }), 150);
+      }
+    },
+    close() { this.readyState = WebSocket.CLOSED; },
+  };
+
+  const run = runGatewayAgent({
+    message: "Use the execution budget",
+    agentId: "main",
+    sessionKey: "reslu-timeout-test",
+    idempotencyKey: "timeout-test-1",
+    timeoutSeconds: 0.1,
+    startTimeoutSeconds: 1,
+    finalizationGraceSeconds: 0,
+    attachments: [],
+  }, { websocket: socket, token: "test-token", emit() {} });
+  socket.onmessage({ data: JSON.stringify({ type: "event", event: "connect.challenge", payload: {} }) });
+
+  assert.equal(await run, "Finished in budget");
 });
