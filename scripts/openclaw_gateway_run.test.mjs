@@ -176,6 +176,24 @@ test("durable history recovers only the reply to the exact accepted prompt", () 
   assert.equal(extractDurableRunReply(history, "A different prompt", acceptedAt), null);
 });
 
+test("durable history recovery spans tool-heavy turns", () => {
+  const messages = [
+    { role: "user", timestamp: 9_500, content: "Research this exact turn" },
+  ];
+  for (let index = 0; index < 20; index += 1) {
+    messages.push(
+      { role: "assistant", timestamp: 10_000 + index * 2, content: [{ type: "toolCall" }] },
+      { role: "toolResult", timestamp: 10_001 + index * 2, content: [{ type: "toolResult" }] },
+    );
+  }
+  messages.push({ role: "assistant", timestamp: 11_000, content: "Recovered after many tools" });
+
+  assert.equal(
+    extractDurableRunReply({ messages }, "Research this exact turn", 10_000),
+    "Recovered after many tools",
+  );
+});
+
 test("durable history recovery retains only safe runtime usage", () => {
   const result = extractDurableRunResult({ messages: [
     { role: "user", timestamp: 9_500, content: "Current" },
@@ -206,6 +224,7 @@ test("durable history rejects stale and non-visible assistant output", () => {
 
 test("a lifecycle end recovers from durable history without rerunning the agent", async () => {
   const sentMethods = [];
+  const historyRequests = [];
   const socket = {
     readyState: WebSocket.OPEN,
     onmessage: null,
@@ -231,6 +250,7 @@ test("a lifecycle end recovers from durable history without rerunning the agent"
           }) });
         });
       } else if (request.method === "chat.history") {
+        historyRequests.push(request);
         setImmediate(() => this.onmessage({ data: JSON.stringify({
           type: "res",
           id: request.id,
@@ -257,6 +277,7 @@ test("a lifecycle end recovers from durable history without rerunning the agent"
   assert.equal(await run, "Recovered once");
   assert.equal(sentMethods.filter((method) => method === "agent").length, 1);
   assert.equal(sentMethods.filter((method) => method === "chat.history").length, 1);
+  assert.equal(historyRequests[0].params.limit, 100);
 });
 
 test("the execution timeout starts with run activity, not helper startup", async () => {
