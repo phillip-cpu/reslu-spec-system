@@ -1295,6 +1295,12 @@ export interface Lead {
   utm_medium: string | null;
   utm_campaign: string | null;
   utm_content: string | null;
+  gbraid?: string | null;
+  wbraid?: string | null;
+  utm_term?: string | null;
+  attribution_landing_page?: string | null;
+  attribution_captured_at?: string | null;
+  rooms?: string[];
   project_id: string | null;
   created_by: string | null;
   created_at: string;
