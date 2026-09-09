@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { measurementSummary, reviewedStatus, adelaideDate, sourceEvidence, type MeasurementLead, type ReviewStatus } from './lead-measurement.ts';
+import { measurementSummary, outcomeSummary, reviewedStatus, adelaideDate, sourceEvidence, type MeasurementLead, type ReviewStatus } from './lead-measurement.ts';
 
 function lead(id: string, status?: ReviewStatus, duplicate_of: string | null = null): MeasurementLead {
   return { id, first_name: null, surname_project: 'Example', email: null, received_at: null, created_at: '2026-08-13T11:00:00Z', deleted_at: null, stage: 'Potential Lead', page: '/begin', gclid: null, utm_source: null, utm_medium: null, lead_measurement_reviews: status ? [{ id: 1, status, duplicate_of, reason: 'Reviewed evidence', reviewed_at: '2026-09-07T00:00:00Z' }] : [] };
@@ -34,4 +34,16 @@ test('Adelaide dates account for standard and daylight saving time', () => {
   assert.equal(adelaideDate('2026-09-07T14:29:59Z'), '2026-09-07');
   assert.equal(adelaideDate('2026-09-07T14:30:00Z'), '2026-09-08');
   assert.equal(adelaideDate('2026-12-07T13:30:00Z'), '2026-12-08');
+});
+
+test('outcomes exclude unreviewed and test records and count each project once', () => {
+  const rows = ['genuine', 'qualified', 'test', 'unreviewed'].map((status, i) => ({
+    ...lead(String(i), status as ReviewStatus), project_id: i < 2 ? 'one' : String(i),
+    site_visit_date: '2026-09-09T01:00:00Z', contract_recorded_signed: true,
+  }));
+  assert.deepEqual(outcomeSummary(rows), {reviewed:2,visits:2,projects:1,recordedSigned:1});
+});
+test('a completed stage does not invent a signed contract or project link', () => {
+  const row = {...lead('a','genuine'), stage:'Complete'};
+  assert.deepEqual(outcomeSummary([row]), {reviewed:1,visits:0,projects:0,recordedSigned:0});
 });

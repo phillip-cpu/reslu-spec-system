@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { adelaideDate, latestReview, measurementSummary, reviewedStatus, sourceEvidence, REVIEW_STATUSES, type MeasurementLead, type ReviewStatus } from '@/lib/lead-measurement';
+import { adelaideDate, latestReview, measurementSummary, outcomeSummary, reviewedStatus, sourceEvidence, REVIEW_STATUSES, type MeasurementLead, type ReviewStatus } from '@/lib/lead-measurement';
 
 const labels: Record<ReviewStatus, string> = { unreviewed: 'Unreviewed', genuine: 'Genuine enquiry', qualified: 'Qualified opportunity', test: 'Test', spam: 'Spam', duplicate: 'Repeat enquiry' };
 
@@ -46,6 +46,7 @@ export function LeadMeasurement({ leads }: { leads: MeasurementLead[] }) {
   const valid = !!start && !!end && start <= end;
   const rows = valid ? leads.filter(row => { const date = adelaideDate(row.received_at || row.created_at); return date >= start && date <= end; }) : [];
   const totals = measurementSummary(rows, leads);
+  const outcomes = outcomeSummary(rows, leads);
   const cards = [['Raw submissions', totals.raw], ['Genuine unique enquiries', totals.genuine], ['Qualified opportunities', totals.qualified], ['Unreviewed', totals.unreviewed], ['Tests', totals.test], ['Spam', totals.spam], ['Repeat submissions', totals.duplicate]] as const;
   return <div className="space-y-6">
     <p>Website submissions received in the selected period. Dates use Adelaide time. Archived submissions remain visible for reconciliation.</p>
@@ -54,6 +55,12 @@ export function LeadMeasurement({ leads }: { leads: MeasurementLead[] }) {
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{cards.map(([label, count]) => <div key={label} className="border border-[#dcd6cc] bg-offwhite p-4"><p className="text-sm">{label}</p><p className="mt-2 text-3xl">{count}</p></div>)}</div>
       <p className="text-sm text-charcoal/80">Genuine enquiries include qualified opportunities. Qualification requires a review confirming that the project suits RESLU and is ready for an agreed next step. A form submission or booked visit alone does not qualify it. Sales stages are shown separately.</p>
       <p className="text-sm text-charcoal/80">Source labels show the evidence saved with the form. Missing tracking is shown as “Source not recorded”, rather than assumed to be direct or organic. This report does not change Google Analytics or Ads conversion settings.</p>
+      <section className="space-y-3" aria-label="Recorded project outcomes">
+        <h2 className="text-xl">Recorded project outcomes</h2>
+        <p className="text-sm">For reviewed genuine or qualified enquiries received in this date range, showing their current outcomes. Tests, spam, repeats and unreviewed submissions are excluded. Visits are booked dates, not proof of attendance. Projects are counted once.</p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">{[['Visit dates recorded', outcomes.visits], ['Linked projects', outcomes.projects], ['Projects with signed contract recorded', outcomes.recordedSigned]].map(([label, count]) => <div key={label} className="border border-[#dcd6cc] p-4"><p>{label}</p><p className="mt-2 text-3xl">{count}</p></div>)}</div>
+        <p className="text-sm">Signed-contract counts require a signed date and agreement reference in the project commercial record. They are not independent signature verification or collected revenue. Missing records are not proof that work was lost.</p>
+      </section>
       {rows.length === 0 && <p>No website submissions in this period.</p>}
       <div className="grid gap-4 lg:grid-cols-2">{rows.map(lead => {
         const review = latestReview(lead);
@@ -64,6 +71,9 @@ export function LeadMeasurement({ leads }: { leads: MeasurementLead[] }) {
           <p className="mt-2 font-semibold">{labels[status]}</p>
           <p>{adelaideDate(lead.received_at || lead.created_at)} · {lead.stage}{lead.deleted_at ? ' · Archived' : ''}</p>
           <p className="mt-2 break-words">{sourceEvidence(lead)} · {lead.page || 'Page not recorded'}</p>
+          <p className="mt-2 break-words text-sm">Campaign: {lead.utm_campaign || 'Not recorded'} · Acquisition page: {lead.attribution_landing_page || 'Not recorded'}</p>
+          {lead.site_visit_date && <p className="mt-2 text-sm">Visit date recorded: {adelaideDate(lead.site_visit_date)}</p>}
+          {lead.project_id && <p className="mt-2 text-sm">Project linked · {lead.contract_recorded_signed ? 'Signed contract recorded' : 'Signed contract not recorded'}</p>}
           {review && <p className="mt-2 text-sm">{review.reason}</p>}
           {similar && status === 'unreviewed' && <p className="mt-2 text-sm">Another submission uses this email. Check whether it is the same project before counting it separately.</p>}
           <ReviewEditor key={`${lead.id}-${review?.id ?? 0}`} lead={lead} leads={leads} />
