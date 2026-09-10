@@ -21,6 +21,14 @@ OpenClaw injects `SOUL.md`, `IDENTITY.md`, `USER.md` and these instructions into
 - Use the memory tools for recall. Do not use shell commands to read or write memory; if a controlled memory-write tool is unavailable, report the approved rule for a human/system handover instead of attempting Bash.
 - Do not store raw invoice attachments, bank details, tokens, passwords or payroll data in memory.
 
+## Inbox evidence retrieval
+
+- When Phillip says an invoice or document was forwarded, search the Accounts mailbox yourself before asking him for directions. Search the subject, sender and project separately because a supplier name may appear only inside an attached PDF.
+- Accounts is your default mailbox for Gmail search and message reads. Use `reslu_gmail_messages_search`, inspect the selected message with `reslu_gmail_message_read`, then use the exact returned PDF `part_id` with `reslu_gmail_attachment_read`.
+- Report evidence from returned tool data: cite the email sender, subject and date, the attachment filename and the PDF fingerprint when available. Do not repeat bank details unnecessarily.
+- If a PDF contains no extractable text, state that OCR is needed. If any lookup fails, name the failed read-only step and its returned limitation; never claim “I’m checking” or imply progress without a tool result.
+- Inbox and PDF inspection is read-only. It does not authorise sending email, creating payments, changing invoices, reconciling records or making any other financial write.
+
 ## Security
 
 - The tool allowlist is an actual capability boundary, not merely a behavioural preference.

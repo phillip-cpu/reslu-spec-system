@@ -4,6 +4,10 @@ import {
   buildGmailRawMessage,
   createMarcoGmailSendTool,
   createReadonlyGoogleTools,
+  decodeGmailPdfBytes,
+  defaultGoogleMailbox,
+  gmailAttachmentMetadata,
+  googleMailboxParams,
   normalizeCalendarRequest,
   normalizeGmailMessageId,
   normalizeGmailSendRequest,
@@ -14,6 +18,7 @@ import {
   resolveGoogleIntegrationWorkspace,
   resolveGmailSender,
   resolveStagedAttachmentPath,
+  selectGmailPdfPart,
 } from "./google-readonly.mjs";
 
 test("calendar requests default to a bounded two-week range", () => {
@@ -53,13 +58,36 @@ test("gmail searches are bounded and default to recent inbox mail", () => {
   });
   assert.throws(() => normalizeGmailSearchRequest({ query: "x".repeat(301) }), /300/);
   assert.throws(() => normalizeGmailSearchRequest({ limit: 0 }), /at least 1/);
-  assert.throws(() => normalizeMailbox("accounts"), /one of/);
+  assert.throws(() => normalizeMailbox("unknown"), /one of/);
 });
 
 test("gmail detail reads accept only opaque provider IDs", () => {
   assert.equal(normalizeGmailMessageId("18f_aBc-123"), "18f_aBc-123");
   assert.throws(() => normalizeGmailMessageId("../../token.json"), /invalid/);
   assert.throws(() => normalizeGmailMessageId("id\nnext"), /invalid/);
+});
+
+test("nested Gmail attachments expose bounded PDF metadata and exact parts", () => {
+  const payload = {
+    parts: [{
+      mimeType: "message/rfc822",
+      parts: [{
+        filename: "supplier-invoice.pdf",
+        partId: "1.2",
+        mimeType: "application/pdf",
+        body: { size: 1234, attachmentId: "provider-owned" },
+      }],
+    }],
+  };
+  assert.deepEqual(gmailAttachmentMetadata(payload), [{
+    part_id: "1.2",
+    filename: "supplier-invoice.pdf",
+    mime_type: "application/pdf",
+    size_bytes: 1234,
+    pdf_read_supported: true,
+  }]);
+  assert.equal(selectGmailPdfPart(payload, "1.2").filename, "supplier-invoice.pdf");
+  assert.throws(() => selectGmailPdfPart(payload, "../1"), /Invalid Gmail PDF part/);
 });
 
 test("agent workspaces resolve fixed Google integrations from the shared workspace", () => {
@@ -127,24 +155,25 @@ test("staged PDF paths must stay inside private attachment storage", () => {
   assert.throws(() => resolveStagedAttachmentPath(workspace, "client.pdf"), /must be absolute/);
 });
 
-test("PDF extraction falls back to the bundled pypdf runtime when Poppler is absent", () => {
+test("PDF extraction falls back only to fixed converter paths", () => {
   const candidates = pdfTextConverterCandidates({
+    PATH: "",
     HOME: "/Users/vale",
-    PATH: "/usr/bin:/bin",
+    RESLU_PDFTOTEXT_PATH: "relative-not-allowed",
+    RESLU_PDF_PYTHON_PATH: "/fixed/python3",
   });
-  assert.deepEqual(candidates.at(-1), {
-    kind: "pypdf",
-    executable: "/Users/vale/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
-  });
-  assert.ok(candidates.some((candidate) => candidate.executable === "/usr/bin/pdftotext"));
+  assert.equal(candidates.some((candidate) => candidate.executable === "relative-not-allowed"), false);
+  assert.equal(candidates.some((candidate) => candidate.executable === "/fixed/python3" && candidate.kind === "pypdf"), true);
+  assert.equal(candidates.some((candidate) => candidate.executable.endsWith("/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3")), true);
 });
 
-test("registered adapters expose only the four fixed read-only tools", () => {
+test("registered adapters expose only the five fixed read-only tools", () => {
   const tools = createReadonlyGoogleTools({ workspaceDir: "/Users/vale/.openclaw/workspace" });
   assert.deepEqual(tools.map((tool) => tool.name), [
     "reslu_calendar_events_list",
     "reslu_gmail_messages_search",
     "reslu_gmail_message_read",
+    "reslu_gmail_attachment_read",
     "reslu_attachment_pdf_text_read",
   ]);
   for (const tool of tools) {
@@ -152,6 +181,29 @@ test("registered adapters expose only the four fixed read-only tools", () => {
     assert.match(tool.description, /Read-only/);
     assert.equal(typeof tool.execute, "function");
   }
+});
+
+test("Stuart defaults to Accounts and PDF bytes must match the email attachment", () => {
+  assert.equal(defaultGoogleMailbox("/Users/vale/.openclaw/workspace-stuart"), "accounts");
+  assert.equal(defaultGoogleMailbox("/Users/vale/.openclaw/workspace"), "aria");
+  assert.equal(googleMailboxParams("/Users/vale/.openclaw/workspace-stuart", {}).mailbox, "accounts");
+  assert.throws(
+    () => googleMailboxParams("/Users/vale/.openclaw/workspace-marco", { mailbox: "accounts" }),
+    /restricted to Stuart/,
+  );
+  const bytes = Buffer.from("%PDF-1.7 synthetic-test-only");
+  assert.deepEqual(
+    decodeGmailPdfBytes({ body: { size: bytes.length } }, { data: bytes.toString("base64url") }),
+    bytes,
+  );
+  assert.throws(
+    () => decodeGmailPdfBytes({ body: { size: bytes.length + 1 } }, { data: bytes.toString("base64url") }),
+    /verification failed/,
+  );
+  assert.throws(
+    () => decodeGmailPdfBytes({ body: { size: 4 } }, { data: Buffer.from("html").toString("base64url") }),
+    /verification failed/,
+  );
 });
 
 test("Marco send adapter is separate, scoped and reports the verified operation", async () => {
