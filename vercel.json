@@ -53,8 +53,8 @@
       "schedule": "14-59/15 * * * *"
     },
     {
-      "path": "/api/brief/generate",
-      "schedule": "30 21 * * *"
+      "path": "/api/brief/generate?notify=1",
+      "schedule": "30 20,21 * * *"
     },
     {
       "path": "/api/visit-emails/run",

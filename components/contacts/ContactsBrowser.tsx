@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Contact } from "@/types";
 import type { InsuranceStatus } from "@/lib/insurance";
+import { birthdayFromInput, birthdayInputValue, birthdayLabel } from "@/lib/birthdays";
 import { ContactDocumentsPanel } from "./ContactDocumentsPanel";
 
 interface Props {
@@ -333,6 +334,9 @@ function ContactCard({
         {contact.specialty && (
           <p className="mt-2 text-caption text-charcoal/50">{contact.specialty}</p>
         )}
+        {contact.birthday && (
+          <p className="mt-1 text-caption text-charcoal/50">Birthday · {birthdayLabel(contact.birthday)}</p>
+        )}
         {contact.notes && (
           <p className="mt-1 text-caption text-sand">{contact.notes}</p>
         )}
@@ -388,6 +392,7 @@ function ContactForm({
     specialty: initial?.specialty ?? "",
     category: initial?.category ?? "",
     notes: initial?.notes ?? "",
+    birthday: birthdayInputValue(initial?.birthday),
   });
   const [submitting, setSubmitting] = useState(false);
   const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
@@ -395,6 +400,11 @@ function ContactForm({
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.company.trim()) return;
+    const birthday = birthdayFromInput(form.birthday);
+    if (birthday === undefined) {
+      onError("Birthday must be a real date in DD/MM format.");
+      return;
+    }
     setSubmitting(true);
     onError(null);
     try {
@@ -407,6 +417,7 @@ function ContactForm({
         specialty: form.specialty.trim() || null,
         category: form.category.trim() || null,
         notes: form.notes.trim() || null,
+        birthday,
       };
       const res = await fetch(initial ? `/api/contacts/${initial.id}` : "/api/contacts", {
         method: initial ? "PATCH" : "POST",
@@ -469,6 +480,16 @@ function ContactForm({
       <label className="flex flex-col gap-1">
         <span className="label-caps">Specialty</span>
         <input value={form.specialty} onChange={(e) => set("specialty", e.target.value)} className={field} />
+      </label>
+      <label className="flex flex-col gap-1">
+        <span className="label-caps">Birthday</span>
+        <input
+          inputMode="numeric"
+          placeholder="DD/MM"
+          value={form.birthday}
+          onChange={(e) => set("birthday", e.target.value)}
+          className={field}
+        />
       </label>
       <label className="flex flex-col gap-1 sm:col-span-3">
         <span className="label-caps">Notes</span>

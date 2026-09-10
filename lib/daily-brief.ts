@@ -56,7 +56,9 @@ export type DailyBriefSource =
   | "invoice"
   | "manual"
   | "aria"
-  | "proposal";
+  | "proposal"
+  | "calendar"
+  | "birthday";
 
 /** One candidate brief item, built from a live attention-feed row — not yet checked against existing open items. */
 export interface DailyBriefCandidate {
@@ -257,6 +259,38 @@ export function buildInsuranceCandidates(rows: InsuranceCandidateInput[]): Daily
   }));
 }
 
+/** Today's schedule is orientation, not an overdue warning. These rows expire automatically the next morning. */
+export interface CalendarCandidateInput {
+  id: string;
+  title: string;
+  link_href: string;
+  project_id: string | null;
+}
+
+export function buildCalendarCandidates(rows: CalendarCandidateInput[]): DailyBriefCandidate[] {
+  return rows.map((row) => ({
+    source: "calendar",
+    title: row.title,
+    link_href: row.link_href,
+    project_id: row.project_id,
+  }));
+}
+
+export interface BirthdayCandidateInput {
+  id: string;
+  name: string;
+  href: string;
+}
+
+export function buildBirthdayCandidates(rows: BirthdayCandidateInput[]): DailyBriefCandidate[] {
+  return rows.map((row) => ({
+    source: "birthday",
+    title: `Birthday — ${row.name}`,
+    link_href: row.href,
+    project_id: null,
+  }));
+}
+
 // ------------------------------------------------------------
 // 7am email — BUILD-SPEC.md "Email: 7am cron ... sends the glance
 // email (counts + top items + one button to /my-work) via
@@ -278,6 +312,8 @@ const SOURCE_LABEL: Record<DailyBriefSource, string> = {
   aria: "Aria",
   // QA fix round (r27) item 14 — see DailyBriefSource's own comment.
   proposal: "Proposals",
+  calendar: "Calendar",
+  birthday: "Birthdays",
 };
 
 export interface BriefEmailItem {

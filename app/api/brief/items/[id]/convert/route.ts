@@ -157,6 +157,10 @@ export async function POST(
         project: { id: project.id, name: project.name, alias: project.alias },
         carried_over_label: null,
         converted_label: `added to ${project.name}`,
+        morning_rank: 0,
+        action_label: "Action",
+        is_first_up: false,
+        carried_over_days: 0,
       },
       created: { kind: "board_task", id: task.id },
     };
@@ -222,7 +226,16 @@ export async function POST(
   }
 
   const body2: ConvertBriefItemResponse = {
-    item: { ...(updatedItem2 as DailyBriefItem), project: null, carried_over_label: null, converted_label: "added to Office" },
+    item: {
+      ...(updatedItem2 as DailyBriefItem),
+      project: null,
+      carried_over_label: null,
+      converted_label: "added to Office",
+      morning_rank: 0,
+      action_label: "Action",
+      is_first_up: false,
+      carried_over_days: 0,
+    },
     created: { kind: "office_task", id: officeTask.id },
   };
   return NextResponse.json(body2, { status: 201 });
