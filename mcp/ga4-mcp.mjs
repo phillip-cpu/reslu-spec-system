@@ -10,11 +10,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: "ga4_funnel",
-      description: "Read the RESLU /begin form events and landing-page views from the fixed GA4 property. Detects impossible event ordering and refuses to present broken instrumentation as a valid conversion funnel. Read-only.",
+      description: "Read current RESLU form-view, genuine-start and step diagnostics, with legacy events separately labelled. Missing instrumentation is not a zero-conversion funnel. Supports explicit dates and campaign/channel cohorts; tagged QA is excluded by default. Read-only.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
-        properties: { days: { type: "integer", minimum: 1, maximum: 366, default: 30 } },
+        properties: {
+          days: { type: "integer", minimum: 1, maximum: 366, default: 30 },
+          start_date: { type: 'string' }, end_date: { type: 'string' },
+          channel: { type: 'string' },
+          campaign_id: { type: 'string', description: 'Exact linked Google Ads campaign ID (sessionGoogleAdsCampaignId)' },
+          campaign_name: { type: 'string', description: 'Exact GA4 session campaign name, including a manual UTM name where used' },
+          exclude_internal_qa: { type: 'boolean', default: true },
+        },
       },
     },
     {
@@ -28,6 +35,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           start_date: { type: "string" },
           end_date: { type: "string" },
           channel: { type: "string", description: "Exact GA4 default channel group, for example Organic Search or Paid Search" },
+          campaign_id: { type: 'string', description: 'Exact linked Google Ads campaign ID' },
+          campaign_name: { type: 'string', description: 'Exact GA4 session campaign name' },
+          exclude_internal_qa: { type: 'boolean', default: true },
           limit: { type: "integer", minimum: 1, maximum: 250, default: 50 },
         },
       },

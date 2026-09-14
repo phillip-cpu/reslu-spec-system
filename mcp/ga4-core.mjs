@@ -3,6 +3,19 @@ import fs from "node:fs";
 export const ENV_PATH = "/Users/vale/.openclaw/workspace/google-ads/.env";
 export const PROPERTY = "properties/375473067";
 const MAX_LIMIT = 250;
+export const CURRENT_FORM_EVENTS = ['reslu_form_view', 'reslu_form_start', 'reslu_form_step_2', 'reslu_form_step_3', 'reslu_form_step_4', 'reslu_form_current_step'];
+
+function cohortFilter(args, base) {
+  const expressions = base ? [base] : [];
+  for (const [key, fieldName] of [['channel', 'sessionDefaultChannelGroup'], ['campaign_id', 'sessionGoogleAdsCampaignId'], ['campaign_name', 'sessionCampaignName']]) {
+    const value = String(args[key] ?? '').trim();
+    if (value) expressions.push({filter: {fieldName, stringFilter: {matchType: 'EXACT', value, caseSensitive: false}}});
+  }
+  if (args.exclude_internal_qa !== false) expressions.push({notExpression: {filter: {
+    fieldName: 'sessionSource', inListFilter: {values: ['reslu_internal_qa', 'internal_qa', 'codex_qa', 'codex', 'qa'], caseSensitive: false},
+  }}});
+  return expressions.length === 1 ? expressions[0] : expressions.length ? {andGroup: {expressions}} : undefined;
+}
 
 export function loadKeyValues(filePath = ENV_PATH) {
   const values = {};
@@ -77,7 +90,6 @@ export function buildGenericRequest(args = {}) {
 export function buildLandingRequest(args = {}) {
   const startDate = normalizeDate(args.start_date, "start_date");
   const endDate = normalizeDate(args.end_date, "end_date");
-  const channel = String(args.channel ?? "").trim();
   const request = {
     dateRanges: [{ startDate, endDate }],
     dimensions: [
@@ -91,48 +103,45 @@ export function buildLandingRequest(args = {}) {
       { name: "screenPageViews" },
       { name: "bounceRate" },
       { name: "keyEvents" },
+      { name: "averageSessionDuration" },
+      { name: "userEngagementDuration" },
     ],
     orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
     limit: normalizeLimit(args.limit),
   };
-  if (channel) {
-    request.dimensionFilter = {
-      filter: {
-        fieldName: "sessionDefaultChannelGroup",
-        stringFilter: { matchType: "EXACT", value: channel, caseSensitive: false },
-      },
-    };
-  }
+  request.dimensionFilter = cohortFilter(args);
   return request;
 }
 
 export function buildFunnelRequests(args = {}) {
   const days = normalizeDays(args.days);
-  const dateRanges = [{ startDate: `${days}daysAgo`, endDate: "yesterday" }];
+  const dateRanges = [{ startDate: normalizeDate(args.start_date ?? `${days}daysAgo`, 'start_date'), endDate: normalizeDate(args.end_date ?? 'yesterday', 'end_date') }];
   const eventNames = [
+    ...CURRENT_FORM_EVENTS,
     "form_step_1", "form_step_2", "form_step_3", "form_step_4",
     "generate_lead", "brief_autofilled", "begin_confirmation_view",
     "form_delivery_error", "form_validation_error", "form_photo_added",
   ];
   return {
-    days,
+    days: args.start_date === undefined ? days : null,
+    dateRanges,
     events: {
       dateRanges,
       dimensions: [{ name: "eventName" }],
       metrics: [{ name: "eventCount" }, { name: "totalUsers" }],
-      dimensionFilter: { filter: { fieldName: "eventName", inListFilter: { values: eventNames } } },
+      dimensionFilter: cohortFilter(args, { filter: { fieldName: "eventName", inListFilter: { values: eventNames } } }),
       limit: 50,
     },
     pages: {
       dateRanges,
       dimensions: [{ name: "pagePath" }],
       metrics: [{ name: "screenPageViews" }, { name: "totalUsers" }],
-      dimensionFilter: {
+      dimensionFilter: cohortFilter(args, {
         filter: {
           fieldName: "pagePath",
-          inListFilter: { values: ["/begin/renovation", "/begin/kitchen", "/begin/bathroom", "/begin", "/begin/design-build", "/begin/extensions", "/landing-renovations-bathroom"] },
+          inListFilter: { values: ["/begin/rooms", "/begin/renovation", "/begin/kitchen", "/begin/bathroom", "/begin", "/begin/design-build", "/begin/extensions", "/begin/interiors", "/landing-renovations-bathroom"] },
         },
-      },
+      }),
       orderBys: [{ metric: { metricName: "screenPageViews" }, desc: true }],
       limit: 50,
     },
@@ -184,27 +193,37 @@ export async function runReport(request) {
       "GA4 events are instrumentation evidence, not RESLU valid or qualified leads.",
       "Current-day data may be incomplete; standard reports end yesterday unless explicitly requested.",
       "Keep platform, analytics, and RESLU populations separate without record-level linkage.",
+      "GA4 observes consenting, successfully measured traffic, not every Ads click. Engagement duration is active measured time; it is not total wall-clock time on the website.",
+      "Missing event rows do not prove that every visitor failed to act. Explicitly tagged QA sources are excluded by the standard landing/funnel tools, not unidentified tests or generic reports.",
     ],
+  };
+}
+
+export function summarizeFunnel(requests, events, pages) {
+  const eventCounts = Object.fromEntries(events.rows.map((row) => [row.dimensions[0], Number(row.metrics[0] || 0)]));
+  const sequence = ['reslu_form_view', 'reslu_form_start', 'reslu_form_step_2', 'reslu_form_step_3', 'reslu_form_step_4', 'generate_lead'];
+  const counts = sequence.map((name) => eventCounts[name] ?? null);
+  const monotonic = counts.some(value => value === null) ? null : counts.every((value, index) => index === 0 || value <= counts[index - 1]);
+  const observed = CURRENT_FORM_EVENTS.some(name => Object.hasOwn(eventCounts, name));
+  return {
+    schema_version: "reslu-ga4-funnel-v3",
+    property: PROPERTY,
+    days: requests.days,
+    date_ranges: requests.dateRanges,
+    event_counts: eventCounts,
+    current_form_event_counts: Object.fromEntries(sequence.map((name, i) => [name, counts[i]])),
+    observed_current_form_events: observed,
+    landing_page_rows: pages.rows,
+    sequence_is_monotonic: monotonic,
+    interpretation: observed
+      ? "Current-form diagnostic counts only, not a session-linked conversion funnel. Late consent and preselected/skipped stages can produce gaps or non-monotonic counts. Legacy form_step events must not be substituted for genuine starts."
+      : "No current-form events were returned for this cohort. This is insufficient measurement evidence, not proof of zero visitor interaction or a working funnel.",
+    interpretation_limits: events.interpretation_limits,
   };
 }
 
 export async function readFunnel(args = {}) {
   const requests = buildFunnelRequests(args);
   const [events, pages] = await Promise.all([runReport(requests.events), runReport(requests.pages)]);
-  const eventCounts = Object.fromEntries(events.rows.map((row) => [row.dimensions[0], Number(row.metrics[0] || 0)]));
-  const sequence = ["form_step_1", "form_step_2", "form_step_3", "form_step_4", "generate_lead"];
-  const counts = sequence.map((name) => eventCounts[name] || 0);
-  const monotonic = counts.every((value, index) => index === 0 || value <= counts[index - 1]);
-  return {
-    schema_version: "reslu-ga4-funnel-v2",
-    property: PROPERTY,
-    days: requests.days,
-    event_counts: eventCounts,
-    landing_page_rows: pages.rows,
-    sequence_is_monotonic: monotonic,
-    interpretation: monotonic
-      ? "Event counts are ordered, but event-level ratios still require user/session and implementation checks."
-      : "Event ordering is impossible for a simple funnel. Diagnose instrumentation before using step conversion rates.",
-    interpretation_limits: events.interpretation_limits,
-  };
+  return summarizeFunnel(requests, events, pages);
 }
