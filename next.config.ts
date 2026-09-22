@@ -10,7 +10,7 @@ const nextConfig: NextConfig = {
   // outputFileTracingIncludes entries below, which get that .so file
   // actually shipped into each function's deployment bundle in the first
   // place — the two problems are independent and both are required.
-  serverExternalPackages: ["onnxruntime-node", "@huggingface/transformers"],
+  serverExternalPackages: ["onnxruntime-node", "@huggingface/transformers", "@jsquash/jxl"],
   images: {
     remotePatterns: [
       {
@@ -29,7 +29,13 @@ const nextConfig: NextConfig = {
   // Ensure the PDF route's font + logo files are bundled into the
   // serverless function on Vercel (they're read from disk at render time).
   outputFileTracingIncludes: {
+    "/api/trade/[token]/documents/schedule": [
+      "./public/fonts/**",
+      "./public/reslu-logo.png",
+      "./node_modules/@jsquash/jxl/codec/dec/**",
+    ],
     "/api/projects/[id]/pdf": [
+      "./node_modules/@jsquash/jxl/codec/dec/**",
       "./public/fonts/**",
       "./public/reslu-logo.png",
       "./public/reslu-logo-white.png",

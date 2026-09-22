@@ -6,8 +6,9 @@ import { createServiceRoleClient } from "@/lib/supabase/server";
 import { rateLimit } from "@/lib/rate-limit";
 import { isVisitExpired } from "@/lib/trade-visits";
 import { ensureStoredImagesForItems } from "@/lib/images";
+import { hasMissingPdfImages } from "@/lib/pdf-image";
 import { ASSET_BUCKET } from "@/lib/storage";
-import { SchedulePdf } from "@/components/pdf/SchedulePdf";
+import { SchedulePdf, SCHEDULE_PDF_LAYOUT_VERSION } from "@/components/pdf/SchedulePdf";
 import type { Category, Item } from "@/types";
 
 export const runtime = "nodejs";
@@ -184,7 +185,7 @@ export async function GET(
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  const cacheKeyInput = `${projectId}|${maxUpdatedAt}|${itemCount ?? 0}||${""}|${project.job_number ?? ""}|cats:${uniqueSelectedCategories.sort().join(",")}|docs:0|`;
+  const cacheKeyInput = `${projectId}|layout:${SCHEDULE_PDF_LAYOUT_VERSION}|${maxUpdatedAt}|${itemCount ?? 0}||${""}|${project.job_number ?? ""}|cats:${uniqueSelectedCategories.sort().join(",")}|docs:0|`;
   const contentHash = createHash("sha256").update(cacheKeyInput).digest("hex").slice(0, 32);
   const cachePath = `${PDF_CACHE_PREFIX}/${projectId}/${contentHash}.pdf`;
   const filename = `${project.name.replace(/[^a-z0-9]+/gi, "-")}-FFE-Schedule.pdf`;
@@ -259,15 +260,18 @@ export async function GET(
   // the instant the response is sent, same reasoning as the
   // team-facing PDF route's own identical after() call. A write
   // failure never fails the trade's response.
-  after(() =>
-    supabase.storage
-      .from(ASSET_BUCKET)
-      .upload(cachePath, bytes, { contentType: "application/pdf", upsert: true })
-      .then(
-        () => {},
-        () => {}
-      )
-  );
+  // Do not make transient image failures permanent by caching this render.
+  if (!hasMissingPdfImages(typedItems, resolvedImages)) {
+    after(() =>
+      supabase.storage
+        .from(ASSET_BUCKET)
+        .upload(cachePath, bytes, { contentType: "application/pdf", upsert: true })
+        .then(
+          () => {},
+          () => {}
+        )
+    );
+  }
 
   return new NextResponse(bytes, {
     headers: {
