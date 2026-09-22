@@ -146,35 +146,44 @@ export async function ensureStoredImage(
   }
 }
 
-/**
- * Runs ensureStoredImage sequentially (not in parallel — deliberate, per
- * spec: "sequentially with per-image try/catch") over every item missing
- * a stored copy. Returns a map of item id → final image URL to embed
- * (or undefined if there is none / it couldn't be fetched).
+/** Prepare validated, compact JPEG data URLs before react-pdf renders.
+ * Work stays sequential to bound decoding memory. Reused stored URLs are
+ * fetched/converted once per request; failures never escape to the renderer.
  */
 export async function ensureStoredImagesForItems(
   supabase: SupabaseClient,
   items: { id: string; selected_image_url: string | null }[]
 ): Promise<Map<string, string | undefined>> {
+  const { normalizePdfImage } = await import("./pdf-image");
   const result = new Map<string, string | undefined>();
+  const renditions = new Map<string, string | undefined>();
 
   for (const item of items) {
-    if (!item.selected_image_url) {
+    const original = item.selected_image_url;
+    if (!original) {
       result.set(item.id, undefined);
       continue;
     }
-    if (isOurStorageHost(item.selected_image_url)) {
-      result.set(item.id, item.selected_image_url);
+    const { url } = await ensureStoredImage(supabase, item.id, original);
+    if (!url) {
+      result.set(item.id, undefined);
       continue;
     }
-    const { url } = await ensureStoredImage(
-      supabase,
-      item.id,
-      item.selected_image_url
-    );
-    result.set(item.id, url ?? undefined);
+    if (!renditions.has(url)) {
+      try {
+        const { bytes } = await withTimeout(
+          safeFetch(url, { maxBytes: MAX_BYTES, accept: "image/*" }),
+          FETCH_TIMEOUT_MS
+        );
+        renditions.set(url, await normalizePdfImage(bytes));
+      } catch {
+        // Log only the item ID, never signed URLs or source image content.
+        console.warn("PDF image could not be prepared", { itemId: item.id });
+        renditions.set(url, undefined);
+      }
+    }
+    result.set(item.id, renditions.get(url));
   }
-
   return result;
 }
 

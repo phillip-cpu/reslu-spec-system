@@ -71,7 +71,7 @@ const HEADER_BAND_HEIGHT = 92; // pt, cream band at top of every page
 // Fold this into the route's storage-cache key whenever the PDF layout
 // changes. Otherwise an unchanged item set can keep serving an older
 // cached render after a deployment.
-export const SCHEDULE_PDF_LAYOUT_VERSION = "compact-rows-v6";
+export const SCHEDULE_PDF_LAYOUT_VERSION = "compact-rows-v7-images";
 
 const styles = StyleSheet.create({
   // ── Cover page ──────────────────────────────────────────
@@ -300,9 +300,8 @@ function joinPresent(values: (string | null | undefined)[], sep = "  ·  "): str
 }
 
 interface PdfItem extends Item {
-  /** Resolved by the PDF route's image pre-pass (lib/images.ts) — may
-   *  differ from item.selected_image_url if it was re-hosted, or be
-   *  undefined if the image couldn't be fetched/stored (skip, don't fail). */
+  /** Validated JPEG data URL from the image pre-pass; undefined when
+   *  no image was selected or the source could not be prepared. */
   resolvedImageUrl?: string;
   /** Whether this item has at least one item_files row — drives the
    *  deferred "Docs: spec sheet available in portal" label
@@ -498,7 +497,7 @@ export function SchedulePdf({
                           </View>
                         ) : (
                           <View style={styles.noImageBox}>
-                            <Text style={styles.noImage}>No image</Text>
+                            <Text style={styles.noImage}>{item.selected_image_url ? "Image unavailable" : "No image"}</Text>
                           </View>
                         )}
 

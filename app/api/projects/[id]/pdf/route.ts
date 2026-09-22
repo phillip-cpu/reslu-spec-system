@@ -3,6 +3,7 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { ensureStoredImagesForItems } from "@/lib/images";
+import { hasMissingPdfImages } from "@/lib/pdf-image";
 import { ASSET_BUCKET } from "@/lib/storage";
 import { reportError } from "@/lib/report-error";
 import {
@@ -410,15 +411,18 @@ export async function GET(
   // either way since it's keyed on the same hash. A write failure never
   // fails the PDF response — the team member still gets their PDF,
   // just without a cached copy for the next request.
-  after(() =>
-    serviceClient.storage
-      .from(ASSET_BUCKET)
-      .upload(cachePath, bytes, { contentType: "application/pdf", upsert: true })
-      .then(
-        () => {},
-        () => {}
-      )
-  );
+  // Do not make transient image failures permanent by caching this render.
+  if (!hasMissingPdfImages(typedItems, resolvedImages)) {
+    after(() =>
+      serviceClient.storage
+        .from(ASSET_BUCKET)
+        .upload(cachePath, bytes, { contentType: "application/pdf", upsert: true })
+        .then(
+          () => {},
+          () => {}
+        )
+    );
+  }
 
   return new NextResponse(bytes, {
     headers: {
