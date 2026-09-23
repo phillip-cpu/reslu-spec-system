@@ -14,6 +14,7 @@ import type {
   ProjectFinanceResponse,
 } from "@/types/finance";
 import { projectStageLabel } from "@/lib/project-lifecycle";
+import { isClientCashSource } from "@/lib/finance/client-claims";
 
 type WorkspaceTab = "position" | "setup";
 
@@ -249,13 +250,13 @@ export function ProjectFinanceWorkspace({ projectId }: { projectId: string }) {
         .reduce((sum, contribution) => sum + contribution.amountMinor, 0)
     : 0;
   const selectedPeriod = projection?.periods[selectedIndex] ?? null;
-  const clientClaimContributions = projection?.effectiveContributions.filter(
-    (contribution) => contribution.sourceTrace.source_type === "client_claim"
+  const clientCashContributions = projection?.effectiveContributions.filter(
+    (contribution) => isClientCashSource(contribution.sourceTrace.source_type)
   ) ?? [];
-  const clientPaid = clientClaimContributions
+  const clientPaid = clientCashContributions
     .filter((contribution) => contribution.state === "actual_paid")
     .reduce((sum, contribution) => sum + contribution.amountMinor, 0);
-  const clientRemaining = clientClaimContributions
+  const clientRemaining = clientCashContributions
     .filter((contribution) => contribution.state !== "actual_paid")
     .reduce((sum, contribution) => sum + contribution.amountMinor, 0);
   const constructionCostsIncluded = shadow?.source.construction_costs_included !== false;

@@ -16,6 +16,13 @@ function dollarsToMinor(value: number): number {
   return minor;
 }
 
+/** Both scheduled claims and deliberately unallocated invoice receipts are
+ * client cash. Keep this shared with the Finance KPI so historical receipts
+ * are not dropped merely because no milestone mapping was invented. */
+export function isClientCashSource(sourceType: unknown): boolean {
+  return sourceType === "client_claim" || sourceType === "client_invoice";
+}
+
 /** Builds money-in contributions from the same contract claims shown on the
  * project invoice screen. The contract supplies value; contract signing or
  * the linked construction phase supplies claim timing; payment terms supply
