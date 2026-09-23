@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
-import type { CreateCostLineInput } from "@/types";
+import type { CreateForeignCashCostLineInput } from "@/types/foreign-cost-cash";
 
 const VALID_QUOTE_STATUS = new Set(["Q", "S", "NA"]);
 const VALID_LINE_KINDS = new Set(["standard", "delivery_allowance"]);
+const VALID_GST_TREATMENTS = new Set(["exclusive", "inclusive", "gst_free", "not_applicable"]);
 
 /**
  * POST /api/estimate/sections/[sectionId]/lines
@@ -43,7 +44,7 @@ export async function POST(
     return NextResponse.json({ error: "Section not found" }, { status: 404 });
   }
 
-  let body: CreateCostLineInput;
+  let body: CreateForeignCashCostLineInput;
   try {
     body = await request.json();
   } catch {
@@ -69,6 +70,24 @@ export async function POST(
       { error: "A Delivery allowance cannot be a reusable FF&E product line" },
       { status: 400 }
     );
+  }
+  if (body.gst_treatment && !VALID_GST_TREATMENTS.has(body.gst_treatment)) {
+    return NextResponse.json({ error: "Invalid gst_treatment" }, { status: 400 });
+  }
+  if (body.source_currency && !/^[A-Za-z]{3}$/.test(body.source_currency)) {
+    return NextResponse.json({ error: "source_currency must be a three-letter code" }, { status: 400 });
+  }
+  if (
+    body.source_forecast_total_minor !== undefined && body.source_forecast_total_minor !== null &&
+    (!Number.isSafeInteger(body.source_forecast_total_minor) || body.source_forecast_total_minor < 0)
+  ) {
+    return NextResponse.json({ error: "source_forecast_total_minor must be a non-negative integer" }, { status: 400 });
+  }
+  if (
+    body.forecast_fx_rate !== undefined && body.forecast_fx_rate !== null &&
+    (!Number.isFinite(body.forecast_fx_rate) || body.forecast_fx_rate <= 0)
+  ) {
+    return NextResponse.json({ error: "forecast_fx_rate must be greater than zero" }, { status: 400 });
   }
 
   const { data: existing } = await supabase
@@ -97,6 +116,10 @@ export async function POST(
       item_id: body.item_id ?? null,
       notes: body.notes?.trim() || null,
       line_kind: body.line_kind ?? "standard",
+      gst_treatment: body.gst_treatment ?? "exclusive",
+      source_currency: body.source_currency?.trim().toUpperCase() || null,
+      source_forecast_total_minor: body.source_forecast_total_minor ?? null,
+      forecast_fx_rate: body.forecast_fx_rate ?? null,
       sort: nextSort,
     })
     .select()

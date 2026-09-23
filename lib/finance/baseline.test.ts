@@ -113,6 +113,68 @@ test("legacy preview overrides still take precedence over the construction sched
   assert.equal(overridden?.sourceTrace?.timing_source, "shadow_override");
 });
 
+test("GST-free foreign lines keep the full budget but forecast only the confirmed unpaid source balance", () => {
+  const result = buildEstimatePlanContributions({
+    projectId: "radio-athens",
+    estimateVersionId: "estimate-v3",
+    snapshot: {
+      sections: [{
+        id: "joinery",
+        name: "Joinery / Cabinetry",
+        lines: [{
+          id: "easy-imex-furniture",
+          description: "Furniture — incl. joinery/cabinetry",
+          qty: 1,
+          rate_ex_gst: 137_255.36,
+          cost_ex_gst: null,
+          gst_treatment: "gst_free",
+          source_currency: "USD",
+          // Main SO/2026/16719 only. The separate USD 1,300 leather
+          // variation remains in the full AUD budget, but is not assumed due.
+          source_forecast_total_minor: 9_604_423,
+          forecast_fx_rate: 1.41,
+          source_payments: [
+            { source_amount_minor: 2_503_627, paid_on: "2026-05-09" },
+            { source_amount_minor: 3_387_652, paid_on: "2026-08-20" },
+          ],
+        }],
+      }],
+    },
+  });
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].plannedMinor, 5_235_533);
+  assert.equal(result[0].sourceTrace?.net_minor, 13_725_536);
+  assert.equal(result[0].sourceTrace?.tax_minor, 0);
+  assert.equal(result[0].sourceTrace?.source_paid_minor, 5_891_279);
+});
+
+test("GST-free foreign remaining balances do not receive a ten percent uplift", () => {
+  const [stone] = buildEstimatePlanContributions({
+    projectId: "radio-athens",
+    estimateVersionId: "estimate-v3",
+    snapshot: {
+      sections: [{
+        id: "stone",
+        name: "Stone & Benchtops",
+        lines: [{
+          id: "easy-imex-stone",
+          description: "Stone balance",
+          qty: 1,
+          rate_ex_gst: 7_317.69,
+          gst_treatment: "gst_free",
+          source_currency: "USD",
+          source_forecast_total_minor: 518_985,
+          forecast_fx_rate: 1.41,
+          source_payments: [],
+        }],
+      }],
+    },
+  });
+  assert.equal(stone.plannedMinor, 731_769);
+  assert.equal(stone.sourceTrace?.tax_minor, 0);
+});
+
 test("new estimate snapshots forecast FF&E by item using live procurement timing", () => {
   const result = buildEstimatePlanContributions({
     projectId: "project-1",

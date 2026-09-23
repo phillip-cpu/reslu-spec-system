@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import type { Contact, CostLine, EstimateResponse, FfeCategoryRollup, MeasurementWithGroup, QuoteStatus } from "@/types";
+import type { Contact, EstimateResponse, FfeCategoryRollup, MeasurementWithGroup, QuoteStatus } from "@/types";
+import type { ForeignCashCostLine as CostLine } from "@/types/foreign-cost-cash";
 import {
   effectiveQty,
   lineClientPrice,
@@ -749,6 +750,10 @@ function LineRow({
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentDate, setPaymentDate] = useState("");
+  const [savingPayment, setSavingPayment] = useState(false);
   const rowRef = useRef<HTMLTableRowElement>(null);
 
   // If the server row changes underneath us (e.g. another tab, or a
@@ -813,6 +818,10 @@ function LineRow({
       quote_status: draft.quote_status,
       notes: draft.notes,
       wastage_pct: draft.wastage_pct,
+      gst_treatment: draft.gst_treatment,
+      source_currency: draft.source_currency,
+      source_forecast_total_minor: draft.source_forecast_total_minor,
+      forecast_fx_rate: draft.forecast_fx_rate,
     };
     try {
       const updated = await onPatch(patch);
@@ -843,6 +852,41 @@ function LineRow({
       setDirty(false);
     } catch (err) {
       setRowError(err instanceof Error ? err.message : "Could not update this line.");
+    }
+  }
+
+  async function recordSourcePayment() {
+    const sourceAmountMinor = Math.round(Number(paymentAmount) * 100);
+    if (!Number.isSafeInteger(sourceAmountMinor) || sourceAmountMinor <= 0) {
+      setRowError("Enter a valid source-currency amount.");
+      return;
+    }
+    setSavingPayment(true);
+    setRowError(null);
+    try {
+      const response = await fetch(`/api/estimate/lines/${line.id}/source-payments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_amount_minor: sourceAmountMinor,
+          paid_on: paymentDate || null,
+          settled_aud_minor: null,
+          evidence_reference: "Recorded from the estimate cash-history control",
+        }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Could not record source payment");
+      setDraft((current) => ({
+        ...current,
+        source_payments: [...(current.source_payments ?? []), body.payment],
+      }));
+      setPaymentAmount("");
+      setPaymentDate("");
+      setPaymentOpen(false);
+    } catch (error) {
+      setRowError(error instanceof Error ? error.message : "Could not record source payment.");
+    } finally {
+      setSavingPayment(false);
     }
   }
 
@@ -973,6 +1017,92 @@ function LineRow({
               Delivery allowance · project cost only · no catalogue price
             </p>
           )}
+          <div className="mx-2 mb-2 grid grid-cols-4 gap-1 border border-[#e5e0d6] bg-offwhite p-1.5">
+            <select
+              value={draft.gst_treatment ?? "exclusive"}
+              onChange={(event) => setField("gst_treatment", event.target.value as CostLine["gst_treatment"])}
+              title="Supplier cash GST treatment"
+              className="border border-[#c9c2b4] bg-nearwhite px-1 py-1 text-caption"
+            >
+              <option value="exclusive">GST +10%</option>
+              <option value="inclusive">GST included</option>
+              <option value="gst_free">GST-free</option>
+              <option value="not_applicable">No GST</option>
+            </select>
+            <input
+              value={draft.source_currency ?? ""}
+              onChange={(event) => setField("source_currency", event.target.value.toUpperCase() || null)}
+              placeholder="Currency"
+              maxLength={3}
+              title="Supplier source currency, e.g. USD"
+              className="border border-[#c9c2b4] bg-nearwhite px-1 py-1 text-caption uppercase"
+            />
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              value={draft.source_forecast_total_minor == null ? "" : draft.source_forecast_total_minor / 100}
+              onChange={(event) => setField(
+                "source_forecast_total_minor",
+                event.target.value === "" ? null : Math.round(Number(event.target.value) * 100)
+              )}
+              placeholder="Confirmed due"
+              title="Confirmed supplier obligation in source currency; uncertain items stay out"
+              className="border border-[#c9c2b4] bg-nearwhite px-1 py-1 text-right text-caption"
+            />
+            <input
+              type="number"
+              step="0.0001"
+              min="0"
+              value={draft.forecast_fx_rate ?? ""}
+              onChange={(event) => setField("forecast_fx_rate", event.target.value === "" ? null : Number(event.target.value))}
+              placeholder="AUD FX"
+              title="Planning AUD per source-currency unit"
+              className="border border-[#c9c2b4] bg-nearwhite px-1 py-1 text-right text-caption"
+            />
+            {draft.source_currency && draft.source_forecast_total_minor !== null && (
+              <div className="col-span-4 text-caption text-charcoal/60">
+                Paid in {draft.source_currency}: {((draft.source_payments ?? []).reduce(
+                  (sum, payment) => sum + payment.source_amount_minor,
+                  0
+                ) / 100).toFixed(2)}
+                <button
+                  type="button"
+                  onClick={() => setPaymentOpen((open) => !open)}
+                  className="ml-2 text-sand hover:text-nearblack"
+                >
+                  + Record source payment
+                </button>
+              </div>
+            )}
+            {paymentOpen && (
+              <div className="col-span-4 flex gap-1">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={paymentAmount}
+                  onChange={(event) => setPaymentAmount(event.target.value)}
+                  placeholder={`Amount ${draft.source_currency ?? ""}`}
+                  className="min-w-0 flex-1 border border-[#c9c2b4] bg-nearwhite px-1 py-1 text-caption"
+                />
+                <input
+                  type="date"
+                  value={paymentDate}
+                  onChange={(event) => setPaymentDate(event.target.value)}
+                  className="border border-[#c9c2b4] bg-nearwhite px-1 py-1 text-caption"
+                />
+                <button
+                  type="button"
+                  onClick={recordSourcePayment}
+                  disabled={savingPayment}
+                  className="border border-nearblack px-2 py-1 text-caption disabled:opacity-40"
+                >
+                  {savingPayment ? "Saving…" : "Save payment"}
+                </button>
+              </div>
+            )}
+          </div>
           {/* Double-counting rule (BUILD-SPEC.md "Estimate ↔ Schedule
               integration"): a line linked to a spec register item means
               this line is labour/install only — the product's own cost

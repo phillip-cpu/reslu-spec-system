@@ -127,3 +127,27 @@ test("a variation package adds its own claim and uses its own approval date and 
   assert.equal(claim.description, "Client claim — Radio Athens · Variation 01 — Variation completion");
   assert.equal(claim.sourceTrace?.contract_variation_id, "variation-1");
 });
+
+test("paid unallocated invoices remain visible as confirmed historical receipts", () => {
+  const invoices = [{
+    id: "invoice-1215",
+    invoice_number: "00001215",
+    status: "paid",
+    issued_at: "2026-07-01T00:00:00.000Z",
+    paid_at: "2026-07-13T00:00:00.000Z",
+    due_days: 14,
+    total_inc_gst: 71_548.68,
+    payment_schedule_item_id: null,
+  }] as ClientInvoice[];
+  const result = buildClientClaimContributions({
+    projectId: "project-1",
+    profile,
+    schedule,
+    phases,
+    invoices,
+  });
+  const receipt = result.find((item) => item.sourceTrace?.client_invoice_id === "invoice-1215");
+  assert.equal(receipt?.actualPaidMinor, 7_154_868);
+  assert.equal(receipt?.actualPaidDate, "2026-07-13");
+  assert.equal(receipt?.sourceTrace?.payment_schedule_item_id, null);
+});

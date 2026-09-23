@@ -7,6 +7,7 @@ import {
 import { buildEstimateFfeItemSnapshots } from "@/lib/estimate-ffe-snapshot";
 import { createClient } from "@/lib/supabase/server";
 import type { CostSectionWithLines, Measurement, MeasurementWithGroup } from "@/types";
+import type { CostLineSourcePayment, ForeignCashCostLine } from "@/types/foreign-cost-cash";
 import type { EstimateSnapshot } from "@/types/phase-12a-a";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
@@ -34,7 +35,7 @@ export async function buildLiveSnapshot(
   ] = await Promise.all([
     supabase
       .from("cost_sections")
-      .select("*, cost_lines(*)")
+      .select("*, cost_lines(*, cost_line_source_payments(*))")
       .eq("project_id", projectId)
       .order("sort", { ascending: true }),
     supabase
@@ -75,9 +76,22 @@ export async function buildLiveSnapshot(
   const measurementsById = new Map(measurements.map((m) => [m.id, { value: m.value }]));
 
   const sectionsWithLines: CostSectionWithLines[] = (sections ?? []).map((section) => {
-    const lines = ((section as unknown as { cost_lines: CostSectionWithLines["lines"] }).cost_lines ?? [])
+    const lines = ((section as unknown as {
+      cost_lines: Array<ForeignCashCostLine & {
+        cost_line_source_payments?: CostLineSourcePayment[];
+      }>;
+    }).cost_lines ?? [])
       .filter((line) => !line.deleted_at)
-      .sort((a, b) => a.sort - b.sort);
+      .sort((a, b) => a.sort - b.sort)
+      .map((line) => {
+        const { cost_line_source_payments, ...rest } = line;
+        return {
+          ...rest,
+          source_payments: [...(cost_line_source_payments ?? [])].sort((a, b) =>
+            (a.paid_on ?? "9999-12-31").localeCompare(b.paid_on ?? "9999-12-31")
+          ),
+        };
+      });
     const { cost_lines: omittedCostLines, ...rest } = section as unknown as Record<string, unknown>;
     void omittedCostLines;
     return {
