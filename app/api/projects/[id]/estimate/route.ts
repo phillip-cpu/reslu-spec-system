@@ -4,6 +4,7 @@ import { getUserRole } from "@/lib/auth";
 import { projectRollup, sectionRollup, ffeRollup, wholeJobSummary } from "@/lib/estimate";
 import { supplierQuoteSummaryStatus } from "@/lib/supplier-quotes";
 import type { CostSectionWithLines, EstimateResponse, Measurement, MeasurementWithGroup } from "@/types";
+import type { CostLineSourcePayment, ForeignCashCostLine } from "@/types/foreign-cost-cash";
 import type { SupplierQuoteLineSummary } from "@/types/supplier-quotes";
 
 /**
@@ -74,7 +75,7 @@ export async function GET(
   ] = await Promise.all([
     supabase
       .from("cost_sections")
-      .select("*, cost_lines(*)")
+      .select("*, cost_lines(*, cost_line_source_payments(*))")
       .eq("project_id", projectId)
       .order("sort", { ascending: true }),
     supabase
@@ -125,9 +126,22 @@ export async function GET(
   const measurementsById = new Map(measurements.map((m) => [m.id, { value: m.value }]));
 
   const sectionsWithLines: CostSectionWithLines[] = (sections ?? []).map((section) => {
-    const lines = ((section as unknown as { cost_lines: CostSectionWithLines["lines"] }).cost_lines ?? [])
+    const lines = ((section as unknown as {
+      cost_lines: Array<ForeignCashCostLine & {
+        cost_line_source_payments?: CostLineSourcePayment[];
+      }>;
+    }).cost_lines ?? [])
       .filter((l) => !l.deleted_at)
-      .sort((a, b) => a.sort - b.sort);
+      .sort((a, b) => a.sort - b.sort)
+      .map((line) => {
+        const { cost_line_source_payments, ...rest } = line;
+        return {
+          ...rest,
+          source_payments: [...(cost_line_source_payments ?? [])].sort((a, b) =>
+            (a.paid_on ?? "9999-12-31").localeCompare(b.paid_on ?? "9999-12-31")
+          ),
+        };
+      });
     const { cost_lines: _omit, ...rest } = section as unknown as Record<string, unknown>;
     void _omit;
     return {

@@ -7,6 +7,15 @@ interface SnapshotLine {
   qty?: number | null;
   rate_ex_gst?: number | null;
   cost_ex_gst?: number | null;
+  gst_treatment?: "exclusive" | "inclusive" | "gst_free" | "not_applicable";
+  source_currency?: string | null;
+  source_forecast_total_minor?: number | null;
+  forecast_fx_rate?: number | null;
+  source_payments?: Array<{
+    source_amount_minor?: number | null;
+    settled_aud_minor?: number | null;
+    paid_on?: string | null;
+  }>;
 }
 
 interface SnapshotSection {
@@ -58,6 +67,42 @@ function exGstDollarsToGrossMinor(value: number): number {
   return dollarsToMinor(value * 1.1);
 }
 
+function estimateCashMinor(line: SnapshotLine): {
+  plannedMinor: number;
+  netMinor: number;
+  taxMinor: number;
+  sourceTotalMinor: number | null;
+  sourcePaidMinor: number;
+} {
+  const treatment = line.gst_treatment ?? "exclusive";
+  const netMinor = dollarsToMinor(lineCost(line));
+  const sourceTotalMinor = Number.isSafeInteger(line.source_forecast_total_minor)
+    ? Math.max(Number(line.source_forecast_total_minor), 0)
+    : null;
+  const fx = finiteNumber(line.forecast_fx_rate);
+  const sourcePaidMinor = (line.source_payments ?? []).reduce((sum, payment) => {
+    const amount = Number(payment.source_amount_minor);
+    return Number.isSafeInteger(amount) && amount > 0 ? sum + amount : sum;
+  }, 0);
+  const hasForeignForecast = Boolean(line.source_currency) && sourceTotalMinor !== null && fx > 0;
+  const baseCashMinor = hasForeignForecast
+    ? Math.round(Math.max(sourceTotalMinor - sourcePaidMinor, 0) * fx)
+    : netMinor;
+  if (!Number.isSafeInteger(baseCashMinor)) {
+    throw new Error("Forecast source-currency amount exceeds safe minor units");
+  }
+  const plannedMinor = treatment === "exclusive"
+    ? Math.round(baseCashMinor * 1.1)
+    : baseCashMinor;
+  return {
+    plannedMinor,
+    netMinor,
+    taxMinor: plannedMinor - baseCashMinor,
+    sourceTotalMinor,
+    sourcePaidMinor,
+  };
+}
+
 function frozenMinor(value: number | null | undefined, fallback: number): number {
   if (value === null || value === undefined) return fallback;
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -102,8 +147,8 @@ export function buildEstimatePlanContributions(input: {
 
   for (const section of input.snapshot.sections ?? []) {
     for (const line of section.lines ?? []) {
-      const netMinor = dollarsToMinor(lineCost(line));
-      const plannedMinor = exGstDollarsToGrossMinor(lineCost(line));
+      const cash = estimateCashMinor(line);
+      const { plannedMinor, netMinor } = cash;
       if (plannedMinor <= 0) continue;
       const contributionKey = `project:${input.projectId}|cost_line:${line.id}|scope:base`;
       const override = overrides[contributionKey] ?? null;
@@ -121,9 +166,16 @@ export function buildEstimatePlanContributions(input: {
           source_type: "estimate_cost_line",
           source_record_id: line.id,
           source_version_id: input.estimateVersionId,
-          cash_basis: "gross_inc_gst",
+          cash_basis: line.gst_treatment === "exclusive" || line.gst_treatment === undefined
+            ? "gross_inc_gst"
+            : "configured_tax_treatment",
           net_minor: netMinor,
-          tax_minor: plannedMinor - netMinor,
+          tax_minor: cash.taxMinor,
+          gst_treatment: line.gst_treatment ?? "exclusive",
+          source_currency: line.source_currency ?? null,
+          source_forecast_total_minor: cash.sourceTotalMinor,
+          source_paid_minor: cash.sourcePaidMinor,
+          forecast_fx_rate: line.forecast_fx_rate ?? null,
           section_id: section.id,
           section_name: section.name,
           timing_source: override

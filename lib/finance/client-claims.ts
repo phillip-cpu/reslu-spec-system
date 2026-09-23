@@ -29,10 +29,41 @@ export function buildClientClaimContributions(input: {
   contractVariations?: ClientContractVariation[];
 }): FinanceContributionInput[] {
   const profile = input.profile;
-  if (!profile) return [];
   const invoiceById = new Map(input.invoices.map((invoice) => [invoice.id, invoice]));
+  const linkedInvoiceIds = new Set(
+    input.schedule.map((stage) => stage.client_invoice_id).filter(Boolean) as string[]
+  );
 
-  return input.schedule.flatMap((stage) => {
+  const unallocatedPaid = input.invoices
+    .filter((invoice) => invoice.status === "paid" && !linkedInvoiceIds.has(invoice.id))
+    .map((invoice) => {
+      const amountMinor = dollarsToMinor(invoice.total_inc_gst);
+      return {
+        contributionKey: `project:${input.projectId}|client_invoice:${invoice.id}|scope:unallocated`,
+        direction: "inflow" as const,
+        description: `Client receipt — ${invoice.invoice_number}`,
+        plannedMinor: amountMinor,
+        actualAccruedMinor: amountMinor,
+        actualPaidMinor: amountMinor,
+        plannedDate: invoice.paid_at?.slice(0, 10) ?? null,
+        actualDueDate: invoice.paid_at?.slice(0, 10) ?? null,
+        actualPaidDate: invoice.paid_at?.slice(0, 10) ?? null,
+        baseEligible: true,
+        confidence: "confirmed" as const,
+        sourceTrace: {
+          source_type: "client_invoice",
+          source_record_id: invoice.id,
+          section_name: "Unallocated client receipts",
+          client_invoice_id: invoice.id,
+          payment_schedule_item_id: null,
+          timing_source: invoice.paid_at ? "actual_payment" : "actual_payment_date_unknown",
+        },
+      };
+    });
+
+  if (!profile) return unallocatedPaid;
+
+  const scheduled = input.schedule.flatMap((stage) => {
     const variation = stage.contract_variation_id
       ? input.contractVariations?.find((candidate) => candidate.id === stage.contract_variation_id) ?? null
       : null;
@@ -109,4 +140,5 @@ export function buildClientClaimContributions(input: {
       },
     }];
   });
+  return [...scheduled, ...unallocatedPaid];
 }

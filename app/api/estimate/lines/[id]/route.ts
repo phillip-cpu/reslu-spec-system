@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
-import type { PatchCostLineInput } from "@/types";
+import type { PatchForeignCashCostLineInput } from "@/types/foreign-cost-cash";
 
 const VALID_QUOTE_STATUS = new Set(["Q", "S", "NA"]);
 const VALID_LINE_KINDS = new Set(["standard", "delivery_allowance"]);
+const VALID_GST_TREATMENTS = new Set(["exclusive", "inclusive", "gst_free", "not_applicable"]);
 
 const EDITABLE_FIELDS = new Set([
   "description",
@@ -25,6 +26,10 @@ const EDITABLE_FIELDS = new Set([
   // who's quoting/doing the trade for this line.
   "contact_id",
   "line_kind",
+  "gst_treatment",
+  "source_currency",
+  "source_forecast_total_minor",
+  "forecast_fx_rate",
 ]);
 
 const NUMERIC_FIELDS = new Set([
@@ -35,6 +40,8 @@ const NUMERIC_FIELDS = new Set([
   "actual_paid_ex_gst",
   "sort",
   "wastage_pct",
+  "source_forecast_total_minor",
+  "forecast_fx_rate",
 ]);
 
 /**
@@ -64,7 +71,7 @@ export async function PATCH(
     );
   }
 
-  let body: PatchCostLineInput;
+  let body: PatchForeignCashCostLineInput;
   try {
     body = await request.json();
   } catch {
@@ -99,6 +106,34 @@ export async function PATCH(
     );
   }
 
+  if (
+    body.gst_treatment !== undefined &&
+    !VALID_GST_TREATMENTS.has(body.gst_treatment)
+  ) {
+    return NextResponse.json({ error: "Invalid gst_treatment" }, { status: 400 });
+  }
+  if (
+    body.source_currency !== undefined &&
+    body.source_currency !== null &&
+    !/^[A-Za-z]{3}$/.test(body.source_currency)
+  ) {
+    return NextResponse.json({ error: "source_currency must be a three-letter code" }, { status: 400 });
+  }
+  if (
+    body.source_forecast_total_minor !== undefined &&
+    body.source_forecast_total_minor !== null &&
+    (!Number.isSafeInteger(body.source_forecast_total_minor) || body.source_forecast_total_minor < 0)
+  ) {
+    return NextResponse.json({ error: "source_forecast_total_minor must be a non-negative integer" }, { status: 400 });
+  }
+  if (
+    body.forecast_fx_rate !== undefined &&
+    body.forecast_fx_rate !== null &&
+    (!Number.isFinite(body.forecast_fx_rate) || body.forecast_fx_rate <= 0)
+  ) {
+    return NextResponse.json({ error: "forecast_fx_rate must be greater than zero" }, { status: 400 });
+  }
+
   // Week 7 — Estimate ↔ Schedule integration: wastage only makes sense
   // as a percent addition on top of a linked measurement's value, so
   // it's capped at a sane 0–50% range (also enforced by a DB check
@@ -126,7 +161,9 @@ export async function PATCH(
     } else if (key === "description" && typeof value === "string") {
       update[key] = value.trim();
     } else if (typeof value === "string") {
-      update[key] = value.trim() || null;
+      update[key] = key === "source_currency"
+        ? value.trim().toUpperCase() || null
+        : value.trim() || null;
     } else {
       update[key] = value;
     }
@@ -139,23 +176,32 @@ export async function PATCH(
     return NextResponse.json({ error: "description cannot be empty" }, { status: 400 });
   }
 
-  const { data: line, error } = await supabase
+  const { data: row, error } = await supabase
     .from("cost_lines")
     .update(update)
     .eq("id", id)
     .is("deleted_at", null)
-    .select()
+    .select("*, cost_line_source_payments(*)")
     .single();
 
   if (error) {
     const status = error.code === "23503" ? 400 : 500;
     return NextResponse.json({ error: error.message }, { status });
   }
-  if (!line) {
+  if (!row) {
     return NextResponse.json({ error: "Line not found" }, { status: 404 });
   }
 
-  return NextResponse.json({ line });
+  const { cost_line_source_payments, ...line } = row;
+
+  return NextResponse.json({
+    line: {
+      ...line,
+      source_payments: [...(cost_line_source_payments ?? [])].sort((a, b) =>
+        a.paid_on.localeCompare(b.paid_on)
+      ),
+    },
+  });
 }
 
 /**
