@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildClientClaimContributions } from "./client-claims.ts";
+import { buildClientClaimContributions, isClientCashSource } from "./client-claims.ts";
 import type {
   ClientBillingProfile,
   ClientInvoice,
@@ -150,4 +150,10 @@ test("paid unallocated invoices remain visible as confirmed historical receipts"
   assert.equal(receipt?.actualPaidMinor, 7_154_868);
   assert.equal(receipt?.actualPaidDate, "2026-07-13");
   assert.equal(receipt?.sourceTrace?.payment_schedule_item_id, null);
+});
+
+test("Finance client-cash totals include scheduled claims and unallocated receipts", () => {
+  assert.equal(isClientCashSource("client_claim"), true);
+  assert.equal(isClientCashSource("client_invoice"), true);
+  assert.equal(isClientCashSource("estimate"), false);
 });
