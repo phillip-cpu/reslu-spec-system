@@ -71,7 +71,10 @@ export default definePluginEntry({
       evaluate(event, context) {
         const runId = event.runId ?? context.runId;
         const state = (runId ? runs.get(runId) : null) ?? loadBridgeEnvelope(context.sessionKey);
-        return evaluateResluConversationTool(event, context, state);
+        return evaluateResluConversationTool(event, context, state, {
+          enableStuartCustomerReceipts: api.pluginConfig?.enableStuartCustomerReceipts === true,
+          enableStuartCustomerReceiptPreparation: api.pluginConfig?.enableStuartCustomerReceiptPreparation === true,
+        });
       },
     });
 

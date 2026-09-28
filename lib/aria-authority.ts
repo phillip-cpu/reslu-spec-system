@@ -134,6 +134,18 @@ export function deriveActionTarget(
   args: Record<string, unknown>,
   envelope?: Partial<AriaAuthorityEnvelope>,
 ): { target_type: string; target_id: string } {
+  if (toolName === "record_stuart_xero_customer_receipts") {
+    if (typeof args.tenant_id !== "string" || !UUID.test(args.tenant_id)
+      || typeof args.contact_id !== "string" || !UUID.test(args.contact_id)
+      || typeof args.remittance_reference !== "string"
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(args.remittance_reference)) {
+      throw new Error("Exact customer remittance identity is required");
+    }
+    return {
+      target_type: "customer_remittance",
+      target_id: `${args.tenant_id}:${args.contact_id}:${args.remittance_reference.toUpperCase()}`,
+    };
+  }
   const rule = TARGET_KEYS[toolName];
   if (rule) {
     const values = rule.keys

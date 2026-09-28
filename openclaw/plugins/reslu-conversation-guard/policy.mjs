@@ -183,7 +183,7 @@ function blocked(reason) {
   };
 }
 
-export function evaluateResluConversationTool(event, context, runState) {
+export function evaluateResluConversationTool(event, context, runState, config = {}) {
   if (!isResluConversationSession(context?.sessionKey)) return undefined;
   const state = runState ?? null;
   if (!state) return blocked("RESLU conversation run has no validated bridge envelope");
@@ -203,6 +203,22 @@ export function evaluateResluConversationTool(event, context, runState) {
       return undefined;
     }
     return blocked("Attachment review is restricted to its private staged files");
+  }
+
+  // This capability is separate from the ordinary Stuart allowlist. Only a
+  // trusted plugin configuration can enable it; request/envelope fields cannot.
+  if ([
+    "reslu-stuart__record_stuart_xero_customer_receipts",
+    "mcp__reslu_stuart__record_stuart_xero_customer_receipts",
+    "reslu-stuart__prepare_stuart_xero_customer_receipts",
+    "mcp__reslu_stuart__prepare_stuart_xero_customer_receipts",
+  ].includes(toolName)) {
+    const preparation = toolName.endsWith("__prepare_stuart_xero_customer_receipts");
+    const enabled = config.enableStuartCustomerReceipts === true
+      || (preparation && config.enableStuartCustomerReceiptPreparation === true);
+    return state.mode === "human_request" && enabled
+      ? undefined
+      : blocked("Stuart customer receipts require explicit capability activation and a validated direct human request");
   }
 
   // Typed specialist delegation remains available alongside generic agent

@@ -19,6 +19,18 @@
   },
   "configSchema": {
     "type": "object",
+    "properties": {
+      "enableStuartCustomerReceiptPreparation": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable only read-only remittance preparation for validated direct human requests. Does not permit receipt recording or expand OAuth scopes."
+      },
+      "enableStuartCustomerReceipts": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable only the exact, server-approved Stuart incoming customer receipt tool for validated direct human requests. Requires separately reviewed API/MCP activation and Xero consent."
+      }
+    },
     "additionalProperties": false
   }
 }
