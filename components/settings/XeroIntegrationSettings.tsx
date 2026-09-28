@@ -293,8 +293,12 @@ export function XeroIntegrationSettings({
             </dd>
           </div>
           <div>
-            <dt className="label-caps !text-charcoal/50">Access</dt>
-            <dd className="mt-1 text-nearblack">Read only</dd>
+            <dt className="label-caps !text-charcoal/50">Payment access</dt>
+            <dd className="mt-1 text-nearblack">
+              {status.customer_receipts_enabled && status.payment_write_access
+                ? "Record received funds with exact owner approval"
+                : "Read only"}
+            </dd>
           </div>
         </dl>
         <div className="border-t border-[#e5e0d6] px-4 py-4">
