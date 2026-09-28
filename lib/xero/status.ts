@@ -4,11 +4,15 @@ import type { XeroConnectionStatus } from "@/types/xero";
 
 export async function getXeroConnectionStatus(): Promise<XeroConnectionStatus> {
   const configured = xeroConfigured();
+  const customerReceiptsEnabled = process.env.STUART_XERO_CUSTOMER_RECEIPTS_ENABLED === "true"
+    && process.env.XERO_CUSTOMER_RECEIPTS_WRITE_CONSENT_ENABLED === "true";
   if (!configured) {
     return {
       configured: false,
       connected: false,
       reporting_access: false,
+      customer_receipts_enabled: customerReceiptsEnabled,
+      payment_write_access: false,
       tenant_name: null,
       tenant_id: null,
       connected_at: null,
@@ -34,6 +38,8 @@ export async function getXeroConnectionStatus(): Promise<XeroConnectionStatus> {
       configured: true,
       connected: false,
       reporting_access: false,
+      customer_receipts_enabled: customerReceiptsEnabled,
+      payment_write_access: false,
       tenant_name: null,
       tenant_id: null,
       connected_at: null,
@@ -57,6 +63,8 @@ export async function getXeroConnectionStatus(): Promise<XeroConnectionStatus> {
   return {
     configured: true,
     connected: true,
+    customer_receipts_enabled: customerReceiptsEnabled,
+    payment_write_access: (connection.scopes ?? []).includes("accounting.payments"),
     reporting_access: XERO_REPORT_SCOPES.every((scope) =>
       (connection.scopes ?? []).includes(scope)
     ),

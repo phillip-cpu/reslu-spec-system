@@ -1,8 +1,10 @@
-# Stuart customer receipts — disabled development candidate
+# Stuart customer receipts — deployment and operation
 
 Prepared 28 September 2026. This candidate adds the missing ability to prepare and record **already received AUD customer receipts against existing approved ACCREC invoices**. It does not transfer money, create or approve invoices, pay suppliers, issue refunds, change bank details, reconcile bank feeds or execute instructions from email content.
 
-**Nothing in this candidate was deployed, enabled, consented to or run against live financial records. No Fairmont invoice has been marked paid by this development work.** The prior automatic approval rejection remains binding; this capability must not be used as an indirect route around that rejection.
+**Production rollout, 28 September 2026:** PR #235 was merged and deployed. Both original remittances passed read-only preparation through the authenticated Stuart conversation with exact account, customer, source hash and live balances. The owner then explicitly approved production receipt activation and consent setup. The server, policy and Mac gates are enabled, but payment-write consent remains a separate human Xero step. No real receipt has been recorded by this rollout. Final financial-action handoff remains required; deployment and activation do not substitute for the owner's exact approval of an allocation.
+
+The initial development and synthetic verification described below performed no live financial writes. The Mac runtime was installed as a scoped merge preserving local work and its previously installed finance aliases.
 
 ## What exists and why a new capability was needed
 

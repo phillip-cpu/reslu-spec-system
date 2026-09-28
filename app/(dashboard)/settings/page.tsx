@@ -440,7 +440,7 @@ export default async function SettingsPage({
             External connections are configured with credentials in <code>.env.local</code>
             (or the Vercel project&apos;s environment variables in production). Monday.com
             and Gmail stay dormant until configured. Xero is separately admin-authorised
-            below and remains read-only.
+            below; receipt recording requires separate consent and exact owner approval.
           </p>
           <IntegrationStatus
             mondayConfigured={mondayConfigured}
