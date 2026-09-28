@@ -25,6 +25,12 @@ export const XERO_SCOPES = [
 
 export const XERO_STATE_COOKIE = "reslu_xero_oauth_state";
 
+/** Opt-in changes only the next human consent request; it cannot widen a token. */
+export function requestedXeroScopes(env: Record<string, string | undefined> = process.env): string[] {
+  return XERO_SCOPES.map(scope => scope === "accounting.payments.read" && env.XERO_CUSTOMER_RECEIPTS_WRITE_CONSENT_ENABLED === "true"
+    ? "accounting.payments" : scope);
+}
+
 export function xeroConfigured(): boolean {
   return Boolean(
     process.env.XERO_CLIENT_ID &&
@@ -53,7 +59,7 @@ export function xeroAuthorizationUrl(state: string): string {
   url.searchParams.set("response_type", "code");
   url.searchParams.set("client_id", clientId);
   url.searchParams.set("redirect_uri", xeroRedirectUri());
-  url.searchParams.set("scope", XERO_SCOPES.join(" "));
+  url.searchParams.set("scope", requestedXeroScopes().join(" "));
   url.searchParams.set("state", state);
   return url.toString();
 }

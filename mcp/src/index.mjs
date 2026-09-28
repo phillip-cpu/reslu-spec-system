@@ -56,6 +56,7 @@ import {
 import { transcribePrivateMeetingSource } from "./local-whisper.mjs";
 import { compactProjectBoard, resolveBoardGroupUpdate, resolveBoardTaskUpdate, verifyBoardGroupUpdate, verifyBoardTaskUpdate } from "./project-board.mjs";
 import { assertItemCanBeLinked, chooseExactEmailContact, mergeVerifiedContactNotes, normalizeContactItemLinkInput } from "./contact-item-link.mjs";
+import { CUSTOMER_RECEIPT_TOOL, CUSTOMER_RECEIPT_PREPARE_TOOL, createCustomerReceiptTool, createCustomerReceiptPreparationTool, customerReceiptToolEnabled } from "./customer-receipts.mjs";
 
 // ------------------------------------------------------------
 // Environment
@@ -2515,6 +2516,12 @@ const TOOLS = [
   },
 ];
 
+// Disabled by default and Stuart-only. The API independently checks its own
+// activation flag, exact owner approval, registry and current provider state.
+if (customerReceiptToolEnabled(AGENT_ROLE, process.env.STUART_XERO_CUSTOMER_RECEIPTS_ENABLED)) {
+  TOOLS.push(createCustomerReceiptPreparationTool(apiFetch));
+  TOOLS.push(createCustomerReceiptTool(apiFetch));
+}
 const toolsByName = new Map(TOOLS.map((t) => [t.name, t]));
 
 let ariaPolicyCache = null;
@@ -2599,8 +2606,9 @@ async function callAriaTool(tool, name, args) {
 
 // Stuart is deliberately incapable of using the general operational write
 // surface. His purpose-built finance routes and the guarded delegation
-// boundary are explicit; payment, payroll, refunds and ordinary Spec
-// mutations are absent rather than relying on prompt compliance.
+// boundary are explicit. Incoming customer receipts have a separate default-off
+// switch below; outgoing payments, payroll, refunds and ordinary Spec mutations
+// are absent rather than relying on prompt compliance.
 const STUART_ALLOWED_TOOLS = new Set([
   "delegate_reslu_agent_task",
   "get_stuart_finance_brief",
@@ -2626,6 +2634,9 @@ const MARCO_ALLOWED_TOOLS = new Set([
 ]);
 
 function toolAllowedForAgent(name) {
+  if (name === CUSTOMER_RECEIPT_TOOL || name === CUSTOMER_RECEIPT_PREPARE_TOOL) {
+    return customerReceiptToolEnabled(AGENT_ROLE, process.env.STUART_XERO_CUSTOMER_RECEIPTS_ENABLED);
+  }
   if (AGENT_ROLE === "stuart") return STUART_ALLOWED_TOOLS.has(name);
   if (AGENT_ROLE === "marco") return MARCO_ALLOWED_TOOLS.has(name);
   return true;
@@ -2700,7 +2711,11 @@ async function main() {
       const result = AGENT_ROLE === "aria"
         ? await callAriaTool(tool, name, args ?? {})
         : await tool.handler(args ?? {});
-      const text = JSON.stringify(result, null, 2);
+      // Keep bounded remittance plans and recovery IDs intact within the MCP
+      // response limit; whitespace must not crowd out exact approval data.
+      const text = name === CUSTOMER_RECEIPT_TOOL || name === CUSTOMER_RECEIPT_PREPARE_TOOL
+        ? JSON.stringify(result)
+        : JSON.stringify(result, null, 2);
       return {
         content: [{ type: "text", text: truncateForResponse(text) }],
       };

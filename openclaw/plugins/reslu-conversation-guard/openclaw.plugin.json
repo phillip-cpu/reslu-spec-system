@@ -19,6 +19,13 @@
   },
   "configSchema": {
     "type": "object",
+    "properties": {
+      "enableStuartCustomerReceipts": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable only the exact, server-approved Stuart incoming customer receipt tool for validated direct human requests. Requires separately reviewed API/MCP activation and Xero consent."
+      }
+    },
     "additionalProperties": false
   }
 }

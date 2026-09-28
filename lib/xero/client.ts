@@ -161,6 +161,9 @@ async function xeroWrite<T>(
   path: string,
   init: { method: "POST" | "PUT"; body: BodyInit; contentType: string; idempotencyKey?: string }
 ): Promise<T> {
+  if (init.idempotencyKey != null && !/^[a-f0-9]{64}$/.test(init.idempotencyKey)) {
+    throw new Error("Invalid Xero idempotency key");
+  }
   const url = new URL(path, "https://api.xero.com/");
   const request = (token: string) => fetch(url, {
     method: init.method,
@@ -201,12 +204,14 @@ export async function xeroPostJson<T>(
 export async function xeroPutJson<T>(
   connection: StoredXeroConnection,
   path: string,
-  body: unknown
+  body: unknown,
+  idempotencyKey?: string
 ): Promise<T> {
   return xeroWrite<T>(connection, path, {
     method: "PUT",
     body: JSON.stringify(body),
     contentType: "application/json",
+    idempotencyKey,
   });
 }
 
