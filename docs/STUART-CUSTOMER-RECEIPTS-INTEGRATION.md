@@ -1,6 +1,6 @@
 # Customer receipt integration and activation
 
-This is a disabled development candidate. It has not been deployed, granted additional Xero consent, or used to record a real payment.
+The code was deployed in PR #235. Read-only preparation passed through the live Stuart conversation, and the owner explicitly approved receipt activation and consent setup afterward. No additional Xero consent has yet been granted and no real receipt has been recorded. The flags below still default off in a fresh installation.
 
 ## Conversation and MCP boundary
 
