@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseStartAgentTaskRequest, taskIntentMatches } from "@/lib/agent-tasks";
 import { authorizedConversationAgent, conversationParticipants } from "@/lib/conversation-access";
+import { matchesConversationMessageTask } from "@/lib/conversation-message-task";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -19,7 +20,7 @@ async function accessConversation(conversationId: string, requestedSlug?: string
   if (participants.error || !self || (requestedSlug && !agent?.agent_slug)) {
     return { error: NextResponse.json({ error: "Conversation or agent not found" }, { status: 404 }) } as const;
   }
-  return { supabase, user, agent, error: null } as const;
+  return { supabase, user, agent, participants: participants.participants, error: null } as const;
 }
 
 export async function GET(_request: NextRequest, context: Context) {
@@ -62,6 +63,19 @@ export async function POST(request: NextRequest, context: Context) {
   const access = await accessConversation(id, body.agentSlug);
   if (access.error) return access.error;
   if (!access.agent) return NextResponse.json({ error: "Conversation agent not found" }, { status: 404 });
+
+  if (body.sourceMessageTask) {
+    const source = await access.supabase.from("conversation_messages")
+      .select("id,conversation_id,author_profile_id,author_agent_id,deleted_at,kind,body,metadata,conversation_attachments(id),conversation_forwarded_attachments(id)")
+      .eq("id", body.sourceMessageId!).eq("conversation_id", id).maybeSingle();
+    if (source.error) return NextResponse.json({ error: source.error.message }, { status: 500 });
+    if (!source.data || !matchesConversationMessageTask(body, {
+      ...source.data,
+      attachments: [...source.data.conversation_attachments, ...source.data.conversation_forwarded_attachments],
+    }, id, access.user.id, access.participants)) {
+      return NextResponse.json({ error: "This message is no longer eligible for this background task. Refresh and try again." }, { status: 409 });
+    }
+  }
 
   const existing = await access.supabase
     .from("agent_tasks")

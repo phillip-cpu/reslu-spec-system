@@ -12,6 +12,7 @@ import {
 } from "@/lib/agent-task-artifact";
 import { latestAgentComputerState } from "@/lib/agent-operating-workspace";
 import { visibleAgentWorkTasks } from "@/lib/agent-work-visibility";
+import { conversationMessageTask } from "@/lib/conversation-message-task";
 import { boundedFetch } from "@/lib/bounded-request";
 import { SimpleMarkdown } from "@/lib/simple-markdown";
 import { ChatContent } from "./ChatContent";
@@ -1439,6 +1440,7 @@ export function ConversationWorkspace({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [replyingTo, setReplyingTo] = useState<ConversationMessage | null>(null);
   const [messageMenuId, setMessageMenuId] = useState<string | null>(null);
+  const [startingMessageTaskId, setStartingMessageTaskId] = useState<string | null>(null);
   const [mediaViewer, setMediaViewer] = useState<{ url: string; filename: string; author: string } | null>(null);
   const [swipeBackOffset, setSwipeBackOffset] = useState(0);
   const [swipeBackDragging, setSwipeBackDragging] = useState(false);
@@ -2368,6 +2370,34 @@ export function ConversationWorkspace({
       setError("Could not copy this message. Press and hold the text to copy it manually.");
     }
   }, [copyTextToClipboard]);
+
+  const startMessageTask = useCallback(async (message: ConversationMessage) => {
+    const conversationId = selectedIdRef.current;
+    if (!conversationId || !currentUserId || startingMessageTaskId) return;
+    const request = conversationMessageTask(message, conversationId, currentUserId, participants);
+    if (!request) return;
+    setStartingMessageTaskId(message.id);
+    setMessageMenuId(null);
+    setError(null);
+    try {
+      const response = await boundedFetch(`/api/conversations/${conversationId}/tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      }, CONVERSATION_ACTION_TIMEOUT_MS);
+      const body = await response.json() as { task?: AgentTask; error?: string };
+      if (!response.ok || !body.task) throw new Error(body.error ?? "Could not start background task");
+      if (selectedIdRef.current === conversationId) {
+        setSelectedAgentTaskId(body.task.id);
+        setAgentWorkExpanded(true);
+      }
+      await loadAgentTasks(conversationId);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not start background task");
+    } finally {
+      setStartingMessageTaskId(null);
+    }
+  }, [currentUserId, participants, startingMessageTaskId, loadAgentTasks]);
 
   const beginReply = useCallback((message: ConversationMessage) => {
     setReplyingTo(message);
@@ -5560,6 +5590,17 @@ export function ConversationWorkspace({
                             {!pending && !message.deleted_at && (
                               <button type="button" role="menuitem" onClick={() => beginReply(message)} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f1e8]">
                                 Reply
+                              </button>
+                            )}
+                            {!pending && currentUserId && selectedId && conversationMessageTask(message, selectedId, currentUserId, participants) && (
+                              <button
+                                type="button"
+                                role="menuitem"
+                                disabled={Boolean(startingMessageTaskId)}
+                                onClick={() => void startMessageTask(message)}
+                                className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f1e8] disabled:opacity-40"
+                              >
+                                Start background task
                               </button>
                             )}
                             {!pending && !message.deleted_at && message.kind === "text" && (

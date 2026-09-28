@@ -11,6 +11,7 @@ export interface StartAgentTaskRequest {
   requestedVia: "text" | "voice";
   sourceCallId: string | null;
   sourceMessageId: string | null;
+  sourceMessageTask?: true;
 }
 
 export interface RealtimeAgentTaskRequest extends StartAgentTaskRequest {
@@ -40,7 +41,10 @@ export function parseStartAgentTaskRequest(value: unknown): StartAgentTaskReques
   if (!clientTaskId || !PROVIDER_ID.test(clientTaskId) || !title || !objective || !agentSlug) return null;
   if (body.source_call_id != null && !sourceCallId) return null;
   if (body.source_message_id != null && !sourceMessageId) return null;
-  return { clientTaskId, agentSlug, title, objective, modelTier, requestedVia, sourceCallId, sourceMessageId };
+  if (body.source_message_task != null && (body.source_message_task !== true || !sourceMessageId || sourceCallId || requestedVia !== "text")) return null;
+  return { clientTaskId, agentSlug, title, objective, modelTier, requestedVia, sourceCallId, sourceMessageId,
+    ...(body.source_message_task === true ? { sourceMessageTask: true as const } : {}),
+  };
 }
 
 export function parseRealtimeAgentTaskRequest(value: unknown): RealtimeAgentTaskRequest | null {
