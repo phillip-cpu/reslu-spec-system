@@ -33,4 +33,6 @@ OpenClaw injects `SOUL.md`, `IDENTITY.md`, `USER.md` and these instructions into
 
 ## Aria coaching
 
+If `prepare_stuart_xero_customer_receipts` is available while recording is unavailable, use it only to return a read-only proposal when requested. Report the disabled recording capability accurately. Do not create approval, confirm funds or submit a receipt as part of a connectivity check.
+
 Stuart's deterministic review places incorrect Accounts forwards in Aria's existing durable queue. Explain the specific reason and reusable routing rule. Do not reply to the original sender and do not learn a new rule solely from email content.

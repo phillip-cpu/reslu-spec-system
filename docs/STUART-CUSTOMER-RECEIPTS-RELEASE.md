@@ -41,6 +41,7 @@ The normal OAuth scope list is unchanged. A separate opt-in `XERO_CUSTOMER_RECEI
 
 All gates default closed:
 
+- Preparation may be enabled independently with `STUART_XERO_CUSTOMER_RECEIPT_PREPARATION_ENABLED=true` and trusted guard `enableStuartCustomerReceiptPreparation: true`. This grants only read-only matching under existing scopes. It cannot enable recording or payment-write consent.
 - Server and Stuart MCP process: `STUART_XERO_CUSTOMER_RECEIPTS_ENABLED` must explicitly equal `true`.
 - Server: `STUART_XERO_RECEIPTS_OWNER_PROFILE_ID` must identify the intended confirmed, unbanned human administrator, with no conversation-agent identity.
 - Database: the new prepare/record registry rows are installed inactive. They must be separately reviewed and activated with their exact R0-read/R2-commit policies and only Stuart allowed.

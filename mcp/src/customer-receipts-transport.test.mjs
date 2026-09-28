@@ -5,7 +5,7 @@ import test from "node:test";
 
 // Exercise the real MCP entrypoint with fake credentials and unreachable local
 // URLs. Listing tools and rejecting unavailable calls must never authenticate.
-async function request(role, enabled, method, params = {}) {
+async function request(role, enabled, method, params = {}, preparationEnabled = "false") {
   const child = spawn(process.execPath, [fileURLToPath(new URL("./index.mjs", import.meta.url))], {
     env: {
       PATH: process.env.PATH, HOME: process.env.HOME,
@@ -13,6 +13,7 @@ async function request(role, enabled, method, params = {}) {
       NEXT_PUBLIC_SUPABASE_ANON_KEY: "test-only-placeholder",
       RESLU_AGENT_EMAIL: "test@example.invalid", RESLU_AGENT_PASSWORD: "test-only-placeholder",
       RESLU_AGENT_ROLE: role, STUART_XERO_CUSTOMER_RECEIPTS_ENABLED: enabled,
+      STUART_XERO_CUSTOMER_RECEIPT_PREPARATION_ENABLED: preparationEnabled,
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -53,6 +54,18 @@ test("actual MCP listing exposes receipt tools only to explicitly enabled Stuart
       assert.equal(write.inputSchema.properties._authority.required.includes("approval_receipt_id"), true);
     }
   }
+});
+
+test("read-only preparation activation never exposes or permits receipt recording", async () => {
+  const response = await request("stuart", "false", "tools/list", {}, "true");
+  const names = response.tools.map(tool => tool.name);
+  assert.equal(names.includes("prepare_stuart_xero_customer_receipts"), true);
+  assert.equal(names.includes("record_stuart_xero_customer_receipts"), false);
+  const denied = await request("stuart", "false", "tools/call", { name: "record_stuart_xero_customer_receipts", arguments: {} }, "true");
+  assert.equal(denied.isError, true);
+  assert.match(denied.content[0].text, /Tool is not available/);
+  const other = await request("marco", "false", "tools/list", {}, "true");
+  assert.equal(other.tools.some(tool => tool.name.endsWith("stuart_xero_customer_receipts")), false);
 });
 
 test("calling a hidden receipt tool directly is rejected before any API request", async () => {

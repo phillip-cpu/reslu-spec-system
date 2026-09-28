@@ -2518,8 +2518,11 @@ const TOOLS = [
 
 // Disabled by default and Stuart-only. The API independently checks its own
 // activation flag, exact owner approval, registry and current provider state.
-if (customerReceiptToolEnabled(AGENT_ROLE, process.env.STUART_XERO_CUSTOMER_RECEIPTS_ENABLED)) {
+if (customerReceiptToolEnabled(AGENT_ROLE, process.env.STUART_XERO_CUSTOMER_RECEIPT_PREPARATION_ENABLED)
+  || customerReceiptToolEnabled(AGENT_ROLE, process.env.STUART_XERO_CUSTOMER_RECEIPTS_ENABLED)) {
   TOOLS.push(createCustomerReceiptPreparationTool(apiFetch));
+}
+if (customerReceiptToolEnabled(AGENT_ROLE, process.env.STUART_XERO_CUSTOMER_RECEIPTS_ENABLED)) {
   TOOLS.push(createCustomerReceiptTool(apiFetch));
 }
 const toolsByName = new Map(TOOLS.map((t) => [t.name, t]));
@@ -2634,7 +2637,11 @@ const MARCO_ALLOWED_TOOLS = new Set([
 ]);
 
 function toolAllowedForAgent(name) {
-  if (name === CUSTOMER_RECEIPT_TOOL || name === CUSTOMER_RECEIPT_PREPARE_TOOL) {
+  if (name === CUSTOMER_RECEIPT_PREPARE_TOOL) {
+    return customerReceiptToolEnabled(AGENT_ROLE, process.env.STUART_XERO_CUSTOMER_RECEIPT_PREPARATION_ENABLED)
+      || customerReceiptToolEnabled(AGENT_ROLE, process.env.STUART_XERO_CUSTOMER_RECEIPTS_ENABLED);
+  }
+  if (name === CUSTOMER_RECEIPT_TOOL) {
     return customerReceiptToolEnabled(AGENT_ROLE, process.env.STUART_XERO_CUSTOMER_RECEIPTS_ENABLED);
   }
   if (AGENT_ROLE === "stuart") return STUART_ALLOWED_TOOLS.has(name);

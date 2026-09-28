@@ -20,6 +20,11 @@
   "configSchema": {
     "type": "object",
     "properties": {
+      "enableStuartCustomerReceiptPreparation": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable only read-only remittance preparation for validated direct human requests. Does not permit receipt recording or expand OAuth scopes."
+      },
       "enableStuartCustomerReceipts": {
         "type": "boolean",
         "default": false,

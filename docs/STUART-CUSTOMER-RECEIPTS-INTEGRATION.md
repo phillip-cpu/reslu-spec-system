@@ -4,6 +4,8 @@ This is a disabled development candidate. It has not been deployed, granted addi
 
 ## Conversation and MCP boundary
 
+Read-only preparation can be released independently: set `STUART_XERO_CUSTOMER_RECEIPT_PREPARATION_ENABLED=true` in the server and Stuart MCP environment, activate only its R0 registry row, and set trusted guard config `enableStuartCustomerReceiptPreparation: true`. The recording flag, record policy and payment-write consent remain closed. This setting cannot expose or invoke the recording tool. Both preparation confirmations stay false and no authority receipt or action claim is created.
+
 The connector exposes `prepare_stuart_xero_customer_receipts` and `record_stuart_xero_customer_receipts` only when `RESLU_AGENT_ROLE=stuart` and `STUART_XERO_CUSTOMER_RECEIPTS_ENABLED=true` in that MCP process. Hidden tools also reject direct invocation before authentication or any API call. Other agents cannot obtain the tools through the general Aria registry.
 
 The Mac guard separately requires the trusted plugin setting `enableStuartCustomerReceipts: true`. It recognises only the `reslu-stuart__...` and `mcp__reslu_stuart__...` names for these two tools. Forwarded messages, attachment-review turns, specialist consultations and missing bridge envelopes remain blocked. Setting a similarly named field in tool arguments or run state cannot activate it. Other Stuart payments, approvals and host tools retain their restrictions.

@@ -5,7 +5,8 @@ import { prepareCustomerReceiptPlan, receiptWhereLiteral, validateReceiptPrepara
 import type { XeroRow } from "./customer-receipt-contract";
 
 export async function prepareStuartXeroCustomerReceipts(raw: unknown, actorId: string) {
-  if (process.env.STUART_XERO_CUSTOMER_RECEIPTS_ENABLED !== "true") throw new Error("Customer receipt preparation is disabled pending reviewed activation");
+  if (process.env.STUART_XERO_CUSTOMER_RECEIPT_PREPARATION_ENABLED !== "true"
+    && process.env.STUART_XERO_CUSTOMER_RECEIPTS_ENABLED !== "true") throw new Error("Customer receipt preparation is disabled pending reviewed activation");
   const input = validateReceiptPreparation(raw);
   const service = createServiceRoleClient();
   const { data: agent, error } = await service.from("conversation_agents").select("id").eq("slug", "stuart").eq("active", true).eq("auth_profile_id", actorId).maybeSingle();

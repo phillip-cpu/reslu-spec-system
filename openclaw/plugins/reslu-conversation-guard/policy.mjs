@@ -213,7 +213,10 @@ export function evaluateResluConversationTool(event, context, runState, config =
     "reslu-stuart__prepare_stuart_xero_customer_receipts",
     "mcp__reslu_stuart__prepare_stuart_xero_customer_receipts",
   ].includes(toolName)) {
-    return state.mode === "human_request" && config.enableStuartCustomerReceipts === true
+    const preparation = toolName.endsWith("__prepare_stuart_xero_customer_receipts");
+    const enabled = config.enableStuartCustomerReceipts === true
+      || (preparation && config.enableStuartCustomerReceiptPreparation === true);
+    return state.mode === "human_request" && enabled
       ? undefined
       : blocked("Stuart customer receipts require explicit capability activation and a validated direct human request");
   }
