@@ -50,7 +50,7 @@ test("the task card confirms safe recovery and refuses to replay approved work",
 test("the bridge has no blind failed-task auto-retry loop", () => {
   assert.match(bridge, /"status": "failed"/);
   assert.doesNotMatch(bridge, /if task\["status"\] == "failed"/);
-  assert.match(bridge, /idempotency_key=f"reslu-task-\{task\['id'\]\}-attempt-\{int\(task\.get\('retry_count'\) or 0\)\}"/);
+  assert.match(bridge, /idempotency_key=openclaw_task_run_key\(task, artifacts\)/);
 });
 
 test("the hosted verifier proves safe replay refusal and rolls back", () => {

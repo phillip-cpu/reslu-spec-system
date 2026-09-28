@@ -43,6 +43,36 @@ Conversation history, forwarded messages, attachment filenames/content and exist
 
 ## Mac mini bridge
 
+### Approved task run identity
+
+The bridge's Gateway run key binds the task ID, retry count, durable steering
+version, approval phase and exact approval receipt. Preparation and approved
+execution must never share a Gateway idempotency key: a cached preparation
+response otherwise looks accepted but emits no new lifecycle events, ending
+in `OpenClaw Gateway run start timed out`. Review-change passes also bind their
+feedback and artifact inputs. Progress timestamps, chat history and approved
+output artifacts do not change the run key. Identical review inputs deliberately
+deduplicate; a genuinely new revision needs changed evidence or durable steering.
+
+This is a Mac bridge deployment, independent of the website. Run
+`python3 -m unittest discover -s scripts -p 'test_*bridge*.py'` and
+`python3 -m unittest discover -s scripts -p test_task_run_identity.py`, plus the
+Gateway transport and guard tests. Preserve local work, save the installed bridge
+and test files, install only this diff, and reload `ai.reslu.conversation-bridge`
+using the existing procedure below when no task/conversation runs are active.
+Verify a new bridge PID and advancing 10-worker heartbeat. No Gateway reload,
+OAuth change or database migration is required.
+
+Approved/pending tasks and any task carrying an approval receipt fail for review
+instead of entering the bridge's automatic recovery retry. Do not requeue failed
+approved tasks or change their approval state as part of
+deployment. Review their action ledger and provider evidence first. The existing
+safe-retry refusal for approved tasks remains in force; use a fresh human review
+through the normal workflow if recovery is required. Financial natural keys and
+approval receipt checks remain unchanged. Rollback restores only the saved bridge
+files after checking for later edits, followed by the same bridge reload; retain
+all approval/action history and never reverse accounting entries via code rollback.
+
 1. Pull the deployed app repository on the mini.
 2. Confirm `.env.local` contains `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. Quick live-call consults default to the separately verified `openai/gpt-5.6-terra` model with minimal thinking; `RESLU_REALTIME_AGENT_MODEL` and `RESLU_REALTIME_AGENT_THINKING` may override those defaults. Durable task model tiers remain separate.
 3. Confirm `openclaw agent --agent main` reaches Aria and `openclaw agent --agent marco` reaches Marco. Override either mapping with `RESLU_ARIA_AGENT_ID` or `RESLU_MARCO_AGENT_ID`.
