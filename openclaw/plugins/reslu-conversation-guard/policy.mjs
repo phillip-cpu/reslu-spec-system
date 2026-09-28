@@ -69,6 +69,8 @@ const HUMAN_TYPED_SPECIALIST_TOOLS = new Set([
 const HUMAN_STUART_OPERATION_TOOLS = new Set([
   "reslu-stuart__run_stuart_finance_review",
   "reslu-stuart__process_stuart_supplier_invoice",
+  "mcp__reslu_stuart__run_stuart_finance_review",
+  "mcp__reslu_stuart__process_stuart_supplier_invoice",
   "reslu-stuart__attach_stuart_source_invoice",
   "reslu-stuart__create_stuart_xero_supplier_contact",
   "reslu-stuart__create_stuart_xero_draft_bill",

@@ -110,6 +110,8 @@ test("direct human turns can load governed core and operational Aria skill packa
 for (const toolName of [
   "reslu-stuart__run_stuart_finance_review",
   "reslu-stuart__process_stuart_supplier_invoice",
+  "mcp__reslu_stuart__run_stuart_finance_review",
+  "mcp__reslu_stuart__process_stuart_supplier_invoice",
 ]) {
   test(`${toolName} is available in validated human chat and voice turns`, () => {
     for (const stuartSessionKey of [
@@ -136,7 +138,7 @@ for (const toolName of [
   });
 }
 
-test("Stuart workflow access does not permit other run/process tools or financial approvals", () => {
+test("Stuart workflow access does not permit lookalikes, other operations or host tools", () => {
   for (const toolName of [
     "reslu-stuart__run_arbitrary_workflow",
     "reslu-stuart__process_stuart_supplier_payment",
@@ -144,6 +146,24 @@ test("Stuart workflow access does not permit other run/process tools or financia
     "reslu-stuart__approve_xero_bill",
     "reslu-stuart__pay_xero_bill",
     "reslu-stuart__reconcile_xero_bank_transaction",
+    "reslu-stuart__run_stuart_finance_review_extra",
+    "reslu-stuart__process_stuart_supplier_invoice_extra",
+    "mcp__reslu_stuart__run_arbitrary_workflow",
+    "mcp__reslu_stuart__process_stuart_supplier_payment",
+    "mcp__reslu_stuart__run_stuart_finance_review_and_pay",
+    "mcp__reslu_stuart__process_stuart_supplier_invoice_extra",
+    "mcp__reslu_stuart__approve_xero_bill",
+    "mcp__reslu_stuart__pay_xero_bill",
+    "mcp__reslu_stuart__reconcile_xero_bank_transaction",
+    "mcp__reslu_marco__run_stuart_finance_review",
+    "mcp__other__process_stuart_supplier_invoice",
+    "mcp__reslu_stuart_extra__run_stuart_finance_review",
+    "mcp__reslu_stuart__exec",
+    "mcp__reslu_stuart__write",
+    "exec",
+    "read",
+    "write",
+    "browser",
   ]) {
     assert.equal(decision(toolName, "human_request")?.block, true, toolName);
   }

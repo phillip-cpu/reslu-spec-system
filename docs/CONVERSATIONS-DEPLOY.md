@@ -72,6 +72,13 @@ Neither verb matches the generic read-only tool rule. Omitting either name
 produces `RESLU conversation tool is not on the read-only business allowlist`
 before the existing Stuart API handler or Xero connection is reached.
 
+The native Codex MCP hook supplies the same operations as
+`mcp__reslu_stuart__run_stuart_finance_review` and
+`mcp__reslu_stuart__process_stuart_supplier_invoice`. Its tool-name adapter
+does not translate those names to the OpenClaw spelling, so both exact aliases
+must also be in the validated-human set. Do not replace these entries with a
+general MCP prefix exception or broad tool-name normalization.
+
 These are exact-name exceptions. The finance review refreshes Spec's Xero
 cache and findings without writing to Xero. Invoice processing uses the existing
 Accounts-mailbox, source-evidence, currency, account-mapping, duplicate and
@@ -96,6 +103,21 @@ To deploy this guard change:
    check is complete and that work is resumed by the human.
 
 Record the installed commit and live review result before marking access fixed.
+
+Live verification on 28 September 2026: the original OpenClaw-name fix reached
+the native Codex hook but still returned the allowlist error for
+`mcp__reslu_stuart__run_stuart_finance_review`. After installing the two exact
+aliases and reloading `ai.openclaw.gateway` through the existing launchd
+procedure, fresh gateway health was `ok` and the advancing bridge heartbeat
+reported a valid session with all 10 expected workers active. No bridge restart
+was required for this guard-only change.
+
+A fresh authenticated direct Stuart message with no attachments then completed
+review `9f5699d5-3ec5-4d9d-abbc-436e6c62f9a4` at
+`2026-09-28T07:10:11.139Z`, independently verified by its stored review record.
+The response reported `error=null` and `xero_sync_warning=null`. Verification
+used only the finance-review operation; invoice processing, cleanup and Xero
+writes remained paused. No OAuth scopes or server checks changed.
 
 ## Current release boundary
 
