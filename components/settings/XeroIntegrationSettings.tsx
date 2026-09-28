@@ -218,8 +218,16 @@ export function XeroIntegrationSettings({
             <h3 className="text-body text-nearblack">Xero accounting</h3>
           </div>
           <p className="mt-1 text-caption text-charcoal/55">
-            Read-only invoices, purchase bills, payments and financial reports.
+            Invoices, purchase bills, payments and financial reports.
           </p>
+          {status.customer_receipts_enabled && (
+            <p className="mt-1 text-caption text-charcoal/70">
+              {status.payment_write_access
+                ? "Customer receipts: Xero consent granted. Each allocation still requires the owner's exact approval."
+                : "Customer receipts: awaiting Xero consent. Authorise access to record money already received; each allocation requires the owner's exact approval."}
+              {" Bank reconciliation remains separate."}
+            </p>
+          )}
         </div>
         {status.configured && !status.connected && (
           <a
@@ -231,6 +239,14 @@ export function XeroIntegrationSettings({
         )}
         {status.connected && (
           <div className="flex flex-wrap gap-2">
+            {status.customer_receipts_enabled && !status.payment_write_access && (
+              <a
+                href="/api/xero/connect"
+                className="bg-nearblack px-4 py-2 text-subhead text-white hover:bg-charcoal"
+              >
+                Authorise receipt recording
+              </a>
+            )}
             {!status.reporting_access && (
               <a
                 href="/api/xero/connect"
