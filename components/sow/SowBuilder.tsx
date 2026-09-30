@@ -500,7 +500,9 @@ export function SowBuilder({ projectId }: Props) {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error ?? "Could not add section.");
-    setSections((cur) => [...cur, body.section as SowSectionWithTradedLines]);
+    // Adding a section can move the standard closing clauses in the database.
+    // Reload their saved sort values as well as the newly inserted section.
+    await loadSow(sow.id);
   }
 
   async function renameSection(sectionId: string, heading: string) {
@@ -511,9 +513,7 @@ export function SowBuilder({ projectId }: Props) {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error ?? "Could not rename section.");
-    setSections((cur) =>
-      cur.map((s) => (s.id === sectionId ? { ...s, heading: body.section.heading } : s))
-    );
+    if (sow) await loadSow(sow.id);
   }
 
   async function moveRoomSection(sectionId: string, direction: -1 | 1) {
