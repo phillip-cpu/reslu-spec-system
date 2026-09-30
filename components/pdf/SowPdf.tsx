@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -11,7 +12,7 @@ import {
 } from "@react-pdf/renderer";
 import type { Project } from "@/types";
 import type { SowLineWithTrade, SowSectionWithTradedLines } from "@/types/sow-trade-tags";
-import { groupSowLinesByTrade } from "@/lib/sow-trade-tags";
+import { groupSowLinesByTrade, isGeneralNotesHeading } from "@/lib/sow-trade-tags";
 
 // ── fonts (registered once) ─────────────────────────────────
 // Same registration approach as components/pdf/SchedulePdf.tsx — falls
@@ -252,6 +253,15 @@ interface Props {
   extractTrade?: string | null;
 }
 
+// Linked rooms and custom area sections start fresh. Standard document
+// introductions and closing clauses retain their continuous flow.
+function isAreaSection(section: SowSectionWithTradedLines) {
+  if (section.source_room_id) return true;
+  const heading = section.heading.trim();
+  return !isGeneralNotesHeading(heading) &&
+    !/^(project overview|general \/ preliminaries|site management(?: & handover)?|exclusions|assumptions)$/i.test(heading);
+}
+
 /**
  * SOW branded PDF (BUILD-SPEC.md "Scope of Works builder"): cover
  * matches docs-sow-reference.docx's placeholder structure (PROJECT
@@ -289,34 +299,32 @@ export function SowPdf({
     const exclusions = lines.filter((line) => line.kind === "exclusion");
     const notes = lines.filter((line) => line.kind === "note");
 
-    return (
-      <>
-        {inclusions.map((line) => (
-          <View key={line.id} style={styles.lineRow} wrap={false}>
-            <Text style={styles.lineBullet}>—</Text>
-            <Text style={styles.lineText}>{line.text}</Text>
-          </View>
-        ))}
+    return [
+      ...inclusions.map((line) => (
+        <View key={line.id} style={styles.lineRow} wrap={false}>
+          <Text style={styles.lineBullet}>—</Text>
+          <Text style={styles.lineText}>{line.text}</Text>
+        </View>
+      )),
 
-        {exclusions.length > 0 && (
-          <View style={styles.exclusionsBlock} wrap={false}>
-            <Text style={styles.exclusionsLabel}>Exclusions</Text>
-            {exclusions.map((line) => (
-              <View key={line.id} style={styles.lineRow} wrap={false}>
-                <Text style={styles.lineBullet}>—</Text>
-                <Text style={styles.lineText}>{line.text}</Text>
-              </View>
-            ))}
-          </View>
-        )}
+      ...(exclusions.length > 0 ? [(
+        <View key="exclusions" style={styles.exclusionsBlock} wrap={false}>
+          <Text style={styles.exclusionsLabel}>Exclusions</Text>
+          {exclusions.map((line) => (
+            <View key={line.id} style={styles.lineRow} wrap={false}>
+              <Text style={styles.lineBullet}>—</Text>
+              <Text style={styles.lineText}>{line.text}</Text>
+            </View>
+          ))}
+        </View>
+      )] : []),
 
-        {notes.map((line) => (
-          <Text key={line.id} style={[styles.noteText, { marginTop: 6 }]}>
-            {line.text}
-          </Text>
-        ))}
-      </>
-    );
+      ...notes.map((line) => (
+        <Text key={line.id} style={[styles.noteText, { marginTop: 6 }]}>
+          {line.text}
+        </Text>
+      )),
+    ];
   }
 
   return (
@@ -374,51 +382,51 @@ export function SowPdf({
           </Text>
         </View>
 
-        {sections.map((section) => {
+        {sections.map((section, sectionIndex) => {
+          const startOnNewPage = sectionIndex > 0 && isAreaSection(section);
           const lineGroups = extractTrade
             ? [{ trade: null, lines: section.lines }]
             : groupSowLinesByTrade(section.lines);
           const hasTradeGroups = lineGroups.some((group) => group.trade !== null);
 
           return (
-            // Root cause of the overlapping-text bug: this section
-            // container was `wrap={false}` — an unbreakable block. A
-            // section's total content (heading + every inclusion/
-            // exclusion/note line) routinely exceeds one page's usable
-            // height (long room sections have a dozen-plus multi-line
-            // clauses; General Notes/Compliance clauses run several
-            // sentences each — see lib/sow-templates.ts). @react-pdf's
-            // layout engine cannot slice an unbreakable node across
-            // pages, so once a section's measured height passed the
-            // remaining/full page height it got compressed onto a
-            // single page with every line's box overlapping the next
-            // instead of flowing onto page 2, 3, etc. — exactly the
-            // "text stamped over text" symptom.
-            //
-            // Fix: let the section flow/paginate normally (no
-            // wrap={false} here — same as SchedulePdf.tsx's category
-            // groups, which are never force-unbroken either), and
-            // protect only the heading from being orphaned alone at
-            // the bottom of a page via minPresenceAhead — it demands
-            // ~1 body line's worth of following space be available on
-            // the same page, else the heading itself moves to the next
-            // page together with its content.
-            <View key={section.id}>
-              <Text style={styles.sectionHeading} minPresenceAhead={32}>
-                {section.heading}
-              </Text>
-
-              {lineGroups.map((group, groupIndex) => (
-                <View key={group.trade ?? `untagged-${groupIndex}`}>
-                  {group.trade || (!extractTrade && hasTradeGroups) ? (
-                    <Text style={styles.tradeHeading} minPresenceAhead={24}>
-                      {group.trade ?? "General"}
-                    </Text>
-                  ) : null}
-                  {renderLines(group.lines)}
-                </View>
-              ))}
-            </View>
+            // Keep only the heading(s) and first rendered block together.
+            // Whole sections/trade groups must remain breakable: long rooms
+            // can span several pages. A fixed minPresenceAhead allowance
+            // cannot account for a multi-line first row moving independently.
+            // Fragments keep these blocks as Page children; nested breakable
+            // Views can retain an empty split and create a trailing blank page.
+            <Fragment key={section.id}>
+              {lineGroups.length === 0 ? (
+                <Text style={styles.sectionHeading} break={startOnNewPage}>{section.heading}</Text>
+              ) : null}
+              {lineGroups.map((group, groupIndex) => {
+                const [firstBlock, ...remainingBlocks] = renderLines(group.lines);
+                return (
+                  <Fragment key={group.trade ?? `untagged-${groupIndex}`}>
+                    <View
+                      wrap={false}
+                      break={startOnNewPage && groupIndex === 0}
+                      minPresenceAhead={firstBlock?.type === Text ? 24 : 0}
+                    >
+                      {groupIndex === 0 ? (
+                        <Text style={styles.sectionHeading}>{section.heading}</Text>
+                      ) : null}
+                      {group.trade || (!extractTrade && hasTradeGroups) ? (
+                        <Text style={styles.tradeHeading}>
+                          {group.trade ?? "General"}
+                        </Text>
+                      ) : null}
+                      {firstBlock?.type === Text ? null : firstBlock}
+                    </View>
+                    {/* Notes can exceed a page; keep their opening lines with
+                        the heading while allowing the rest to wrap. */}
+                    {firstBlock?.type === Text ? firstBlock : null}
+                    {remainingBlocks}
+                  </Fragment>
+                );
+              })}
+            </Fragment>
           );
         })}
 
