@@ -63,6 +63,62 @@ Do not infer liveness only from an old startup line in the local log.
 
 The bridge polls only the dedicated lightweight agent job table. Each worker reuses one private HTTPS connection to Supabase instead of opening a new TLS handshake for every poll and context lookup. A claimed turn fetches its transport metadata and newest-message files together, then loads recent messages with their author names and ready-file metadata in one joined request. It routes each RESLU conversation through a stable OpenClaw session key, sends the existing runtime the recent canonical thread history, then stores only the final response in that same thread. With migration 100 and its feature flag enabled, the bridge uses the authenticated loopback Gateway event protocol and shows member-scoped progress while keeping the CLI as a pre-acceptance fallback. If the run lifecycle ends before its separate live final event arrives, the helper polls bounded `chat.history` for the same qualified session and accepts only the visible assistant response whose nearest current user message exactly matches the accepted prompt and timestamp window. It never reruns an accepted job, so durable recovery cannot duplicate agent work or business side effects. For a newest message containing uploaded or forwarded attachments, the bridge downloads those private objects into a per-job temporary directory, instructs the existing agent to inspect their local paths, and removes the directory when the synchronous agent turn finishes. A newer spoken turn cancels the exact accepted Gateway run and publication of stale output. Cancellation never claims to reverse an external side effect that already completed.
 
+### Stuart finance tools in conversations
+
+The conversation guard must explicitly allow
+`reslu-stuart__run_stuart_finance_review` and
+`reslu-stuart__process_stuart_supplier_invoice` for a validated `human_request`.
+Neither verb matches the generic read-only tool rule. Omitting either name
+produces `RESLU conversation tool is not on the read-only business allowlist`
+before the existing Stuart API handler or Xero connection is reached.
+
+The native Codex MCP hook supplies the same operations as
+`mcp__reslu_stuart__run_stuart_finance_review` and
+`mcp__reslu_stuart__process_stuart_supplier_invoice`. Its tool-name adapter
+does not translate those names to the OpenClaw spelling, so both exact aliases
+must also be in the validated-human set. Do not replace these entries with a
+general MCP prefix exception or broad tool-name normalization.
+
+These are exact-name exceptions. The finance review refreshes Spec's Xero
+cache and findings without writing to Xero. Invoice processing uses the existing
+Accounts-mailbox, source-evidence, currency, account-mapping, duplicate and
+DRAFT-only checks. The same tools remain blocked in forwarded, attachment and
+specialist-consultation turns, and without a validated bridge envelope. No Xero
+OAuth scopes or payment/approval permissions are added by this change.
+
+To deploy this guard change:
+
+1. Update the production Mac checkout to the reviewed release containing the
+   guard fix. The installed plugin loads from that checkout; a web deployment
+   alone does not update the running OpenClaw plugin.
+2. Run `node --test openclaw/plugins/reslu-conversation-guard/*.test.mjs` there.
+3. Reload the OpenClaw runtime that loads `reslu-conversation-guard` using the
+   host's existing service procedure. Confirm the matching bridge heartbeat is
+   fresh and its expected workers are active.
+4. In a new direct Stuart message with no attachments, request only a fresh
+   finance review and its result timestamp. Verify the tool reaches the API and
+   returns a result; report any separate authentication or scope error exactly.
+   Do not use supplier-invoice processing as a connectivity probe: it can stage
+   invoices and create Xero drafts. Keep invoice work paused until the access
+   check is complete and that work is resumed by the human.
+
+Record the installed commit and live review result before marking access fixed.
+
+Live verification on 28 September 2026: the original OpenClaw-name fix reached
+the native Codex hook but still returned the allowlist error for
+`mcp__reslu_stuart__run_stuart_finance_review`. After installing the two exact
+aliases and reloading `ai.openclaw.gateway` through the existing launchd
+procedure, fresh gateway health was `ok` and the advancing bridge heartbeat
+reported a valid session with all 10 expected workers active. No bridge restart
+was required for this guard-only change.
+
+A fresh authenticated direct Stuart message with no attachments then completed
+review `9f5699d5-3ec5-4d9d-abbc-436e6c62f9a4` at
+`2026-09-28T07:10:11.139Z`, independently verified by its stored review record.
+The response reported `error=null` and `xero_sync_warning=null`. Verification
+used only the finance-review operation; invoice processing, cleanup and Xero
+writes remained paused. No OAuth scopes or server checks changed.
+
 ## Current release boundary
 
 - Durable one-to-one and mixed group text conversations.

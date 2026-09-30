@@ -59,13 +59,18 @@ const HUMAN_TYPED_SPECIALIST_TOOLS = new Set([
   "reslu-marco__delegate_reslu_agent_task",
   "reslu-stuart__delegate_reslu_agent_task",
 ]);
-// Stuart's only direct-human finance writes are purpose-built, server-guarded
-// workflow steps: link already-ingested source evidence, create a verified
-// supplier contact without bank details, and create a Xero DRAFT.
+// Stuart's direct-human finance workflows are purpose-built and server-guarded:
+// refresh the read-only Xero cache/findings, process an Accounts invoice through
+// the existing staging/DRAFT checks, link already-ingested source evidence,
+// create a verified supplier contact without bank details, and create a Xero DRAFT.
 // Keep this exact-name allowlist narrow; it must not become a general
 // `reslu-stuart__` prefix because payments, approvals and master-data writes
 // must remain structurally unavailable.
 const HUMAN_STUART_OPERATION_TOOLS = new Set([
+  "reslu-stuart__run_stuart_finance_review",
+  "reslu-stuart__process_stuart_supplier_invoice",
+  "mcp__reslu_stuart__run_stuart_finance_review",
+  "mcp__reslu_stuart__process_stuart_supplier_invoice",
   "reslu-stuart__attach_stuart_source_invoice",
   "reslu-stuart__create_stuart_xero_supplier_contact",
   "reslu-stuart__create_stuart_xero_draft_bill",
