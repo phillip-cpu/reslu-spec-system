@@ -2148,9 +2148,20 @@ const TOOLS = [
   {
     name: "get_stuart_finance_brief",
     description:
-      "Stuart-only concise read of the current cash snapshot, Xero/Spec exceptions, overdue receivables/payables, unlinked Accounts invoices, cost-change signals and pending coaching for Aria. Returns evidence and confidence without the large forecast/history arrays. It cannot move money or change any financial record.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    handler: async () => apiFetch("/api/stuart/brief?response_format=concise"),
+      "Stuart-only cached finance read. Use section=banking for paginated account-level Xero ledger report balances, their as-of/retrieval dates and imported payment-only reconciliation observations. This cannot establish statement balances, feed health or whole-account reconciliation. The default overview returns the current cash snapshot and finance exceptions. It never starts a sync, calls Xero, moves money or changes financial records.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        section: { type: "string", enum: ["overview", "banking"] },
+        offset: { type: "integer", minimum: 0, description: "Account page offset for banking" },
+        limit: { type: "integer", minimum: 1, maximum: 5, description: "Account page size for banking (default 5)" },
+      },
+      additionalProperties: false,
+    },
+    handler: async ({ section = "overview", offset = 0, limit = 5 } = {}) =>
+      apiFetch(section === "banking"
+        ? `/api/stuart/brief?response_format=banking&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(limit)}`
+        : "/api/stuart/brief?response_format=concise"),
   },
   {
     name: "get_stuart_invoice_evidence",
