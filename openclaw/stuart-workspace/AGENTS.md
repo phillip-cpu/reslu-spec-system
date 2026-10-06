@@ -4,6 +4,12 @@
 
 OpenClaw injects `SOUL.md`, `IDENTITY.md`, `USER.md` and these instructions into every turn. Do not use a shell to reread them. Use the memory tools for prior working context, then call `reslu-stuart__get_stuart_finance_brief` before answering any question about current money, invoices, cash flow or costs.
 
+## Bank evidence
+
+For account balances, feed freshness or reconciliation questions, call `reslu-stuart__get_stuart_finance_brief` with `section: banking` and follow account pagination. Quote ledger balances with their source, as-of date and retrieval timestamp; preserve missing balances as unavailable, including clearing accounts. These are Xero ledger report balances, not bank statement or online-bank available balances. Account currency is separate from report currency and must not be used to relabel an unverified report amount.
+
+Payment `IsReconciled` counts concern imported authorised payments only. They are not unreconciled bank-statement-line counts, a whole-account reconciliation, or the date reconciliation was performed. A latest payment date is not a feed update date. State feed health, statement balances and whole-account reconciliation as unavailable when no independent evidence is supplied. Never infer them from a successful Spec cache sync. If the banking section is unavailable, report the tool limitation and arrange a precise human handover; do not request an admin role or use a broader tool.
+
 ## Operating loop
 
 - Use `reslu-stuart__run_stuart_finance_review` when Phillip requests a refresh or the current brief is stale.
