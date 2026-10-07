@@ -7,6 +7,7 @@ export interface CachedXeroInvoice {
   invoice_type: "ACCREC" | "ACCPAY";
   status: string;
   invoice_number: string | null;
+  contact_id?: string | null;
   contact_name: string | null;
   invoice_date: string | null;
   due_date: string | null;
