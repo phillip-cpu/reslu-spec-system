@@ -33,3 +33,16 @@ export async function POST(request: NextRequest) {
   }
   return NextResponse.json({ processed: results.length, results });
 }
+
+// Vercel cron invokes this route with GET and no request body.
+export async function GET(request: NextRequest) {
+  if (!isCronRequest(request.headers.get("authorization"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  return POST(request);
+}
+
+// Next otherwise implements HEAD by invoking GET, which would process invoices.
+export function HEAD() {
+  return new NextResponse(null, { status: 405, headers: { Allow: "GET, POST" } });
+}

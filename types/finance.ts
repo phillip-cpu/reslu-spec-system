@@ -398,9 +398,18 @@ export interface FinanceCockpitProject {
   client_paid_minor: number;
 }
 
+export type FinanceOperatingViewScope = "company" | "phillip";
+
 export interface FinanceCockpitResponse {
   mode: "shadow";
   persisted: false;
+  operating_view: {
+    scope: FinanceOperatingViewScope;
+    excluded_receivable_count: number;
+    excluded_outstanding_count: number;
+    excluded_outstanding_minor: number;
+    opening_cash_scope: "company_pooled";
+  };
   shadow_enabled: boolean;
   can_manage_policy: boolean;
   can_edit_forecast: boolean;

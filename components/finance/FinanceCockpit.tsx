@@ -14,10 +14,12 @@ import {
 import type {
   EffectiveFinanceContribution,
   FinanceCockpitResponse,
+  FinanceOperatingViewScope,
   FinanceProjectionPeriod,
 } from "@/types/finance";
 
 type CockpitTab = "cash" | "commitments" | "bills" | "projects";
+const operatingViewCurrency = new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" });
 
 function MetricCard({
   label,
@@ -226,13 +228,14 @@ export function FinanceCockpit() {
   const [error, setError] = useState<string | null>(null);
   const [asOfDate, setAsOfDate] = useState(adelaideToday);
   const [openingCash, setOpeningCash] = useState("");
+  const [operatingView, setOperatingView] = useState<FinanceOperatingViewScope>("phillip");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [activeTab, setActiveTab] = useState<CockpitTab>("cash");
   const [syncingXero, setSyncingXero] = useState(false);
   const [forecastView, setForecastView] = useState<"cash" | "planning">("cash");
   const [focusedSource, setFocusedSource] = useState<{ recordId?: string; dueDate?: string }>({});
 
-  const loadCockpit = useCallback(async () => {
+  const loadCockpit = useCallback(async (scope: FinanceOperatingViewScope = operatingView) => {
     const openingMinor = dollarsInputToMinor(openingCash);
     if (openingCash.trim() && openingMinor === null) {
       setError("Opening cash must be a dollar amount with no more than two decimal places.");
@@ -241,7 +244,7 @@ export function FinanceCockpit() {
     setLoading(true);
     setError(null);
     try {
-      const query = new URLSearchParams({ as_of_date: asOfDate });
+      const query = new URLSearchParams({ as_of_date: asOfDate, view_scope: scope });
       if (openingMinor !== null) query.set("opening_cash_minor", String(openingMinor));
       const response = await fetch(`/api/finance/cockpit?${query.toString()}`, {
         cache: "no-store",
@@ -257,7 +260,7 @@ export function FinanceCockpit() {
     } finally {
       setLoading(false);
     }
-  }, [asOfDate, openingCash]);
+  }, [asOfDate, openingCash, operatingView]);
 
   const syncXero = useCallback(async () => {
     setSyncingXero(true);
@@ -321,12 +324,28 @@ export function FinanceCockpit() {
             </p>
           </div>
           <form
-            className="grid w-full gap-3 border border-charcoal/15 bg-cream p-4 sm:grid-cols-[1fr_1fr_auto] md:max-w-2xl"
+            className="grid w-full gap-3 border border-charcoal/15 bg-cream p-4 sm:grid-cols-2 md:max-w-2xl"
             onSubmit={(event) => {
               event.preventDefault();
               void loadCockpit();
             }}
           >
+            <label>
+              <span className="label-caps">Invoice view</span>
+              <select
+                value={operatingView}
+                disabled={loading}
+                onChange={(event) => {
+                  const scope = event.target.value as FinanceOperatingViewScope;
+                  setOperatingView(scope);
+                  void loadCockpit(scope);
+                }}
+                className="mt-2 w-full border border-charcoal/20 bg-offwhite px-3 py-2 text-body disabled:opacity-40"
+              >
+                <option value="phillip">Phillip operating view</option>
+                <option value="company">Company-wide</option>
+              </select>
+            </label>
             <label>
               <span className="label-caps">As of</span>
               <input
@@ -355,6 +374,13 @@ export function FinanceCockpit() {
             </button>
           </form>
         </div>
+
+        {data?.operating_view && <div role="status" className="border-b border-charcoal/20 bg-cream px-5 py-4 text-caption text-charcoal/70 md:px-7">
+          <p>{data.operating_view.scope === "phillip"
+            ? `Phillip operating view: Fairmont Homes and Crouch Construction receivables assigned to Nathan are excluded from both cash and planning timelines (${data.operating_view.excluded_outstanding_count} outstanding, ${operatingViewCurrency.format(data.operating_view.excluded_outstanding_minor / 100)}). Switch to Company-wide to include them.`
+            : "Company-wide view includes all company receivables."}</p>
+          <p className="mt-1">Shared payables and credit remain included. Opening cash uses the company pool or your manual preview; this invoice filter does not isolate a bank account.</p>
+        </div>}
 
         <div className="flex overflow-x-auto border-b border-charcoal/20 px-4 md:px-7" role="tablist" aria-label="Finance cockpit views">
           {[
