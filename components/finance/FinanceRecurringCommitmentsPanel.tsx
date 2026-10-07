@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useState } from "react";
 import type { FinanceRecurringOccurrence } from "@/lib/finance/recurrence";
+import { hasRecurringCommitmentEnded } from "@/lib/finance/recurring-presentation";
 import {
   dollarsInputToMinor,
   formatFinanceDate,
@@ -188,6 +189,16 @@ export function FinanceRecurringCommitmentsPanel({
     }, 0);
     return () => window.clearTimeout(timer);
   }, [focusCommitmentId, focusDueDate, showAllWeeks, paymentFilter, data]);
+
+  const registerAsOfDate = data?.as_of_date ?? asOfDate;
+  const commitmentGroups = [
+    { label: "Current commitments", ended: false, items: (data?.commitments ?? []).filter(
+      (item) => !hasRecurringCommitmentEnded(item, registerAsOfDate)
+    ) },
+    { label: "Ended history", ended: true, items: (data?.commitments ?? []).filter(
+      (item) => hasRecurringCommitmentEnded(item, registerAsOfDate)
+    ) },
+  ];
 
   const nearbyEnd = new Date(`${asOfDate}T00:00:00Z`);
   nearbyEnd.setUTCDate(nearbyEnd.getUTCDate() + 13);
@@ -384,7 +395,7 @@ export function FinanceRecurringCommitmentsPanel({
         )}
 
         <div className="grid grid-cols-1 border-b border-charcoal/20 sm:grid-cols-3">
-          <div className="border-b border-charcoal/15 p-4 sm:border-b-0 sm:border-r"><p className="label-caps">Active</p><p className="mt-2 text-subhead text-nearblack">{data?.summary.active_count ?? "—"}</p></div>
+          <div className="border-b border-charcoal/15 p-4 sm:border-b-0 sm:border-r"><p className="label-caps">Current active</p><p className="mt-2 text-subhead text-nearblack">{data?.summary.active_count ?? "—"}</p><p className="mt-1 text-caption text-charcoal/50">As at {formatFinanceDate(registerAsOfDate)}</p></div>
           <div className="border-b border-charcoal/15 p-4 sm:border-b-0 sm:border-r"><p className="label-caps">{data?.summary.linked_occurrence_count ? "Unlinked planned outgoings" : "13-week unpaid outflow"}</p><p className="mt-2 text-subhead text-nearblack">{data ? formatMinorCurrency(data.summary.projected_outflow_minor) : "—"}</p>{Boolean(data?.summary.linked_occurrence_count) && <p className="mt-1 text-caption text-charcoal/50">Linked bills are reconciled in the cash timeline, not counted again here.</p>}</div>
           <div className="p-4"><p className="label-caps">Next due</p><p className="mt-2 text-subhead text-nearblack">{formatFinanceDate(data?.summary.next_due_date)}</p></div>
         </div>
@@ -435,16 +446,21 @@ export function FinanceRecurringCommitmentsPanel({
           <table className="w-full min-w-[900px] border-collapse text-left">
             <thead className="bg-nearblack text-white"><tr className="text-[7px] uppercase tracking-[0.14em]"><th className="px-5 py-3">Outgoing</th><th className="px-5 py-3">Category</th><th className="px-5 py-3 text-right">Cash amount</th><th className="px-5 py-3">Schedule</th><th className="px-5 py-3">Due / anchor date</th><th className="px-5 py-3">Status</th><th className="px-5 py-3"><span className="sr-only">Actions</span></th></tr></thead>
             <tbody className="divide-y divide-charcoal/10">
-              {(data?.commitments ?? []).map((item) => (
-                <tr key={item.id} className="text-body hover:bg-cream">
-                  <td className="px-5 py-4"><span className="block text-nearblack">{item.name}</span><span className="mt-1 block text-caption text-charcoal/45">{item.supplier_or_payee ?? "No payee"}</span></td>
-                  <td className="px-5 py-4">{CATEGORY_OPTIONS.find(([value]) => value === item.category)?.[1]}</td>
-                  <td className="px-5 py-4 text-right">{formatMinorCurrency(item.amount_minor)}</td>
-                  <td className="px-5 py-4">{FREQUENCY_OPTIONS.find(([value]) => value === item.frequency)?.[1]}</td>
-                  <td className="px-5 py-4">{formatFinanceDate(item.first_due_date)}</td>
-                  <td className="px-5 py-4"><span className={`px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] ${item.status === "active" ? "bg-[#304b33]/10 text-[#304b33]" : "bg-charcoal/10 text-charcoal"}`}>{item.status}</span></td>
-                  <td className="px-5 py-4 text-right">{canEdit && <span className="inline-flex gap-3"><button type="button" onClick={() => { setForm(formFromCommitment(item)); setShowForm(true); window.scrollTo({ top: 0, behavior: "smooth" }); }} className="border-b border-charcoal/30 text-caption">Edit</button><button type="button" onClick={() => void archive(item)} className="border-b border-red-700/30 text-caption text-red-800">Archive</button></span>}</td>
-                </tr>
+              {commitmentGroups.map((group) => (
+                <Fragment key={group.label}>
+                  {group.items.length > 0 && <tr className="bg-cream"><th colSpan={7} className="px-5 py-3 text-left text-caption text-charcoal">{group.label}{group.ended && <span className="mt-1 block font-normal text-charcoal/60">Unpaid historical occurrences remain in the payment register above.</span>}</th></tr>}
+                  {group.items.map((item) => (
+                    <tr key={item.id} className="text-body hover:bg-cream">
+                      <td className="px-5 py-4"><span className="block text-nearblack">{item.name}</span><span className="mt-1 block text-caption text-charcoal/45">{item.supplier_or_payee ?? "No payee"}</span></td>
+                      <td className="px-5 py-4">{CATEGORY_OPTIONS.find(([value]) => value === item.category)?.[1]}</td>
+                      <td className="px-5 py-4 text-right">{formatMinorCurrency(item.amount_minor)}</td>
+                      <td className="px-5 py-4">{FREQUENCY_OPTIONS.find(([value]) => value === item.frequency)?.[1]}</td>
+                      <td className="px-5 py-4">{formatFinanceDate(item.first_due_date)}{item.end_date && <span className="mt-1 block text-caption text-charcoal/50">{group.ended ? "Ended" : "Ends"} {formatFinanceDate(item.end_date)}</span>}</td>
+                      <td className="px-5 py-4"><span className={`px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] ${!group.ended && item.status === "active" ? "bg-[#304b33]/10 text-[#304b33]" : "bg-charcoal/10 text-charcoal"}`}>{group.ended ? "Ended" : item.status}</span></td>
+                      <td className="px-5 py-4 text-right">{canEdit && <span className="inline-flex gap-3"><button type="button" onClick={() => { setForm(formFromCommitment(item)); setShowForm(true); window.scrollTo({ top: 0, behavior: "smooth" }); }} className="border-b border-charcoal/30 text-caption">Edit</button><button type="button" onClick={() => void archive(item)} className="border-b border-red-700/30 text-caption text-red-800">Archive</button></span>}</td>
+                    </tr>
+                  ))}
+                </Fragment>
               ))}
               {!loading && (data?.commitments.length ?? 0) === 0 && <tr><td colSpan={7} className="px-5 py-12 text-center text-body text-charcoal/50">No planned company outgoings yet. Add recurring costs or one-time purchases such as marketing and entertainment.</td></tr>}
               {loading && <tr><td colSpan={7} className="px-5 py-12 text-center text-body text-charcoal/50">Loading recurring commitments…</td></tr>}
