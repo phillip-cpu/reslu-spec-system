@@ -283,12 +283,14 @@ export function ProposalReveal({
   greetingName,
   sentDateLabel,
   residence,
+  proposalLabel = "Design Proposal",
   children,
 }: {
   token: string;
   greetingName: string;
   sentDateLabel: string;
   residence: string;
+  proposalLabel?: string;
   children: React.ReactNode;
 }) {
   const [phase, setPhase] = useState<Phase>("checking");
@@ -830,7 +832,7 @@ export function ProposalReveal({
       <div className="pr-strip mx-auto max-w-2xl px-6 pt-4">
         {showStatic && (
           <div className="pr-strip-static">
-            <span className="label-caps">Design Proposal</span>
+            <span className="label-caps">{proposalLabel}</span>
             <span className="pr-ink">{greetingName}</span>
             <span className="pr-strip-date">
               {residence} &middot; {sentDateLabel}
@@ -858,7 +860,7 @@ export function ProposalReveal({
             <div className="pr-packet" ref={packetRef}>
               <div className="pr-packet-front">
                 <div className={`pr-emboss${phase === "packet" ? " pr-show" : ""}`} />
-                <p className="label-caps pr-label">Design Proposal</p>
+                <p className="label-caps pr-label">{proposalLabel}</p>
                 <p className="pr-ink pr-name" ref={nameRef} />
                 <p className="pr-cap">
                   {residence} &middot; {sentDateLabel}

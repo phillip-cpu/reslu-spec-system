@@ -38,6 +38,8 @@ export interface ProposalFeeStage {
 }
 
 export interface ProposalFees {
+  /** Construction selling allocation and GST, separate from milestone payments. */
+  price_lines?: string[];
   /** 'staged' — Neave-style multi-phase stages, each with its own total + milestones. 'single' — one flat fee with a payment_lines percentage/structure list only (no separate per-stage totals). */
   mode: ProposalFeesMode;
   stages: ProposalFeeStage[];
@@ -58,6 +60,8 @@ export interface ProposalExclusions {
 
 /** The full jsonb document stored on proposals.content — see migration 051's own column comment. */
 export interface ProposalContent {
+  kind?: "design" | "construction";
+  construction?: import("./construction-proposals").ConstructionMetadata;
   letter: string;
   vision: string;
   scope_sections: ProposalScopeSection[];
@@ -77,6 +81,7 @@ export interface ProposalSignature {
 }
 
 export interface Proposal {
+  construction_version_digest?: string | null;
   id: string;
   lead_id: string | null;
   project_id: string | null;
@@ -124,6 +129,9 @@ export interface ProposalResponse {
 
 /** POST /api/proposal/[token]/accept body. */
 export interface AcceptProposalInput {
+  request_id?: string;
+  proposal_version_id?: string;
+  proposal_version_digest?: string;
   drawn_data_url: string;
   typed_name: string;
   consent: boolean;

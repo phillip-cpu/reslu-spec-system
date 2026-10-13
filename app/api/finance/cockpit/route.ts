@@ -6,6 +6,7 @@ import {
 } from "@/lib/finance/feature-flags";
 import { hasFinanceCapability } from "@/lib/finance/permissions";
 import { calculateShadowProjection } from "@/lib/finance/projection";
+import { selectOperatingViewInvoices } from "@/lib/finance/operating-view";
 import {
   buildEstimatePlanContributions,
   type FinanceEstimateSnapshot,
@@ -229,6 +230,10 @@ export async function GET(request: NextRequest) {
     new Date().toISOString().slice(0, 10);
   const openingRaw = request.nextUrl.searchParams.get("opening_cash_minor");
   const requestedOpeningCashMinor = openingRaw === null ? null : Number(openingRaw);
+  const viewScope = request.nextUrl.searchParams.get("view_scope") ?? "company";
+  if (viewScope !== "company" && viewScope !== "phillip") {
+    return NextResponse.json({ error: "view_scope must be company or phillip" }, { status: 400 });
+  }
   if (!isIsoDate(asOfDate)) {
     return NextResponse.json({ error: "as_of_date must be an ISO calendar date" }, { status: 400 });
   }
@@ -286,7 +291,7 @@ export async function GET(request: NextRequest) {
           .maybeSingle(),
         service
           .from("xero_invoices")
-          .select("xero_invoice_id,invoice_type,status,invoice_number,contact_name,invoice_date,due_date,total,amount_paid,amount_credited", { count: "exact" })
+          .select("xero_invoice_id,invoice_type,status,invoice_number,contact_id,contact_name,invoice_date,due_date,total,amount_paid,amount_credited", { count: "exact" })
           .eq("connection_id", connection.id).limit(1000),
         service
           .from("xero_payments")
@@ -583,6 +588,7 @@ export async function GET(request: NextRequest) {
       projectNames: projectNameById,
       contractVariations,
     });
+    const operatingView = selectOperatingViewInvoices(xeroInvoices, viewScope);
     const xeroActuals = applyXeroInvoiceActuals({
       contributions: [
         ...supplierReconciliation.contributions,
@@ -590,7 +596,7 @@ export async function GET(request: NextRequest) {
       ],
       clientInvoices,
       supplierInvoices,
-      xeroInvoices,
+      xeroInvoices: operatingView.invoices,
       xeroPayments,
     });
     const recurringReconciliation = reconcileRecurringInvoiceActuals({
@@ -762,6 +768,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       mode: "shadow",
       persisted: false,
+      operating_view: operatingView.summary,
       shadow_enabled: shadowEnabled,
       can_manage_policy: !policyPermission.error && policyPermission.allowed,
       can_edit_forecast: !editPermission.error && editPermission.allowed,

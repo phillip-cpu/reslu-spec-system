@@ -1,3 +1,4 @@
+import { sowTradeDisplayHeading } from "@/lib/sow-display-headings";
 import { Fragment } from "react";
 import fs from "node:fs";
 import path from "node:path";
@@ -385,7 +386,7 @@ export function SowPdf({
         {sections.map((section, sectionIndex) => {
           const startOnNewPage = sectionIndex > 0 && isAreaSection(section);
           const lineGroups = extractTrade
-            ? [{ trade: null, lines: section.lines }]
+            ? [{ trade: section.trade_heading_overrides?.[extractTrade] ? extractTrade : null, lines: section.lines }]
             : groupSowLinesByTrade(section.lines);
           const hasTradeGroups = lineGroups.some((group) => group.trade !== null);
 
@@ -414,7 +415,7 @@ export function SowPdf({
                       ) : null}
                       {group.trade || (!extractTrade && hasTradeGroups) ? (
                         <Text style={styles.tradeHeading}>
-                          {group.trade ?? "General"}
+                          {sowTradeDisplayHeading(section, group.trade)}
                         </Text>
                       ) : null}
                       {firstBlock?.type === Text ? null : firstBlock}

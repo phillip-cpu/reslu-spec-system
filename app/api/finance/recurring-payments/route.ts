@@ -3,6 +3,7 @@ import { getUserRole } from "@/lib/auth";
 import { financeFoundationEnabled } from "@/lib/finance/feature-flags";
 import { hasFinanceCapability } from "@/lib/finance/permissions";
 import { generateRecurringOccurrences, normalizeRecurringPayment } from "@/lib/finance/recurrence";
+import { isCurrentActiveRecurringCommitment } from "@/lib/finance/recurring-presentation";
 import { buildWeeklyPeriods } from "@/lib/finance/projection";
 import { isIsoDate } from "@/lib/finance/readiness";
 import { createClient } from "@/lib/supabase/server";
@@ -69,7 +70,7 @@ export async function GET(request: NextRequest) {
       commitments: commitments.filter((item) => item.status !== "archived"),
       payments, occurrences, can_edit: auth.canEdit, as_of_date: asOfDate,
       summary: {
-        active_count: commitments.filter((item) => item.status === "active").length,
+        active_count: commitments.filter((item) => isCurrentActiveRecurringCommitment(item, asOfDate)).length,
         projected_outflow_minor: occurrences.filter((item) => !item.linked_invoice_id).reduce((sum, item) => sum + item.remaining_minor, 0),
         next_due_date: occurrences.find((item) => !item.linked_invoice_id && item.remaining_minor > 0)?.due_date ?? null,
         linked_occurrence_count: occurrences.filter((item) => item.linked_invoice_id).length,

@@ -58,6 +58,7 @@ const LINE = "#DCD6CC";
 const WHITE = "#FFFFFF";
 
 const LOGO_BLACK = path.join(process.cwd(), "public/reslu-logo.png");
+const LOGO_WHITE = path.join(process.cwd(), "public/reslu-logo-white.png");
 
 const PAGE_MARGIN_H = 44;
 
@@ -285,19 +286,21 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
   ensureFonts();
   const content = proposal.content;
   const sig = proposal.signature;
+  const construction = content.kind === "construction";
+  const proposalLabel = construction ? (content.construction?.variation ? "Construction Variation" : "Construction Proposal") : "Design Proposal";
 
   return (
-    <Document title={`RESLU Design Proposal — ${residence}`}>
+    <Document title={`RESLU ${proposalLabel} — ${residence}`}>
       {/* Cover */}
       <Page size="A4" style={styles.cover}>
         <View>
           {/* eslint-disable-next-line jsx-a11y/alt-text */}
-          <Image src={LOGO_BLACK} style={styles.coverLogo} />
+          <Image src={construction && fs.existsSync(LOGO_WHITE) ? LOGO_WHITE : LOGO_BLACK} style={styles.coverLogo} />
         </View>
         <View>
-          <Text style={styles.coverEyebrow}>Design Proposal</Text>
+          <Text style={styles.coverEyebrow}>{proposalLabel}</Text>
           <Text style={{ ...styles.coverTitle, fontFamily: displayFontFamily }}>
-            {clientName} | DESIGN PROPOSAL
+            {clientName} | {proposalLabel.toUpperCase()}
           </Text>
           <Text style={styles.coverResidence}>{residence}</Text>
           {address ? <Text style={styles.coverResidence}>{address}</Text> : null}
@@ -308,16 +311,17 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
       {/* Body */}
       <Page size="A4" style={styles.page} wrap>
         <View style={styles.headerBand} fixed>
-          <Text style={styles.headerTitle}>
-            Architectural Design Services Proposal{address ? ` | ${address}` : ""}
+          <Text style={construction ? { ...styles.headerTitle, maxWidth: "60%" } : styles.headerTitle}>
+            {construction ? "Construction Proposal" : "Architectural Design Services Proposal"}{address ? ` | ${address}` : ""}
           </Text>
-          <Text style={styles.headerMeta}>RESLU · {residence}</Text>
+          <Text style={construction ? { ...styles.headerMeta, maxWidth: "35%", textAlign: "right" } : styles.headerMeta}>RESLU · {residence}</Text>
         </View>
 
+
         {/* Letter */}
-        <Text style={styles.sectionHeading} minPresenceAhead={32}>
+        {!construction && <Text style={styles.sectionHeading} minPresenceAhead={32}>
           Letter
-        </Text>
+        </Text>}
         {splitParagraphs(content.letter).map((p, i) => (
           <Text key={i} style={styles.paragraph}>
             {p}
@@ -336,7 +340,7 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
 
         {/* Scope */}
         <Text style={styles.sectionHeading} minPresenceAhead={32}>
-          Scope of Design Services
+          {construction ? "Construction Scope" : "Scope of Design Services"}
         </Text>
         {content.scope_sections.map((section, si) => (
           <View key={si}>
@@ -366,7 +370,7 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
 
         {/* Design fee */}
         <Text style={styles.sectionHeading} minPresenceAhead={32}>
-          Design Fee
+          {construction ? "Payment Breakdown" : "Design Fee"}
         </Text>
         {content.fees.stages.map((stage, sti) => (
           // A stage block is NOT wrap={false} — a stage can legitimately
@@ -391,12 +395,24 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
             ))}
           </View>
         ))}
+        {construction && (content.fees.price_lines ?? []).map((line, i) => <Text key={i} style={styles.paragraph}>{line}</Text>)}
+        {construction && <>
+        <View style={styles.grandTotalRow} wrap={false}>
+          <Text style={styles.grandTotalLabel}>{construction ? "Total Construction Price (Inc GST)" : "Total Design Fee (Inc GST)"}</Text>
+          <Text style={styles.grandTotalValue}>{formatMoney(proposal.total_inc)}</Text>
+        </View>
+        <View style={styles.depositRow} wrap={false}>
+          <Text style={styles.depositLabel}>{construction ? "Deposit" : "Deposit payable on acceptance"}</Text>
+          <Text style={styles.depositValue}>{formatMoney(proposal.deposit_inc)}</Text>
+        </View>
+
+        </>}
         {content.fees.payment_lines.length > 0 ? (
           // Not wrap={false} on the outer container — same "don't make a
           // variable-length list unbreakable" reasoning as the stage
           // block fix above; only each individual line is atomic.
-          <View>
-            <Text style={styles.deliverablesLabel}>Payment Structure</Text>
+          <View break={construction}>
+            <Text style={construction ? styles.sectionHeading : styles.deliverablesLabel} minPresenceAhead={32}>{construction ? "Payment Breakdown" : "Payment Structure"}</Text>
             {content.fees.payment_lines.map((line, li) => (
               <View key={li} style={styles.bulletRow} wrap={false}>
                 <Text style={styles.bulletMark}>—</Text>
@@ -405,14 +421,17 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
             ))}
           </View>
         ) : null}
+        {!construction && <>
         <View style={styles.grandTotalRow} wrap={false}>
-          <Text style={styles.grandTotalLabel}>Total Design Fee (Inc GST)</Text>
+          <Text style={styles.grandTotalLabel}>{construction ? "Total Construction Price (Inc GST)" : "Total Design Fee (Inc GST)"}</Text>
           <Text style={styles.grandTotalValue}>{formatMoney(proposal.total_inc)}</Text>
         </View>
         <View style={styles.depositRow} wrap={false}>
-          <Text style={styles.depositLabel}>Deposit payable on acceptance</Text>
+          <Text style={styles.depositLabel}>{construction ? "Deposit" : "Deposit payable on acceptance"}</Text>
           <Text style={styles.depositValue}>{formatMoney(proposal.deposit_inc)}</Text>
         </View>
+
+        </>}
 
         {/* Timeline */}
         <Text style={styles.sectionHeading} minPresenceAhead={32}>
@@ -434,7 +453,7 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
 
         {/* Exclusions */}
         <Text style={styles.sectionHeading} minPresenceAhead={32}>
-          Exclusions &amp; Additional Consultant Services
+          {construction ? "Optional Extras & Exclusions" : "Exclusions & Additional Consultant Services"}
         </Text>
         {content.exclusions.bullets.map((b, bi) => (
           <View key={bi} style={styles.bulletRow} wrap={false}>
@@ -463,13 +482,13 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
         )}
 
         <View style={styles.footer} fixed>
-          <Text style={styles.footerText}>{residence} · RESLU Design Proposal</Text>
+          <Text style={styles.footerText}>{residence} · RESLU {proposalLabel}</Text>
           <Text style={styles.footerText} render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
         </View>
       </Page>
 
       {/* Signature page */}
-      <Page size="A4" style={styles.sigPage}>
+      {!construction && <Page size="A4" style={styles.sigPage}>
         <Text style={styles.sigEyebrow}>Acceptance &amp; Signature</Text>
         <Text style={{ ...styles.sigTitle, fontFamily: displayFontFamily }}>
           Both parties agree to the terms set out in this proposal.
@@ -514,10 +533,10 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
         </View>
 
         <View style={styles.footer} fixed>
-          <Text style={styles.footerText}>{residence} · RESLU Design Proposal</Text>
+          <Text style={styles.footerText}>{residence} · RESLU {proposalLabel}</Text>
           <Text style={styles.footerText} render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
         </View>
-      </Page>
+      </Page>}
     </Document>
   );
 }
