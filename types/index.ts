@@ -954,6 +954,8 @@ export interface SowDocument {
 }
 
 export interface SowSection {
+  /** Presentation only; keys remain the original trade identities. */
+  trade_heading_overrides?: Record<string, string>;
   id: string;
   sow_id: string;
   heading: string;
@@ -1000,6 +1002,8 @@ export interface CreateSowSectionInput {
 
 /** body accepted by PATCH /api/sow/sections/[sectionId]. */
 export interface PatchSowSectionInput {
+  trade_heading_override?: { trade: string; heading: string | null };
+  expected_updated_at?: string;
   heading?: string;
   sort?: number;
 }
