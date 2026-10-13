@@ -32,5 +32,42 @@ try{
  await page.getByRole('button',{name:'Scope',exact:true}).click();await page.getByRole('button',{name:'Expand',exact:true}).first().click();await page.locator('input:visible:not([type=checkbox])').first().fill('Revised V3 scope');await page.getByRole('heading',{name:/V3/}).click();
  await page.getByRole('button',{name:'Compare',exact:true}).click();assert.match(await page.locator('body').innerText(),/Revised V3 scope/);assert.match(await page.locator('body').innerText(),/Default trade markup/);
  assert.deepEqual(await page.evaluate(()=>window.other),[]);assert.deepEqual(errors,[]);console.log('PASS reused estimate markup, measurement rendering, scope editing and detailed comparison stay inside V3.');
+ // Rename a room-linked display heading alongside existing unsaved edits, then save/reopen.
+ await page.getByRole('button',{name:'Scope',exact:true}).click();
+ await page.getByRole('button',{name:'Synthetic room',exact:true}).click();
+ await page.getByLabel('Scope section heading').fill('Discarded heading');
+ await page.getByLabel('Scope section heading').press('Escape');
+ await page.getByRole('button',{name:'Synthetic room',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Synthetic room',exact:true}).click();
+ await page.getByLabel('Scope section heading').fill('   ');
+ await page.getByLabel('Scope section heading').press('Enter');
+ await page.getByRole('button',{name:'Synthetic room',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Synthetic room',exact:true}).click();
+ await page.getByLabel('Scope section heading').fill('Front Entry');
+ await page.getByLabel('Scope section heading').press('Enter');
+ await page.getByRole('button',{name:'Front Entry',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Save working revision',exact:true}).click();
+ await page.evaluate(()=>window.release());await page.getByRole('status').waitFor();
+ const saved=await page.evaluate(()=>window.saves.at(-1).payload);
+ assert.equal(saved.scope.sections[0].heading,'Front Entry');
+ assert.equal(saved.scope.sections[0].source_room_id,workspace.payload.scope.sections[0].source_room_id);
+ assert.deepEqual(saved.rooms,workspace.payload.rooms);
+ assert.equal(saved.scope.sections[0].lines[0].text,'Revised V3 scope');
+ assert.equal(saved.markup_pct,.25);
+ await page.getByLabel('Revision',{exact:true}).selectOption(version.id);
+ assert.equal(await page.getByRole('button',{name:'Synthetic room',exact:true}).count(),0);
+ assert.equal(await page.getByLabel('Scope section heading').count(),0);
+ assert.match(await page.locator('body').innerText(),/Synthetic room/);
+ assert.doesNotMatch(await page.locator('body').innerText(),/Front Entry/);
+ await page.getByLabel('Revision',{exact:true}).selectOption(workspace.id);
+ await page.getByRole('button',{name:'Front Entry',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Front Entry',exact:true}).click();
+ await page.getByLabel('Scope section heading').fill('Cancel this rename');
+ await page.getByLabel('Scope section heading').press('Enter');
+ await page.getByRole('button',{name:'Cancel changes',exact:true}).click();
+ await page.getByRole('button',{name:'Front Entry',exact:true}).waitFor();
+ assert.deepEqual(await page.evaluate(()=>window.other),[]);assert.deepEqual(errors,[]);
+ console.log('PASS room display heading persists in V3; Escape/blank/cancel safe; unsaved scope and estimate edits preserved; V2 and original rooms unchanged.');
+
 
 }finally{await browser?.close();if(server)await new Promise(r=>server.close(r));await rm(scratch,{recursive:true,force:true})}
