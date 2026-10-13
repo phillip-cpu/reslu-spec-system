@@ -1871,6 +1871,7 @@ function AddSectionForm({ onAdd }: { onAdd: (heading: string) => Promise<void> }
 export function SectionBlock({
   section,
   allowLineSelection = true,
+  allowRoomHeadingRename = false,
   defaultExpanded,
   readOnly,
   presetNames,
@@ -1893,6 +1894,8 @@ export function SectionBlock({
 }: {
   section: SowSectionWithTradedLines;
   allowLineSelection?: boolean;
+  /** Revision-local display heading only; live room-linked sections stay locked. */
+  allowRoomHeadingRename?: boolean;
   defaultExpanded: boolean;
   readOnly: boolean;
   /** "Trade-scoped SOW extracts" round — the trade `<select>`'s option list, threaded down to every LineRow. */
@@ -1972,7 +1975,7 @@ export function SectionBlock({
           >
             {expanded ? "−" : "+"}
           </button>
-          {readOnly || section.source_room_id !== null ? (
+          {readOnly || (section.source_room_id !== null && !allowRoomHeadingRename) ? (
             <p className="label-caps !text-nearblack">{section.heading}</p>
           ) : (
             <SectionHeadingEditor heading={section.heading} onRename={onRename} />
@@ -2166,6 +2169,7 @@ function SectionHeadingEditor({
     return (
       <input
         autoFocus
+        aria-label="Scope section heading"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => {
