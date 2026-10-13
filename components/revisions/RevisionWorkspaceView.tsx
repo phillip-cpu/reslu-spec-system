@@ -10,6 +10,7 @@ import { SectionBlock } from '@/components/sow/SowBuilder';
 import { EditableCell } from '@/components/items/SpecRegister';
 import { formatMoney } from '@/components/estimate/EstimateWorkspace';
 import { diffSections, diffFfeSubstitutions, ffeSubstitutionItemsFromSnapshot } from '@/lib/estimate-versions';
+import { RevisionImport } from './RevisionImport';
 import { RevisionTransportContext } from './RevisionTransport';
 import { createRevisionTransport } from '@/lib/revisions/adapter';
 import { revisionChangeSummary } from '@/lib/revisions/change-summary';
@@ -83,7 +84,7 @@ export function RevisionWorkspaceView({projectId}:{projectId:string}){
    {loaded&&<button className={button} disabled={busy} onClick={()=>void open(selected)}>Reload</button>}
    {loaded&&!readOnly&&<><button className={button} disabled={busy||!dirty} onClick={()=>void save()}>Save working revision</button><button className={button} disabled={busy||!dirty} onClick={cancel}>Cancel changes</button></>}
   </div>
-  {entries.versions.length===0&&<p>No complete frozen job baseline is available. A reviewed baseline import must be approved before creating a working revision.</p>}
+  {entries.versions.length===0&&<RevisionImport projectId={projectId} onImported={async id=>{await list();await open(id);}}/>}
   {error&&<p role="alert" className="border border-red-700 p-3 text-red-700">{error}</p>}{notice&&<p role="status">{notice}</p>}
   {loaded&&draft&&estimate&&<>
    <div className="border border-sand bg-cream p-4 space-y-2"><h2 className="font-display text-section">{loaded.workspace?.label??loaded.version.label} · {readOnly?'Frozen / read-only':'Working / unissued'}{dirty?' · Unsaved changes':''}</h2>

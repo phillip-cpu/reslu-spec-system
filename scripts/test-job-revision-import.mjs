@@ -1,0 +1,33 @@
+/** Synthetic route/model checks. No network, customer data or real session. */
+import assert from 'node:assert/strict';import fs from 'node:fs';import {createRequire} from 'node:module';import ts from 'typescript';import {createHash} from 'node:crypto';
+import {revisionFixture} from '../lib/revisions/fixture.ts';import {revisionSnapshot} from '../lib/revisions/model.ts';import {assembleFrozenJob} from '../lib/revisions/baseline.ts';
+const require=createRequire(import.meta.url),{NextRequest}=require('next/server');
+function module(file,mocks){const code=ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;const out={};new Function('require','exports',code)(n=>mocks[n]??require(n),out);return out;}
+const frozen=revisionFixture(),p=frozen.payload,pdf=Buffer.from('%PDF synthetic original'),sha=b=>createHash('sha256').update(b).digest('hex');
+frozen.sent_pdf={reference:'synthetic original',sha256:sha(pdf),bytes:pdf.length};
+const input={project:{id:p.project_id,estimate_markup_pct:p.markup_pct},tables:{cost_sections:p.sections.map(({lines,...s})=>s),cost_lines:p.sections.flatMap(s=>s.lines),items:p.items,measurement_groups:p.measurement_groups.map(({measurements,...g})=>g),measurements:p.measurement_groups.flatMap(g=>g.measurements),rooms:p.rooms,item_rooms:p.item_rooms,item_components:p.item_components,variations:[]},scope:{document:{...p.scope.document,project_id:p.project_id},sections:p.scope.sections.map(({lines,...s})=>s),lines:p.scope.sections.flatMap(s=>s.lines)},payments:p.payments,options:p.options,allowances:p.allowances,sent_pdf:frozen.sent_pdf,source_manifest_sha256:frozen.source_manifest_sha256,captured_at:frozen.captured_at};
+const archive=Buffer.from(JSON.stringify(input)),review={projectId:p.project_id,label:'V2',archiveSha256:sha(archive),archiveBytes:archive.length,frozenHash:'a'.repeat(64),snapshotHash:'b'.repeat(64),manifestHash:frozen.source_manifest_sha256,pdf:{...frozen.sent_pdf,storage_path:`projects/${p.project_id}/files/original.pdf`},totalIncGst:revisionSnapshot(p).wholeJob.combinedIncGst};
+const logic=module('lib/revisions/import.ts',{'./baseline':{assembleFrozenJob},'./model':{paymentValidation:p=>({total:p.payments.reduce((a,b)=>a+b.percent,0)})}});
+assert.equal(logic.prepareReviewedImport(archive,review).summary.totalIncGst,review.totalIncGst);assert.throws(()=>logic.prepareReviewedImport(Buffer.from('{}'),review),/reviewed/);
+assert.throws(()=>logic.prepareReviewedImport(archive,{...review,projectId:'another-project'}),/project/);assert.throws(()=>logic.prepareReviewedImport(archive,{...review,totalIncGst:1}),/total changed/);
+console.log('PASS exact reviewed archive, project, PDF metadata and derived total validation.');
+let role='admin',reads=0,writes=0,download=pdf,rpcError=null,seen=[];
+const db={storage:{from(){return {download:async()=>{reads++;return {data:new Blob([download]),error:null}}}}},rpc:async(name,args)=>{writes++;seen.push({name,args});return {data:rpcError?null:{id:'frozen-version',label:'V2',frozen_job_hash:review.frozenHash},error:rpcError}}};
+process.env.JOB_REVISION_WORKSPACES_ENABLED='true';
+const access=module('lib/revisions/access.ts',{'@/lib/supabase/server':{createClient:async()=>db},'@/lib/auth':{getUserRole:async()=>role?{role,userId:'real-verified-session'}:null}});
+const api=module('app/api/projects/[id]/revisions/import/route.ts',{'@/lib/revisions/access':access,'@/lib/revisions/import-reviews':{importReviews:{[p.project_id]:review}},'@/lib/revisions/import':logic,'@/lib/storage':{ASSET_BUCKET:'assets'}});
+const context={params:Promise.resolve({id:p.project_id})};
+const request=(mode='preview',bytes=archive,origin='http://localhost',confirmation=review.archiveSha256)=>{const form=new FormData();form.set('archive',new File([bytes],'reviewed.json',{type:'application/json'}));form.set('mode',mode);form.set('confirmed_archive_sha256',confirmation);return new NextRequest('http://localhost/api/import',{method:'POST',headers:{origin},body:form});};
+for(role of [null,'designer','staff','client','builder']){reads=writes=0;assert.equal((await api.POST(request('commit'),context)).status,role?403:401);assert.equal(reads+writes,0)}role='admin';
+assert.equal((await api.POST(request('commit',archive,'https://attacker.test'),context)).status,403);assert.equal(reads+writes,0);
+process.env.JOB_REVISION_WORKSPACES_ENABLED='false';assert.equal((await api.POST(request('commit'),context)).status,404);process.env.JOB_REVISION_WORKSPACES_ENABLED='true';
+console.log('PASS unauthenticated/non-admin/cross-origin/gate denial before sensitive reads or writes.');
+let r=await api.POST(request(),context);assert.equal(r.status,200);const body=await r.json();assert.equal(writes,0);assert.equal(r.headers.get('cache-control'),'private, no-store');assert.deepEqual(Object.keys(body),['summary']);assert(!JSON.stringify(body).includes('price_trade'));
+assert.equal((await api.POST(request('commit',Buffer.from('{}')),context)).status,400);assert.equal(writes,0);
+download=Buffer.from('wrong original');assert.equal((await api.POST(request('commit'),context)).status,409);assert.equal(writes,0);download=pdf;
+assert.equal((await api.POST(request('commit',archive,'http://localhost','wrong'),context)).status,400);assert.equal(writes,0);
+console.log('PASS preview is read-only; changed archive, wrong PDF bytes and stale confirmation cannot freeze.');
+rpcError={message:'Source changed'};assert.equal((await api.POST(request('commit'),context)).status,409);rpcError=null;
+const responses=await Promise.all([api.POST(request('commit'),context),api.POST(request('commit'),context)]);assert.deepEqual(await responses[0].json(),await responses[1].json());assert(seen.every(x=>x.name==='freeze_reviewed_job_revision'));assert(seen.every(x=>!('actor' in x.args)&&!('claims' in x.args)&&x.args.expected_hash===review.frozenHash));
+assert.equal(seen[0].args.frozen.sent_pdf.storage_path,review.pdf.storage_path);assert.deepEqual(seen[0].args.snapshot,revisionSnapshot(seen[0].args.frozen.payload));
+console.log('PASS source conflict stays closed; retries pin identical inputs and pass no actor/claims override.');
