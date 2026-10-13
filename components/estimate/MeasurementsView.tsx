@@ -1,5 +1,7 @@
 "use client";
 
+import { useRevisionTransport } from "@/components/revisions/RevisionTransport";
+
 import { useRef, useState } from "react";
 import clsx from "clsx";
 import type { Measurement, MeasurementGroupWithRows } from "@/types";
@@ -39,6 +41,8 @@ export function MeasurementsView({
   onMeasurementChanged,
   onMeasurementRemoved,
 }: Props) {
+  const { fetch, revision } = useRevisionTransport();
+  void revision;
   const [error, setError] = useState<string | null>(null);
   const [addingGroup, setAddingGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");

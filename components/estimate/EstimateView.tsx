@@ -1,5 +1,7 @@
 "use client";
 
+import { useRevisionTransport } from "@/components/revisions/RevisionTransport";
+
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import type { Contact, EstimateResponse, FfeCategoryRollup, MeasurementWithGroup, QuoteStatus } from "@/types";
@@ -80,6 +82,8 @@ export function EstimateView({
   measurements,
   onOpenQuoteRequests,
 }: Props) {
+  const { fetch, revision } = useRevisionTransport();
+  void revision;
   const [markupDraft, setMarkupDraft] = useState<string | null>(null);
   const [savingMarkup, setSavingMarkup] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -742,6 +746,8 @@ function LineRow({
   quoteSummaries: EstimateResponse["quote_summaries"][string];
   onOpenQuoteRequests: (options?: SupplierQuoteLaunchOptions) => void;
 }) {
+  const { fetch, revision } = useRevisionTransport();
+  void revision;
   const [linkOpen, setLinkOpen] = useState(false);
   const [measurementLinkOpen, setMeasurementLinkOpen] = useState(false);
   const [contactLinkOpen, setContactLinkOpen] = useState(false);
@@ -801,7 +807,7 @@ function LineRow({
     return () => {
       cancelled = true;
     };
-  }, [draft.contact_id]);
+  }, [draft.contact_id, fetch]);
 
   async function save() {
     if (!dirty || saving) return;
@@ -1068,6 +1074,7 @@ function LineRow({
                 ) / 100).toFixed(2)}
                 <button
                   type="button"
+                  disabled={revision}
                   onClick={() => setPaymentOpen((open) => !open)}
                   className="ml-2 text-sand hover:text-nearblack"
                 >
@@ -1204,10 +1211,10 @@ function LineRow({
           )}
         </td>
         <td className="w-28 px-0 py-0">
-          <EditableNumber
+          <fieldset disabled={revision}><EditableNumber
             value={draft.actual_paid_ex_gst}
             onCommit={(v) => setField("actual_paid_ex_gst", v)}
-          />
+          /></fieldset>
           {draft.line_kind === "delivery_allowance" && (
             <p className="px-2 pb-1 text-right text-[10px] text-charcoal/45">Actual delivery</p>
           )}
@@ -1360,6 +1367,8 @@ function DraftLineRow({
   markupPct: number;
   onAdd: (draft: NewLineInput) => Promise<void>;
 }) {
+  const { fetch, revision } = useRevisionTransport();
+  void revision;
   const [draft, setDraft] = useState<NewLineDraft>(BLANK_DRAFT);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1488,6 +1497,7 @@ function DraftLineRow({
           type="number"
           step="any"
           value={draft.actual_paid_ex_gst}
+          disabled={revision}
           onChange={(e) => setField("actual_paid_ex_gst", e.target.value)}
           onKeyDown={onKeyDown}
           placeholder="Actual"

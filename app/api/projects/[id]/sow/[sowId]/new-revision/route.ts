@@ -123,6 +123,7 @@ export async function POST(
       .insert({
         sow_id: newSow.id,
         heading: section.heading,
+        trade_heading_overrides: section.trade_heading_overrides ?? {},
         sort: section.sort,
         source_room_id: sourceRoomId,
       })

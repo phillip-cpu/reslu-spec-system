@@ -1,5 +1,7 @@
 "use client";
 
+import { useRevisionTransport } from "@/components/revisions/RevisionTransport";
+
 import { useEffect, useState } from "react";
 import type { Contact } from "@/types";
 import { ContactPicker } from "@/components/shared/ContactPicker";
@@ -31,6 +33,8 @@ interface Props {
  * (components/estimate/EstimateView.tsx) needs no changes.
  */
 export function ContactLinkPicker({ currentContactId, onSelect, onClose }: Props) {
+  const { fetch, revision } = useRevisionTransport();
+  void revision;
   const [contacts, setContacts] = useState<Contact[]>([]);
 
   useEffect(() => {
@@ -38,7 +42,7 @@ export function ContactLinkPicker({ currentContactId, onSelect, onClose }: Props
       .then((r) => r.json())
       .then((body) => setContacts(body.contacts ?? []))
       .catch(() => {});
-  }, []);
+  }, [fetch]);
 
   return (
     <ContactPicker

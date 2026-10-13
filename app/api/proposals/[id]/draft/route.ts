@@ -1,3 +1,4 @@
+import { isConstruction } from "@/lib/construction-proposals";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
@@ -34,6 +35,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   const { data: existing } = await supabase.from("proposals").select("id,status,content").eq("id", id).maybeSingle();
   if (!existing) return NextResponse.json({ error: "Proposal not found" }, { status: 404 });
+  if (isConstruction(existing.content)) return NextResponse.json({ error: "Generated construction versions are immutable. Generate a new revision from the estimate workspace." }, { status: 409 });
   if (existing.status !== "draft") {
     return NextResponse.json(
       { error: "set_proposal_draft can only update a proposal while it is still status='draft'." },

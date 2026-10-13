@@ -1,3 +1,4 @@
+import { revisionsEnabled } from "@/lib/revisions/access";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
@@ -71,6 +72,7 @@ export default async function EstimatePage({
       <Header title={project.name} subtitle={`${project.client_name} · Estimate`} titleHref={`/projects/${id}`} />
       <ProjectTabs projectId={id} active="estimate" isAdmin={isAdmin} portalUrl={portalUrlFor(project.client_token)} />
       <main className="flex-1 px-8 py-8">
+        {revisionsEnabled() && <a className="mb-4 inline-block border border-sand px-4 py-2 text-caption" href={`/projects/${id}/revisions`}>Job revisions · frozen baseline / working copy</a>}
         <EstimateWorkspace
           projectId={id}
           initialView={query.view === "versions" ? "versions" : query.quote ? "quotes" : "estimate"}

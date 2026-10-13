@@ -92,7 +92,7 @@ function compareItemCodes(a: string, b: string): number {
 
 // ── inline editable text cell ───────────────────────────────
 
-function EditableCell({
+export function EditableCell({
   value,
   onCommit,
   placeholder,

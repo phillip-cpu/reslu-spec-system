@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
+import { sowTradeDisplayHeading } from "@/lib/sow-display-headings";
+import { TradeDisplayHeadingEditor } from "./TradeDisplayHeadingEditor";
 import type { SowDocument, SowLineKind } from "@/types";
 import type {
   CopySowLinesResponse,
@@ -513,6 +515,13 @@ export function SowBuilder({ projectId }: Props) {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error ?? "Could not rename section.");
+    if (sow) await loadSow(sow.id);
+  }
+
+  async function renameTradeHeading(section: SowSectionWithTradedLines, trade: string, heading: string | null) {
+    const res = await fetch(`/api/sow/sections/${section.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ trade_heading_override: { trade, heading }, expected_updated_at: section.updated_at }) });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error ?? "Could not save display heading.");
     if (sow) await loadSow(sow.id);
   }
 
@@ -1077,6 +1086,7 @@ export function SowBuilder({ projectId }: Props) {
                       presetNames={presets.map((p) => p.name)}
                       assignmentsByRoleKey={assignmentByRoleKey}
                       onRename={(heading) => renameSection(section.id, heading)}
+                      onTradeHeading={(trade, heading) => renameTradeHeading(section, trade, heading)}
                       onDelete={() => deleteSection(section.id, section.heading)}
                       canMoveUp={roomIndex > 0}
                       canMoveDown={
@@ -1858,13 +1868,15 @@ function AddSectionForm({ onAdd }: { onAdd: (heading: string) => Promise<void> }
   );
 }
 
-function SectionBlock({
+export function SectionBlock({
   section,
+  allowLineSelection = true,
   defaultExpanded,
   readOnly,
   presetNames,
   assignmentsByRoleKey,
   onRename,
+  onTradeHeading,
   onDelete,
   canMoveUp,
   canMoveDown,
@@ -1880,12 +1892,14 @@ function SectionBlock({
   onToggleLineSelection,
 }: {
   section: SowSectionWithTradedLines;
+  allowLineSelection?: boolean;
   defaultExpanded: boolean;
   readOnly: boolean;
   /** "Trade-scoped SOW extracts" round — the trade `<select>`'s option list, threaded down to every LineRow. */
   presetNames: string[];
   assignmentsByRoleKey: ReadonlyMap<string, ProjectTradeAssignment>;
   onRename: (heading: string) => Promise<void>;
+  onTradeHeading: (trade: string, heading: string | null) => Promise<void>;
   onDelete: () => void;
   canMoveUp: boolean;
   canMoveDown: boolean;
@@ -2025,9 +2039,8 @@ function SectionBlock({
                 {hasTradeHeadings && (
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#dcd6cc] bg-offwhite px-4 py-2">
                     <div className="flex flex-wrap items-center gap-2">
-                      <p className="label-caps font-semibold !text-nearblack">
-                        {section.heading} — {group.trade ?? "General"}
-                      </p>
+                      <p className="label-caps font-semibold !text-nearblack">{section.heading} —</p>
+                      {!readOnly && group.trade ? <TradeDisplayHeadingEditor trade={group.trade} heading={sowTradeDisplayHeading(section, group.trade)} overridden={!!section.trade_heading_overrides?.[group.trade]} onSave={heading => onTradeHeading(group.trade!, heading)} /> : <p className="label-caps font-semibold !text-nearblack">{sowTradeDisplayHeading(section, group.trade)}</p>}
                       {group.trade && (
                         <span
                           className={clsx(
@@ -2057,6 +2070,7 @@ function SectionBlock({
                         presetNames={presetNames}
                         onPatch={(patch) => onPatchLine(line, patch)}
                         onDelete={() => onDeleteLine(line)}
+                        allowSelection={allowLineSelection}
                         selected={selectedLineIds.has(line.id)}
                         onSelect={(checked) => onToggleLineSelection(line.id, checked)}
                         dragging={draggedLineId === line.id}
@@ -2194,6 +2208,7 @@ function SectionHeadingEditor({
  */
 function LineRow({
   line,
+  allowSelection = true,
   readOnly,
   presetNames,
   onPatch,
@@ -2213,6 +2228,7 @@ function LineRow({
   onDrop,
 }: {
   line: SowLineWithTrade;
+  allowSelection?: boolean;
   readOnly: boolean;
   /** "Trade-scoped SOW extracts" round — the trade select's option list (current preset names) + blank ("— trade —", clears the tag). */
   presetNames: string[];
@@ -2306,14 +2322,14 @@ function LineRow({
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
-      <input
+      {allowSelection && <input
         type="checkbox"
         checked={selected}
         onChange={(event) => onSelect(event.target.checked)}
         aria-label={`Select line for copying: ${line.text}`}
         title="Select this line to copy it to other rooms"
         className="mt-2 h-4 w-4 shrink-0 accent-nearblack"
-      />
+      />}
       <button
         type="button"
         draggable={!reordering}

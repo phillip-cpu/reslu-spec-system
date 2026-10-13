@@ -1,5 +1,6 @@
 "use client";
 
+import { ConstructionProposalBuilder } from "@/components/proposals/ConstructionProposalBuilder";
 import { useCallback, useEffect, useState } from "react";
 import { formatMoney } from "./EstimateWorkspace";
 import { VersionCompare } from "./VersionCompare";
@@ -124,6 +125,7 @@ export function VersionsPanel({ projectId }: Props) {
 
   return (
     <div className="space-y-6">
+      <ConstructionProposalBuilder projectId={projectId} versions={versions} />
       {error && (
         <p className="border border-red-700/40 bg-red-50 px-4 py-2 text-body text-red-700">{error}</p>
       )}
@@ -307,7 +309,7 @@ export function VersionsPanel({ projectId }: Props) {
 }
 
 /** Minimal read-only render of a frozen snapshot — reuses formatMoney; deliberately simple (a plain per-section table), not the full interactive EstimateView. */
-function VersionSnapshotView({ version }: { version: EstimateVersion }) {
+export function VersionSnapshotView({ version }: { version: EstimateVersion }) {
   const { snapshot } = version;
   return (
     <div className="space-y-4">

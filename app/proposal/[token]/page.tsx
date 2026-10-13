@@ -1,8 +1,11 @@
+import { localConstructionLifecycleEnabled } from "@/lib/construction-lifecycle";
 import type { Metadata } from "next";
 import Image from "next/image";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
-import { createServiceRoleClient } from "@/lib/supabase/server";
+import { getUserRole } from "@/lib/auth";
+import { isConstruction } from "@/lib/construction-proposals";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { rateLimit } from "@/lib/rate-limit";
 import { residenceLabel } from "@/lib/proposals";
 import { TIMELINE_COUNCIL_CAVEAT } from "@/lib/proposal-templates";
@@ -111,6 +114,11 @@ export default async function ProposalPage({ params }: { params: Promise<{ token
   }
   const p = proposal as Proposal;
   const content = p.content as ProposalContent;
+  const construction = isConstruction(content);
+  const localLifecycle = localConstructionLifecycleEnabled();
+  // Construction drafts stay private until the release gate is explicitly reviewed.
+  if (construction && !(localLifecycle && p.status !== "draft") && (await getUserRole(await createClient()))?.role !== "admin") notFound();
+  const proposalLabel = construction ? (content.construction?.variation ? "Construction Variation" : "Construction Proposal") : "Design Proposal";
 
   const [{ data: lead }, { data: project }] = await Promise.all([
     p.lead_id
@@ -160,22 +168,22 @@ export default async function ProposalPage({ params }: { params: Promise<{ token
        * (via its `.pr-doc` wrapper) off the same sheet geometry the
        * video uses, so the real document is always the thing on screen,
        * never a second approximation of it. */}
-      <ProposalReveal token={token} greetingName={greetingName} sentDateLabel={sentDateLabel} residence={residence}>
+      <ProposalReveal proposalLabel={proposalLabel} token={token} greetingName={greetingName} sentDateLabel={sentDateLabel} residence={residence}>
         <main className="mx-auto max-w-2xl px-6 py-10">
-        {p.status === "draft" && (
+        {p.status === "draft" && !construction && (
           <p className="mb-6 border border-sand/60 bg-offwhite px-4 py-2 text-caption text-sand">
             Preview — this proposal has not been sent yet.
           </p>
         )}
 
-        <p className="label-caps">Design Proposal</p>
+        <p className="label-caps">{proposalLabel}</p>
         <h1 className="mt-1 font-display text-section text-nearblack">{residence}</h1>
         {address && <p className="mt-1 text-body text-charcoal/70">{address}</p>}
         <p className="mt-1 text-caption text-charcoal/40">{sentDateLabel}</p>
 
         {/* Letter */}
         <section className="mt-10">
-          <p className="label-caps mb-3">Letter</p>
+          {!construction && <p className="label-caps mb-3">Letter</p>}
           <div className="space-y-3">
             {content.letter.split(/\n\s*\n/).map((para, i) => (
               <p key={i} className="text-body text-charcoal/80 whitespace-pre-line">
@@ -199,7 +207,7 @@ export default async function ProposalPage({ params }: { params: Promise<{ token
 
         {/* Scope */}
         <section className="mt-10 border-t border-[#dcd6cc] pt-8">
-          <p className="label-caps mb-4">Scope of Design Services</p>
+          <p className="label-caps mb-4">{construction ? "Construction Scope" : "Scope of Design Services"}</p>
           <div className="space-y-8">
             {content.scope_sections.map((section, i) => (
               <div key={i}>
@@ -235,7 +243,7 @@ export default async function ProposalPage({ params }: { params: Promise<{ token
 
         {/* Fees */}
         <section className="mt-10 border-t border-[#dcd6cc] pt-8">
-          <p className="label-caps mb-4">Design Fee &amp; Payment Structure</p>
+          <p className="label-caps mb-4">{construction ? "Payment Breakdown" : "Design Fee & Payment Structure"}</p>
           <div className="space-y-6">
             {content.fees.stages.map((stage, si) => (
               <div key={si}>
@@ -253,9 +261,22 @@ export default async function ProposalPage({ params }: { params: Promise<{ token
                 </ul>
               </div>
             ))}
+            {construction && (content.fees.price_lines ?? []).map((line,i)=><p key={i} className="text-body text-charcoal/80">{line}</p>)}
+            {construction && <>
+            <div className="border-t border-nearblack pt-3">
+              <div className="flex items-baseline justify-between">
+                <p className="text-subhead text-nearblack">{construction ? "Total construction price (inc GST)" : "Total design fee (inc GST)"}</p>
+                <p className="text-subhead text-nearblack">{formatMoney(p.total_inc)}</p>
+              </div>
+              <div className="mt-1 flex items-baseline justify-between">
+                <p className="text-body text-sand">{construction ? "Deposit" : "Deposit payable on acceptance"}</p>
+                <p className="text-body text-sand">{formatMoney(p.deposit_inc)}</p>
+              </div>
+            </div>
+            </>}
             {content.fees.payment_lines.length > 0 && (
               <div>
-                <p className="label-caps mb-1.5">Payment Structure</p>
+                <p className="label-caps mb-1.5">{construction ? "Payment Breakdown" : "Payment Structure"}</p>
                 <ul className="space-y-1">
                   {content.fees.payment_lines.map((line, li) => (
                     <li key={li} className="flex gap-2 text-body text-charcoal/80">
@@ -266,16 +287,18 @@ export default async function ProposalPage({ params }: { params: Promise<{ token
                 </ul>
               </div>
             )}
+            {!construction && <>
             <div className="border-t border-nearblack pt-3">
               <div className="flex items-baseline justify-between">
-                <p className="text-subhead text-nearblack">Total design fee (inc GST)</p>
+                <p className="text-subhead text-nearblack">{construction ? "Total construction price (inc GST)" : "Total design fee (inc GST)"}</p>
                 <p className="text-subhead text-nearblack">{formatMoney(p.total_inc)}</p>
               </div>
               <div className="mt-1 flex items-baseline justify-between">
-                <p className="text-body text-sand">Deposit payable on acceptance</p>
+                <p className="text-body text-sand">{construction ? "Deposit" : "Deposit payable on acceptance"}</p>
                 <p className="text-body text-sand">{formatMoney(p.deposit_inc)}</p>
               </div>
             </div>
+            </>}
           </div>
         </section>
 
@@ -297,7 +320,7 @@ export default async function ProposalPage({ params }: { params: Promise<{ token
 
         {/* Exclusions */}
         <section className="mt-10 border-t border-[#dcd6cc] pt-8">
-          <p className="label-caps mb-4">Exclusions &amp; Additional Consultant Services</p>
+          <p className="label-caps mb-4">{construction ? "Optional Extras & Exclusions" : "Exclusions & Additional Consultant Services"}</p>
           <ul className="space-y-1.5">
             {content.exclusions.bullets.map((b, bi) => (
               <li key={bi} className="flex gap-2 text-body text-charcoal/80">
@@ -319,8 +342,8 @@ export default async function ProposalPage({ params }: { params: Promise<{ token
           </div>
         </section>
 
-        {/* Sign to accept */}
-        <section className="mt-10 border-t border-[#dcd6cc] pt-8">
+        {/* Signing controls remain unavailable for unreleased construction previews. */}
+        {(!construction || localLifecycle) && <section className="mt-10 border-t border-[#dcd6cc] pt-8">
           <p className="label-caps mb-4">Sign to Accept</p>
           {p.status === "accepted" ? (
             <div className="border border-sand bg-offwhite p-6 text-center">
@@ -328,8 +351,8 @@ export default async function ProposalPage({ params }: { params: Promise<{ token
                 Signed by {p.signed_name} on {formatDate(p.signed_at)}.
               </p>
             </div>
-          ) : p.status === "sent" ? (
-            <ProposalSignForm token={token} />
+          ) : p.status === "sent" && (!construction || localLifecycle) ? (
+            <ProposalSignForm token={token} version={construction && p.construction_version_digest ? { id: p.id, digest: p.construction_version_digest } : undefined} />
           ) : (
             <p className="border border-[#dcd6cc] bg-offwhite p-6 text-center text-body text-charcoal/60">
               {p.status === "draft"
@@ -337,7 +360,7 @@ export default async function ProposalPage({ params }: { params: Promise<{ token
                 : "This proposal is no longer available for signing."}
             </p>
           )}
-        </section>
+        </section>}
         </main>
       </ProposalReveal>
 

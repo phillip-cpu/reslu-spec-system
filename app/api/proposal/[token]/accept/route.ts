@@ -1,3 +1,6 @@
+import { localConstructionLifecycleEnabled, respondConstructionVersion } from "@/lib/construction-lifecycle";
+import { matchesConstructionApproval } from "@/lib/construction-proposal-identity";
+import { isConstruction, CONSTRUCTION_RELEASE_HOLD } from "@/lib/construction-proposals";
 import { NextRequest, NextResponse } from "next/server";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { createServiceRoleClient } from "@/lib/supabase/server";
@@ -125,6 +128,19 @@ export async function POST(
     .maybeSingle();
   if (!proposal) {
     return NextResponse.json({ error: "Invalid link" }, { status: 404 });
+  }
+
+  if (isConstruction(proposal.content)) {
+    if (!matchesConstructionApproval(proposal, body)) return NextResponse.json({ error: "Approval must reference the exact displayed proposal version." }, { status: 409 });
+    if (!localConstructionLifecycleEnabled()) return NextResponse.json({ error: CONSTRUCTION_RELEASE_HOLD }, { status: 409 });
+    if (!body.request_id || !proposal.project_id) return NextResponse.json({ error: "Version-bound request identity is required." }, { status: 400 });
+    try {
+      const receipt = await respondConstructionVersion(supabase, { projectId: proposal.project_id, proposalId: proposal.id, token, digest: proposal.construction_version_digest, requestId: body.request_id, decision: "accepted", evidence: { drawn_data_url: body.drawn_data_url, typed_name: typedName, consent: true, ip: clientIp(request), user_agent: request.headers.get("user-agent") } });
+      // Construction has its own atomic held outbox. Never enter the design
+      // email/invoice/PDF side-effect pipeline during local validation.
+      return NextResponse.json({ ok: true, status: "accepted", receipt });
+    } catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 409 }); }
+
   }
 
   if (proposal.status === "accepted") {

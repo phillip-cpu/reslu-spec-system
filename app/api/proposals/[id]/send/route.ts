@@ -1,5 +1,7 @@
+import { localConstructionLifecycleEnabled, issueConstructionVersion } from "@/lib/construction-lifecycle";
+import { isConstruction, CONSTRUCTION_RELEASE_HOLD } from "@/lib/construction-proposals";
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
 import { sendProposalEmail } from "@/lib/proposal-emails";
 import { recipientEmail, residenceLabel } from "@/lib/proposals";
@@ -54,7 +56,7 @@ function formatSentDateAdelaide(d: Date): string {
   }).format(d);
 }
 
-export async function POST(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const supabase = await createClient();
   const info = await getUserRole(supabase);
@@ -70,6 +72,16 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     .maybeSingle();
   if (fetchError) return NextResponse.json({ error: fetchError.message }, { status: 500 });
   if (!proposal) return NextResponse.json({ error: "Proposal not found" }, { status: 404 });
+  if (isConstruction(proposal.content)) {
+    if (!localConstructionLifecycleEnabled()) return NextResponse.json({ error: CONSTRUCTION_RELEASE_HOLD }, { status: 409 });
+    const body = await request.json().catch(() => null);
+    if (!body?.request_id || body.proposal_version_digest !== proposal.construction_version_digest || !proposal.project_id) return NextResponse.json({ error: "Exact construction version and request identity required." }, { status: 409 });
+    try {
+      const receipt = await issueConstructionVersion(createServiceRoleClient(), { projectId: proposal.project_id, proposalId: proposal.id, digest: proposal.construction_version_digest, requestId: body.request_id, actorId: info.userId });
+      return NextResponse.json({ ok: true, receipt, delivery: "held" });
+    } catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 409 }); }
+  }
+
   if (proposal.status !== "draft") {
     return NextResponse.json(
       { error: `This proposal is already ${proposal.status} — use resend to send it again.` },
