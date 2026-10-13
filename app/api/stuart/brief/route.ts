@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { isStuartUser } from "@/lib/stuart/access";
+import { buildBankingEvidence, type CachedBankAccount, type CachedPaymentObservation } from "@/lib/stuart/banking-evidence";
 import { buildThirteenWeekForecast, summariseProjectCosts, type StuartCostLine, type StuartForecastInvoice } from "@/lib/stuart/forecast";
 
 export const runtime = "nodejs";
@@ -14,10 +15,45 @@ export async function GET(request: NextRequest) {
   const service = createServiceRoleClient();
   const { data: connection, error: connectionError } = await service
     .from("xero_connections")
-    .select("id")
+    .select("id,last_sync_completed_at,last_sync_error,scopes")
     .eq("is_active", true)
     .maybeSingle();
   if (connectionError) return NextResponse.json({ error: connectionError.message }, { status: 500 });
+
+  // Cached read only: this branch never calls Xero or starts a sync/review.
+  if (request.nextUrl.searchParams.get("response_format") === "banking") {
+    const offset = Number(request.nextUrl.searchParams.get("offset") ?? "0");
+    const limit = Number(request.nextUrl.searchParams.get("limit") ?? "5");
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 5) {
+      return NextResponse.json({ error: "offset must be a non-negative integer and limit must be 1-5" }, { status: 400 });
+    }
+    const connectionId = connection?.id ?? "00000000-0000-0000-0000-000000000000";
+    const [accounts, payments] = await Promise.all([
+      service.from("xero_bank_accounts")
+        .select("xero_account_id,name,bank_account_type,status,current_balance,balance_as_of,balance_source,balance_synced_at,synced_at,account_currency_code:raw_json->>CurrencyCode", { count: "exact" })
+        .eq("connection_id", connectionId)
+        .eq("status", "ACTIVE")
+        .in("bank_account_type", ["BANK", "CREDITCARD", "PAYPAL"])
+        .order("xero_account_id", { ascending: true })
+        .range(offset, offset + limit - 1),
+      service.from("xero_payments")
+        .select("account_id:raw_json->Account->>AccountID,payment_date,is_reconciled,status,synced_at", { count: "exact" })
+        .eq("connection_id", connectionId)
+        .order("xero_payment_id", { ascending: true })
+        .range(0, 999),
+    ]);
+    const error = accounts.error ?? payments.error;
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(buildBankingEvidence({
+      connection,
+      accounts: (accounts.data ?? []) as unknown as CachedBankAccount[],
+      payments: (payments.data ?? []) as unknown as CachedPaymentObservation[],
+      accountTotal: accounts.count ?? 0,
+      paymentTotal: payments.count ?? 0,
+      offset,
+      limit,
+    }));
+  }
 
   const [findings, feedback, run, cash, invoices, costLines, projects] = await Promise.all([
     service
