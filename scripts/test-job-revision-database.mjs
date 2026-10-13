@@ -5,13 +5,15 @@ import {createRequire} from 'node:module';
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';import {tmpdir} from 'node:os';import {createServer} from 'node:net';
 import {revisionFixture} from '../lib/revisions/fixture.ts';
+import {largeRevisionFixture} from './fixtures/large-job-revision.mjs';
 import {revisionSnapshot,revisionEstimate,editRevision,validatePayload} from '../lib/revisions/model.ts';
 const deps=createRequire('/tmp/reslu-construction-db-deps/package.json');const {default:EmbeddedPostgres}=await import(deps.resolve('embedded-postgres'));const {Client}=deps('pg');
 const root=await mkdtemp(join(tmpdir(),'job-revision-pg-'));const socket=createServer();await new Promise(r=>socket.listen(0,'127.0.0.1',r));const port=socket.address().port;await new Promise(r=>socket.close(r));const password=randomBytes(24).toString('hex');
 const cluster=new EmbeddedPostgres({databaseDir:join(root,'data'),user:'postgres',password,port,persistent:false,createPostgresUser:false,postgresFlags:['-h','127.0.0.1','-k',root],onLog:()=>{},onError:()=>{}});
 let owner,checks=0;const clients=[];const check=async(name,fn)=>{await fn();checks++;console.log('PASS',name)};
 const connect=async(role='postgres',actor='')=>{const db=new Client({host:'127.0.0.1',port,user:role,password,database:'postgres'});await db.connect();clients.push(db);await db.query("select set_config('request.jwt.claim.sub',$1,false)",[actor]);return db;};
-const adminId=randomUUID(),designerId=randomUUID(),frozen=revisionFixture(),project=frozen.payload.project_id;
+const scale=process.env.REVISION_SCALE_TEST==='1';
+const adminId=randomUUID(),designerId=randomUUID(),frozen=scale?largeRevisionFixture():revisionFixture(),project=frozen.payload.project_id;
 try{
  await cluster.initialise();await cluster.start();owner=await connect();
  await owner.query(`create role anon login password '${password}';create role authenticated login password '${password}';create role service_role login bypassrls password '${password}';create schema auth;grant usage on schema public,auth to anon,authenticated,service_role;
@@ -80,10 +82,33 @@ try{
   await assert.rejects(()=>admin.query("update job_revision_workspaces set payload='{}'"),/permission denied/);
  });
  const save=(payload,version=w.lock_version,request=randomUUID(),db=admin)=>db.query('select save_job_revision($1,$2,$3,$4,$5,$6) r',[project,w.id,hash,version,payload,request]);
+ const beforeDefinition=(await owner.query("select proacl,prosecdef,proconfig,proowner from pg_proc where oid='job_revision_private.save(uuid,uuid,text,integer,jsonb,uuid)'::regprocedure")).rows[0];
+ if(scale)await check('full-size pre-fix save reproduces timeout with atomic rollback',async()=>{
+  await admin.query('begin');const oldStarted=performance.now();
+  try{await save(w.payload)}finally{await admin.query('rollback')}
+  const oldMs=performance.now()-oldStarted,budget=Math.max(100,Math.floor(oldMs*.6));
+  console.log(`Pre-fix unrestricted full-size save: ${Math.round(oldMs)}ms; calibrated local budget: ${budget}ms`);
+  await admin.query(`set statement_timeout='${budget}ms'`);const request=randomUUID(),started=performance.now();
+  await assert.rejects(()=>save(w.payload,w.lock_version,request),e=>e.code==='57014'&&/owned_rows/.test(e.where));
+  console.log(`Reproduced timeout: ${Math.round(performance.now()-started)}ms, ${JSON.stringify(w.payload).length} bytes`);
+  assert.deepEqual((await admin.query('select payload from job_revision_workspaces where id=$1',[w.id])).rows[0].payload,w.payload);
+  assert.equal((await owner.query('select count(*)::int n from job_revision_private.requests where request_id=$1',[request])).rows[0].n,0);
+ });
+ await owner.query(await readFile('supabase/migrations/20261013062801_revision_save_identity_lookup.sql','utf8'));
+ await check('save optimisation preserves function security, grants and search path',async()=>{
+  assert.deepEqual((await owner.query("select proacl,prosecdef,proconfig,proowner from pg_proc where oid='job_revision_private.save(uuid,uuid,text,integer,jsonb,uuid)'::regprocedure")).rows[0],beforeDefinition);
+ });
+ if(scale)await check('full-size fixed save persists within the same calibrated local timeout',async()=>{
+  const payload=structuredClone(w.payload);payload.scope.sections[0].heading='Synthetic revised heading';payload.scope.sections[0].lines.pop();
+  const started=performance.now();w=(await save(payload)).rows[0].r;
+  console.log(`Fixed full-size save: ${Math.round(performance.now()-started)}ms`);
+  assert.equal(w.payload.scope.sections[0].heading,'Synthetic revised heading');
+  assert.deepEqual((await admin.query('select payload from job_revision_workspaces where id=$1',[w.id])).rows[0].payload,payload);
+ });
  await check('atomic save retry, two-editor conflict, source remains unchanged',async()=>{
   const payload=editRevision(w.payload,{entity:'items',action:'patch',id:w.payload.items[0].id,values:{price_trade:99,quantity:8}}).payload;
-  const request=randomUUID();const results=await Promise.all([save(payload,0,request),save(payload,0,request,second)]);assert.equal(results[0].rows[0].r.lock_version,1);assert.equal(results[1].rows[0].r.lock_version,1);
-  await assert.rejects(()=>save(payload,0),/conflict/);w=results[0].rows[0].r;
+  const priorVersion=w.lock_version,request=randomUUID();const results=await Promise.all([save(payload,priorVersion,request),save(payload,priorVersion,request,second)]);assert.equal(results[0].rows[0].r.lock_version,priorVersion+1);assert.equal(results[1].rows[0].r.lock_version,priorVersion+1);
+  await assert.rejects(()=>save(payload,priorVersion),/conflict/);w=results[0].rows[0].r;
   assert.deepEqual((await owner.query('select snapshot from estimate_versions where id=$1',[baseline.id])).rows[0].snapshot.full_job_revision,frozen);
  });
  await check('failed validation leaves payload, counter and request log untouched; same key may retry after rollback',async()=>{
@@ -102,6 +127,22 @@ try{
    const bad=structuredClone(w.payload);mutate(bad);await assert.rejects(()=>save(bad),/identity|link|references|project-owned/);
   }
   assert.equal((await admin.query('select lock_version from job_revision_workspaces where id=$1',[w.id])).rows[0].lock_version,w.lock_version);
+ });
+ await check('new rows cannot forge origins, including explicit null; existing origins cannot be removed',async()=>{
+  for(const mutate of [p=>delete p.items[0].origin_id,p=>p.items.push({...p.items[0],id:randomUUID()}),p=>p.items.push({...p.items[0],id:randomUUID(),origin_id:null})]){
+   const bad=structuredClone(w.payload);mutate(bad);await assert.rejects(()=>save(bad),/identity|impersonate/);
+  }
+  assert.equal((await admin.query('select lock_version from job_revision_workspaces where id=$1',[w.id])).rows[0].lock_version,w.lock_version);
+ });
+ await check('legitimate new rows with absent/null origins retain legacy equivalence on later saves',async()=>{
+  let payload=editRevision(w.payload,{entity:'lines',action:'add',parent_id:w.payload.sections[0].id,values:{description:'Synthetic added cost',qty:1,rate_ex_gst:100}}).payload;
+  w=(await save(payload)).rows[0].r;
+  payload=structuredClone(w.payload);payload.sections[0].lines.at(-1).origin_id=null;
+  w=(await save(payload)).rows[0].r;
+  payload=structuredClone(w.payload);delete payload.sections[0].lines.at(-1).origin_id;
+  payload.scope.sections[0].heading='Synthetic edited scope';payload.scope.sections[0].lines.pop();
+  w=(await save(payload)).rows[0].r;
+  assert.equal(w.payload.scope.sections[0].heading,'Synthetic edited scope');
  });
  await check('accounting, payments and notification records untouched; complete payload round-trip',async()=>{
   assert.equal((await owner.query('select amount from invoices')).rows[0].amount,'123');assert.equal((await owner.query('select amount from payments')).rows[0].amount,'45');assert.equal((await owner.query('select count(*)::int n from notifications')).rows[0].n,0);
