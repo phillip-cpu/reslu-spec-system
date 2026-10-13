@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FocusEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FocusEvent } from "react";
 import clsx from "clsx";
 import type {
   Proposal,
@@ -83,6 +83,9 @@ const smallBtn = "border border-[#c9c2b4] px-2 py-1 text-caption text-charcoal/7
  * editor does.
  */
 export function ProposalEditor({ proposalId }: { proposalId: string }) {
+  const localIssueLock = useRef(false);
+  const localIssueRequest = useRef<string | null>(null);
+  const [localLifecycle, setLocalLifecycle] = useState(false);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [content, setContent] = useState<ProposalContent | null>(null);
   const [depositInc, setDepositInc] = useState<number>(0);
@@ -94,12 +97,12 @@ export function ProposalEditor({ proposalId }: { proposalId: string }) {
   const [sendResult, setSendResult] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
     try {
       const res = await fetch(`/api/proposals/${proposalId}`);
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "Could not load this proposal.");
+      setError(null);
+      setLocalLifecycle(body.local_lifecycle_enabled === true);
       const p: Proposal = body.proposal;
       setProposal(p);
       setContent(p.content);
@@ -113,7 +116,9 @@ export function ProposalEditor({ proposalId }: { proposalId: string }) {
   }, [proposalId]);
 
   useEffect(() => {
-    load();
+    // Fetch completion updates state asynchronously; there is no synchronous state write here.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
   }, [load]);
 
   function patchContent(next: ProposalContent) {
@@ -195,10 +200,45 @@ export function ProposalEditor({ proposalId }: { proposalId: string }) {
     }
   }
 
+  async function issueLocalConstruction() {
+    if (localIssueLock.current || sending || !proposal?.construction_version_digest) return;
+    localIssueLock.current = true;
+    localIssueRequest.current ??= crypto.randomUUID();
+    setSending(true); setError(null);
+    try {
+      const res = await fetch(`/api/proposals/${proposal.id}/send`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request_id: localIssueRequest.current, proposal_version_digest: proposal.construction_version_digest }) });
+      const body = await res.json(); if (!res.ok) throw new Error(body.error);
+      await load();
+    } catch (e) { setError((e as Error).message); } finally { localIssueLock.current = false; setSending(false); }
+  }
+
   if (loading) return <p className="text-body text-charcoal/50">Loading proposal…</p>;
   if (!proposal || !content) {
     return <p className="border border-red-700/40 bg-red-50 px-4 py-2 text-body text-red-700">{error ?? "Proposal not found."}</p>;
   }
+
+  if (content.kind === "construction") return (
+    <section className="space-y-5 border border-[#dcd6cc] bg-offwhite p-6">
+      <h2 className="font-display text-section">{content.construction?.variation ? "Post-contract variation" : "Construction proposal"} · internal review</h2>
+      <p>Frozen from estimate {content.construction?.estimate_label} and scope {content.construction?.sow_revision}. Version {proposal.id}.</p>
+      <p>Production sending and acceptance are unavailable pending final review and verified contract terms.</p>
+      {localLifecycle && proposal.status === "draft" && <button className={smallBtn} disabled={sending} onClick={issueLocalConstruction}>Issue synthetic local version (delivery held)</button>}
+      {error && <p role="alert" className="text-red-700">{error}</p>}
+      <a className={smallBtn} href={`/api/proposals/${proposal.id}/history`} target="_blank" rel="noopener noreferrer">Database approval history →</a>
+      <ul className="list-disc pl-5">{content.construction?.changes.map((c, i) => <li key={i}>{c}</li>)}</ul>
+      {content.construction?.variation && <div>
+        <p>Variation approval: pending. Base contract approval history:</p>
+        <ul>{content.construction.variation.approval_history.map(a => <li key={a.proposal_id}>{a.name} accepted version {a.proposal_id} on {a.at}.</li>)}</ul>
+        <a className={smallBtn} href={`/proposals/${content.construction.variation.accepted_proposal_id}`}>Accepted original →</a>
+      </div>}
+      <div className="flex flex-wrap gap-4">
+        <a className={smallBtn} href={`/proposal/${proposal.token}`} target="_blank" rel="noopener noreferrer">Preview client experience →</a>
+        <a className={smallBtn} href={`/api/proposals/${proposal.id}/pdf`} target="_blank" rel="noopener noreferrer">Preview PDF →</a>
+        <a className={smallBtn} href={`/projects/${proposal.project_id}/estimate`}>Back to estimate / generate revision</a>
+        {content.construction?.previous_proposal_id && <a className={smallBtn} href={`/proposals/${content.construction.previous_proposal_id}`}>Previous version →</a>}
+      </div>
+    </section>
+  );
 
   const readOnly = proposal.status === "accepted" || proposal.status === "closed";
   const grandTotal = content.fees.stages.reduce((s, st) => s + (Number(st.total_inc) || 0), 0);

@@ -1,3 +1,5 @@
+import { localConstructionLifecycleEnabled } from "@/lib/construction-lifecycle";
+import { isConstruction } from "@/lib/construction-proposals";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
@@ -27,7 +29,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   if (!proposal) return NextResponse.json({ error: "Proposal not found" }, { status: 404 });
 
   const body: ProposalResponse = { proposal: proposal as Proposal };
-  return NextResponse.json(body);
+  return NextResponse.json({ ...body, local_lifecycle_enabled: localConstructionLifecycleEnabled() });
 }
 
 /**
@@ -64,8 +66,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "Only admins can edit fee proposals" }, { status: 403 });
   }
 
-  const { data: existing } = await supabase.from("proposals").select("id,status").eq("id", id).maybeSingle();
+  const { data: existing } = await supabase.from("proposals").select("id,status,content").eq("id", id).maybeSingle();
   if (!existing) return NextResponse.json({ error: "Proposal not found" }, { status: 404 });
+  if (isConstruction(existing.content)) return NextResponse.json({ error: "Generated construction versions are immutable. Generate a new revision from the estimate workspace." }, { status: 409 });
   if (existing.status === "accepted" || existing.status === "closed") {
     return NextResponse.json(
       { error: `A ${existing.status} proposal cannot be edited.` },
@@ -83,6 +86,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const patch: Record<string, unknown> = {};
 
   if (body.content !== undefined) {
+    if (isConstruction(body.content)) return NextResponse.json({ error: "Use construction generation." }, { status: 400 });
     const reason = validateProposalContent(body.content);
     if (reason) return NextResponse.json({ error: reason }, { status: 400 });
     patch.content = body.content;

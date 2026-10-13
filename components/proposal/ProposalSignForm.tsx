@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { SignatureCanvas } from "@/components/portal/SignatureCanvas";
 
@@ -20,7 +20,9 @@ import { SignatureCanvas } from "@/components/portal/SignatureCanvas";
  * here (unlike that flow's "draw AND/OR type") — see
  * app/api/proposal/[token]/accept/route.ts's own doc comment.
  */
-export function ProposalSignForm({ token }: { token: string }) {
+export function ProposalSignForm({ token, version }: { token: string; version?: { id: string; digest: string } }) {
+  const requestId = useRef<string | null>(null);
+  const submitLock = useRef(false);
   const router = useRouter();
   const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(null);
   const [typedName, setTypedName] = useState("");
@@ -32,7 +34,9 @@ export function ProposalSignForm({ token }: { token: string }) {
   const canSubmit = !!signatureDataUrl && typedName.trim().length > 0 && consent && !submitting;
 
   async function submit() {
-    if (!canSubmit) return;
+    if (!canSubmit || submitLock.current) return;
+    submitLock.current = true;
+    requestId.current ??= crypto.randomUUID();
     setSubmitting(true);
     setError(null);
     try {
@@ -40,6 +44,7 @@ export function ProposalSignForm({ token }: { token: string }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          ...(version ? { proposal_version_id: version.id, proposal_version_digest: version.digest, request_id: requestId.current } : {}),
           drawn_data_url: signatureDataUrl,
           typed_name: typedName.trim(),
           consent,
@@ -52,6 +57,7 @@ export function ProposalSignForm({ token }: { token: string }) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
+      submitLock.current = false;
       setSubmitting(false);
     }
   }
@@ -61,7 +67,7 @@ export function ProposalSignForm({ token }: { token: string }) {
       <div className="border border-sand bg-offwhite p-6 text-center">
         <p className="text-subhead text-nearblack">Thank you — your signature has been recorded.</p>
         <p className="mt-2 text-body text-charcoal/60">
-          A signed copy is on its way to your inbox.
+          {version ? "Synthetic local acceptance recorded. Delivery remains held; no email or payment was created." : "A signed copy is on its way to your inbox."}
         </p>
       </div>
     );

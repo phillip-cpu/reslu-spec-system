@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';import fs from 'node:fs';import {createRequire} from 'node:module';import ts from 'typescript';import {revisionFixture} from '../lib/revisions/fixture.ts';import * as model from '../lib/revisions/model.ts';
+const require=createRequire(import.meta.url),{NextRequest,NextResponse}=require('next/server');
+function module(file,mocks){const code=ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;const out={};new Function('require','exports',code)(n=>mocks[n]??require(n),out);return out;}
+let reads=0,writes=0;const db={from(table){reads++;const q={select:()=>q,eq:()=>q,not:()=>q,order:async()=>({data:[],error:null}),maybeSingle:async()=>({data:null,error:null})};return q},rpc:async()=>{writes++;return {data:{id:'working'},error:null}}};
+const endpoints=['app/api/projects/[id]/revisions/route.ts','app/api/projects/[id]/revisions/[revisionId]/route.ts','app/api/projects/[id]/revisions/[revisionId]/sent-pdf/route.ts'];const context={params:Promise.resolve({id:'project',revisionId:'revision'})};const request=body=>new NextRequest('http://localhost/api/test',{method:'POST',body:JSON.stringify(body)});
+for(const role of [null,'designer','staff','client','builder','admin']){
+ process.env.JOB_REVISION_WORKSPACES_ENABLED='true';const access=module('lib/revisions/access.ts',{'@/lib/supabase/server':{createClient:async()=>db},'@/lib/auth':{getUserRole:async()=>role?{role}:null}});
+ for(const path of endpoints){const api=module(path,{'@/lib/revisions/access':access,'@/lib/revisions/model':model,'@/lib/storage':{ASSET_BUCKET:'assets'}});if(role!=='admin'){reads=0;writes=0;for(const handler of Object.values(api)){const r=await handler(request({}),context);assert.equal(r.status,role?403:401)}assert.equal(reads,0);assert.equal(writes,0);}}
+}
+console.log('PASS all revision endpoints deny unauthenticated/non-admin users before financial reads or writes.');
+process.env.JOB_REVISION_WORKSPACES_ENABLED='false';let auth=0;let access=module('lib/revisions/access.ts',{'@/lib/supabase/server':{createClient:async()=>{auth++;return db}},'@/lib/auth':{getUserRole:async()=>({role:'admin'})}});assert.equal((await access.revisionAccess()).error.status,404);assert.equal(auth,0);console.log('PASS feature gate defaults closed without database access.');
+process.env.JOB_REVISION_WORKSPACES_ENABLED='true';access=module('lib/revisions/access.ts',{'@/lib/supabase/server':{createClient:async()=>db},'@/lib/auth':{getUserRole:async()=>({role:'admin'})}});
+const api=module(endpoints[1],{'@/lib/revisions/access':access,'@/lib/revisions/model':model,'@/lib/storage':{ASSET_BUCKET:'assets'}});reads=0;writes=0;assert.equal((await api.GET(request({}),context)).status,404);assert.equal((await api.PATCH(request({payload:revisionFixture().payload,expected_version:0,source_hash:'hash',request_id:'id'}),context)).status,400);assert.equal(writes,0);console.log('PASS unknown/cross-project revisions cannot save; no fallback to current job.');
+const {createHash}=await import('node:crypto');
+const bytes=Buffer.from('%PDF-1.7 synthetic immutable document');let downloads=0;
+let artifact={reference:'synthetic',storage_path:'projects/project/files/synthetic.pdf',bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')};
+const artifactDb={from(table){const q={select:()=>q,eq:()=>q,not:()=>q,maybeSingle:async()=>({data:table==='job_revision_workspaces'?null:{snapshot:{full_job_revision:{sent_pdf:artifact}}},error:null})};return q},storage:{from(){return {download:async()=>{downloads++;return {data:new Blob([bytes]),error:null}}}}}};
+const pdfApi=module(endpoints[2],{'@/lib/revisions/access':{revisionAccess:async()=>({db:artifactDb,user:{role:'admin'}})},'@/lib/storage':{ASSET_BUCKET:'assets'}});
+let pdf=await pdfApi.GET(request({}),context);assert.equal(pdf.status,200);assert.deepEqual(Buffer.from(await pdf.arrayBuffer()),bytes);assert.equal(pdf.headers.get('Cache-Control'),'private, no-store');
+artifact={...artifact,sha256:'0'.repeat(64)};assert.equal((await pdfApi.GET(request({}),context)).status,409);
+artifact={...artifact,storage_path:'projects/other/files/synthetic.pdf'};const before=downloads;assert.equal((await pdfApi.GET(request({}),context)).status,409);assert.equal(downloads,before);
+console.log('PASS sent-PDF route returns original bytes only, rejects digest mismatch and foreign project path.');

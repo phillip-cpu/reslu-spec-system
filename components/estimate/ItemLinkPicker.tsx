@@ -1,5 +1,7 @@
 "use client";
 
+import { useRevisionTransport } from "@/components/revisions/RevisionTransport";
+
 import { useEffect, useState } from "react";
 import type { Item } from "@/types";
 
@@ -22,12 +24,16 @@ interface Props {
  * this component only ever reads from it (GET), never writes.
  */
 export function ItemLinkPicker({ projectId, currentItemId, onSelect, onClose }: Props) {
+  const { fetch, revision } = useRevisionTransport();
+  void revision;
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
 
   useEffect(() => {
     let cancelled = false;
+    // Reset the external request state when project or scoped transport changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     fetch(`/api/projects/${projectId}/items`)
       .then((r) => r.json())
@@ -41,7 +47,7 @@ export function ItemLinkPicker({ projectId, currentItemId, onSelect, onClose }: 
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, fetch]);
 
   const term = q.trim().toLowerCase();
   const filtered = term
