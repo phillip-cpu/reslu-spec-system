@@ -150,6 +150,7 @@ export default async function ProjectPage({
         portalUrl={portalUrlFor(project.client_token)}
       />
       <main className="flex-1 px-8 py-8">
+        {project.builder_id && <a className="inline-block border border-[#c9c2b4] px-4 py-2 text-body mb-6" href={`/projects/${id}/schedule`}>Builder selection schedule &rarr;</a>}
         {showFfe ? (
           <ProjectWorkspace
             projectId={id}

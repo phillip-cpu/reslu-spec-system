@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import type { Category, DuplicateMatch, LibraryItem } from "@/types";
 import type { LibraryItemWithStandardFlag } from "@/types/round-d";
 
@@ -197,6 +198,7 @@ export function LibraryBrowser({ categories }: Props) {
                 <TradePricePanel item={item} onSaved={(next) => patch(item.id, next)} onError={setError} />
               )}
 
+              <Link className="block text-body underline mt-3" href={`/library/${item.id}`}>Product details &amp; documents</Link>
               <div className="mt-3 flex items-center justify-between border-t border-[#dcd6cc] pt-2">
                 {item.product_url ? (
                   <a
