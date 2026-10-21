@@ -1,4 +1,5 @@
 'use client';
+import type {CandidateAllocation} from '@/lib/builder-workspaces';
 import {useState} from 'react';
 /* Mirrors SchedulePdf's image / product details / dimensions and quantity row. */
 type Summary = {
@@ -8,9 +9,9 @@ type Summary = {
 type Item = Summary & {
   name: string; category: string; colour: string | null; finish: string | null;
   selected_image_url?: string | null; is_candidate?: boolean; client_approved: boolean;
-  quantity?: number | null; unit?: string;
+  quantity?: number | null; unit?: string; preliminary_allocations?: CandidateAllocation[];
 };
-export function ScheduleProductRow({item, product, supplier, contact, contactsUnavailable=false, contactNote, scopeLabel}: {
+export function ScheduleProductRow({item, product, supplier, contact, contactsUnavailable=false, scopeLabel}: {
   item: Item; product: Summary; supplier?: string | null; contact: string | null;
   contactsUnavailable?: boolean; contactNote?: string; scopeLabel: string;
 }) {
@@ -29,13 +30,13 @@ export function ScheduleProductRow({item, product, supplier, contact, contactsUn
       <p className="text-body text-charcoal/65 mt-2">{[product.brand ?? item.brand, item.colour, item.finish].filter(Boolean).join(' · ') || 'Brand TBC'}</p>
       <dl className="text-caption mt-3 grid grid-cols-[66px_minmax(0,1fr)] gap-x-2 gap-y-1">
         <dt className="text-charcoal/50">Supplier</dt><dd>{supplier || 'TBC'}</dd>
-        <dt className="text-charcoal/50">Contact</dt><dd title={contactNote}>{contact}{contact && contactNote ? ' · source' : ''}{!contact && (contactsUnavailable ? 'Unavailable' : 'TBC')}</dd>
+        <dt className="text-charcoal/50">Contact</dt><dd>{contact}{!contact && (contactsUnavailable ? 'Unavailable' : 'TBC')}</dd>
       </dl>
     </div>
     <div className="col-start-2 md:col-start-auto text-body md:text-right space-y-2">
       <p className="text-charcoal/70">{dimensions ? `${dimensions} mm` : product.application_note ? 'See drawing' : 'Dimensions TBC'}</p>
-      <p>Qty {item.is_candidate || item.quantity == null ? 'TBC' : `${item.quantity} ${item.unit ?? ''}`}</p>
-      <p className="label-caps text-charcoal/50">{item.is_candidate ? 'Proposed' : item.client_approved ? 'Approved' : 'To confirm'}</p>
+      {item.is_candidate && item.preliminary_allocations?.length ? item.preliminary_allocations.map((a,index)=><p key={index}>{a.room}{a.lot_key?` (${a.lot_key})`:''}: {a.quantity === null ? 'Qty TBC' : `${a.quantity} ${a.unit}`} · {a.lot_basis === 'per_lot' ? 'per lot' : a.lot_basis === 'project_total' ? 'project total' : 'basis TBC'}</p>) : <p>Qty {item.is_candidate || item.quantity == null ? 'TBC' : `${item.quantity} ${item.unit ?? ''}`}</p>}
+      <p className="label-caps text-charcoal/50">{item.is_candidate ? 'Proposed · preliminary' : item.client_approved ? 'Approved' : 'To confirm'}</p>
     </div>
   </div>;
 }

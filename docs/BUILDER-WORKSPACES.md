@@ -25,3 +25,21 @@ Template application uses `PATCH /api/builders/:slug` with `{project_id, templat
 ## Binary upload and candidate release
 
 Migration `20261021075202_library_binary_documents_and_candidates.sql` is required before deploying the corrected code. It adds metadata and append-only binary content identity to library documents while candidates use existing project settings and RLS, with optimistic concurrency checks. It does not create buckets or change storage policies. No new candidate-table grants or storage permissions are introduced. No candidate is automatically promoted to a costable item or client approval. Historical price columns are untouched.
+
+## Preliminary allocations and opt-in schedule exports
+
+Candidates may now carry `preliminary_allocations` in their existing project settings relationship. Each allocation has `room`, optional verified `room_id` and `lot_key`, `quantity` (number or null), `unit` (text or null), `lot_basis` (`per_lot`, `project_total`, or `unknown`), and `status: preliminary`. Optional bounded fields retain `quantity_basis`, `source_reference`, `source_revision`, and `note`. Known quantities require a unit and known lot basis. No new migration is needed for these fields.
+
+Allocation-only PATCH requests preserve scope/key; scope-only edits preserve allocations and stored source metadata. Explicit allocation lots must exist and match a lot-specific selection. `shared_internal` remains supported as an existing shared scope. Explicit lot evidence is displayed only for that lot or the all-selections organiser; counts are never multiplied across lots.
+
+The schedule reuses `RoomBuilder` and `ExportDialog`. Existing room records are managed through the existing room APIs; suggested room names can be selected in the preliminary editor. This code does not seed Cara rooms or apply audit quantities. Group by room/type continues to show one canonical candidate row in the interactive view.
+
+The existing PDF endpoint accepts an opt-in builder view: `/api/projects/:id/pdf?schedule=builder&scope=lot59&grouping=room&docs=1`. Without `schedule=builder`, existing register exports remain unchanged. The builder export applies scope and category filters before loading documents, renders each preliminary room allocation as an explicitly labelled row, and never creates items, writes image/cache records, or changes totals. It reuses `SchedulePdf` and the existing bundle renderer. Stored canonical product documents are included once per stored path; source-link-only or missing documents are reported in the documents index. `docs=1` is optional. Unknown quantities stay TBC, including in the PDF.
+
+Normal schedule prose is reduced for presentation only: hashes, bucket URLs and import audit paragraphs are hidden while useful product restrictions and outstanding issues remain. Source metadata remains stored and available for audit. Raw verification fields are not added to exports.
+
+Additional local checks:
+- `node --experimental-strip-types --test lib/candidate-allocations.test.ts lib/schedule-product-notes.test.ts lib/schedule-grouping.test.ts`
+- `node scripts/test-candidate-allocations.mjs`
+- `node scripts/test-builder-schedule-export.mjs` (synthetic local PDFs only; no network or database writes)
+- `npm run build -- --webpack` when using an out-of-root dependency symlink, as documented in `docs/revisions/LOCAL-REVIEW.md`.

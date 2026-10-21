@@ -2,7 +2,7 @@ export type ScheduleGrouping = 'room' | 'type';
 export interface ScheduleCategory {prefix:string;name:string;sort_order?:number}
 interface Groupable {id:string;category:string;rooms?:{id:string;name:string}[]}
 
-/** Presentation only: read actual item_rooms allocations, never reference-deck
+/** Presentation only: read item_rooms or explicit preliminary candidate allocations, never reference-deck
  * locations, occurrence counts or quantities. Multi-room products appear once
  * under their combined allocation, preserving one canonical row per selection. */
 export function groupSchedule<T extends Groupable>(items:T[], mode:ScheduleGrouping, categories:ScheduleCategory[]=[]) {

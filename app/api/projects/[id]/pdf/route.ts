@@ -1,3 +1,4 @@
+import {renderBuilderScheduleExport} from '@/lib/builder-schedule-export';
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse, after } from "next/server";
 import { renderToBuffer } from "@react-pdf/renderer";
@@ -115,6 +116,7 @@ export async function GET(
   }
 
   const { searchParams } = new URL(request.url);
+  if(searchParams.get('schedule')==='builder')return renderBuilderScheduleExport(supabase,id,searchParams);
   const revisionLabel = searchParams.get("revision") ?? undefined;
   const scheduleSubtitle = searchParams.get("subtitle") ?? undefined;
   const noCache = searchParams.get("nocache") === "1";
