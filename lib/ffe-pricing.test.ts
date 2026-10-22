@@ -25,10 +25,10 @@ test("intentional and legacy markup values remain authoritative", () => {
   );
 });
 
-test("RRP placeholders, trade packages and reusable costs are not marked up", () => {
+test("RRP placeholders receive item markup while trade packages stay excluded", () => {
   assert.equal(
     ffeClientQuoteUnitPrice({ price_trade: null, price_rrp: 180, markup_pct: 30 }),
-    180
+    234
   );
   assert.equal(
     ffeClientQuoteUnitPrice({
@@ -63,4 +63,14 @@ test("product cost follows the same trade then RRP placeholder cascade", () => {
     }),
     null
   );
+});
+
+test("placeholder markup preserves zero, missing, custom rates and missing costs", () => {
+  for (const markup_pct of [0, null, undefined]) {
+    assert.equal(ffeClientQuoteUnitPrice({ price_trade: null, price_rrp: 80, markup_pct }), 80);
+  }
+  assert.equal(ffeClientQuoteUnitPrice({ price_trade: null, price_rrp: 80, markup_pct: 12.5 }), 90);
+  assert.equal(ffeClientQuoteUnitPrice({ price_trade: null, price_rrp: null, markup_pct: 30 }), null);
+  assert.equal(ffeClientQuoteUnitPrice({ price_trade: 0, price_rrp: 80, markup_pct: 30 }), 0);
+  assert.equal(ffeClientQuoteUnitPrice({ price_trade: null, price_rrp: 80, markup_pct: 30, cost_scope: "trade_package" }), null);
 });
