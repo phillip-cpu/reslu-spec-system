@@ -709,3 +709,14 @@ export function wholeJobSummary(trades: ProjectRollup, ffe: FfeRollup): WholeJob
   const combinedIncGst = roundMoney(combinedExGst + combinedGst);
   return { trades, ffe, combinedExGst, combinedGst, combinedIncGst };
 }
+
+/** Estimated profit on the same selling totals as the headline, excluding GST.
+ * Includes manual trade price overrides, approved variations and FF&E markup.
+ * Derive from existing totals so historical snapshots need no schema migration.
+ */
+export function wholeJobMarginExGst(summary: WholeJobSummary): number {
+  return roundMoney(
+    summary.combinedExGst - summary.trades.allTradesSubtotalExGst -
+    summary.trades.approvedVariationsExGst - summary.ffe.total
+  );
+}

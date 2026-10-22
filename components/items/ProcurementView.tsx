@@ -83,7 +83,7 @@ interface Props {
 
 // ── computations ────────────────────────────────────────────
 
-/** Shared quote cascade: marked-up trade price, then unmarked-up RRP placeholder. */
+/** Shared quote cascade: trade price, then RRP placeholder, with the item markup on either. */
 function clientPrice(item: Item): number | null {
   return ffeClientQuoteUnitPrice(item);
 }

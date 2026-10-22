@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import clsx from "clsx";
 import type { CostLine, EstimateResponse, MeasurementGroupWithRows, MeasurementWithGroup, Variation } from "@/types";
-import { approvedVariationsTotal, projectRollup, sectionRollup, wholeJobSummary } from "@/lib/estimate";
+import { approvedVariationsTotal, projectRollup, sectionRollup, wholeJobSummary, wholeJobMarginExGst } from "@/lib/estimate";
 import { EstimateView } from "./EstimateView";
 import { VariationsView } from "./VariationsView";
 import { MeasurementsView } from "./MeasurementsView";
@@ -335,6 +335,12 @@ export function EstimateWorkspace({ projectId, initialView = "estimate" }: Props
               <p className="label-caps mb-1">Whole job total — inc GST</p>
               <p className="font-display text-section text-nearblack">
                 {formatMoney(estimate.wholeJob.combinedIncGst)}
+              </p>
+            </div>
+            <div>
+              <p className="label-caps mb-1">Margin — ex GST</p>
+              <p className="font-display text-section text-nearblack">
+                {formatMoney(wholeJobMarginExGst(estimate.wholeJob))}
               </p>
             </div>
             <p className="max-w-sm text-caption text-charcoal/50">
