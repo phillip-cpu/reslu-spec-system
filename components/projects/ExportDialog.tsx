@@ -11,6 +11,7 @@ interface Props {
   /** Every category present on the project's own item set (used to build the checkbox list — a project with no TW items shouldn't show a TW checkbox). */
   categoriesInProject: Category[];
   onClose: () => void;
+  scheduleView?: {scope:string;grouping:'room'|'type'};
 }
 
 /**
@@ -28,7 +29,7 @@ interface Props {
  * to ALL TICKED (full schedule) per the brief's "all ticked default =
  * full schedule".
  */
-export function ExportDialog({ projectId, projectName, categoriesInProject, onClose }: Props) {
+export function ExportDialog({ projectId, projectName, categoriesInProject, onClose, scheduleView }: Props) {
   const [presets, setPresets] = useState<ExportPresetRow[]>(FALLBACK_EXPORT_PRESETS);
   const [selected, setSelected] = useState<Set<string>>(
     () => new Set(categoriesInProject.map((c) => c.prefix))
@@ -84,6 +85,7 @@ export function ExportDialog({ projectId, projectName, categoriesInProject, onCl
 
   const downloadHref = useMemo(() => {
     const params = new URLSearchParams();
+    if(scheduleView){params.set('schedule','builder');params.set('scope',scheduleView.scope);params.set('grouping',scheduleView.grouping)}
     if (!isFullSchedule && selected.size > 0) {
       params.set("categories", categoriesQueryValue([...selected]));
     }
@@ -91,7 +93,7 @@ export function ExportDialog({ projectId, projectName, categoriesInProject, onCl
     params.set("filename", `${filenameHintLabel.replace(/[^a-z0-9]+/gi, "-")}.pdf`);
     const qs = params.toString();
     return `/api/projects/${projectId}/pdf${qs ? `?${qs}` : ""}`;
-  }, [projectId, isFullSchedule, selected, includeDocs, filenameHintLabel]);
+  }, [projectId, isFullSchedule, selected, includeDocs, filenameHintLabel, scheduleView]);
 
   const nothingSelected = selected.size === 0;
 

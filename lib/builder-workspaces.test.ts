@@ -15,7 +15,7 @@ test('unassigned legacy items stay shared; malformed lot metadata is ignored',()
  assert.deepEqual(projectLots(null),[]);
 });
 
-test('unconfirmed candidates preserve project settings and cannot carry quantities, prices, or approvals',()=>{
+test('unconfirmed candidates preserve project settings and cannot carry costable quantities, prices, or approvals',()=>{
  const original={unrelated:{keep:true},builder_workspace:{lots:[{key:'lot58',label:'Lot 58'}],template:'Paired homes'}};
  const candidate={id:'candidate',library_item_id:'canonical',selection_scope:'shared',selection_key:null,quantity:999,price_trade:123,client_approved:true};
  const cleaned=projectCandidates({builder_workspace:{candidates:[candidate]}});

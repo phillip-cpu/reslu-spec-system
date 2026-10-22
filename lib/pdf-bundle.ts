@@ -59,6 +59,7 @@ export interface BundleItemDoc {
   itemCode: string | null;
   itemName: string;
   files: ItemFile[];
+  unavailableNotes?: string[];
 }
 
 const KIND_LABEL: Record<ItemFileKind, string> = {
@@ -100,6 +101,7 @@ export async function buildDocBundle(
 
   // ---- 2. Per-item documents, in schedule order ----
   for (const doc of itemDocs) {
+    for(const note of doc.unavailableNotes??[])indexRows.push({itemCode:doc.itemCode,itemName:doc.itemName,note});
     for (const file of doc.files) {
       const label = KIND_LABEL[file.kind] ?? "Document";
       try {

@@ -1,3 +1,4 @@
+import {groupSchedule} from '@/lib/schedule-grouping';
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -71,7 +72,7 @@ const HEADER_BAND_HEIGHT = 92; // pt, cream band at top of every page
 // Fold this into the route's storage-cache key whenever the PDF layout
 // changes. Otherwise an unchanged item set can keep serving an older
 // cached render after a deployment.
-export const SCHEDULE_PDF_LAYOUT_VERSION = "compact-rows-v7-images";
+export const SCHEDULE_PDF_LAYOUT_VERSION = "compact-rows-v8-preliminary";
 
 const styles = StyleSheet.create({
   // ── Cover page ──────────────────────────────────────────
@@ -299,7 +300,11 @@ function joinPresent(values: (string | null | undefined)[], sep = "  ·  "): str
   return present.length ? present.join(sep) : null;
 }
 
-interface PdfItem extends Item {
+export interface PdfItem extends Omit<Item,'quantity'> {
+  quantity:number|null;
+  quantityLabel?:string;
+  displayNote?:string;
+  rooms?:{id:string;name:string}[];
   /** Validated JPEG data URL from the image pre-pass; undefined when
    *  no image was selected or the source could not be prepared. */
   resolvedImageUrl?: string;
@@ -320,6 +325,7 @@ interface Props {
   categories: Category[];
   generatedAt: string; // formatted date, passed in (server)
   revisionLabel?: string; // e.g. "T3" — optional, matches the mock's header
+  grouping?: 'room' | 'type';
   scheduleSubtitle?: string; // e.g. "Wet Area Works" — optional phase label
 }
 
@@ -343,28 +349,20 @@ function paginateGroups(groups: [string, PdfItem[]][]): PdfPageSection[][] {
   for (const [category, categoryItems] of groups) {
     let itemIndex = 0;
     while (itemIndex < categoryItems.length) {
-      const minimumSectionHeight = SECTION_LABEL_BUDGET + ITEM_ROW_BUDGET;
+      const rowHeight=(item:PdfItem)=>ITEM_ROW_BUDGET+(item.displayNote?Math.ceil(item.displayNote.length/60)*9+6:0);
+      const minimumSectionHeight = SECTION_LABEL_BUDGET + rowHeight(categoryItems[itemIndex]);
       if (page.length > 0 && remainingHeight < minimumSectionHeight) {
-        pages.push(page);
-        page = [];
-        remainingHeight = PAGE_CONTENT_BUDGET;
+        pages.push(page);page=[];remainingHeight=PAGE_CONTENT_BUDGET;
       }
-
-      const availableRows = Math.max(
-        1,
-        Math.floor(
-          (remainingHeight - SECTION_LABEL_BUDGET) / ITEM_ROW_BUDGET
-        )
-      );
-      const take = Math.min(availableRows, categoryItems.length - itemIndex);
-      page.push({
-        category,
-        items: categoryItems.slice(itemIndex, itemIndex + take),
-        continued: itemIndex > 0,
-      });
-      itemIndex += take;
-      remainingHeight -=
-        SECTION_LABEL_BUDGET + take * ITEM_ROW_BUDGET;
+      let usedHeight=SECTION_LABEL_BUDGET;
+      let take=0;
+      while(itemIndex+take<categoryItems.length){
+        const nextHeight=rowHeight(categoryItems[itemIndex+take]);
+        if(take>0&&usedHeight+nextHeight>remainingHeight)break;
+        usedHeight+=nextHeight;take++;
+      }
+      page.push({category,items:categoryItems.slice(itemIndex,itemIndex+take),continued:itemIndex>0});
+      itemIndex+=take;remainingHeight-=usedHeight;
 
       if (itemIndex < categoryItems.length) {
         pages.push(page);
@@ -385,6 +383,7 @@ export function SchedulePdf({
   generatedAt,
   revisionLabel,
   scheduleSubtitle,
+  grouping='type',
 }: Props) {
   ensureFonts();
 
@@ -406,7 +405,8 @@ export function SchedulePdf({
     if (sa !== sb) return sa - sb;
     return a[0].localeCompare(b[0]);
   });
-  const schedulePages = paginateGroups(groups);
+  const roomGroups=grouping==='room'?groupSchedule(items,'room').map(g=>[g.label,g.items] as [string,PdfItem[]]):null;
+  const schedulePages = paginateGroups(roomGroups??groups);
 
   const headerSub = scheduleSubtitle
     ? `FF&E Schedule  ·  ${scheduleSubtitle}`
@@ -469,7 +469,7 @@ export function SchedulePdf({
                 style={styles.categorySection}
               >
                 <Text style={styles.sectionLabel}>
-                  {categoryName.get(category) ?? category}
+                  {grouping==='room'?category:categoryName.get(category) ?? category}
                   {continued ? "  ·  Continued" : ""}
                 </Text>
                 <View style={styles.itemRows}>
@@ -489,7 +489,7 @@ export function SchedulePdf({
                     const imgSrc = item.resolvedImageUrl;
 
                     return (
-                      <View key={item.id} style={styles.itemRow} wrap={false}>
+                      <View key={item.id} style={[styles.itemRow,{height:ITEM_ROW_BUDGET+(item.displayNote?Math.ceil(item.displayNote.length/60)*9+6:0)}]} wrap={false}>
                         {imgSrc ? (
                           <View style={styles.imageBox}>
                             {/* eslint-disable-next-line jsx-a11y/alt-text */}
@@ -515,6 +515,7 @@ export function SchedulePdf({
                           >
                             {item.name}
                           </Text>
+                          {item.displayNote ? <Text style={{fontSize:7,lineHeight:1.2,marginTop:3}}>{item.displayNote}</Text> : null}
                           {specLine ? (
                             <Text style={styles.specLine}>{specLine}</Text>
                           ) : null}
@@ -525,9 +526,9 @@ export function SchedulePdf({
                             <Text style={styles.dimensionsLine}>{dims}</Text>
                           ) : null}
                           <Text style={styles.qtyLine}>
-                            {item.cost_scope === "trade_package"
+                            {item.quantityLabel ?? (item.cost_scope === "trade_package"
                               ? "INCLUDED IN TRADE PACKAGE"
-                              : `QTY ${trimNum(item.quantity)}`}
+                              : item.quantity == null ? "QTY TBC" : `QTY ${trimNum(item.quantity)}`)}
                           </Text>
                           {item.hasDocs ? (
                             <Text style={styles.docsLine}>
