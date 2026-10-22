@@ -80,13 +80,13 @@ const styles = StyleSheet.create({
   },
   indexRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
     borderBottomWidth: 1,
     borderBottomColor: "#DCD6CC",
     paddingVertical: 6,
   },
-  indexRowLabel: { fontSize: 10, color: NEARBLACK },
-  indexRowNote: { fontSize: 9, color: SAND, fontStyle: "italic" },
+  // Explicit columns let both texts wrap instead of painting over each other.
+  indexRowLabel: { width: "55%", paddingRight: 12, fontSize: 10, lineHeight: 1.35, color: NEARBLACK },
+  indexRowNote: { width: "45%", fontSize: 9, lineHeight: 1.35, color: SAND, fontStyle: "italic" },
 });
 
 /**
@@ -142,10 +142,12 @@ export function DocsIndexPage({ rows }: { rows: DocsIndexRow[] }) {
   return (
     <Document title="Documents index">
       <Page size="A4" style={styles.indexPage}>
-        <Text style={{ ...styles.indexTitle, fontFamily: displayFontFamily }}>Documents index</Text>
-        <Text style={styles.indexSub}>Not merged into this bundle</Text>
+        <View fixed>
+          <Text style={{ ...styles.indexTitle, fontFamily: displayFontFamily }}>Documents index</Text>
+          <Text style={styles.indexSub}>Not merged into this bundle</Text>
+        </View>
         {rows.map((row, i) => (
-          <View key={i} style={styles.indexRow}>
+          <View key={i} style={styles.indexRow} wrap={false}>
             <Text style={styles.indexRowLabel}>
               {[row.itemCode, row.itemName].filter(Boolean).join(" — ")}
             </Text>
