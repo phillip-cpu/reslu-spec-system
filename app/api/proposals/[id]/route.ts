@@ -1,3 +1,4 @@
+import { isConstructionQuote, quoteContent } from "@/lib/construction-quotes";
 import { localConstructionLifecycleEnabled } from "@/lib/construction-lifecycle";
 import { isConstruction } from "@/lib/construction-proposals";
 import { NextRequest, NextResponse } from "next/server";
@@ -82,6 +83,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
+
+  if (!body || typeof body !== "object" || Array.isArray(body)) return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+  if (isConstructionQuote(existing.content)) {
+    const input = body as PatchProposalInput & { expected_updated_at?: string };
+    if (existing.status !== "draft" || typeof input.expected_updated_at !== "string" || !input.expected_updated_at) return NextResponse.json({ error: "Draft version required" }, { status: 409 });
+    if (!isConstructionQuote(body.content) || body.deposit_inc !== undefined) return NextResponse.json({ error: "Quote kind cannot change and quotes have no deposit invoice." }, { status: 400 });
+    let content;
+    try { content = quoteContent(body.content?.quote); } catch (error) { return NextResponse.json({ error: (error as Error).message }, { status: 400 }); }
+    const { data, error } = await supabase.from("proposals").update({ content, total_inc: content.fees.stages[0].total_inc, deposit_inc: 0 })
+      .eq("id", id).eq("status", "draft").eq("updated_at", input.expected_updated_at).select().maybeSingle();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (!data) return NextResponse.json({ error: "This draft changed elsewhere. Reload before saving." }, { status: 409 });
+    return NextResponse.json({ proposal: data });
+  }
+  if (isConstructionQuote(body.content)) return NextResponse.json({ error: "Create a separate construction quote." }, { status: 400 });
 
   const patch: Record<string, unknown> = {};
 

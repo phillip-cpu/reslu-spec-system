@@ -283,11 +283,14 @@ interface Props {
  * see app/proposal/[token]/page.tsx).
  */
 export function ProposalPdf({ proposal, residence, address, clientName, coverDateLabel, signedDateLabel }: Props) {
-  ensureFonts();
   const content = proposal.content;
   const sig = proposal.signature;
-  const construction = content.kind === "construction";
-  const proposalLabel = construction ? (content.construction?.variation ? "Construction Variation" : "Construction Proposal") : "Design Proposal";
+  const quote = content.kind === "construction_quote";
+  if (!quote) ensureFonts();
+  // Helvetica is the website’s declared fallback; no unlicensed system font is embedded.
+  const headingFont = quote ? "Helvetica" : displayFontFamily;
+  const construction = content.kind === "construction" || quote;
+  const proposalLabel = quote ? "Construction Quote - Internal Draft" : construction ? (content.construction?.variation ? "Construction Variation" : "Construction Proposal") : "Design Proposal";
 
   return (
     <Document title={`RESLU ${proposalLabel} — ${residence}`}>
@@ -299,8 +302,8 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
         </View>
         <View>
           <Text style={styles.coverEyebrow}>{proposalLabel}</Text>
-          <Text style={{ ...styles.coverTitle, fontFamily: displayFontFamily }}>
-            {clientName} | {proposalLabel.toUpperCase()}
+          <Text style={{ ...styles.coverTitle, fontFamily: headingFont }}>
+            {quote ? clientName : `${clientName} | ${proposalLabel.toUpperCase()}`}
           </Text>
           <Text style={styles.coverResidence}>{residence}</Text>
           {address ? <Text style={styles.coverResidence}>{address}</Text> : null}
@@ -312,7 +315,7 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
       <Page size="A4" style={styles.page} wrap>
         <View style={styles.headerBand} fixed>
           <Text style={construction ? { ...styles.headerTitle, maxWidth: "60%" } : styles.headerTitle}>
-            {construction ? "Construction Proposal" : "Architectural Design Services Proposal"}{address ? ` | ${address}` : ""}
+            {construction ? proposalLabel : "Architectural Design Services Proposal"}{address ? ` | ${address}` : ""}
           </Text>
           <Text style={construction ? { ...styles.headerMeta, maxWidth: "35%", textAlign: "right" } : styles.headerMeta}>RESLU · {residence}</Text>
         </View>
@@ -330,7 +333,7 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
 
         {/* Vision */}
         <Text style={styles.sectionHeading} minPresenceAhead={32}>
-          Project Vision Alignment
+          {quote ? "Quote basis" : "Project Vision Alignment"}
         </Text>
         {splitParagraphs(content.vision).map((p, i) => (
           <Text key={i} style={styles.paragraph}>
@@ -340,11 +343,11 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
 
         {/* Scope */}
         <Text style={styles.sectionHeading} minPresenceAhead={32}>
-          {construction ? "Construction Scope" : "Scope of Design Services"}
+          {quote ? "Scope Summary and Drawing Basis" : construction ? "Construction Scope" : "Scope of Design Services"}
         </Text>
         {content.scope_sections.map((section, si) => (
           <View key={si}>
-            <Text style={{ ...styles.subHeading, fontFamily: displayFontFamily }} minPresenceAhead={24}>
+            <Text style={{ ...styles.subHeading, fontFamily: headingFont }} minPresenceAhead={24}>
               {section.title}
             </Text>
             {section.intro ? <Text style={styles.paragraph}>{section.intro}</Text> : null}
@@ -401,17 +404,17 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
           <Text style={styles.grandTotalLabel}>{construction ? "Total Construction Price (Inc GST)" : "Total Design Fee (Inc GST)"}</Text>
           <Text style={styles.grandTotalValue}>{formatMoney(proposal.total_inc)}</Text>
         </View>
-        <View style={styles.depositRow} wrap={false}>
+        {!quote && <View style={styles.depositRow} wrap={false}>
           <Text style={styles.depositLabel}>{construction ? "Deposit" : "Deposit payable on acceptance"}</Text>
           <Text style={styles.depositValue}>{formatMoney(proposal.deposit_inc)}</Text>
-        </View>
+        </View>}
 
         </>}
         {content.fees.payment_lines.length > 0 ? (
           // Not wrap={false} on the outer container — same "don't make a
           // variable-length list unbreakable" reasoning as the stage
           // block fix above; only each individual line is atomic.
-          <View break={construction}>
+          <View break={construction && !quote}>
             <Text style={construction ? styles.sectionHeading : styles.deliverablesLabel} minPresenceAhead={32}>{construction ? "Payment Breakdown" : "Payment Structure"}</Text>
             {content.fees.payment_lines.map((line, li) => (
               <View key={li} style={styles.bulletRow} wrap={false}>
@@ -426,14 +429,15 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
           <Text style={styles.grandTotalLabel}>{construction ? "Total Construction Price (Inc GST)" : "Total Design Fee (Inc GST)"}</Text>
           <Text style={styles.grandTotalValue}>{formatMoney(proposal.total_inc)}</Text>
         </View>
-        <View style={styles.depositRow} wrap={false}>
+        {!quote && <View style={styles.depositRow} wrap={false}>
           <Text style={styles.depositLabel}>{construction ? "Deposit" : "Deposit payable on acceptance"}</Text>
           <Text style={styles.depositValue}>{formatMoney(proposal.deposit_inc)}</Text>
-        </View>
+        </View>}
 
         </>}
 
         {/* Timeline */}
+        {!quote && <>
         <Text style={styles.sectionHeading} minPresenceAhead={32}>
           Project Timeline
         </Text>
@@ -450,10 +454,11 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
           ))}
         </View>
         <Text style={styles.italicNote}>{TIMELINE_COUNCIL_CAVEAT}</Text>
+        </>}
 
         {/* Exclusions */}
         <Text style={styles.sectionHeading} minPresenceAhead={32}>
-          {construction ? "Optional Extras & Exclusions" : "Exclusions & Additional Consultant Services"}
+          {quote ? "Exclusions" : construction ? "Optional Extras & Exclusions" : "Exclusions & Additional Consultant Services"}
         </Text>
         {content.exclusions.bullets.map((b, bi) => (
           <View key={bi} style={styles.bulletRow} wrap={false}>
@@ -461,9 +466,9 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
             <Text style={styles.bulletText}>{b}</Text>
           </View>
         ))}
-        <View style={styles.allowanceBlock} wrap={false}>
+        {(!quote || content.exclusions.allowance) && <View style={styles.allowanceBlock} wrap={false}>
           <Text style={styles.paragraph}>{content.exclusions.allowance}</Text>
-        </View>
+        </View>}
 
         {/* Terms */}
         <Text style={styles.sectionHeading} minPresenceAhead={32}>
@@ -490,7 +495,7 @@ export function ProposalPdf({ proposal, residence, address, clientName, coverDat
       {/* Signature page */}
       {!construction && <Page size="A4" style={styles.sigPage}>
         <Text style={styles.sigEyebrow}>Acceptance &amp; Signature</Text>
-        <Text style={{ ...styles.sigTitle, fontFamily: displayFontFamily }}>
+        <Text style={{ ...styles.sigTitle, fontFamily: headingFont }}>
           Both parties agree to the terms set out in this proposal.
         </Text>
 

@@ -1,0 +1,64 @@
+/** Real local browser → Next routes → disposable Auth/PostgREST/Postgres. */
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
+const require=createRequire(import.meta.url);
+export async function verifyQuoteBrowser({appUrl,jar,quote,db,project}) {
+ const {chromium}=require('/Users/phillip/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+ const browser=await chromium.launch({headless:true,executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+ try {
+  const context=await browser.newContext({viewport:{width:1440,height:1080}});
+  await context.route('**/*',r=>['127.0.0.1','localhost'].includes(new URL(r.request().url()).hostname)?r.continue():r.abort());
+  await context.addCookies([...jar].map(([name,value])=>({name,value,url:appUrl})));
+  const p=await context.newPage(),url=appUrl+'/proposals/'+quote.id;
+  const entry=appUrl+'/projects/'+project+'/estimate';
+  const responses=[];p.on('response',r=>{if(r.url().includes('/api/projects/'+project+'/'))responses.push([r.url(),r.status()]);});
+  await p.goto(entry);await p.getByRole('button',{name:'Versions',exact:true}).click();
+  await p.getByRole('heading',{name:'Pre-contract construction quotes'}).waitFor();
+  const createResponse=p.waitForResponse(r=>r.url().endsWith('/construction-quotes') && r.request().method()==='POST');
+  await p.getByRole('button',{name:'New construction quote',exact:true}).dblclick();
+  assert.equal((await createResponse).status(),201);await p.getByLabel('Scope summary').waitFor();
+  const createdUrl=p.url();assert.match(createdUrl,/\/proposals\//);
+  assert.equal((await db.query("select count(*)::int n from proposals where project_id=$1 and content->>'kind'='construction_quote'",[project])).rows[0].n,2);
+  await p.getByLabel('Scope summary').fill('SYNTHETIC created from Versions');await p.getByRole('button',{name:'Save draft',exact:true}).click();await p.getByText('Saved draft',{exact:true}).waitFor();
+  await p.goto(entry+'?view=versions');await p.locator('a[href="'+new URL(createdUrl).pathname+'"]').click();
+  assert.equal(await p.getByLabel('Scope summary').inputValue(),'SYNTHETIC created from Versions');
+  assert.ok(responses.filter(([u])=>/\/(estimate|variations|groups|versions)$/.test(u)).every(([,status])=>status===200),JSON.stringify(responses));
+  assert.equal((await db.query('select count(*)::int n from sow_documents')).rows[0].n,0);
+  assert.equal((await db.query('select count(*)::int n from estimate_versions')).rows[0].n,0);
+  console.log('PASS real Estimate → Versions → repeated create → save → list → reopen; no SOW issue or frozen version creation');
+  await p.goto(appUrl+'/login');await p.goto(url);
+  const scope=p.getByLabel('Scope summary'),save=p.getByRole('button',{name:'Save draft',exact:true});
+  await scope.waitFor();assert.match(await scope.evaluate(e=>getComputedStyle(e.closest('section')).fontFamily),/Helvetica Neue Light/);
+  await scope.fill('SYNTHETIC browser saved scope');await save.click();await p.getByText('Saved draft',{exact:true}).waitFor();
+  await p.reload();await scope.waitFor();assert.equal(await scope.inputValue(),'SYNTHETIC browser saved scope');
+  console.log('PASS browser edit/save/reload persisted through actual authenticated routes');
+  await p.getByLabel('Selling price').fill('-1');await save.click();await p.locator('section').filter({has:p.getByLabel('Scope summary')}).getByRole('alert').waitFor();assert.match(await p.locator('section').filter({has:p.getByLabel('Scope summary')}).getByRole('alert').innerText(),/price/i);
+  await p.getByRole('button',{name:'Discard unsaved edits'}).click();assert.equal(await p.getByLabel('Selling price').inputValue(),'1000.01');
+  await scope.fill('SYNTHETIC unsaved cancel reload');
+  const dialog=new Promise(resolve=>p.once('dialog',async d=>{assert.equal(d.type(),'beforeunload');await d.dismiss();resolve();}));
+  await Promise.all([dialog,p.reload().catch(()=>{})]);assert.equal(await scope.inputValue(),'SYNTHETIC unsaved cancel reload');
+  await p.getByRole('button',{name:'Discard unsaved edits'}).click();
+  console.log('PASS negative-price validation, discard and native refresh cancellation preserve saved/unsaved values');
+  await scope.fill('SYNTHETIC keep on sidebar cancel');
+  const sidebarDialog=p.waitForEvent('dialog');
+  const sidebarClick=p.getByRole('link',{name:'Projects',exact:true}).first().click();
+  const leaveDialog=await sidebarDialog;assert.equal(leaveDialog.type(),'confirm');await leaveDialog.dismiss();await sidebarClick;
+  assert.equal(p.url(),url);assert.equal(await scope.inputValue(),'SYNTHETIC keep on sidebar cancel');
+  await p.getByRole('button',{name:'Discard unsaved edits'}).click();
+  console.log('PASS Next sidebar navigation cancellation retains unsaved edits');
+  const second=await context.newPage();await second.goto(url);await second.getByLabel('Scope summary').waitFor();
+  await scope.fill('SYNTHETIC winning tab');await save.click();await p.getByText('Saved draft',{exact:true}).waitFor();
+  await second.getByLabel('Scope summary').fill('SYNTHETIC stale tab retained');await second.getByRole('button',{name:'Save draft',exact:true}).click();await second.locator('section').filter({has:second.getByLabel('Scope summary')}).getByRole('alert').waitFor();assert.match(await second.locator('section').filter({has:second.getByLabel('Scope summary')}).getByRole('alert').innerText(),/changed|reload/i);assert.equal(await second.getByLabel('Scope summary').inputValue(),'SYNTHETIC stale tab retained');
+  assert.equal((await db.query('select content from proposals where id=$1',[quote.id])).rows[0].content.quote.scope_summary,'SYNTHETIC winning tab');
+  console.log('PASS independent browser tabs retain losing edits and protect persisted winner');
+  await scope.focus();await p.keyboard.press('Tab');assert.ok(await p.getByLabel('Drawing identifiers').evaluate(e=>e===document.activeElement));
+  assert.notEqual(await p.evaluate(()=>getComputedStyle(document.activeElement).outlineStyle),'none');
+  assert.equal(await p.getByRole('button',{name:/Send|Accept|Issue/}).count(),0);
+  await p.screenshot({path:'../evidence/quote-first/Synthetic-Authenticated-Quote-Editor.png',fullPage:true});
+  await p.setViewportSize({width:390,height:844});assert.ok(await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  await p.screenshot({path:'../evidence/quote-first/Synthetic-Authenticated-Quote-Editor-Mobile.png',fullPage:true});
+  console.log('PASS keyboard field order, visible focus, desktop/mobile layout and no release controls');
+  await p.goto(appUrl+'/login');await p.goBack();await scope.waitFor();assert.equal(await scope.inputValue(),'SYNTHETIC winning tab');
+  console.log('PASS clean navigation away/back reloads persisted quote');
+ } finally {await browser.close();}
+}

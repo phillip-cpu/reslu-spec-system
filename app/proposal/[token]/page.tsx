@@ -1,3 +1,4 @@
+import { isConstructionQuote } from "@/lib/construction-quotes";
 import { localConstructionLifecycleEnabled } from "@/lib/construction-lifecycle";
 import type { Metadata } from "next";
 import Image from "next/image";
@@ -112,6 +113,7 @@ export default async function ProposalPage({ params }: { params: Promise<{ token
   if (!proposal) {
     notFound();
   }
+  if (isConstructionQuote(proposal.content)) notFound();
   const p = proposal as Proposal;
   const content = p.content as ProposalContent;
   const construction = isConstruction(content);

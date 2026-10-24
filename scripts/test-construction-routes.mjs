@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
 import * as core from '../lib/construction-proposals.ts';
+import * as quotes from '../lib/construction-quotes.ts';
 import * as lifecycle from '../lib/construction-lifecycle.ts';
 import * as identity from '../lib/construction-proposal-identity.ts';
 import * as headings from '../lib/sow-display-headings.ts';
@@ -19,6 +20,7 @@ function loadRoute(file, db, role, localEnabled=false) {
     '@/lib/supabase/server': { createClient: async () => db, createServiceRoleClient: () => db },
     '@/lib/auth': { getUserRole: async () => role === null ? null : { role, userId: 'synthetic-admin' } },
     '@/lib/construction-proposals': core,
+    '@/lib/construction-quotes': quotes,
     '@/lib/sow-display-headings': headings,
     '@/lib/construction-proposal-identity': identity,
     '@/lib/construction-lifecycle': { ...lifecycle, localConstructionLifecycleEnabled: () => localEnabled },
