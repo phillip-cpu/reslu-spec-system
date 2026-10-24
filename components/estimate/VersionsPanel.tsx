@@ -1,5 +1,6 @@
 "use client";
 
+import { ConstructionQuotesSection } from "@/components/proposals/ConstructionQuotesSection";
 import { ConstructionProposalBuilder } from "@/components/proposals/ConstructionProposalBuilder";
 import { useCallback, useEffect, useState } from "react";
 import { formatMoney } from "./EstimateWorkspace";
@@ -125,6 +126,7 @@ export function VersionsPanel({ projectId }: Props) {
 
   return (
     <div className="space-y-6">
+      <ConstructionQuotesSection projectId={projectId} />
       <ConstructionProposalBuilder projectId={projectId} versions={versions} />
       {error && (
         <p className="border border-red-700/40 bg-red-50 px-4 py-2 text-body text-red-700">{error}</p>
