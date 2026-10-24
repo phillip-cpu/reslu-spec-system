@@ -1,3 +1,4 @@
+import * as quoteAccess from '../lib/construction-quote-access.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
@@ -20,6 +21,7 @@ function loadRoute(file, db, role, localEnabled=false) {
     '@/lib/supabase/server': { createClient: async () => db, createServiceRoleClient: () => db },
     '@/lib/auth': { getUserRole: async () => role === null ? null : { role, userId: 'synthetic-admin' } },
     '@/lib/construction-proposals': core,
+    '@/lib/construction-quote-access': quoteAccess,
     '@/lib/construction-quotes': quotes,
     '@/lib/sow-display-headings': headings,
     '@/lib/construction-proposal-identity': identity,

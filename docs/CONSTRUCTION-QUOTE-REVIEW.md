@@ -128,3 +128,30 @@ verification. Ready for code/security review. Production release still requires
 approval of the quote-authorisation migration and its existing profile-role-guard
 prerequisite, merge approval, controlled deployment and post-deploy admin smoke QA.
 Customer send/acceptance remain deliberately unsupported and fail closed.
+
+## Independent review remediation
+
+The follow-up review identified app-before-migration exposure, unsafe plain-revert
+rollback and dirty SPA Back loss. Fixes add default-off server write enablement
+(`RESLU_CONSTRUCTION_QUOTES_ENABLED=1` only after approved readiness verification),
+a read-only invoker RPC installed atomically with quote privacy guards, and tab-memory
+unsaved draft recovery. Readiness fingerprints policies/functions and verifies RLS
+and exact enabled triggers; missing/error/drift returns held writes. Recovered saves
+keep the old timestamp; discard restores the latest fetched server baseline and
+confirmed navigation clears retained edits.
+
+`docs/CONSTRUCTION-QUOTE-RELEASE.md` specifies approved installation order and safe
+rollback. `scripts/build-quote-safe-rollback.mjs` applies retained guards to the pinned
+pre-feature tree and runs public-token/no-send regression tests against it. Database
+privacy controls are retained; rollback is operational disablement or patched old UI,
+never an unmodified old app or dropping quote restrictions.
+
+Independent re-review found all source findings addressed, including two follow-up
+recovery edge cases. Verification: 14 quote DB scenarios, 16 existing construction DB
+scenarios, 9 quote route tests, construction route suite, editor DOM recovery tests,
+rollback token/send tests, TypeScript/changed-file lint and production webpack build.
+Actual HTTP/browser verification includes missing-readiness RPC denial with zero rows
+created and dirty same-document Back/Forward recovery, in addition to entry-path,
+persistence, concurrency and privacy checks. Evidence: `review-fixes-*.log` in the
+local evidence directory. Rollback build and smoke validation remain mandatory before
+any actual rollback deployment; no production migration or release is performed here.

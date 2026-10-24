@@ -23,5 +23,17 @@ try {
  await act(async()=>release());assert.match(document.body.textContent,/Saved draft/);assert.equal(calls[0].content.fees.stages[0].total_inc,1100);assert.equal(calls[0].content.quote.drawing_references,'A102 / T1');assert.ok(document.querySelector('a').href.endsWith('/api/proposals/synthetic/pdf'));
  await input('Scope summary','Keep on conflict');fail=true;await act(async()=>button('Save draft').click());await act(async()=>release());assert.match(document.body.textContent,/Draft changed elsewhere/);assert.equal(document.querySelectorAll('textarea')[1].value,'Keep on conflict');assert.match(document.body.textContent,/Unsaved changes/);
  assert.ok(![...document.querySelectorAll('button')].some(b=>/Send|Accept|Issue/.test(b.textContent)));await act(async()=>root.unmount());assert.equal(calls.length,2);
+ // Return after same-document navigation against a newer server version.
+ const newer={...saved,updated_at:'v3',content:quoteContent({...emptyQuote(),scope_summary:'Newest server scope'})};
+ const root2=createRoot(document.getElementById('root'));await act(async()=>root2.render(React.createElement(ConstructionQuoteEditor,{proposal:newer})));
+ assert.equal(document.querySelectorAll('textarea')[1].value,'Keep on conflict');
+ await act(async()=>button('Save draft').click());assert.equal(calls.at(-1).expected_updated_at,'v2');await act(async()=>release());
+ await act(async()=>button('Discard unsaved edits').click());assert.equal(document.querySelectorAll('textarea')[1].value,'Newest server scope');
+ await input('Scope summary','Discard by leaving');window.confirm=()=>true;
+ const link=document.createElement('a');link.href='/elsewhere';link.addEventListener('click',e=>e.preventDefault());document.body.append(link);
+ await act(async()=>link.click());await act(async()=>root2.unmount());link.remove();
+ const root3=createRoot(document.getElementById('root'));await act(async()=>root3.render(React.createElement(ConstructionQuoteEditor,{proposal:newer})));
+ assert.equal(document.querySelectorAll('textarea')[1].value,'Newest server scope');await act(async()=>root3.unmount());
+ console.log('PASS: recovery keeps stale timestamp; discard uses newest server data; confirmed leave clears recovery.');
  console.log('PASS: all quote fields editable; discard has no writes; double save locked; stale edits retained; preview only saved data; no release actions.');
 } finally {rmSync(file,{force:true});dom.window.close();}

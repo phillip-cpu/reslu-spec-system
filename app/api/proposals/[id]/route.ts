@@ -1,3 +1,4 @@
+import { constructionQuoteWritesReady, QUOTE_NOT_READY } from "@/lib/construction-quote-access";
 import { isConstructionQuote, quoteContent } from "@/lib/construction-quotes";
 import { localConstructionLifecycleEnabled } from "@/lib/construction-lifecycle";
 import { isConstruction } from "@/lib/construction-proposals";
@@ -86,6 +87,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   if (!body || typeof body !== "object" || Array.isArray(body)) return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   if (isConstructionQuote(existing.content)) {
+    if (!await constructionQuoteWritesReady(supabase)) return NextResponse.json({ error: QUOTE_NOT_READY }, { status: 503 });
     const input = body as PatchProposalInput & { expected_updated_at?: string };
     if (existing.status !== "draft" || typeof input.expected_updated_at !== "string" || !input.expected_updated_at) return NextResponse.json({ error: "Draft version required" }, { status: 409 });
     if (!isConstructionQuote(body.content) || body.deposit_inc !== undefined) return NextResponse.json({ error: "Quote kind cannot change and quotes have no deposit invoice." }, { status: 400 });

@@ -18,6 +18,12 @@ export async function verifyQuoteBrowser({appUrl,jar,quote,db,project}) {
   await p.getByRole('button',{name:'New construction quote',exact:true}).dblclick();
   assert.equal((await createResponse).status(),201);await p.getByLabel('Scope summary').waitFor();
   const createdUrl=p.url();assert.match(createdUrl,/\/proposals\//);
+  await p.getByLabel('Scope summary').fill('SYNTHETIC dirty SPA Back recovery');
+  await p.goBack();await p.getByRole('button',{name:'Versions',exact:true}).click();await p.getByRole('heading',{name:'Pre-contract construction quotes'}).waitFor();
+  await p.goForward();await p.getByLabel('Scope summary').waitFor();
+  assert.equal(await p.getByLabel('Scope summary').inputValue(),'SYNTHETIC dirty SPA Back recovery');
+  await p.getByText('Unsaved edits recovered from this tab. Review and save, or discard them.').waitFor();
+  console.log('PASS dirty same-document Back/Forward recovers tab draft');
   assert.equal((await db.query("select count(*)::int n from proposals where project_id=$1 and content->>'kind'='construction_quote'",[project])).rows[0].n,2);
   await p.getByLabel('Scope summary').fill('SYNTHETIC created from Versions');await p.getByRole('button',{name:'Save draft',exact:true}).click();await p.getByText('Saved draft',{exact:true}).waitFor();
   await p.goto(entry+'?view=versions');await p.locator('a[href="'+new URL(createdUrl).pathname+'"]').click();

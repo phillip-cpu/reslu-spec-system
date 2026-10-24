@@ -46,10 +46,17 @@ try{
  }
  await db.query("notify pgrst,'reload schema'");
  const appUrl='http://127.0.0.1:31847';
- app=spawn(process.execPath,['node_modules/next/dist/bin/next','start','--hostname','127.0.0.1','--port','31847'],{env:{PATH:process.env.PATH,HOME:process.env.HOME,NODE_ENV:'production',NEXT_PUBLIC_SUPABASE_URL:url,NEXT_PUBLIC_SUPABASE_ANON_KEY:env.ANON_KEY,SUPABASE_SERVICE_ROLE_KEY:env.SERVICE_ROLE_KEY},stdio:['ignore','pipe','pipe']});
+ app=spawn(process.execPath,['node_modules/next/dist/bin/next','start','--hostname','127.0.0.1','--port','31847'],{env:{PATH:process.env.PATH,HOME:process.env.HOME,NODE_ENV:'production',RESLU_CONSTRUCTION_QUOTES_ENABLED:'1',NEXT_PUBLIC_SUPABASE_URL:url,NEXT_PUBLIC_SUPABASE_ANON_KEY:env.ANON_KEY,SUPABASE_SERVICE_ROLE_KEY:env.SERVICE_ROLE_KEY},stdio:['ignore','pipe','pipe']});
  let logs='';app.stdout.on('data',b=>logs+=b);app.stderr.on('data',b=>logs+=b);
  for(let i=0;i<100;i++){try{await fetch(appUrl+'/login');break;}catch{await new Promise(r=>setTimeout(r,100));}}
  const api=(path,method='GET',body,role='admin',extra={})=>fetch(appUrl+path,{method,redirect:'manual',headers:{Authorization:'Bearer '+sessions[role].jwt,...(body?{'Content-Type':'application/json'}:{}),...extra},body:body?JSON.stringify(body):undefined});
+ await check('actual HTTP create fails closed when migration readiness RPC is missing',async()=>{
+  await db.query('alter function public.construction_quote_runtime_ready() rename to synthetic_temporarily_unavailable');
+  await db.query("notify pgrst,'reload schema'");
+  try {const r=await api(`/api/projects/${project}/construction-quotes`,'POST',{request_id:randomUUID()});assert.equal(r.status,503);assert.equal((await db.query('select count(*)::int n from proposals')).rows[0].n,0);}
+  finally {await db.query('alter function public.synthetic_temporarily_unavailable() rename to construction_quote_runtime_ready');await db.query("notify pgrst,'reload schema'");
+   let restored;for(let i=0;i<30;i++){restored=await sessions.admin.client.rpc('construction_quote_runtime_ready');if(restored.data===true&&!restored.error)break;await new Promise(r=>setTimeout(r,100));}assert.equal(restored.data,true,JSON.stringify(restored.error));}
+ });
  let quote;
  await check('real GoTrue password sessions authorise admin and reject designer creation',async()=>{
   const r=await api(`/api/projects/${project}/construction-quotes`,'POST',{request_id:randomUUID()},'designer');assert.equal(r.status,403,await r.text());

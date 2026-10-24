@@ -1,3 +1,4 @@
+import { constructionQuoteWritesReady, QUOTE_NOT_READY } from "@/lib/construction-quote-access";
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserRole } from "@/lib/auth";
@@ -7,6 +8,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const user = await getUserRole(db);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   if (user.role !== "admin") return NextResponse.json({ error: "Admin access required" }, { status: 403 });
+  if (!await constructionQuoteWritesReady(db)) return NextResponse.json({ error: QUOTE_NOT_READY }, { status: 503 });
   const { id } = await params;
   let body;
   try { body = await request.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }

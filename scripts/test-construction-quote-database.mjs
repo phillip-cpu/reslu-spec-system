@@ -1,3 +1,4 @@
+import * as quoteAccess from '../lib/construction-quote-access.ts';
 /** Real PostgreSQL in a disposable /tmp cluster. No external DB URLs accepted.
  * Install pinned embedded-postgres@18.4.0-beta.17 and pg@8.16.3 under
  * /tmp/reslu-construction-db-deps; hydrate its platform symlinks before running.
@@ -16,6 +17,7 @@ import { createServer } from 'node:net';
 import { buildConstructionContent, buildConstructionVariation } from '../lib/construction-proposals.ts';
 import { issueConstructionVersion, respondConstructionVersion } from '../lib/construction-lifecycle.ts';
 import { fixture } from '../lib/construction-proposals.fixture.ts';
+process.env.RESLU_CONSTRUCTION_QUOTES_ENABLED='1';
 const deps = createRequire('/tmp/reslu-construction-db-deps/package.json');
 const { default: EmbeddedPostgres } = await import(deps.resolve('embedded-postgres'));
 const { Client, types } = deps('pg');
@@ -77,6 +79,26 @@ try {
   await apply(quoteSql); await apply(quoteSql);
   const admin=await connect('authenticated',adminId), designer=await connect('authenticated',designerId), anon=await connect('anon');
   const service=await connect('service_role'), service2=await connect('service_role');
+  await check('readiness rejects missing, disabled or drifted protections and non-admin actors',async()=>{
+    const ready=async()=> (await admin.query('select public.construction_quote_runtime_ready() ready')).rows[0].ready;
+    assert.equal(await ready(),true);
+    assert.equal((await designer.query('select public.construction_quote_runtime_ready() ready')).rows[0].ready,false);
+    await assert.rejects(()=>anon.query('select public.construction_quote_runtime_ready()'),/permission denied/);
+    for(const statement of [
+      'alter table proposals disable row level security',
+      'alter table proposals disable trigger guard_construction_quote',
+      'alter table profiles disable trigger guard_profile_role_change',
+      'drop policy construction_quote_no_anonymous on proposals',
+      "alter policy construction_quote_admin_only on proposals using(true)",
+    ]) {
+      await owner.query('begin');await owner.query(statement);
+      // Evaluate as authenticated admin within the owner transaction, without bypass privileges.
+      await owner.query('set local role authenticated');await owner.query("select set_config('request.jwt.claim.sub',$1,true)",[adminId]);
+      assert.equal((await owner.query('select public.construction_quote_runtime_ready() ready')).rows[0].ready,false,statement);
+      await owner.query('rollback');
+    }
+    assert.equal(await ready(),true);
+  });
   function content(previous) {
     const f=fixture(); f.version.id=version;f.version.project_id=project;f.sow.id=sow;f.sow.project_id=project;
     f.selection.estimate_version_id=version;f.selection.sow_id=sow;
@@ -87,7 +109,7 @@ try {
   }
   // Run the actual creation/save handlers, backed by PostgreSQL rather than row mocks.
   // This adapter implements only their query vocabulary, with all filters in SQL.
-  const sqlAdapter = db => ({ from(table) {
+  const sqlAdapter = db => ({ async rpc(name){assert.equal(name,'construction_quote_runtime_ready');return {data:(await db.query('select public.construction_quote_runtime_ready() ready')).rows[0].ready,error:null};}, from(table) {
     assert.ok(['proposals','projects'].includes(table));
     let filters=[], inserted, updated, columns='*';
     const q={select(c='*'){columns=c;return q;},eq(k,v){assert.ok(['id','project_id','status','updated_at'].includes(k));filters.push([k,v]);return q;},insert(v){inserted=v;return q;},update(v){updated=v;return q;},single:()=>run(),maybeSingle:()=>run()};
@@ -107,7 +129,8 @@ try {
     const mocks={
       '@/lib/supabase/server':{createClient:async()=>sqlAdapter(db)},
       '@/lib/auth':{getUserRole:async()=>role?{role,userId:adminId}:null},
-      '@/lib/construction-quotes':quotes,
+      '@/lib/construction-quote-access': quoteAccess,
+    '@/lib/construction-quotes':quotes,
       '@/lib/construction-proposals':{isConstruction:c=>c?.kind==='construction'},
       '@/lib/construction-lifecycle':{localConstructionLifecycleEnabled:()=>false},
     };
