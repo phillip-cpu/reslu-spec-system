@@ -72,7 +72,7 @@ const HEADER_BAND_HEIGHT = 92; // pt, cream band at top of every page
 // Fold this into the route's storage-cache key whenever the PDF layout
 // changes. Otherwise an unchanged item set can keep serving an older
 // cached render after a deployment.
-export const SCHEDULE_PDF_LAYOUT_VERSION = "compact-rows-v8-preliminary";
+export const SCHEDULE_PDF_LAYOUT_VERSION = "compact-rows-v9-room-pages";
 
 const styles = StyleSheet.create({
   // ── Cover page ──────────────────────────────────────────
@@ -341,12 +341,19 @@ interface PdfPageSection {
  * fill each page with roughly nine compact rows while accounting for category
  * labels, so a short continuation section uses the space above the footer.
  */
-function paginateGroups(groups: [string, PdfItem[]][]): PdfPageSection[][] {
+function paginateGroups(groups: [string, PdfItem[]][], startEachGroupOnPage = false): PdfPageSection[][] {
   const pages: PdfPageSection[][] = [];
   let page: PdfPageSection[] = [];
   let remainingHeight = PAGE_CONTENT_BUDGET;
 
   for (const [category, categoryItems] of groups) {
+    // A room starts on its own page; long rooms still use the existing
+    // height-budgeted continuation pages. Type groups keep compact packing.
+    if (startEachGroupOnPage && categoryItems.length > 0 && page.length > 0) {
+      pages.push(page);
+      page = [];
+      remainingHeight = PAGE_CONTENT_BUDGET;
+    }
     let itemIndex = 0;
     while (itemIndex < categoryItems.length) {
       const rowHeight=(item:PdfItem)=>ITEM_ROW_BUDGET+(item.displayNote?Math.ceil(item.displayNote.length/60)*9+6:0);
@@ -406,7 +413,7 @@ export function SchedulePdf({
     return a[0].localeCompare(b[0]);
   });
   const roomGroups=grouping==='room'?groupSchedule(items,'room').map(g=>[g.label,g.items] as [string,PdfItem[]]):null;
-  const schedulePages = paginateGroups(roomGroups??groups);
+  const schedulePages = paginateGroups(roomGroups??groups, grouping==='room');
 
   const headerSub = scheduleSubtitle
     ? `FF&E Schedule  ·  ${scheduleSubtitle}`
