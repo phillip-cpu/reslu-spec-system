@@ -11,3 +11,12 @@ export function supplierReferenceContact(product: {supplier?: string | null; tag
   return product.supplier?.trim().toLowerCase() === 'reece' && product.tags?.includes('reece-reference')
     ? reeceHarvardReference : null;
 }
+
+/** A named contact's missing email must not be filled with another source's. */
+export function scheduleContactEmail(
+  contact: {email: string | null} | null,
+  reference: {email: string} | null,
+  supplierEmail?: string | null,
+) {
+  return contact ? contact.email : reference?.email ?? supplierEmail ?? null;
+}
