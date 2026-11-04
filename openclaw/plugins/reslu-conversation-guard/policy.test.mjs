@@ -107,6 +107,68 @@ test("direct human turns can load governed core and operational Aria skill packa
   assert.equal(decision("read", "human_request", { path: "skills/unknown/SKILL.md" })?.block, true);
 });
 
+for (const toolName of [
+  "reslu-stuart__run_stuart_finance_review",
+  "reslu-stuart__process_stuart_supplier_invoice",
+  "mcp__reslu_stuart__run_stuart_finance_review",
+  "mcp__reslu_stuart__process_stuart_supplier_invoice",
+]) {
+  test(`${toolName} is available in validated human chat and voice turns`, () => {
+    for (const stuartSessionKey of [
+      "agent:stuart:reslu-conversation-v2-12345678",
+      "agent:stuart:reslu-call-v1-12345678",
+    ]) {
+      assert.equal(evaluateResluConversationTool(
+        { toolName, params: {} },
+        { toolName, sessionKey: stuartSessionKey },
+        { mode: "human_request", workspaceDir },
+      ), undefined);
+    }
+  });
+
+  test(`${toolName} remains blocked outside validated human requests`, () => {
+    for (const mode of ["specialist_consultation", "forwarded_context", "attachment_review"]) {
+      assert.equal(decision(toolName, mode)?.block, true, mode);
+    }
+    assert.equal(evaluateResluConversationTool(
+      { toolName, params: {} },
+      { toolName, sessionKey },
+      null,
+    )?.block, true);
+  });
+}
+
+test("Stuart workflow access does not permit lookalikes, other operations or host tools", () => {
+  for (const toolName of [
+    "reslu-stuart__run_arbitrary_workflow",
+    "reslu-stuart__process_stuart_supplier_payment",
+    "reslu-stuart__run_stuart_finance_review_and_pay",
+    "reslu-stuart__approve_xero_bill",
+    "reslu-stuart__pay_xero_bill",
+    "reslu-stuart__reconcile_xero_bank_transaction",
+    "reslu-stuart__run_stuart_finance_review_extra",
+    "reslu-stuart__process_stuart_supplier_invoice_extra",
+    "mcp__reslu_stuart__run_arbitrary_workflow",
+    "mcp__reslu_stuart__process_stuart_supplier_payment",
+    "mcp__reslu_stuart__run_stuart_finance_review_and_pay",
+    "mcp__reslu_stuart__process_stuart_supplier_invoice_extra",
+    "mcp__reslu_stuart__approve_xero_bill",
+    "mcp__reslu_stuart__pay_xero_bill",
+    "mcp__reslu_stuart__reconcile_xero_bank_transaction",
+    "mcp__reslu_marco__run_stuart_finance_review",
+    "mcp__other__process_stuart_supplier_invoice",
+    "mcp__reslu_stuart_extra__run_stuart_finance_review",
+    "mcp__reslu_stuart__exec",
+    "mcp__reslu_stuart__write",
+    "exec",
+    "read",
+    "write",
+    "browser",
+  ]) {
+    assert.equal(decision(toolName, "human_request")?.block, true, toolName);
+  }
+});
+
 test("specialist consultations stay bounded to read-only advice", () => {
   assert.equal(decision("memory_search", "specialist_consultation"), undefined);
   assert.equal(decision("reslu_spec_get_project", "specialist_consultation"), undefined);
