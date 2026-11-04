@@ -1180,6 +1180,30 @@ def openclaw_task_session_key(task_id: str) -> str:
     return f"reslu-task-{task_id}"
 
 
+def openclaw_task_run_key(task: dict, artifacts: list[dict]) -> str:
+    """Deduplicate one durable input pass, never an earlier preparation pass."""
+    phase = task.get("approval_state") or "none"
+    identity = {
+        "retry_count": int(task.get("retry_count") or 0),
+        "steering_version": int(task.get("steering_version") or 0),
+        "approval_state": phase,
+        "approval_receipt_id": task.get("approval_receipt_id") if phase == "approved" else None,
+    }
+    if phase == "changes_requested":
+        # Review feedback does not currently advance steering_version. Bind
+        # the revision's inputs without progress timestamps or chat history.
+        identity["review_revision"] = {
+            "note": task.get("approval_note"),
+            "artifacts": sorted([
+                {key: artifact.get(key) for key in ("id", "artifact_key", "status", "content")}
+                for artifact in artifacts
+            ], key=lambda artifact: (str(artifact.get("id") or ""), str(artifact.get("artifact_key") or ""))),
+        }
+    # Approved output artifacts and progress must not create another run.
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return f"reslu-task-{task['id']}-v2-{digest}"
+
+
 def meeting_minutes_id_for_task(task: dict) -> str | None:
     client_task_id = str(task.get("client_task_id") or "")
     if task.get("title") != "Prepare meeting minutes" or not client_task_id.startswith("meeting-minutes:"):
@@ -2030,10 +2054,7 @@ def invoke_task_agent(
                 prompt=prompt,
                 agent_id=runtime_agent_id,
                 session_key=openclaw_task_session_key(task["id"]),
-                idempotency_key=(
-                    f"reslu-task-{task['id']}-attempt-{int(task.get('retry_count') or 0)}"
-                    f"-steering-{steering_iteration}"
-                ),
+                idempotency_key=openclaw_task_run_key(task, artifacts),
                 timeout_seconds=TASK_PROCESS_TIMEOUT_SECONDS,
                 should_continue=should_continue,
                 thinking_level=thinking_level,
@@ -2695,7 +2716,11 @@ def task_worker_loop(base_url: str, service_key: str, slug: str) -> None:
                 try:
                     if task_should_continue(rest, task["id"]):
                         retry_count = int(task.get("retry_count") or 0)
-                        if retry_count < 1:
+                        if (
+                            retry_count < 1
+                            and task.get("approval_state") not in {"approved", "pending"}
+                            and not task.get("approval_receipt_id")
+                        ):
                             rest.patch("agent_tasks", task["id"], {
                                 "status": "queued",
                                 "retry_count": retry_count + 1,
