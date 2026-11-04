@@ -49,4 +49,3 @@ export function ScheduleProductRow({item, product, supplier, contact, contactPho
     </div>
   </div>;
 }
-
