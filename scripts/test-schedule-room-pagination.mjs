@@ -14,7 +14,8 @@ function load(file,mocks={}) {
 }
 const renderer=await import('@react-pdf/renderer');
 const grouping=load('lib/schedule-grouping.ts');
-const {SchedulePdf}=load('components/pdf/SchedulePdf.tsx',{'@react-pdf/renderer':renderer,'@/lib/schedule-grouping':grouping});
+const references=load('lib/schedule-pdf-references.ts',{'./schedule-colour-references':load('lib/schedule-colour-references.ts')});
+const {SchedulePdf}=load('components/pdf/SchedulePdf.tsx',{'@react-pdf/renderer':renderer,'@/lib/schedule-grouping':grouping,'@/lib/schedule-pdf-references':references});
 const output=path.resolve(process.env.PDF_PAGINATION_OUTPUT??'../pdf-pagination-review');
 fs.mkdirSync(output,{recursive:true});
 const items=[];
@@ -38,7 +39,10 @@ function sections(page) {return flatten(page).filter(node=>typeof node==='object
 const roomDocument=SchedulePdf({...props,grouping:'room'});
 const roomPages=pages(roomDocument).slice(1);
 assert.ok(roomPages.length>6,'long rooms continue across pages');
-assert.ok(roomPages.every(page=>sections(page).length===1),'each room occupies its own pages');
+assert.ok(roomPages.every(page=>{
+  const rows=flatten(page).filter(node=>items.some(item=>node?.key===item.id));
+  return new Set(rows.map(node=>items.find(item=>item.id===node.key).rooms[0].id)).size===1;
+}),'each room occupies its own pages');
 const renderedItems=roomPages.flatMap(page=>flatten(page).filter(node=>items.some(item=>node?.key===item.id)).map(node=>node.key));
 assert.deepEqual(renderedItems.toSorted(),items.map(item=>item.id).toSorted(),'every input row retained exactly once');
 const typeDocument=SchedulePdf({...props,grouping:'type'});
@@ -59,12 +63,12 @@ for(const [mode,document] of [['room',roomDocument],['type',typeDocument]]) {
   assert.equal((text.match(/PROPOSED \/ PRELIMINARY/g)??[]).length,items.length,'quantity/status labels retained');
   if(mode==='room') {
     for(const lot of ['58','59'])for(const room of ['LIVING 1','LIVING 2','LIVING 3']) {
-      const label=`LOT ${lot} · ${room}`;
+      const label=`Lot ${lot} · ${room}`;
       const found=physical.map((page,index)=>({page,index})).filter(({page})=>page.includes(label));
       assert.ok(found.length>=1,`${label} retained`);
       assert.ok(found[0].page.split('\n').slice(0,12).some(line=>line.trim()===label),`${label} starts at top of a new page`);
       assert.ok(found.every(({page})=>!page.includes(`LOT ${lot} · LIVING ${room==='LIVING 3'?1:3}`)),'room pages do not mix');
-      if(room==='LIVING 2')assert.ok(found.slice(1).every(({page})=>page.includes('CONTINUED')),'long-room continuation labels retained');
+      if(room==='LIVING 2')assert.ok(found.slice(1).every(({page})=>page.includes('Continued')),'long-room continuation labels retained');
       console.log(`${label}: physical pages ${found.map(({index})=>index+1).join(', ')}`);
     }
   }
