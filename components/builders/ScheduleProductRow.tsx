@@ -27,7 +27,7 @@ export function ScheduleProductRow({item, product, supplier, contact, contactPho
       {/* Canonical supplier images use arbitrary domains, matching the existing register. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       {colourReference ? <div role="img" aria-label={`${colourReference.reference}, indicative digital swatch ${colourReference.hex}`} className="w-full h-full" style={{backgroundColor:colourReference.hex}}/> : image && failedImage !== image && /^https?:\/\//.test(image) ? <img src={image} alt={item.name} className="w-full h-full object-contain" loading="lazy" width={112} height={112} onError={()=>setFailedImage(image)}/> : <span className="text-caption text-charcoal/40">{image ? 'Image unavailable' : 'No image'}</span>}
-    </div>{colourReference && <p className="text-caption text-charcoal/60 mt-2">Indicative digital colour. Check a physical sample.</p>}</div>
+    </div>{colourReference && <p className="text-caption text-charcoal/60 mt-2">{colourReference.kind === 'generic' ? colourReference.reference : 'Indicative digital colour. Check a physical sample.'}</p>}</div>
     <div className="min-w-0"><p className="label-caps text-charcoal/50">{item.category} · {scopeLabel}</p>
       <h4 className="font-display text-xl leading-tight mt-1">{item.name}</h4>
       <p className="text-body text-charcoal/65 mt-2">{[product.brand ?? item.brand, item.colour].filter(Boolean).join(' · ') || 'Brand TBC'}</p>
@@ -36,7 +36,7 @@ export function ScheduleProductRow({item, product, supplier, contact, contactPho
         <dt className="text-charcoal/50">Supplier</dt><dd className="break-words">{supplier || 'TBC'}</dd>
         <dt className="text-charcoal/50">Contact</dt><dd className="min-w-0 break-words">{contact || (contactsUnavailable ? 'Unavailable' : 'TBC')}{contactCompany && contactCompany !== supplier && <span className="block">{contactCompany}</span>}{contactPhone && <a className="block underline" href={`tel:${contactPhone.replace(/[^+\d]/g,'')}`}>{contactPhone}</a>}{contactEmail && <a className="block underline break-all" href={`mailto:${contactEmail}`}>{contactEmail}</a>}{contactNote && <p className="text-charcoal/60 mt-1">{contactNote}</p>}</dd>
       </dl>
-      {colourReference && <div className="text-caption text-charcoal/65 mt-3 space-y-1">
+      {colourReference?.kind === 'manufacturer' && <div className="text-caption text-charcoal/65 mt-3 space-y-1">
         <p><a className="underline" href={colourReference.source} target="_blank" rel="noreferrer">{colourReference.reference}</a></p>
         <p>Manufacturer support · {colourReference.company}: <a className="underline" href={`tel:${colourReference.phone.replace(/ /g,'')}`}>{colourReference.phone}</a> · <a className="underline" href={colourReference.contactUrl} target="_blank" rel="noreferrer">Contact manufacturer</a></p>
         <p>Project supplier and representative remain unassigned unless listed above. Colour reference only; product and finish / sheen remain to be confirmed.</p>

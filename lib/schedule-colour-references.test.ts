@@ -11,8 +11,10 @@ test('the existing roof identity uses Surfmist and accessories use Gully without
     const before = {...input};
     const reference=scheduleColourReference(input);
     assert.equal(reference?.hex,hex);
-    assert.equal(reference?.source,source);
-    assert.equal(reference?.company,'BlueScope / COLORBOND');
+    assert.equal(reference?.kind,'manufacturer');
+    assert.ok(reference?.kind === 'manufacturer');
+    assert.equal(reference.source,source);
+    assert.equal(reference.company,'BlueScope / COLORBOND');
     assert.deepEqual(input,before);
     assert.ok(reference && !('finish' in reference) && !('client_approved' in reference));
     assert.equal(scheduleColourReference({...input,colour:'Jasper'}),null);
@@ -30,4 +32,17 @@ test('Natural Grain stays unchanged for candidates and linked job items', () => 
   assert.equal(scheduleColourReference({id:library_item_id,brand:'Dulux',colour:'Natural Green'}),null);
   assert.equal(scheduleColourReference({id:library_item_id,brand:'Other',colour:'Natural Grain'}),null);
   assert.equal(scheduleColourReference({id:'unrelated',brand:'Dulux',colour:'Natural Grain'}),null);
+});
+
+test('the exact window White identity gets a bordered generic reference with no manufacturer claims', () => {
+  const id='3499dbf9-1b87-403a-ba15-282372c644f2';
+  const swatch=scheduleColourReference({id,colour:'White',brand:null});
+  assert.ok(swatch?.kind === 'generic');
+  assert.equal(swatch.hex,'#FFFFFF');
+  assert.equal(swatch.reference,'Indicative white; exact shade TBC');
+  for(const field of ['brand','source','company','phone','contactUrl','finish','client_approved','installation_status','order_status']) assert.ok(!(field in swatch));
+  assert.equal(scheduleColourReference({id:'job-window',library_item_id:id,colour:'White'})?.kind,'generic');
+  assert.equal(scheduleColourReference({id,colour:'Surfmist',brand:null}),null);
+  assert.equal(scheduleColourReference({id,colour:'White',brand:'Named manufacturer'}),null);
+  assert.equal(scheduleColourReference({id:'unrelated',colour:'White',brand:null}),null);
 });
