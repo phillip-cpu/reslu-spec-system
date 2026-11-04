@@ -13,8 +13,8 @@ import {parseCategoriesParam} from '@/lib/export-presets';
 import type {Category,ItemFile} from '@/types';
 
 // Explicit spec-only fields; no prices or approval values flow into proposed rows.
-const productFields='id,name,category,description,supplier,brand,colour,material,finish,width_mm,height_mm,length_mm,depth_mm,default_image_url,application_note,spec_sheet_url,install_manual_url';
-const itemFields='id,item_code,name,category,description,supplier,brand,quantity,cost_scope,unit,colour,material,finish,width_mm,height_mm,length_mm,depth_mm,selected_image_url,application_note,selection_scope,selection_key,library_item_id';
+const productFields='id,name,category,description,supplier,brand,colour,material,finish,width_mm,height_mm,length_mm,depth_mm,default_image_url,application_note,spec_sheet_url,install_manual_url,product_url';
+const itemFields='id,item_code,name,category,description,supplier,brand,quantity,cost_scope,unit,colour,material,finish,width_mm,height_mm,length_mm,depth_mm,selected_image_url,application_note,selection_scope,selection_key,library_item_id,product_url';
 
 export async function renderBuilderScheduleExport(db:SupabaseClient,id:string,params:URLSearchParams) {
  const {data:project,error:projectError}=await db.from('projects').select('id,name,client_name,address,job_number,builder_id,settings').eq('id',id).is('deleted_at',null).single();

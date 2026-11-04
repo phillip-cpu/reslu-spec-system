@@ -1,4 +1,5 @@
 import {groupSchedule} from '@/lib/schedule-grouping';
+import {schedulePdfReference} from '@/lib/schedule-pdf-references';
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -7,6 +8,7 @@ import {
   View,
   Text,
   Image,
+  Link,
   StyleSheet,
   Font,
 } from "@react-pdf/renderer";
@@ -72,7 +74,7 @@ const HEADER_BAND_HEIGHT = 92; // pt, cream band at top of every page
 // Fold this into the route's storage-cache key whenever the PDF layout
 // changes. Otherwise an unchanged item set can keep serving an older
 // cached render after a deployment.
-export const SCHEDULE_PDF_LAYOUT_VERSION = "compact-rows-v9-room-pages";
+export const SCHEDULE_PDF_LAYOUT_VERSION = "compact-rows-v10-room-hierarchy";
 
 const styles = StyleSheet.create({
   // ── Cover page ──────────────────────────────────────────
@@ -146,6 +148,13 @@ const styles = StyleSheet.create({
   pageContent: { flexShrink: 0 },
   categorySection: { flexShrink: 0 },
   itemRows: { flexShrink: 0 },
+
+  roomHeading: {
+    fontSize: 22,
+    color: NEARBLACK,
+    lineHeight: 1.2,
+    marginBottom: 12,
+  },
 
   // Category section
   sectionLabel: {
@@ -224,6 +233,12 @@ const styles = StyleSheet.create({
     fontSize: 7.5,
     color: CHARCOAL,
     lineHeight: 1.2,
+  },
+  productReference: {
+    fontSize: 7,
+    color: CHARCOAL,
+    textDecoration: 'underline',
+    marginTop: 3,
   },
   itemMeta: {
     width: 112,
@@ -333,6 +348,22 @@ interface PdfPageSection {
   category: string;
   items: PdfItem[];
   continued: boolean;
+  room?: string;
+  roomContinued?: boolean;
+  categoryLabel?: string;
+}
+
+function itemRowHeight(item: PdfItem): number {
+  const lines = (value: string | null | undefined, width: number) => value
+    ? value.split(/\r?\n/).reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / width)), 0) : 0;
+  const specifications = joinPresent([item.brand, item.colour, item.material, item.finish]);
+  // The compact base already allows two title lines, one specification line
+  // and one code/location line. Reserve extra space for longer wrapped text.
+  return ITEM_ROW_BUDGET + (item.displayNote ? lines(item.displayNote, 60) * 9 + 6 : 0)
+    + Math.max(0, lines(item.name, 60) - 2) * 11
+    + Math.max(0, lines(specifications, 80) - 1) * 9
+    + Math.max(0, lines(joinPresent([item.item_code, item.location]), 80) - 1) * 8
+    + (schedulePdfReference(item) ? 12 : 0);
 }
 
 /**
@@ -341,27 +372,20 @@ interface PdfPageSection {
  * fill each page with roughly nine compact rows while accounting for category
  * labels, so a short continuation section uses the space above the footer.
  */
-function paginateGroups(groups: [string, PdfItem[]][], startEachGroupOnPage = false): PdfPageSection[][] {
+function paginateGroups(groups: [string, PdfItem[]][], contentBudget = PAGE_CONTENT_BUDGET, sectionBudget = SECTION_LABEL_BUDGET): PdfPageSection[][] {
   const pages: PdfPageSection[][] = [];
   let page: PdfPageSection[] = [];
-  let remainingHeight = PAGE_CONTENT_BUDGET;
+  let remainingHeight = contentBudget;
 
   for (const [category, categoryItems] of groups) {
-    // A room starts on its own page; long rooms still use the existing
-    // height-budgeted continuation pages. Type groups keep compact packing.
-    if (startEachGroupOnPage && categoryItems.length > 0 && page.length > 0) {
-      pages.push(page);
-      page = [];
-      remainingHeight = PAGE_CONTENT_BUDGET;
-    }
     let itemIndex = 0;
     while (itemIndex < categoryItems.length) {
-      const rowHeight=(item:PdfItem)=>ITEM_ROW_BUDGET+(item.displayNote?Math.ceil(item.displayNote.length/60)*9+6:0);
-      const minimumSectionHeight = SECTION_LABEL_BUDGET + rowHeight(categoryItems[itemIndex]);
+      const rowHeight = itemRowHeight;
+      const minimumSectionHeight = sectionBudget + rowHeight(categoryItems[itemIndex]);
       if (page.length > 0 && remainingHeight < minimumSectionHeight) {
-        pages.push(page);page=[];remainingHeight=PAGE_CONTENT_BUDGET;
+        pages.push(page);page=[];remainingHeight=contentBudget;
       }
-      let usedHeight=SECTION_LABEL_BUDGET;
+      let usedHeight=sectionBudget;
       let take=0;
       while(itemIndex+take<categoryItems.length){
         const nextHeight=rowHeight(categoryItems[itemIndex+take]);
@@ -374,13 +398,35 @@ function paginateGroups(groups: [string, PdfItem[]][], startEachGroupOnPage = fa
       if (itemIndex < categoryItems.length) {
         pages.push(page);
         page = [];
-        remainingHeight = PAGE_CONTENT_BUDGET;
+        remainingHeight = contentBudget;
       }
     }
   }
 
   if (page.length > 0) pages.push(page);
   return pages.length > 0 ? pages : [[]];
+}
+
+/** Keep every room on separate pages and repeat its heading above category
+ * continuations. Categories use the supplied catalogue metadata, never names
+ * inferred from a product or its room. Reserve heading space before packing
+ * categories so a subheading always travels with at least its first row. */
+function paginateRooms(items: PdfItem[], categories: Category[]): PdfPageSection[][] {
+  const pages = groupSchedule(items, 'room').flatMap(room => {
+    const categoryGroups = groupSchedule(room.items, 'type', categories);
+    const categoryLabels = new Map(categoryGroups.map(group => [group.key, group.label]));
+    // Allow long combined room names to wrap, including the continuation suffix.
+    const headingLines = Math.ceil((room.label.length + ' - Continued'.length) / 38);
+    const contentBudget = PAGE_CONTENT_BUDGET - (headingLines * 27 + 16);
+    return paginateGroups(categoryGroups.map(group => [group.key, group.items]), contentBudget, 32)
+      .map((sections, index) => sections.map(section => ({
+        ...section,
+        room: room.label,
+        roomContinued: index > 0,
+        categoryLabel: categoryLabels.get(section.category),
+      })));
+  });
+  return pages.length ? pages : [[]];
 }
 
 export function SchedulePdf({
@@ -412,8 +458,7 @@ export function SchedulePdf({
     if (sa !== sb) return sa - sb;
     return a[0].localeCompare(b[0]);
   });
-  const roomGroups=grouping==='room'?groupSchedule(items,'room').map(g=>[g.label,g.items] as [string,PdfItem[]]):null;
-  const schedulePages = paginateGroups(roomGroups??groups, grouping==='room');
+  const schedulePages = grouping==='room' ? paginateRooms(items, categories) : paginateGroups(groups);
 
   const headerSub = scheduleSubtitle
     ? `FF&E Schedule  ·  ${scheduleSubtitle}`
@@ -470,13 +515,19 @@ export function SchedulePdf({
           </View>
 
           <View style={styles.pageContent}>
-            {pageSections.map(({ category, items: sectionItems, continued }) => (
+            {pageSections[0]?.room ? (
+              <Text style={{...styles.roomHeading, fontFamily: displayFontFamily}}>
+                {pageSections[0].room}
+                {pageSections[0].roomContinued ? " - Continued" : ""}
+              </Text>
+            ) : null}
+            {pageSections.map(({ category, categoryLabel, items: sectionItems, continued }) => (
               <View
                 key={`${category}-${continued ? "continued" : "start"}`}
                 style={styles.categorySection}
               >
-                <Text style={styles.sectionLabel}>
-                  {grouping==='room'?category:categoryName.get(category) ?? category}
+                <Text style={grouping==='room' ? {...styles.sectionLabel, fontSize:8, color:CHARCOAL, marginTop:10, marginBottom:4} : styles.sectionLabel}>
+                  {categoryLabel ?? categoryName.get(category) ?? category}
                   {continued ? "  ·  Continued" : ""}
                 </Text>
                 <View style={styles.itemRows}>
@@ -494,9 +545,10 @@ export function SchedulePdf({
                     ]);
                     const dims = dimensionsLine(item);
                     const imgSrc = item.resolvedImageUrl;
+                    const reference = schedulePdfReference(item);
 
                     return (
-                      <View key={item.id} style={[styles.itemRow,{height:ITEM_ROW_BUDGET+(item.displayNote?Math.ceil(item.displayNote.length/60)*9+6:0)}]} wrap={false}>
+                      <View key={item.id} style={[styles.itemRow,{height:itemRowHeight(item)}]} wrap={false}>
                         {imgSrc ? (
                           <View style={styles.imageBox}>
                             {/* eslint-disable-next-line jsx-a11y/alt-text */}
@@ -525,6 +577,11 @@ export function SchedulePdf({
                           {item.displayNote ? <Text style={{fontSize:7,lineHeight:1.2,marginTop:3}}>{item.displayNote}</Text> : null}
                           {specLine ? (
                             <Text style={styles.specLine}>{specLine}</Text>
+                          ) : null}
+                          {reference ? (
+                            <Link src={reference.url} style={styles.productReference}>
+                              {reference.label}
+                            </Link>
                           ) : null}
                         </View>
 
