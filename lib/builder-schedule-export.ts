@@ -80,7 +80,7 @@ export async function renderBuilderScheduleExport(db:SupabaseClient,id:string,pa
   }
  }
  try{
-  const buffer=await renderToBuffer(SchedulePdf({project,items:pdfItems,categories:(categoryResult.data??[]) as Category[],generatedAt:new Date().toLocaleDateString('en-AU'),grouping:grouping as 'room'|'type',scheduleSubtitle:`${scope==='all'?'All selections':scope==='shared'?'Shared interior':projectLots(project.settings).find(l=>l.key===scope)?.label} · Proposed quantities are preliminary; excluded from totals and orders`}));
+  const buffer=await renderToBuffer(SchedulePdf({project,items:pdfItems,categories:(categoryResult.data??[]) as Category[],generatedAt:new Date().toLocaleDateString('en-AU'),grouping:grouping as 'room'|'type',scheduleSubtitle:`${scope==='all'?'All selections':scope==='shared'?'Shared selections':projectLots(project.settings).find(l=>l.key===scope)?.label} · Proposed quantities are preliminary; excluded from totals and orders`}));
   const bytes=includeDocs?await buildDocBundle(db,new Uint8Array(buffer),bundleDocs):new Uint8Array(buffer);
   const filename=`${project.name.replace(/[^a-z0-9]+/gi,'-')}-${scope}-${includeDocs?'Print-Bundle':'Schedule'}.pdf`;
   return new NextResponse(new Uint8Array(bytes),{headers:{'Content-Type':'application/pdf','Content-Disposition':`inline; filename="${filename}"`,'Cache-Control':'no-store'}});
