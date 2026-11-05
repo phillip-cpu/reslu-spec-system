@@ -60,7 +60,8 @@ export interface ProposalExclusions {
 
 /** The full jsonb document stored on proposals.content — see migration 051's own column comment. */
 export interface ProposalContent {
-  kind?: "design" | "construction";
+  kind?: "design" | "construction" | "construction_quote";
+  quote?: import("../lib/construction-quotes").ConstructionQuoteFields;
   construction?: import("./construction-proposals").ConstructionMetadata;
   letter: string;
   vision: string;

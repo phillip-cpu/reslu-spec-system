@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type FocusEvent } from "react";
 import clsx from "clsx";
+import { ConstructionQuoteEditor } from "./ConstructionQuoteEditor";
 import type {
   Proposal,
   ProposalContent,
@@ -217,6 +218,7 @@ export function ProposalEditor({ proposalId }: { proposalId: string }) {
     return <p className="border border-red-700/40 bg-red-50 px-4 py-2 text-body text-red-700">{error ?? "Proposal not found."}</p>;
   }
 
+  if (content.kind === "construction_quote") return <ConstructionQuoteEditor proposal={proposal} />;
   if (content.kind === "construction") return (
     <section className="space-y-5 border border-[#dcd6cc] bg-offwhite p-6">
       <h2 className="font-display text-section">{content.construction?.variation ? "Post-contract variation" : "Construction proposal"} · internal review</h2>

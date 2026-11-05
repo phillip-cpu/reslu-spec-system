@@ -131,7 +131,7 @@ export function ProposalsSection({ leadId, projectId }: Props) {
               </div>
               <div className="flex items-center gap-3">
                 <a
-                  href={`/proposal/${p.token}`}
+                  href={p.content.kind === "construction_quote" ? `/api/proposals/${p.id}/pdf` : `/proposal/${p.token}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-caption text-charcoal/50 underline hover:text-nearblack"

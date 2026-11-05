@@ -1,3 +1,4 @@
+import { isConstructionQuote, QUOTE_HOLD } from "@/lib/construction-quotes";
 import { isConstruction, CONSTRUCTION_RELEASE_HOLD } from "@/lib/construction-proposals";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
@@ -67,6 +68,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     .maybeSingle();
   if (fetchError) return NextResponse.json({ error: fetchError.message }, { status: 500 });
   if (!proposal) return NextResponse.json({ error: "Proposal not found" }, { status: 404 });
+  if (isConstructionQuote(proposal.content)) return NextResponse.json({ error: QUOTE_HOLD }, { status: 409 });
   if (isConstruction(proposal.content)) return NextResponse.json({ error: CONSTRUCTION_RELEASE_HOLD }, { status: 409 });
 
   if (proposal.status !== "sent") {

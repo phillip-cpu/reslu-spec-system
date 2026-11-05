@@ -51,7 +51,7 @@ export default async function ProposalEditorPage({
 
   return (
     <>
-      <Header title="Fee proposal" subtitle="Letter, vision, scope, fees, timeline, exclusions, terms." />
+      <Header title="Proposal builder" subtitle="Scope, price, payment breakdown and terms." />
       <main className="flex-1 px-8 py-8">
         <ProposalEditor proposalId={id} />
       </main>

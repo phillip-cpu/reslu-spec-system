@@ -1,3 +1,4 @@
+import { isConstructionQuote, QUOTE_HOLD } from "@/lib/construction-quotes";
 import { localConstructionLifecycleEnabled, respondConstructionVersion } from "@/lib/construction-lifecycle";
 import { matchesConstructionApproval } from "@/lib/construction-proposal-identity";
 import { isConstruction, CONSTRUCTION_RELEASE_HOLD } from "@/lib/construction-proposals";
@@ -130,6 +131,7 @@ export async function POST(
     return NextResponse.json({ error: "Invalid link" }, { status: 404 });
   }
 
+  if (isConstructionQuote(proposal.content)) return NextResponse.json({ error: QUOTE_HOLD }, { status: 409 });
   if (isConstruction(proposal.content)) {
     if (!matchesConstructionApproval(proposal, body)) return NextResponse.json({ error: "Approval must reference the exact displayed proposal version." }, { status: 409 });
     if (!localConstructionLifecycleEnabled()) return NextResponse.json({ error: CONSTRUCTION_RELEASE_HOLD }, { status: 409 });

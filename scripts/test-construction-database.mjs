@@ -69,6 +69,7 @@ try {
     await owner.query('alter table profiles enable trigger guard_profile_role_change');
   });
   await apply(sql); await apply(sql);
+  await apply(await readFile('supabase/migrations/20261024000458_construction_quote_authorisation.sql','utf8'));
   const admin=await connect('authenticated',adminId), designer=await connect('authenticated',designerId), anon=await connect('anon');
   const service=await connect('service_role'), service2=await connect('service_role');
   function content(previous) {
