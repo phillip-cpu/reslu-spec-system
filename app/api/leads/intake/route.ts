@@ -145,7 +145,18 @@ export async function POST(request: NextRequest) {
   const firstName = clean(body.first_name, 80);
   const lastName = clean(body.last_name, 80);
   const projectType = clean(body.project_type, 60);
-  const projectTypeCode = projectType ? inferProjectTypeFromText(projectType) : null;
+  const attribution = websiteAttribution(body);
+  // The website sends a service label separately from the selected spaces.
+  // With either generic service, a sole Extension selection is unambiguous.
+  // Leave mixed scopes and explicit project types on the existing path.
+  const service = projectType?.toLowerCase();
+  const extensionOnly =
+    (service === "design + renovate" || service === "design + build") &&
+    attribution.rooms.length === 1 &&
+    attribution.rooms[0] === "Extension";
+  const projectTypeCode = extensionOnly
+    ? "extension"
+    : projectType ? inferProjectTypeFromText(projectType) : null;
   const projectSubtype = projectTypeCode === "single_room_renovation"
     ? inferSingleRoomSubtypeFromText(projectType) ?? "other"
     : null;
@@ -188,7 +199,7 @@ export async function POST(request: NextRequest) {
       utm_medium: clean(body.utm_medium, 100),
       utm_campaign: clean(body.utm_campaign, 150),
       utm_content: clean(body.utm_content, 150),
-      ...websiteAttribution(body),
+      ...attribution,
       created_by: null, // webhook — no app user behind it
     })
     .select()
