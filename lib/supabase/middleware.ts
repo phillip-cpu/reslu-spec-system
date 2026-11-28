@@ -52,6 +52,7 @@ export async function updateSession(request: NextRequest) {
     !!request.headers.get("authorization")?.startsWith("Bearer ");
 
   const isPublicPath =
+    pathname === "/partner/leads" ||
     isBearerApiRequest ||
     pathname.startsWith("/login") ||
     pathname.startsWith("/portal") ||
