@@ -57,7 +57,7 @@ export async function POST(request: NextRequest) {
     return page("<p>Too many requests. Try again in a minute.</p>", 429);
   }
   const origin = request.headers.get("origin");
-  if (origin !== request.nextUrl.origin) return page("<p>Invalid request.</p>", 403);
+  if (!origin || origin !== process.env.PARTNER_REPORT_ORIGIN) return page("<p>Invalid request.</p>", 403);
   if (!request.headers.get("content-type")?.startsWith("application/x-www-form-urlencoded")) {
     return page("<p>Invalid request.</p>", 400);
   }

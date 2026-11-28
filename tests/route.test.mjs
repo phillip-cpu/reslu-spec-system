@@ -25,6 +25,7 @@ process.env.PARTNER_REPORT_KEY_SHA256 = createHash("sha256").update(key).digest(
 process.env.PARTNER_REPORT_EXPIRES_AT = new Date(Date.now()+3600000).toISOString();
 process.env.PARTNER_REPORT_SINCE = "2026-01-01T00:00:00Z";
 process.env.PARTNER_REPORT_CAMPAIGNS = "partner_ad";
+process.env.PARTNER_REPORT_ORIGIN = "https://example.org";
 const address = "https://example.org/partner/leads";
 function req(body, origin = "https://example.org") {
   return Object.assign(new Request(address, {method:"POST",body,headers:{origin,"Content-Type":"application/x-www-form-urlencoded"}}), {nextUrl:new URL(address)});
