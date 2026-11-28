@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { partnerLeadScope, summarizePartnerLeads } from "@/lib/partner-lead-access";
+import { partnerLeadScope, summarizePartnerLeads, summarizeLeadBaseline } from "@/lib/partner-lead-access";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { rateLimit } from "@/lib/rate-limit";
 
@@ -69,13 +69,12 @@ export async function POST(request: NextRequest) {
   if (!scope) return page("<p>Access unavailable. Check your key.</p>" + form, 401);
 
   try {
-    const { data, error } = await createServiceRoleClient()
+    let query = createServiceRoleClient()
       .from("leads")
       .select("utm_campaign,stage")
-      .is("deleted_at", null)
-      .in("utm_campaign", scope.campaigns)
-      .gte("received_at", scope.since)
-      .limit(1000);
+      .is("deleted_at", null);
+    if (!scope.includeBaseline) query = query.in("utm_campaign", scope.campaigns);
+    const { data, error } = await query.gte("received_at", scope.since).limit(1000);
     if (error || !data || data.length === 1000) {
       return page("<p>Report unavailable. Please contact RESLU.</p>", 503);
     }
@@ -83,9 +82,18 @@ export async function POST(request: NextRequest) {
     // Campaign keys are restricted to ASCII alphanumerics/dashes/underscores;
     // stage labels come from a fixed enum and counts are generated locally.
     const rows = report.map(r => `<tr><td>${r.campaign}</td><td>${r.stage}</td><td>${r.count}</td></tr>`).join("");
-    return page(rows
+    const date = scope.since.slice(0, 10);
+    let html = "<p>From " + date + " (UTC). Lead stages reflect Spec at the time of viewing.</p>";
+    if (scope.includeBaseline) {
+      const baseline = summarizeLeadBaseline(data);
+      const stages = baseline.stages.map(s => `<tr><td>${s.stage}</td><td>${s.count}</td></tr>`).join("");
+      html += `<h2>RESLU lead baseline</h2><p>${baseline.total} lead records, ${baseline.notTagged} without a campaign tag in Spec. These counts are not ad conversions.</p>`;
+      if (stages) html += "<table><thead><tr><th>Lead stage</th><th>Count</th></tr></thead><tbody>" + stages + "</tbody></table>";
+    }
+    if (scope.campaigns.length) html += "<h2>Approved campaigns</h2>" + (rows
       ? '<table><thead><tr><th>Campaign</th><th>Lead stage</th><th>Count</th></tr></thead><tbody>' + rows + '</tbody></table>'
       : '<p>No leads match the approved campaigns in this reporting period.</p>');
+    return page(html);
   } catch {
     return page("<p>Report unavailable. Please contact RESLU.</p>", 503);
   }

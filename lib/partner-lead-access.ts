@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
-export type PartnerLeadScope = { campaigns: string[]; since: string };
+export type PartnerLeadScope = { campaigns: string[]; since: string; includeBaseline?: true };
 export const REPORT_STAGES = [
   "Enquiry", "New", "Contacted", "Qualified", "Site Visit",
   "Proposal Sent", "Won", "Lost", "On Hold", "Lead Lost", "Unable to Contact",
@@ -18,17 +18,19 @@ export function partnerLeadScope(
   const digest = env.PARTNER_REPORT_KEY_SHA256 ?? "";
   const expires = Date.parse(env.PARTNER_REPORT_EXPIRES_AT ?? "");
   const since = Date.parse(env.PARTNER_REPORT_SINCE ?? "");
-  const campaigns = [...new Set((env.PARTNER_REPORT_CAMPAIGNS ?? "").split(",").map(s => s.trim()))];
+  const campaignSetting = env.PARTNER_REPORT_CAMPAIGNS?.trim() ?? "";
+  const campaigns = campaignSetting ? [...new Set(campaignSetting.split(",").map(s => s.trim()))] : [];
+  const includeBaseline = env.PARTNER_REPORT_INCLUDE_BASELINE === "true";
   if (
     typeof key !== "string" || !keyPattern.test(key) ||
     !/^[a-f0-9]{64}$/.test(digest) ||
     !Number.isFinite(expires) || expires <= now ||
     !Number.isFinite(since) || since > now ||
-    campaigns.length > 20 || campaigns.some(c => !campaignPattern.test(c))
+    (!includeBaseline && !campaigns.length) || campaigns.length > 20 || campaigns.some(c => !campaignPattern.test(c))
   ) return null;
   const actual = createHash("sha256").update(key).digest();
   if (!timingSafeEqual(actual, Buffer.from(digest, "hex"))) return null;
-  return { campaigns, since: new Date(since).toISOString() };
+  return { campaigns, since: new Date(since).toISOString(), ...(includeBaseline ? { includeBaseline: true as const } : {}) };
 }
 
 export function summarizePartnerLeads(
@@ -48,4 +50,16 @@ export function summarizePartnerLeads(
     const [campaign, stage] = JSON.parse(label) as [string, string];
     return { campaign, stage, count };
   }).sort((a, b) => a.campaign.localeCompare(b.campaign) || a.stage.localeCompare(b.stage));
+}
+
+export function summarizeLeadBaseline(rows: { utm_campaign?: unknown; stage?: unknown }[]) {
+  let notTagged = 0;
+  const byStage = new Map<string, number>();
+  for (const row of rows) {
+    if (typeof row.utm_campaign !== "string" || !row.utm_campaign.trim()) notTagged++;
+    const stage = REPORT_STAGES.find(s => s === row.stage) ?? "Other";
+    byStage.set(stage, (byStage.get(stage) ?? 0) + 1);
+  }
+  return { total: rows.length, notTagged, stages: Array.from(byStage, ([stage, count]) => ({ stage, count }))
+    .sort((a, b) => a.stage.localeCompare(b.stage)) };
 }

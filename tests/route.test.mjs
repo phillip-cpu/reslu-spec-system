@@ -50,3 +50,18 @@ test("scoped lookup excludes unrelated campaigns and only returns stage counts",
   assert.doesNotMatch(html,/internal|hidden@example\.org/);
   assert.deepEqual(calls,[["client"],["from","leads"],["select","utm_campaign,stage"],["is","deleted_at",null],["in","utm_campaign",["partner_ad"]],["gte","received_at","2026-01-01T00:00:00.000Z"],["limit",1000]]);
 });
+
+
+test("aggregate baseline counts untagged leads without publishing unapproved campaign labels", async () => {
+  process.env.PARTNER_REPORT_INCLUDE_BASELINE = "true";
+  delete process.env.PARTNER_REPORT_CAMPAIGNS;
+  calls.length=0;
+  data=[{utm_campaign:null,stage:"Proposal Sent",email:"hidden@example.org"},{utm_campaign:"not_for_consultant",stage:"Lead Lost"}];
+  const response=await POST(req("key="+key));
+  assert.equal(response.status,200);
+  const html=await response.text();
+  assert.match(html,/2 lead records, 1 without a campaign tag/);
+  assert.match(html,/Proposal Sent/);
+  assert.doesNotMatch(html,/not_for_consultant|hidden@example\.org|Approved campaigns/);
+  assert.equal(calls.some(x=>x[0]==="in"),false);
+});
